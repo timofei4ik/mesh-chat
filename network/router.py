@@ -1,50 +1,70 @@
-class Router:
+from network.client import send_packet
 
-    def __init__(
-        self,
-        node_id
-    ):
 
-        self.node_id = node_id
+def forward_packet(
+    discovery,
+    my_node_id,
+    packet
+):
+    
+    print(
+        "FORWARD:",
+        packet["type"],
+        packet.get("source_node"),
+        "->",
+        packet.get("destination_node"),
+        "TTL:",
+        packet.get("ttl")
+    )
 
-    def is_for_me(
-        self,
-        packet
-    ):
+    ttl = packet.get(
+        "ttl",
+        0
+    )
 
-        destination = packet.get(
-            "destination_node"
+    if ttl <= 0:
+        return
+
+    packet["ttl"] = ttl - 1
+
+    source_node = packet.get(
+        "source_node"
+    )
+
+    users = discovery.get_users()
+
+    print("USERS LIST:", users)
+
+    for user in users:
+
+        print("USER:", repr(user))
+
+        node_id, name, ip, port = user
+
+        print(
+            "PARSED:",
+            repr(node_id),
+            repr(name),
+            repr(ip),
+            repr(port)
         )
 
-        return (
-            destination == self.node_id
+        if node_id == my_node_id:
+            continue
+
+        if node_id == source_node:
+            continue
+        
+        print(
+            "FORWARD TO:",
+            node_id,
+            name,
+            ip,
+            port
         )
 
-    def should_forward(
-        self,
-        packet
-    ):
-
-        destination = packet.get(
-            "destination_node"
+        send_packet(
+            ip,
+            port,
+            packet
         )
-
-        return (
-            destination != self.node_id
-        )
-
-    def decrease_ttl(
-        self,
-        packet
-    ):
-
-        ttl = packet.get(
-            "ttl",
-            0
-        )
-
-        ttl -= 1
-
-        packet["ttl"] = ttl
-
-        return ttl > 0

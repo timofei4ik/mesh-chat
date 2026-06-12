@@ -74,6 +74,24 @@ class Database:
 
         self.conn.commit()
 
+        
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS files(
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    sender_node TEXT,
+
+                    receiver_node TEXT,
+
+                    filename TEXT,
+
+                    data TEXT,
+
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+        """)
+
     def save_message(
         self,
         sender,
@@ -426,3 +444,72 @@ class Database:
         )
 
         return cursor.fetchone()
+    
+    def save_file(
+    self,
+    sender_node,
+    receiver_node,
+    filename,
+    data
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO files(
+                sender_node,
+                receiver_node,
+                filename,
+                data
+            )
+            VALUES(?,?,?,?)
+            """,
+            (
+                sender_node,
+                receiver_node,
+                filename,
+                data
+            )
+        )
+
+        self.conn.commit()
+
+    def get_files(
+        self,
+        node1,
+        node2
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT filename,
+                data,
+                sender_node
+            FROM files
+
+            WHERE
+
+            (
+                sender_node=? AND receiver_node=?
+            )
+
+            OR
+
+            (
+                sender_node=? AND receiver_node=?
+            )
+
+            ORDER BY id
+            """,
+            (
+                node1,
+                node2,
+                node2,
+                node1
+            )
+        )
+
+        return cursor.fetchall()

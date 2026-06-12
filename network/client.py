@@ -9,6 +9,14 @@ def send_packet(
         packet
 ):
     
+    print(
+        "SEND:",
+        ip,
+        type(ip),
+        port,
+        type(port)
+    )
+    
     try:
 
         sock = socket.socket(
@@ -31,32 +39,50 @@ def send_packet(
 
     except Exception as e:
 
+        import traceback
+
+        traceback.print_exc()
+
         print(
             "Send error:",
             e
         )
 
 def send_chat_response(
-        ip,
-        port,
-        accepted
+    ip,
+    port,
+    accepted,
+    source_node,
+    destination_node
 ):
-    
+
     print(
         "SENDING RESPONSE:",
         ip,
         port,
         accepted
-    )  
-    
+    )
+
     packet = {
 
         "packet_id": generate_message_id(),
 
         "type": "chat_response",
 
-        "accepted": accepted
+        "accepted": accepted,
+
+        "source_node": source_node,
+
+        "destination_node": destination_node,
+
+        "ttl": 5
     }
+
+    print(
+        "CALL SEND:",
+        repr(ip),
+        repr(port)
+    )
 
     send_packet(
         ip,

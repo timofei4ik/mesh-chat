@@ -13,15 +13,17 @@ from PyQt6.QtWidgets import (
     QMessageBox
 )
 
-from PyQt6.QtCore import QTimer
 from gui.request_dialog import ChatRequestDialog
 from gui.chat_window import ChatWindow
 from storage.database import Database
 from PyQt6.QtWidgets import QInputDialog
 from network.packet_cache import PacketCache
 from PyQt6.QtWidgets import QListWidgetItem
+from network.router import forward_packet
+from network.routing_table import RoutingTable
+from PyQt6.QtWidgets import QFileDialog
+import base64
 
-from network.router import Router
 
 from network.client import (
     send_packet,
@@ -35,6 +37,13 @@ class MainWindow(QWidget):
     incoming_request = pyqtSignal(dict)
     incoming_response = pyqtSignal(dict)
 
+    file_received_signal = pyqtSignal(
+        str,  #sender
+        str,  #sender_node_id
+        str,  #filename
+        str   #data
+    )
+
     def __init__(
         self,
         username,
@@ -45,6 +54,7 @@ class MainWindow(QWidget):
         self.chat_windows = {}
 
         self.port = discovery.tcp_port
+        self.routing_table = RoutingTable()
 
         super().__init__()
 
@@ -52,9 +62,6 @@ class MainWindow(QWidget):
         self.node_id = node_id
         self.discovery = discovery
         self.db = Database()
-        self.router = Router(
-            node_id
-        )
         self.packet_cache = PacketCache()
 
         self.selected_user = None
@@ -174,6 +181,16 @@ class MainWindow(QWidget):
             self.open_saved_chat
         )
 
+        self.route_timer = QTimer()
+
+        self.route_timer.timeout.connect(
+            self.print_routes
+        )
+
+        self.route_timer.start(
+            5000
+        )
+
     def refresh_users(self):
 
         users = self.discovery.get_users()
@@ -243,7 +260,15 @@ class MainWindow(QWidget):
 
         packet = {
 
+            "packet_id": generate_message_id(),
+
             "type": "chat_request",
+
+            "source_node": self.node_id,
+
+            "destination_node": peer_node_id,
+
+            "ttl": 5,
 
             "from_name": self.username,
 
@@ -253,6 +278,12 @@ class MainWindow(QWidget):
 
             "sender_port": self.discovery.tcp_port
         }
+
+        print(
+            "CALL SEND:",
+            repr(ip),
+            repr(port)
+        )
 
         send_packet(
             ip,
@@ -269,8 +300,11 @@ class MainWindow(QWidget):
     def handle_packet(self, packet):
 
         print(
-            "HANDLE:",
-            packet
+            "PACKET:",
+            packet.get("type"),
+            packet.get("source_node"),
+            "->",
+            packet.get("destination_node")
         )
 
         if not isinstance(packet, dict):
@@ -284,6 +318,33 @@ class MainWindow(QWidget):
             self.packet_cache.add(packet_id)
 
         packet_type = packet.get("type")
+
+        destination_node = packet.get(
+            "destination_node"
+        )
+
+        if destination_node:
+
+            if destination_node != self.node_id:
+
+                print(
+                    "FORWARDING:",
+                    packet_type,
+                    "->",
+                    destination_node
+                )
+
+                print(
+                    "FORWARDING PACKET"
+                )
+                
+                forward_packet(
+                    self.discovery,
+                    self.node_id,
+                    packet
+                )
+
+                return
 
         if packet_type == "chat_request":
 
@@ -306,14 +367,15 @@ class MainWindow(QWidget):
 
                 self.chat_windows[sender_node_id].receive_message(
                     sender,
+                    sender_node_id,
                     message
                 )
 
             else:
 
                 self.db.save_message(
-                    sender,
-                    self.username,
+                    sender_node_id,
+                    self.node_id,
                     message
                 )
 
@@ -322,8 +384,39 @@ class MainWindow(QWidget):
                     self.node_id
                 )
 
-        else:
-            print("Unknown packet type:", packet_type)
+        elif packet_type == "file_message":
+
+            sender = packet.get(
+                "sender"
+            )
+
+            sender_node_id = packet.get(
+                "source_node"
+            )
+
+            filename = packet.get(
+                "filename"
+            )
+
+            data = packet.get(
+                "data"
+            )
+
+            self.db.save_file(
+                sender_node_id,
+                self.node_id,
+                filename,
+                data
+            )
+
+            if sender_node_id in self.chat_windows:
+
+                self.show_file_message(
+                    sender,
+                    sender_node_id,
+                    filename,
+                    data
+                )
     
     def show_chat_request(
             self,
@@ -351,10 +444,6 @@ class MainWindow(QWidget):
             username
         )
 
-        print(
-            "CHAT ACCEPTED:",
-            accepted
-        )
 
         if accepted:
 
@@ -368,7 +457,9 @@ class MainWindow(QWidget):
         send_chat_response(
             sender_ip,
             sender_port,
-            accepted
+            accepted,
+            self.node_id,
+            peer_node_id
         )
 
     def open_chat(
@@ -439,6 +530,7 @@ class MainWindow(QWidget):
             )
 
     def refresh_chats(self):
+
 
         contacts = self.db.get_contacts(
             self.node_id
@@ -582,3 +674,36 @@ class MainWindow(QWidget):
         )
 
         return True
+    
+    def print_routes(self):
+
+        print(
+            "ROUTES:"
+        )
+
+        for node_id, route in self.routing_table.get_all_routes().items():
+
+            print(
+                node_id,
+                route
+            )
+
+
+    def show_file_message(
+        self,
+        sender,
+        sender_node_id,
+        filename,
+        data
+    ):
+
+        if sender_node_id in self.chat_windows:
+
+            self.chat_windows[
+                sender_node_id
+            ].receive_file(
+                sender,
+                sender_node_id,
+                filename,
+                data
+            )

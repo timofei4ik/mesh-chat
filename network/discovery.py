@@ -206,10 +206,10 @@ class Discovery:
 
             result.append(
                 (
-                    info["node_id"],
+                    (info["node_id"],
                     info["name"],
                     ip,
-                    info["port"]
+                    info["port"])
                 )
             )
 
@@ -220,14 +220,9 @@ class Discovery:
         username
     ):
 
-        for (
-            ip,
-            port
-        ), info in self.users.items():
+        for (ip, port), info in self.users.items():
 
-            if info[
-                "name"
-            ] == username:
+            if info["name"] == username:
 
                 return (
                     ip,
@@ -235,20 +230,16 @@ class Discovery:
                 )
 
         return None
+
 
     def get_user_by_node_id(
         self,
         node_id
     ):
 
-        for (
-            ip,
-            port
-        ), info in self.users.items():
+        for (ip, port), info in self.users.items():
 
-            if info.get(
-                "node_id"
-            ) == node_id:
+            if info["node_id"] == node_id:
 
                 return (
                     ip,
@@ -256,63 +247,26 @@ class Discovery:
                 )
 
         return None
+
 
     def get_node_id_by_name(
         self,
         username
     ):
 
-        for (
-            ip,
-            port
-        ), info in self.users.items():
+        for (ip, port), info in self.users.items():
 
-            if info[
-                "name"
-            ] == username:
+            if info["name"] == username:
 
-                return info.get(
-                    "node_id"
-                )
+                return info["node_id"]
 
         return None
-    
-    def get_user_by_node_id(
-    self,
-    node_id
-):
 
-        for ip, info in self.users.items():
 
-            if info["node_id"] == node_id:
-
-                return (
-                    ip,
-                    info["port"]
-                )
-
-        return None
-    
-    def get_user_by_node_id(
-    self,
-    node_id
-):
-
-        for ip, info in self.users.items():
-
-            if info["node_id"] == node_id:
-
-                return (
-                    ip,
-                    info["port"]
-                )
-
-        return None
-    
     def get_name_by_node_id(
-    self,
-    node_id
-):
+        self,
+        node_id
+    ):
 
         for info in self.users.values():
 
