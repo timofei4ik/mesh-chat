@@ -75,7 +75,7 @@ def main():
 
     def packet_received(packet):
 
-        window.handle_packet(
+        window.packet_signal.emit(
             packet
         )
 

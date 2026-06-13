@@ -1,5 +1,6 @@
 import sqlite3
 import uuid
+import traceback
 
 
 class Database:
@@ -92,12 +93,22 @@ class Database:
                 )
         """)
 
+        self.conn.commit()
+
+
     def save_message(
         self,
         sender,
         receiver,
         message
     ):
+        
+        print(
+            "SAVE:",
+            sender,
+            receiver,
+            message
+        )
 
         cursor = self.conn.cursor()
 
@@ -505,6 +516,77 @@ class Database:
             ORDER BY id
             """,
             (
+                node1,
+                node2,
+                node2,
+                node1
+            )
+        )
+
+        return cursor.fetchall()
+    
+    def get_chat_history(
+        self,
+        node1,
+        node2
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                'message' as item_type,
+                sender,
+                receiver,
+                message as content,
+                timestamp
+
+            FROM messages
+
+            WHERE
+
+            (
+                sender=? AND receiver=?
+            )
+
+            OR
+
+            (
+                sender=? AND receiver=?
+            )
+
+            UNION ALL
+
+            SELECT
+                'file' as item_type,
+                sender_node,
+                receiver_node,
+                filename as content,
+                timestamp
+
+            FROM files
+
+            WHERE
+
+            (
+                sender_node=? AND receiver_node=?
+            )
+
+            OR
+
+            (
+                sender_node=? AND receiver_node=?
+            )
+
+            ORDER BY timestamp
+            """,
+            (
+                node1,
+                node2,
+                node2,
+                node1,
+
                 node1,
                 node2,
                 node2,

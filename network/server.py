@@ -1,6 +1,7 @@
 import socket
 import threading
 import json
+import traceback
 
 
 class ChatServer:
@@ -40,24 +41,35 @@ class ChatServer:
                 daemon=True
             ).start()
         
+    import traceback
+
     def handle_client(self, conn):
 
         try:
 
-            data = conn.recv(
-                4096
-            )
+            buffer = b""
+
+            while True:
+
+                chunk = conn.recv(4096)
+
+                if not chunk:
+                    break
+
+                buffer += chunk
 
             packet = json.loads(
-                data.decode()
+                buffer.decode()
             )
 
             self.callback(
                 packet
             )
-            
-        except:
-            pass
-            
+
+        except Exception:
+
+            traceback.print_exc()
+
         finally:
+
             conn.close()

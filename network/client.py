@@ -9,14 +9,6 @@ def send_packet(
         packet
 ):
     
-    print(
-        "SEND:",
-        ip,
-        type(ip),
-        port,
-        type(port)
-    )
-    
     try:
 
         sock = socket.socket(
@@ -56,12 +48,6 @@ def send_chat_response(
     destination_node
 ):
 
-    print(
-        "SENDING RESPONSE:",
-        ip,
-        port,
-        accepted
-    )
 
     packet = {
 
@@ -78,11 +64,6 @@ def send_chat_response(
         "ttl": 5
     }
 
-    print(
-        "CALL SEND:",
-        repr(ip),
-        repr(port)
-    )
 
     send_packet(
         ip,
