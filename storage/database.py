@@ -23,6 +23,8 @@ class Database:
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
+            message_id TEXT,
+
             sender TEXT,
 
             receiver TEXT,
@@ -95,12 +97,51 @@ class Database:
 
         self.conn.commit()
 
+        cursor.execute(
+            "PRAGMA table_info(messages)"
+        )
+
+        message_columns = {
+            row[1]
+            for row in cursor.fetchall()
+        }
+
+        if "message_id" not in message_columns:
+
+            cursor.execute(
+                "ALTER TABLE messages ADD COLUMN message_id TEXT"
+            )
+
+            self.conn.commit()
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_messages(
+
+            message_id TEXT PRIMARY KEY,
+
+            sender_node TEXT,
+
+            receiver_node TEXT,
+
+            message TEXT,
+
+            attempts INTEGER DEFAULT 0,
+
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            last_attempt DATETIME
+        )
+        """)
+
+        self.conn.commit()
+
 
     def save_message(
         self,
         sender,
         receiver,
-        message
+        message,
+        message_id=None
     ):
         
         print(
@@ -115,16 +156,147 @@ class Database:
         cursor.execute(
             """
             INSERT INTO messages(
+                message_id,
                 sender,
                 receiver,
                 message
             )
-            VALUES(?,?,?)
+            VALUES(?,?,?,?)
             """,
             (
+                message_id,
                 sender,
                 receiver,
                 message
+            )
+        )
+
+        self.conn.commit()
+
+    def add_pending_message(
+        self,
+        message_id,
+        sender_node,
+        receiver_node,
+        message
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO pending_messages(
+                message_id,
+                sender_node,
+                receiver_node,
+                message
+            )
+            VALUES(?,?,?,?)
+            """,
+            (
+                message_id,
+                sender_node,
+                receiver_node,
+                message
+            )
+        )
+
+        self.conn.commit()
+
+    def get_pending_messages(
+        self,
+        sender_node
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                message_id,
+                receiver_node,
+                message,
+                attempts
+
+            FROM pending_messages
+
+            WHERE sender_node=?
+
+            ORDER BY created_at
+            """,
+            (
+                sender_node,
+            )
+        )
+
+        return cursor.fetchall()
+
+    def get_pending_message_ids(
+        self,
+        sender_node,
+        receiver_node
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT message_id
+
+            FROM pending_messages
+
+            WHERE sender_node=?
+            AND receiver_node=?
+            """,
+            (
+                sender_node,
+                receiver_node
+            )
+        )
+
+        return {
+            row[0]
+            for row in cursor.fetchall()
+        }
+
+    def mark_pending_attempt(
+        self,
+        message_id
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE pending_messages
+
+            SET attempts=attempts+1,
+                last_attempt=CURRENT_TIMESTAMP
+
+            WHERE message_id=?
+            """,
+            (
+                message_id,
+            )
+        )
+
+        self.conn.commit()
+
+    def remove_pending_message(
+        self,
+        message_id
+    ):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM pending_messages
+
+            WHERE message_id=?
+            """,
+            (
+                message_id,
             )
         )
 
@@ -455,6 +627,25 @@ class Database:
         )
 
         return cursor.fetchone()
+
+    def get_bluetooth_contacts(self):
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT node_id
+
+            FROM users
+
+            WHERE ip LIKE 'BT:%'
+            """
+        )
+
+        return [
+            row[0]
+            for row in cursor.fetchall()
+        ]
     
     def save_file(
     self,
@@ -537,6 +728,7 @@ class Database:
             """
             SELECT
                 'message' as item_type,
+                message_id,
                 sender,
                 receiver,
                 message as content,
@@ -560,6 +752,7 @@ class Database:
 
             SELECT
                 'file' as item_type,
+                NULL as message_id,
                 sender_node,
                 receiver_node,
                 filename as content,

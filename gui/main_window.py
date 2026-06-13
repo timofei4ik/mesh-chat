@@ -1,16 +1,25 @@
 import socket
+import threading
 from PyQt6.QtCore import (
     QTimer,
-    pyqtSignal
+    pyqtSignal,
+    Qt
 )
 
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
+    QFormLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QPushButton,
-    QMessageBox
+    QMessageBox,
+    QSystemTrayIcon,
+    QApplication,
+    QStyle,
+    QTabWidget
 )
 
 from gui.request_dialog import ChatRequestDialog
@@ -20,10 +29,12 @@ from PyQt6.QtWidgets import QInputDialog
 from network.packet_cache import PacketCache
 from PyQt6.QtWidgets import QListWidgetItem
 from network.router import forward_packet
-from network.routing_table import RoutingTable
-from PyQt6.QtWidgets import QFileDialog
 from network.message_id import generate_message_id
-import base64
+from network.bluetooth_transport import send_bluetooth_packet
+from network.bluetooth_discovery import (
+    get_local_bluetooth_address,
+    get_paired_bluetooth_devices
+)
 
 
 from network.client import (
@@ -57,19 +68,30 @@ class MainWindow(QWidget):
         str
     )
 
+    bluetooth_scan_done = pyqtSignal(
+        int
+    )
+
+    pending_message_sent = pyqtSignal(
+        str
+    )
+
     def __init__(
         self,
         username,
         discovery,
-        node_id
+        node_id,
+        bluetooth_channel=None
     ):
 
         self.chat_windows = {}
         self.file_chunks = {}
         self.pending_sent_files = {}
+        self.pending_retry_in_progress = False
 
         self.port = discovery.tcp_port
-        self.routing_table = RoutingTable()
+        self.bluetooth_channel = bluetooth_channel
+        self.bluetooth_address = get_local_bluetooth_address()
 
         super().__init__()
 
@@ -110,6 +132,9 @@ class MainWindow(QWidget):
             500
         )
 
+        self.tray_icon = None
+        self.setup_notifications()
+
         layout = QVBoxLayout()
 
         self.me_label = QLabel(
@@ -140,8 +165,226 @@ class MainWindow(QWidget):
             "Изменить имя"
         )
 
+        self.bluetooth_button = QPushButton(
+            "Bluetooth чат"
+        )
+
+        self.bluetooth_scan_button = QPushButton(
+            "Найти Bluetooth"
+        )
+
+        self.bluetooth_status_label = QLabel(
+            "Bluetooth не запущен"
+        )
+
+        self.settings_name_input = QLineEdit(
+            username
+        )
+
+        self.settings_save_button = QPushButton(
+            "Сохранить"
+        )
+
+        self.settings_node_label = QLabel(
+            node_id
+        )
+
+        self.settings_port_label = QLabel(
+            str(self.port)
+        )
+
+        self.settings_database_label = QLabel(
+            "messages.db"
+        )
+
+        self.settings_bluetooth_label = QLabel(
+            ""
+        )
+
         self.chat_button.setEnabled(
             False
+        )
+
+        self.tabs = QTabWidget()
+
+        self.network_tab = QWidget()
+        network_layout = QVBoxLayout()
+        network_actions = QHBoxLayout()
+
+        network_actions.addWidget(
+            self.chat_button
+        )
+
+        network_layout.addWidget(
+            self.users_label
+        )
+
+        network_layout.addWidget(
+            self.users_list
+        )
+
+        network_layout.addWidget(
+            self.info_label
+        )
+
+        network_layout.addLayout(
+            network_actions
+        )
+
+        self.network_tab.setLayout(
+            network_layout
+        )
+
+        self.chats_tab = QWidget()
+        chats_layout = QVBoxLayout()
+
+        chats_layout.addWidget(
+            self.chats_label
+        )
+
+        chats_layout.addWidget(
+            self.chats_list
+        )
+
+        self.chats_tab.setLayout(
+            chats_layout
+        )
+
+        self.bluetooth_tab = QWidget()
+        bluetooth_layout = QVBoxLayout()
+        bluetooth_actions = QHBoxLayout()
+
+        bluetooth_layout.setContentsMargins(
+            16, 16, 16, 16
+        )
+
+        bluetooth_layout.setSpacing(
+            10
+        )
+
+        bluetooth_layout.setAlignment(
+            Qt.AlignmentFlag.AlignTop
+        )
+
+        bluetooth_actions.setSpacing(
+            8
+        )
+
+        bluetooth_title = QLabel(
+            "Bluetooth"
+        )
+
+        bluetooth_title.setStyleSheet(
+            "font-size: 16px; font-weight: 600;"
+        )
+
+        bluetooth_hint = QLabel(
+            "Подключайтесь вручную или найдите спаренные устройства MeshChat."
+        )
+
+        bluetooth_hint.setWordWrap(
+            True
+        )
+
+        bluetooth_hint.setStyleSheet(
+            "color: #b8b8b8;"
+        )
+
+        self.bluetooth_status_label.setWordWrap(
+            True
+        )
+
+        bluetooth_actions.addWidget(
+            self.bluetooth_button
+        )
+
+        bluetooth_actions.addWidget(
+            self.bluetooth_scan_button
+        )
+
+        bluetooth_actions.addStretch()
+
+        bluetooth_layout.addWidget(
+            bluetooth_title
+        )
+
+        bluetooth_layout.addWidget(
+            self.bluetooth_status_label
+        )
+
+        bluetooth_layout.addWidget(
+            bluetooth_hint
+        )
+
+        bluetooth_layout.addLayout(
+            bluetooth_actions
+        )
+
+        bluetooth_layout.addStretch()
+
+        self.bluetooth_tab.setLayout(
+            bluetooth_layout
+        )
+
+        self.settings_tab = QWidget()
+        settings_layout = QVBoxLayout()
+        settings_form = QFormLayout()
+
+        settings_form.addRow(
+            "Имя:",
+            self.settings_name_input
+        )
+
+        settings_form.addRow(
+            "Node ID:",
+            self.settings_node_label
+        )
+
+        settings_form.addRow(
+            "TCP порт:",
+            self.settings_port_label
+        )
+
+        settings_form.addRow(
+            "Bluetooth:",
+            self.settings_bluetooth_label
+        )
+
+        settings_form.addRow(
+            "База:",
+            self.settings_database_label
+        )
+
+        settings_layout.addLayout(
+            settings_form
+        )
+
+        settings_layout.addWidget(
+            self.settings_save_button
+        )
+
+        self.settings_tab.setLayout(
+            settings_layout
+        )
+
+        self.tabs.addTab(
+            self.network_tab,
+            "Сеть"
+        )
+
+        self.tabs.addTab(
+            self.chats_tab,
+            "Чаты"
+        )
+
+        self.tabs.addTab(
+            self.bluetooth_tab,
+            "Bluetooth"
+        )
+
+        self.tabs.addTab(
+            self.settings_tab,
+            "Настройки"
         )
 
         layout.addWidget(
@@ -149,31 +392,7 @@ class MainWindow(QWidget):
         )
 
         layout.addWidget(
-            self.users_label
-        )
-
-        layout.addWidget(
-            self.users_list
-        )
-
-        layout.addWidget(
-            self.chats_label
-        )
-
-        layout.addWidget(
-            self.chats_list
-        )
-
-        layout.addWidget(
-            self.info_label
-        )
-
-        layout.addWidget(
-            self.chat_button
-        )
-
-        layout.addWidget(
-            self.rename_button
+            self.tabs
         )
 
         self.setLayout(
@@ -190,6 +409,26 @@ class MainWindow(QWidget):
 
         self.rename_button.clicked.connect(
             self.change_name
+        )
+
+        self.settings_save_button.clicked.connect(
+            self.save_settings
+        )
+
+        self.bluetooth_button.clicked.connect(
+            self.open_bluetooth_chat_dialog
+        )
+
+        self.bluetooth_scan_button.clicked.connect(
+            self.scan_bluetooth_contacts
+        )
+
+        self.bluetooth_scan_done.connect(
+            self.show_bluetooth_scan_result
+        )
+
+        self.pending_message_sent.connect(
+            self.mark_pending_message_sent
         )
 
         self.incoming_request.connect(
@@ -212,15 +451,495 @@ class MainWindow(QWidget):
             self.open_saved_chat
         )
 
-        self.route_timer = QTimer()
+        self.packet_cache_timer = QTimer()
 
-        #self.route_timer.timeout.connect(
-        #    self.print_routes
-        #   )
+        self.packet_cache_timer.timeout.connect(
+            self.packet_cache.cleanup
+        )
 
-        self.route_timer.start(
+        self.packet_cache_timer.start(
+            60000
+        )
+
+        self.pending_retry_timer = QTimer()
+
+        self.pending_retry_timer.timeout.connect(
+            self.retry_pending_messages
+        )
+
+        self.pending_retry_timer.start(
             5000
         )
+
+        self.update_bluetooth_status()
+
+    def setup_notifications(self):
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        icon = QApplication.style().standardIcon(
+            QStyle.StandardPixmap.SP_MessageBoxInformation
+        )
+
+        self.tray_icon = QSystemTrayIcon(
+            icon,
+            self
+        )
+
+        self.tray_icon.setToolTip(
+            "MeshChat"
+        )
+
+        self.tray_icon.show()
+
+    def notify(
+        self,
+        title,
+        message
+    ):
+
+        if not self.tray_icon:
+            return
+
+        if not self.tray_icon.isVisible():
+            self.tray_icon.show()
+
+        self.tray_icon.showMessage(
+            title,
+            message,
+            QSystemTrayIcon.MessageIcon.Information,
+            5000
+        )
+
+    def set_bluetooth_channel(
+        self,
+        channel
+    ):
+
+        self.bluetooth_channel = channel
+        self.update_bluetooth_status()
+
+        print(
+            "MeshChat Bluetooth channel:",
+            channel
+        )
+
+    def update_bluetooth_status(self):
+
+        if self.bluetooth_channel is None:
+
+            status = "Bluetooth сервер не запущен"
+
+        else:
+
+            address = self.bluetooth_address or "не найден"
+
+            status = (
+                f"MAC: {address} | "
+                f"channel: {self.bluetooth_channel}"
+            )
+
+        self.bluetooth_status_label.setText(
+            status
+        )
+
+        self.settings_bluetooth_label.setText(
+            status
+        )
+
+    def save_settings(self):
+
+        name = self.settings_name_input.text().strip()
+
+        if not name:
+
+            QMessageBox.warning(
+                self,
+                "Настройки",
+                "Введите имя."
+            )
+
+            return
+
+        self.username = name
+
+        self.me_label.setText(
+            f"Вы: {name}\nID: {self.node_id[:8]}"
+        )
+
+        self.setWindowTitle(
+            f"MeshChat - {name}"
+        )
+
+        self.db.set_setting(
+            f"username_{self.port}",
+            name
+        )
+
+        QMessageBox.information(
+            self,
+            "Настройки",
+            "Настройки сохранены."
+        )
+
+    def scan_bluetooth_contacts(self):
+
+        if self.bluetooth_channel is None:
+
+            QMessageBox.warning(
+                self,
+                "Bluetooth",
+                "Запустите приложение с --bluetooth-channel 0."
+            )
+
+            return
+
+        if not self.bluetooth_address:
+
+            QMessageBox.warning(
+                self,
+                "Bluetooth",
+                "Не удалось определить Bluetooth MAC этого компьютера."
+            )
+
+            return
+
+        self.bluetooth_scan_button.setEnabled(
+            False
+        )
+
+        threading.Thread(
+            target=self.run_bluetooth_scan,
+            daemon=True
+        ).start()
+
+    def run_bluetooth_scan(self):
+
+        devices = get_paired_bluetooth_devices()
+        attempts = 0
+
+        print(
+            "Bluetooth paired devices:",
+            devices
+        )
+
+        for device in devices:
+
+            address = device["address"]
+
+            if address == self.bluetooth_address:
+                continue
+
+            packet = {
+
+                "packet_id":
+                generate_message_id(),
+
+                "type":
+                "bluetooth_hello",
+
+                "source_node":
+                self.node_id,
+
+                "sender":
+                self.username,
+
+                "source_bluetooth_address":
+                self.bluetooth_address,
+
+                "source_bluetooth_channel":
+                self.bluetooth_channel or 0
+            }
+
+            for channel in range(
+                1,
+                31
+            ):
+
+                if send_bluetooth_packet(
+                    address,
+                    channel,
+                    packet
+                ):
+
+                    attempts += 1
+
+        self.bluetooth_scan_done.emit(
+            attempts
+        )
+
+    def show_bluetooth_scan_result(
+        self,
+        attempts
+    ):
+
+        self.bluetooth_scan_button.setEnabled(
+            True
+        )
+
+        QMessageBox.information(
+            self,
+            "Bluetooth",
+            f"Отправлено запросов обнаружения: {attempts}"
+        )
+
+    def handle_bluetooth_hello(
+        self,
+        packet
+    ):
+
+        peer_node_id = packet.get(
+            "source_node"
+        )
+
+        peer_name = packet.get(
+            "sender"
+        ) or "Bluetooth"
+
+        peer_address = (
+            packet.get("remote_bluetooth_address")
+            or packet.get("source_bluetooth_address")
+        )
+
+        peer_channel = packet.get(
+            "source_bluetooth_channel",
+            0
+        )
+
+        if not peer_node_id or not peer_address:
+            return
+
+        self.save_bluetooth_contact(
+            peer_node_id,
+            peer_name,
+            peer_address,
+            peer_channel
+        )
+
+        if self.bluetooth_address:
+
+            response = {
+
+                "packet_id":
+                generate_message_id(),
+
+                "type":
+                "bluetooth_hello_response",
+
+                "source_node":
+                self.node_id,
+
+                "destination_node":
+                peer_node_id,
+
+                "sender":
+                self.username,
+
+                "source_bluetooth_address":
+                self.bluetooth_address,
+
+                "source_bluetooth_channel":
+                self.bluetooth_channel or 0
+            }
+
+            send_bluetooth_packet(
+                peer_address,
+                peer_channel,
+                response
+            )
+
+        self.notify(
+            "Bluetooth",
+            f"Найден {peer_name}"
+        )
+
+        self.refresh_chats()
+
+    def handle_bluetooth_hello_response(
+        self,
+        packet
+    ):
+
+        peer_node_id = packet.get(
+            "source_node"
+        )
+
+        peer_name = packet.get(
+            "sender"
+        ) or "Bluetooth"
+
+        peer_address = (
+            packet.get("remote_bluetooth_address")
+            or packet.get("source_bluetooth_address")
+        )
+
+        peer_channel = packet.get(
+            "source_bluetooth_channel",
+            0
+        )
+
+        if not peer_node_id or not peer_address:
+            return
+
+        self.save_bluetooth_contact(
+            peer_node_id,
+            peer_name,
+            peer_address,
+            peer_channel
+        )
+
+        self.notify(
+            "Bluetooth",
+            f"Добавлен {peer_name}"
+        )
+
+        self.refresh_chats()
+
+    def save_bluetooth_contact(
+        self,
+        peer_node_id,
+        peer_name,
+        bluetooth_address,
+        bluetooth_channel
+    ):
+
+        self.db.update_user(
+            peer_node_id,
+            peer_name,
+            f"BT:{bluetooth_address}",
+            bluetooth_channel
+        )
+
+    def retry_pending_messages(self):
+
+        if self.pending_retry_in_progress:
+            return
+
+        self.pending_retry_in_progress = True
+
+        threading.Thread(
+            target=self.run_pending_retry,
+            daemon=True
+        ).start()
+
+    def run_pending_retry(self):
+
+        try:
+
+            pending_messages = self.db.get_pending_messages(
+                self.node_id
+            )
+
+            for (
+                message_id,
+                receiver_node,
+                message,
+                attempts
+            ) in pending_messages:
+
+                packet = {
+
+                    "packet_id":
+                    message_id,
+
+                    "type":
+                    "chat_message",
+
+                    "source_node":
+                    self.node_id,
+
+                    "destination_node":
+                    receiver_node,
+
+                    "ttl":
+                    5,
+
+                    "sender":
+                    self.username,
+
+                    "message":
+                    message
+                }
+
+                sent = self.send_pending_packet(
+                    receiver_node,
+                    packet
+                )
+
+                if sent:
+
+                    self.db.remove_pending_message(
+                        message_id
+                    )
+
+                    self.pending_message_sent.emit(
+                        message_id
+                    )
+
+                else:
+
+                    self.db.mark_pending_attempt(
+                        message_id
+                    )
+
+        finally:
+
+            self.pending_retry_in_progress = False
+
+    def send_pending_packet(
+        self,
+        receiver_node,
+        packet
+    ):
+
+        info = self.db.get_user_info(
+            receiver_node
+        )
+
+        if info:
+
+            _, ip, port = info
+
+            if (
+                isinstance(
+                    ip,
+                    str
+                )
+                and ip.startswith("BT:")
+            ):
+
+                return send_bluetooth_packet(
+                    ip[3:],
+                    port,
+                    packet
+                )
+
+        peer = self.discovery.get_user_by_node_id(
+            receiver_node
+        )
+
+        if not peer:
+            return False
+
+        ip, port = peer
+
+        return send_packet(
+            ip,
+            port,
+            packet
+        )
+
+    def mark_pending_message_sent(
+        self,
+        message_id
+    ):
+
+        for chat in self.chat_windows.values():
+
+            chat.mark_message_sent(
+                message_id
+            )
 
     def refresh_users(self):
 
@@ -325,6 +1044,13 @@ class MainWindow(QWidget):
         if not isinstance(packet, dict):
             return
 
+        source_node = packet.get(
+            "source_node"
+        )
+
+        if source_node == self.node_id:
+            return
+
         packet_id = packet.get("packet_id")
 
         if packet_id:
@@ -355,6 +1081,18 @@ class MainWindow(QWidget):
 
             self.incoming_request.emit(packet)
 
+        elif packet_type == "bluetooth_hello":
+
+            self.handle_bluetooth_hello(
+                packet
+            )
+
+        elif packet_type == "bluetooth_hello_response":
+
+            self.handle_bluetooth_hello_response(
+                packet
+            )
+
         elif packet_type == "chat_response":
 
             self.incoming_response.emit(packet)
@@ -364,6 +1102,8 @@ class MainWindow(QWidget):
             sender_node_id = packet.get("source_node")
             sender = packet.get("sender")
             message = packet.get("message")
+            sender_ip = packet.get("sender_ip")
+            sender_port = packet.get("sender_port")
 
             ack_packet = {
 
@@ -379,13 +1119,15 @@ class MainWindow(QWidget):
                 "destination_node":
                 sender_node_id,
 
+                "ttl":
+                5,
+
                 "message_id":
                 packet.get("packet_id")
             }
 
-            forward_packet(
-                self.discovery,
-                self.node_id,
+            self.send_packet_to_contact(
+                sender_node_id,
                 ack_packet
             )
 
@@ -393,16 +1135,38 @@ class MainWindow(QWidget):
             if not sender_node_id or not message:
                 return
 
+            if sender and sender_ip:
+
+                self.db.update_user(
+                    sender_node_id,
+                    sender,
+                    sender_ip or "",
+                    sender_port or 0
+                )
+
+            self.notify(
+                f"Новое сообщение от {sender}",
+                message
+            )
+
             if sender_node_id in self.chat_windows:
 
 
                 self.chat_windows[sender_node_id].receive_message(
                     sender,
                     sender_node_id,
-                    message
+                    message,
+                    packet.get("packet_id")
                 )
 
             else:
+
+                self.db.save_message(
+                    sender_node_id,
+                    self.node_id,
+                    message,
+                    packet.get("packet_id")
+                )
 
                 self.db.add_unread(
                     sender_node_id,
@@ -495,9 +1259,8 @@ class MainWindow(QWidget):
                         file_id
                 }
 
-                forward_packet(
-                    self.discovery,
-                    self.node_id,
+                self.send_packet_to_contact(
+                    sender_node_id,
                     ack_packet
                 )
 
@@ -519,6 +1282,11 @@ class MainWindow(QWidget):
                     self.node_id,
                     filename,
                     full_data
+                )
+
+                self.notify(
+                    f"Файл от {sender}",
+                    filename
                 )
 
                 if sender_node_id in self.chat_windows:
@@ -576,25 +1344,17 @@ class MainWindow(QWidget):
                 "message_id"
             )
 
+            if message_id:
+
+                self.db.remove_pending_message(
+                    message_id
+                )
+
             for chat in self.chat_windows.values():
 
-                if (
+                chat.mark_message_delivered(
                     message_id
-                    in chat.message_status_labels
-                ):
-
-                    label = chat.message_status_labels[
-                        message_id
-                    ]
-
-                    text = label.text()
-
-                    label.setText(
-                        text.replace(
-                            "✓",
-                            "✓✓"
-                        )
-                    )
+                )
     
     def show_chat_request(
             self,
@@ -615,6 +1375,11 @@ class MainWindow(QWidget):
 
         sender_port = packet.get(
             "sender_port"
+        )
+
+        self.notify(
+            "Новый запрос",
+            f"{username} хочет начать чат"
         )
 
         accepted = ChatRequestDialog.show(
@@ -645,9 +1410,24 @@ class MainWindow(QWidget):
         peer_name,
         peer_node_id,
         peer_ip,
-        peer_port
+        peer_port,
+        transport=None,
+        bluetooth_address=None,
+        bluetooth_channel=None
     ):
         
+        if transport is None:
+
+            transport = "tcp"
+
+            if isinstance(
+                peer_ip,
+                str
+            ) and peer_ip.startswith("BT:"):
+
+                transport = "bluetooth"
+                bluetooth_address = peer_ip[3:]
+                bluetooth_channel = peer_port
 
         if peer_node_id in self.chat_windows:
 
@@ -663,7 +1443,11 @@ class MainWindow(QWidget):
             peer_name,
             peer_node_id,
             peer_ip,
-            peer_port
+            peer_port,
+            self.register_pending_file,
+            transport,
+            bluetooth_address,
+            bluetooth_channel
         )
 
         chat.show()
@@ -703,11 +1487,103 @@ class MainWindow(QWidget):
                 "Запрос отклонён"
             )
 
+    def open_bluetooth_chat_dialog(self):
+
+        peer_name, ok = QInputDialog.getText(
+            self,
+            "Bluetooth чат",
+            "Имя контакта:"
+        )
+
+        if not ok:
+            return
+
+        peer_name = peer_name.strip()
+
+        if not peer_name:
+            return
+
+        peer_node_id, ok = QInputDialog.getText(
+            self,
+            "Bluetooth чат",
+            "Node ID второго компьютера:"
+        )
+
+        if not ok:
+            return
+
+        peer_node_id = peer_node_id.strip()
+
+        if not peer_node_id:
+            return
+
+        if peer_node_id == self.node_id:
+
+            QMessageBox.warning(
+                self,
+                "Bluetooth чат",
+                "Это ваш Node ID. Введите Node ID второго компьютера."
+            )
+
+            return
+
+        bluetooth_address, ok = QInputDialog.getText(
+            self,
+            "Bluetooth чат",
+            "Bluetooth MAC второго компьютера:"
+        )
+
+        if not ok:
+            return
+
+        bluetooth_address = bluetooth_address.strip()
+
+        if not bluetooth_address:
+            return
+
+        bluetooth_channel, ok = QInputDialog.getInt(
+            self,
+            "Bluetooth чат",
+            "Bluetooth channel второго компьютера:",
+            0,
+            0,
+            30
+        )
+
+        if not ok:
+            return
+
+        peer_ip = f"BT:{bluetooth_address}"
+
+        self.save_bluetooth_contact(
+            peer_node_id,
+            peer_name,
+            bluetooth_address,
+            bluetooth_channel
+        )
+
+        self.open_chat(
+            peer_name,
+            peer_node_id,
+            peer_ip,
+            bluetooth_channel,
+            "bluetooth",
+            bluetooth_address,
+            bluetooth_channel
+        )
+
     def refresh_chats(self):
 
 
         contacts = self.db.get_contacts(
             self.node_id
+        )
+
+        contacts = list(
+            dict.fromkeys(
+                contacts
+                + self.db.get_bluetooth_contacts()
+            )
         )
 
         self.chats_list.clear()
@@ -727,10 +1603,25 @@ class MainWindow(QWidget):
                 contact
             )
 
-            prefix = "⚫"
+            prefix = "○"
 
             if online:
-                prefix = "🟢"
+                prefix = "●"
+
+            info = self.db.get_user_info(
+                contact
+            )
+
+            if (
+                info
+                and isinstance(
+                    info[1],
+                    str
+                )
+                and info[1].startswith("BT:")
+            ):
+
+                prefix = "BT"
 
             title = f"{prefix} {display_name}"
 
@@ -810,52 +1701,74 @@ class MainWindow(QWidget):
         if not name:
             return
 
-        self.username = name
-
-        self.me_label.setText(
-            f"Вы: {name}"
-        )
-
-        self.db.set_setting(
-            f"username_{self.port}",
+        self.settings_name_input.setText(
             name
         )
 
-        QMessageBox.information(
-            self,
-            "MeshChat",
-            "Имя сохранено.\nПерезапустите приложение."
-        )
+        self.save_settings()
 
     def route_packet(
-    self,
-    packet
-):
+        self,
+        packet
+    ):
 
-        if not self.router.should_forward(
-            packet
-        ):
-            return False
-
-        if not self.router.decrease_ttl(
-            packet
-        ):
-            return False
-
-        return True
-    
-    ###def print_routes(self):
-
-        print(
-            "ROUTES:"
+        ttl = packet.get(
+            "ttl",
+            0
         )
 
-        for node_id, route in self.routing_table.get_all_routes().items():
+        if ttl <= 0:
+            return False
 
-            print(
-                node_id,
-                route
-            )###
+        packet["ttl"] = ttl - 1
+
+        return True
+
+    def send_packet_to_contact(
+        self,
+        peer_node_id,
+        packet
+    ):
+
+        info = self.db.get_user_info(
+            peer_node_id
+        )
+
+        if info:
+
+            _, ip, port = info
+
+            if (
+                isinstance(
+                    ip,
+                    str
+                )
+                and ip.startswith("BT:")
+            ):
+
+                return send_bluetooth_packet(
+                    ip[3:],
+                    port,
+                    packet
+                )
+
+        forward_packet(
+            self.discovery,
+            self.node_id,
+            packet
+        )
+
+        return True
+
+    def register_pending_file(
+        self,
+        file_id,
+        filename
+    ):
+
+        self.pending_sent_files[
+            file_id
+        ] = filename
 
 
     def show_file_message(

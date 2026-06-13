@@ -1,10 +1,8 @@
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QTextBrowser,
     QLineEdit,
     QPushButton,
-    QFileDialog
 )
 
 from PyQt6.QtWidgets import (
@@ -19,12 +17,14 @@ from PyQt6.QtCore import QTimer
 
 from PyQt6.QtCore import Qt
 from network.client import send_packet
+from network.bluetooth_transport import send_bluetooth_packet
 from storage.database import Database
 from network.message_id import generate_message_id
 from PyQt6.QtWidgets import QFileDialog
 from datetime import datetime
-import base64
 import os
+import threading
+import time
 import uuid
 
 
@@ -37,7 +37,11 @@ class ChatWindow(QWidget):
         peer_name,
         peer_node_id,
         peer_ip,
-        peer_port
+        peer_port,
+        file_sent_callback=None,
+        transport="tcp",
+        bluetooth_address=None,
+        bluetooth_channel=None
     ):
 
 
@@ -49,12 +53,18 @@ class ChatWindow(QWidget):
         self.peer_node_id = peer_node_id
         self.peer_ip = peer_ip
         self.peer_port = peer_port
+        self.file_sent_callback = file_sent_callback
+        self.transport = transport
+        self.bluetooth_address = bluetooth_address
+        self.bluetooth_channel = bluetooth_channel
 
         self.db = Database()
 
         self.pending_files = {}
         self.file_chunks = {}
         self.message_status_labels = {}
+        self.last_typing_sent = 0
+        self.typing_send_in_progress = False
 
         self.my_node_id = my_node_id
 
@@ -73,7 +83,7 @@ class ChatWindow(QWidget):
 
 
         self.setWindowTitle(
-            f"{my_name} ↔ {peer_name}"
+            f"{my_name} - {peer_name}"
         )
 
         self.resize(
@@ -133,7 +143,7 @@ class ChatWindow(QWidget):
         )
 
         self.file_button = QPushButton(
-            "📎 Файл"
+            "Файл"
         )
 
         layout.addWidget(
@@ -152,7 +162,37 @@ class ChatWindow(QWidget):
             self.send_message
         )
 
+        self.input.returnPressed.connect(
+            self.send_message
+        )
+
         self.load_history()
+
+    def send_peer_packet(
+        self,
+        packet
+    ):
+
+        if self.transport == "bluetooth":
+
+            if (
+                not self.bluetooth_address
+                or self.bluetooth_channel is None
+            ):
+
+                return False
+
+            return send_bluetooth_packet(
+                self.bluetooth_address,
+                self.bluetooth_channel,
+                packet
+            )
+
+        return send_packet(
+            self.peer_ip,
+            self.peer_port,
+            packet
+        )
 
     def send_message(self):
 
@@ -162,17 +202,6 @@ class ChatWindow(QWidget):
             return
         
         message_id = generate_message_id()
-
-        self.add_my_message(
-            text,
-            message_id=message_id
-        )
-
-        self.db.save_message(
-            self.my_node_id,
-            self.peer_node_id,
-            text
-        )
 
         packet = {
 
@@ -191,21 +220,78 @@ class ChatWindow(QWidget):
             "message": text
         }
 
-        if self.peer_port == 0:
+        if self.transport != "bluetooth" and self.peer_port == 0:
 
             self.add_my_message(
-                "[Система] Пользователь офлайн"
+                text,
+                message_id=message_id,
+                status="!"
+            )
+
+            self.save_pending_message(
+                message_id,
+                text
+            )
+
+            self.input.clear()
+
+            return
+
+        self.add_my_message(
+            text,
+            message_id=message_id,
+            status=""
+        )
+
+        sent = self.send_peer_packet(
+            packet
+        )
+
+        if not sent:
+
+            self.mark_message_failed(
+                message_id
+            )
+
+            self.save_pending_message(
+                message_id,
+                text
             )
 
             return
 
-        send_packet(
-            self.peer_ip,
-            self.peer_port,
-            packet
+        self.mark_message_sent(
+            message_id
+        )
+
+        self.db.save_message(
+            self.my_node_id,
+            self.peer_node_id,
+            text,
+            message_id
         )
 
         self.input.clear()
+
+    def save_pending_message(
+        self,
+        message_id,
+        text
+    ):
+
+        self.db.save_message(
+            self.my_node_id,
+            self.peer_node_id,
+            text,
+            message_id
+        )
+
+        self.db.add_pending_message(
+            message_id,
+            self.my_node_id,
+            self.peer_node_id,
+            text
+        )
 
     def receive_file(
         self,
@@ -244,7 +330,19 @@ class ChatWindow(QWidget):
             self.peer_node_id
         )
 
-        for item_type, sender, receiver, content, timestamp in history:
+        pending_message_ids = self.db.get_pending_message_ids(
+            self.my_node_id,
+            self.peer_node_id
+        )
+
+        for (
+            item_type,
+            message_id,
+            sender,
+            receiver,
+            content,
+            timestamp
+        ) in history:
 
             if item_type == "message":
 
@@ -252,7 +350,13 @@ class ChatWindow(QWidget):
 
                     self.add_my_message(
                         content,
-                        timestamp[11:16]
+                        timestamp[11:16],
+                        message_id=message_id,
+                        status=(
+                            "!"
+                            if message_id in pending_message_ids
+                            else "✓"
+                        )
                     )
 
                 else:
@@ -289,6 +393,14 @@ class ChatWindow(QWidget):
         if not file_path:
             return
 
+        if self.transport != "bluetooth" and self.peer_port == 0:
+
+            self.add_my_message(
+                "[Система] Пользователь офлайн"
+            )
+
+            return
+
         try:
 
             CHUNK_SIZE = 64 * 1024
@@ -307,6 +419,8 @@ class ChatWindow(QWidget):
             ) as f:
 
                 file_bytes = f.read()
+
+            file_data = file_bytes.hex()
 
             total_chunks = (
                 len(file_bytes)
@@ -373,10 +487,26 @@ class ChatWindow(QWidget):
                     chunk_data
                 }
 
-                send_packet(
-                    self.peer_ip,
-                    self.peer_port,
+                self.send_peer_packet(
                     packet
+                )
+
+            self.pending_files[
+                filename
+            ] = file_data
+
+            self.db.save_file(
+                self.my_node_id,
+                self.peer_node_id,
+                filename,
+                file_data
+            )
+
+            if self.file_sent_callback:
+
+                self.file_sent_callback(
+                    file_id,
+                    filename
                 )
 
             self.add_file_message(
@@ -386,7 +516,10 @@ class ChatWindow(QWidget):
 
         except Exception as e:
 
-            print("Error!")
+            print(
+                "File send error:",
+                e
+            )
 
     def file_clicked(
         self,
@@ -429,7 +562,8 @@ class ChatWindow(QWidget):
         self,
         text,
         timestamp=None,
-        message_id=None
+        message_id=None,
+        status="sent"
     ):
 
         if timestamp is None:
@@ -484,7 +618,10 @@ class ChatWindow(QWidget):
         )
 
         time_label.setText(
-            f"{timestamp} ✓"
+            self.format_message_status(
+                timestamp,
+                status
+            )
         )
 
         bubble_layout.addWidget(
@@ -519,9 +656,76 @@ class ChatWindow(QWidget):
 
             self.message_status_labels[
                 message_id
-            ] = time_label
+            ] = {
+
+                "label": time_label,
+
+                "timestamp": timestamp
+            }
 
         self.chat_log.scrollToBottom()
+
+    def format_message_status(
+        self,
+        timestamp,
+        status
+    ):
+
+        if status:
+
+            return f"{timestamp} {status}"
+
+        return timestamp
+
+    def set_message_status(
+        self,
+        message_id,
+        status
+    ):
+
+        message_status = self.message_status_labels.get(
+            message_id
+        )
+
+        if not message_status:
+            return
+
+        message_status["label"].setText(
+            self.format_message_status(
+                message_status["timestamp"],
+                status
+            )
+        )
+
+    def mark_message_sent(
+        self,
+        message_id
+    ):
+
+        self.set_message_status(
+            message_id,
+            "✓"
+        )
+
+    def mark_message_delivered(
+        self,
+        message_id
+    ):
+
+        self.set_message_status(
+            message_id,
+            "✓✓"
+        )
+
+    def mark_message_failed(
+        self,
+        message_id
+    ):
+
+        self.set_message_status(
+            message_id,
+            "!"
+        )
 
     def add_peer_message(
         self,
@@ -629,13 +833,15 @@ class ChatWindow(QWidget):
         self,
         sender_name,
         sender_node_id,
-        text
+        text,
+        message_id=None
     ):
 
         self.db.save_message(
             sender_node_id,
             self.my_node_id,
-            text
+            text,
+            message_id
         )
 
         self.add_peer_message(
@@ -662,7 +868,7 @@ class ChatWindow(QWidget):
         layout = QHBoxLayout(widget)
 
         label = QLabel(
-            f"📎 {filename}"
+            f"Файл: {filename}"
         )
 
         label.setWordWrap(True)
@@ -747,6 +953,17 @@ class ChatWindow(QWidget):
 
     def send_typing(self):
 
+        now = time.time()
+
+        if now - self.last_typing_sent < 1.5:
+            return
+
+        if self.typing_send_in_progress:
+            return
+
+        self.last_typing_sent = now
+        self.typing_send_in_progress = True
+
         packet = {
 
             "packet_id":
@@ -765,10 +982,36 @@ class ChatWindow(QWidget):
             self.my_name
         }
 
-        send_packet(
-            self.peer_ip,
-            self.peer_port,
-            packet
+        threading.Thread(
+            target=self.send_typing_packet,
+            args=(packet,),
+            daemon=True
+        ).start()
+
+    def send_typing_packet(
+        self,
+        packet
+    ):
+
+        try:
+
+            self.send_peer_packet(
+                packet
+            )
+
+        finally:
+
+            self.typing_send_in_progress = False
+
+    def closeEvent(
+        self,
+        event
+    ):
+
+        self.typing_send_in_progress = False
+
+        super().closeEvent(
+            event
         )
 
     def show_typing(

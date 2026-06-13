@@ -1,6 +1,8 @@
-import socket
 from network.message_id import generate_message_id
-import json
+from network.tcp_transport import TcpTransport
+
+
+tcp_transport = TcpTransport()
 
 
 def send_packet(
@@ -8,37 +10,15 @@ def send_packet(
         port,
         packet
 ):
-    
-    try:
 
-        sock = socket.socket(
-            socket.AF_INET,
-            socket.SOCK_STREAM
-        )
+    return tcp_transport.send_packet(
+        {
+            "ip": ip,
 
-        sock.connect(
-            (
-                ip,
-                port
-            )
-        )
-
-        sock.send(
-            (json.dumps(packet) + "\n").encode()
-        )
-
-        sock.close()
-
-    except Exception as e:
-
-        import traceback
-
-        traceback.print_exc()
-
-        print(
-            "Send error:",
-            e
-        )
+            "port": port
+        },
+        packet
+    )
 
 def send_chat_response(
     ip,
