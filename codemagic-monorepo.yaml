@@ -1,0 +1,76 @@
+﻿workflows:
+  ios_unsigned_check:
+    name: iOS unsigned compile check
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          flutter pub get
+      - name: Install CocoaPods
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          find ios -name "Podfile" -execdir pod install \;
+      - name: Analyze
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          flutter analyze
+        ignore_failure: true
+      - name: Build unsigned iOS app
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          flutter build ios --release --no-codesign
+      - name: Package unsigned IPA for sideload signing
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          mkdir -p build/ios/unsigned_ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/unsigned_ipa/Payload/Runner.app
+          cd build/ios/unsigned_ipa
+          zip -r MeshChat-unsigned.ipa Payload
+    artifacts:
+      - mobile/meshchat_mobile/build/ios/iphoneos/Runner.app
+      - mobile/meshchat_mobile/build/ios/unsigned_ipa/MeshChat-unsigned.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+  ios_signed_ipa:
+    name: iOS signed IPA
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.meshchat.mobile
+    scripts:
+      - name: Set up code signing
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          xcode-project use-profiles
+      - name: Get Flutter packages
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          flutter pub get
+      - name: Install CocoaPods
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          find ios -name "Podfile" -execdir pod install \;
+      - name: Build signed IPA
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          flutter build ipa --release \
+            --build-name=0.1.0 \
+            --build-number=$PROJECT_BUILD_NUMBER \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - mobile/meshchat_mobile/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
