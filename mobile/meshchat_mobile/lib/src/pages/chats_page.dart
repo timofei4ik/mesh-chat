@@ -5,6 +5,7 @@ import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../widgets/profile_avatar.dart';
+import 'bluetooth_nearby_page.dart';
 import 'chat_page.dart';
 import 'edit_profile_page.dart';
 import 'global_search_page.dart';
@@ -188,6 +189,15 @@ class ChatsPage extends StatelessWidget {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => SettingsPage(controller: controller)),
+    );
+  }
+
+  void openBluetoothNearby(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BluetoothNearbyPage(controller: controller),
+      ),
     );
   }
 
@@ -414,6 +424,10 @@ class ChatsPage extends StatelessWidget {
                 ),
               ),
               _HomeCallBanner(controller: controller),
+              _BluetoothChatsStrip(
+                controller: controller,
+                onOpen: () => openBluetoothNearby(context),
+              ),
               Expanded(
                 child: threads.isEmpty && archivedCount == 0
                     ? const Center(
@@ -682,6 +696,58 @@ class _HomeCallBanner extends StatelessWidget {
               icon: const Icon(Icons.call_end_rounded, color: Colors.redAccent),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _BluetoothChatsStrip extends StatelessWidget {
+  const _BluetoothChatsStrip({required this.controller, required this.onOpen});
+
+  final AppController controller;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final ble = controller.ble;
+    final peers = ble.peers;
+
+    final connected = peers.where((peer) => peer.connected).length;
+    final visible = peers.length;
+    final subtitle = ble.running
+        ? [
+            if (connected > 0) '$connected connected',
+            '$visible nearby',
+            if (ble.scanning) 'scanning',
+          ].join(' - ')
+        : 'Tap to start nearby Bluetooth chats';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      child: Card(
+        child: ListTile(
+          leading: CircleAvatar(
+            backgroundColor: ble.running
+                ? Colors.lightBlueAccent.withValues(alpha: 0.18)
+                : Colors.white10,
+            child: Icon(
+              ble.running ? Icons.bluetooth_connected : Icons.bluetooth,
+              color: ble.running ? Colors.lightBlueAccent : Colors.white60,
+            ),
+          ),
+          title: const Text('Bluetooth chats'),
+          subtitle: Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: FilledButton.tonalIcon(
+            onPressed: onOpen,
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Open'),
+          ),
+          onTap: onOpen,
+        ),
       ),
     );
   }

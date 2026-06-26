@@ -124,6 +124,7 @@ class AppController extends ChangeNotifier {
 
   AppController() {
     ble.onPacket = _handleBluetoothPacket;
+    ble.addListener(_handleBluetoothStateChanged);
   }
 
   bool get hasSession => session != null;
@@ -249,6 +250,10 @@ class AppController extends ChangeNotifier {
   }
 
   bool isBlocked(String nodeId) => appSettings.blockedNodeIds.contains(nodeId);
+
+  void _handleBluetoothStateChanged() {
+    notifyListeners();
+  }
 
   Future<void> toggleBlocked(String nodeId) async {
     if (nodeId.isEmpty || nodeId == myNodeId) return;
@@ -3256,6 +3261,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _callTicker?.cancel();
+    ble.removeListener(_handleBluetoothStateChanged);
     ble.dispose();
     _socket.close();
     super.dispose();

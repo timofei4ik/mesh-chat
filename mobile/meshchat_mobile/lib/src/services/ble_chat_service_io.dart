@@ -79,6 +79,8 @@ class BleChatService extends ChangeNotifier {
   final Map<String, _DiscoveredBlePeer> _discovered = {};
   final Map<String, _ConnectedBlePeer> _connected = {};
   final Map<String, _IncomingBlePacket> _incoming = {};
+  final Set<String> _knownPeerIds = {};
+  final Set<String> _autoConnecting = {};
   final List<StreamSubscription> _subscriptions = [];
   Timer? _pruneTimer;
 
@@ -210,58 +212,75 @@ class BleChatService extends ChangeNotifier {
   }
 
   Future<BlePeer> connect(BlePeer peer) async {
+    return _connect(peer, automatic: false);
+  }
+
+  Future<BlePeer> _connect(BlePeer peer, {required bool automatic}) async {
     final discovered = _discovered[peer.id];
     if (discovered == null) return peer;
     final existing = _connected[peer.id];
     if (existing != null) return existing.peer;
 
-    status = 'Connecting to ${peer.name}';
-    notifyListeners();
-    await _central.connect(discovered.peripheral).timeout(_connectTimeout);
-    if (Platform.isAndroid) {
-      await _central
-          .requestMTU(discovered.peripheral, mtu: 512)
-          .catchError((_) => 0);
-    }
-    final services = await _central
-        .discoverGATT(discovered.peripheral)
-        .timeout(_gattTimeout);
-    GATTCharacteristic? infoCharacteristic;
-    GATTCharacteristic? inboxCharacteristic;
-    for (final service in services) {
-      if (service.uuid != serviceUuid) continue;
-      for (final characteristic in service.characteristics) {
-        if (characteristic.uuid == infoUuid) {
-          infoCharacteristic = characteristic;
-        }
-        if (characteristic.uuid == inboxUuid) {
-          inboxCharacteristic = characteristic;
+    try {
+      status = automatic
+          ? 'Auto-connecting to ${peer.name}'
+          : 'Connecting to ${peer.name}';
+      notifyListeners();
+      await _central.connect(discovered.peripheral).timeout(_connectTimeout);
+      if (Platform.isAndroid) {
+        await _central
+            .requestMTU(discovered.peripheral, mtu: 512)
+            .catchError((_) => 0);
+      }
+      final services = await _central
+          .discoverGATT(discovered.peripheral)
+          .timeout(_gattTimeout);
+      GATTCharacteristic? infoCharacteristic;
+      GATTCharacteristic? inboxCharacteristic;
+      for (final service in services) {
+        if (service.uuid != serviceUuid) continue;
+        for (final characteristic in service.characteristics) {
+          if (characteristic.uuid == infoUuid) {
+            infoCharacteristic = characteristic;
+          }
+          if (characteristic.uuid == inboxUuid) {
+            inboxCharacteristic = characteristic;
+          }
         }
       }
-    }
-    if (inboxCharacteristic == null) {
-      throw StateError('MeshChat BLE inbox characteristic was not found');
-    }
-    var updated = peer.copyWith(connected: true);
-    if (infoCharacteristic != null) {
+      if (infoCharacteristic == null || inboxCharacteristic == null) {
+        throw StateError('This is not a MeshChat Bluetooth device');
+      }
       final raw = await _central
           .readCharacteristic(discovered.peripheral, infoCharacteristic)
           .timeout(_gattTimeout);
-      updated = _peerFromInfo(peer, raw).copyWith(connected: true);
+      final updated = _peerFromInfo(peer, raw).copyWith(connected: true);
+      if (updated.nodeId.isEmpty || updated.publicKey.isEmpty) {
+        throw StateError('MeshChat Bluetooth handshake is incomplete');
+      }
+      _connected[peer.id] = _ConnectedBlePeer(
+        peripheral: discovered.peripheral,
+        inbox: inboxCharacteristic,
+        peer: updated,
+      );
+      _discovered[peer.id] = _DiscoveredBlePeer(
+        peripheral: discovered.peripheral,
+        peer: updated,
+      );
+      _knownPeerIds.add(peer.id);
+      _removeDuplicateNodePeers(updated);
+      status = 'Connected to ${updated.displayNameOrName}';
+      notifyListeners();
+      return updated;
+    } catch (error) {
+      _connected.remove(peer.id);
+      await _central.disconnect(discovered.peripheral).catchError((_) {});
+      if (!automatic) {
+        status = 'Bluetooth connect failed: $error';
+        notifyListeners();
+      }
+      rethrow;
     }
-    _connected[peer.id] = _ConnectedBlePeer(
-      peripheral: discovered.peripheral,
-      inbox: inboxCharacteristic,
-      peer: updated,
-    );
-    _discovered[peer.id] = _DiscoveredBlePeer(
-      peripheral: discovered.peripheral,
-      peer: updated,
-    );
-    _removeDuplicateNodePeers(updated);
-    status = 'Connected to ${updated.displayNameOrName}';
-    notifyListeners();
-    return updated;
   }
 
   Future<void> disconnect(BlePeer peer) async {
@@ -349,6 +368,7 @@ class BleChatService extends ChangeNotifier {
           ),
           lastSeen: DateTime.now(),
         );
+        _autoConnectIfKnown(id);
         notifyListeners();
       }),
     );
@@ -391,6 +411,8 @@ class BleChatService extends ChangeNotifier {
       value: Uint8List.fromList(
         utf8.encode(
           jsonEncode({
+            'app': 'MeshChat',
+            'ble_protocol': 1,
             'node_id': profile.nodeId,
             'display_name': profile.displayName,
             'public_username': profile.publicUsername,
@@ -527,6 +549,23 @@ class BleChatService extends ChangeNotifier {
       if (id == peer.id) return false;
       return entry.peer.nodeId == peer.nodeId;
     });
+  }
+
+  void _autoConnectIfKnown(String id) {
+    if (!_knownPeerIds.contains(id) ||
+        _connected.containsKey(id) ||
+        _autoConnecting.contains(id)) {
+      return;
+    }
+    final peer = _discovered[id]?.peer;
+    if (peer == null) return;
+    _autoConnecting.add(id);
+    unawaited(
+      _connect(
+        peer,
+        automatic: true,
+      ).catchError((_) => peer).whenComplete(() => _autoConnecting.remove(id)),
+    );
   }
 
   @override
