@@ -1,4 +1,4 @@
-workflows:
+﻿workflows:
   ios_unsigned_check:
     name: iOS unsigned compile check
     max_build_duration: 60

@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.log
+*.swp
 
 # Local databases and account data
 *.db
@@ -19,16 +20,34 @@ release/
 # IDE and OS files
 .idea/
 .vscode/
+*.iml
+*.ipr
+*.iws
 .DS_Store
 Thumbs.db
 
-# Flutter/Dart outputs
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
 **/.dart_tool/
 **/build/
+**/coverage/
 **/.flutter-plugins
 **/.flutter-plugins-dependencies
 **/.pub-cache/
 **/.pub/
+
+# Swift/package manager leftovers
+.build/
+.buildlog/
+.history/
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# Symbolication / obfuscation
+app.*.symbols
+app.*.map.json
 
 # Generated release archives/installers kept outside source
 *.apk
