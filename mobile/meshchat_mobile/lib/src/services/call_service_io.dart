@@ -1,8 +1,14 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 class CallService {
   static const _audioSession = MethodChannel('meshchat/audio_session');
+
+  static bool get _isMobile => Platform.isAndroid || Platform.isIOS;
+  static bool get _isAndroid => Platform.isAndroid;
+  static bool get _isIOS => Platform.isIOS;
 
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
@@ -87,7 +93,7 @@ class CallService {
     _speakerEnabled = true;
     _pendingRemoteCandidates.clear();
     await _deactivateCallAudio();
-    await Helper.clearAndroidCommunicationDevice().catchError((_) {});
+    await _clearAndroidCommunicationDevice();
   }
 
   Future<void> _resetCurrentConnectionOnly() async {
@@ -119,10 +125,7 @@ class CallService {
   }) async {
     await _resetCurrentConnectionOnly();
     await _activateCallAudio();
-    await Helper.setAndroidAudioConfiguration(
-      AndroidAudioConfiguration.communication,
-    ).catchError((_) {});
-    await Helper.ensureAudioSession().catchError((_) {});
+    await _prepareMobileAudio();
     final peerConnection = await createPeerConnection({
       'iceServers': [
         {'urls': 'stun:stun.l.google.com:19302'},
@@ -145,19 +148,14 @@ class CallService {
     };
     peerConnection.onAddStream = _attachRemoteAudio;
 
-    final stream = await navigator.mediaDevices.getUserMedia({
-      'audio': {
-        'echoCancellation': true,
-        'noiseSuppression': true,
-        'autoGainControl': true,
-      },
-      'video': false,
-    });
+    final stream = await navigator.mediaDevices.getUserMedia(
+      _mediaConstraints(),
+    );
     for (final track in stream.getAudioTracks()) {
       track.enabled = true;
       await peerConnection.addTrack(track, stream);
     }
-    await Helper.setSpeakerphoneOnButPreferBluetooth().catchError((_) {});
+    await _setSpeakerphoneOnButPreferBluetooth();
     await _activateCallAudio();
     _speakerEnabled = true;
     _localStream = stream;
@@ -169,7 +167,9 @@ class CallService {
     final tracks = _localStream?.getAudioTracks() ?? <MediaStreamTrack>[];
     for (final track in tracks) {
       track.enabled = !muted;
-      await Helper.setMicrophoneMute(muted, track).catchError((_) {});
+      if (_isMobile) {
+        await Helper.setMicrophoneMute(muted, track).catchError((_) {});
+      }
     }
   }
 
@@ -178,11 +178,12 @@ class CallService {
   Future<void> setSpeakerEnabled(bool enabled) async {
     _speakerEnabled = enabled;
     await _activateCallAudio();
+    if (!_isMobile) return;
     await Helper.setSpeakerphoneOn(enabled).catchError((_) {});
     if (enabled) {
-      await Helper.setSpeakerphoneOnButPreferBluetooth().catchError((_) {});
+      await _setSpeakerphoneOnButPreferBluetooth();
     } else {
-      await Helper.clearAndroidCommunicationDevice().catchError((_) {});
+      await _clearAndroidCommunicationDevice();
     }
   }
 
@@ -230,14 +231,50 @@ class CallService {
   }
 
   Future<void> _activateCallAudio() async {
+    if (!_isIOS) return;
     try {
       await _audioSession.invokeMethod<void>('activateCallAudio');
     } catch (_) {}
   }
 
   Future<void> _deactivateCallAudio() async {
+    if (!_isIOS) return;
     try {
       await _audioSession.invokeMethod<void>('deactivateCallAudio');
     } catch (_) {}
+  }
+
+  Future<void> _prepareMobileAudio() async {
+    if (!_isMobile) return;
+    if (_isAndroid) {
+      await Helper.setAndroidAudioConfiguration(
+        AndroidAudioConfiguration.communication,
+      ).catchError((_) {});
+    }
+    await Helper.ensureAudioSession().catchError((_) {});
+  }
+
+  Future<void> _setSpeakerphoneOnButPreferBluetooth() async {
+    if (!_isMobile) return;
+    await Helper.setSpeakerphoneOnButPreferBluetooth().catchError((_) {});
+  }
+
+  Future<void> _clearAndroidCommunicationDevice() async {
+    if (!_isAndroid) return;
+    await Helper.clearAndroidCommunicationDevice().catchError((_) {});
+  }
+
+  Map<String, dynamic> _mediaConstraints() {
+    if (!_isMobile) {
+      return {'audio': true, 'video': false};
+    }
+    return {
+      'audio': {
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+      },
+      'video': false,
+    };
   }
 }
