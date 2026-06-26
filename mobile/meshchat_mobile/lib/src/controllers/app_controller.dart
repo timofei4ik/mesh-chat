@@ -162,7 +162,7 @@ class AppController extends ChangeNotifier {
     if (call == null || !call.isGroup) return const [];
     final nodes = <String>{
       myNodeId,
-      call.peer.nodeId,
+      if (!call.peer.nodeId.startsWith('group:')) call.peer.nodeId,
       ...call.groupMembers,
       ...call.connectedNodes,
     }..removeWhere((node) => node.isEmpty);
@@ -292,6 +292,7 @@ class AppController extends ChangeNotifier {
     session = await _store.load();
     if (session != null) {
       await _cache.load(session!, profiles, threads, groups);
+      await _repairCachedGroups();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
     }
@@ -389,6 +390,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      await _repairCachedGroups();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
       await _connect();
@@ -422,6 +424,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      await _repairCachedGroups();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
       await _connect();
@@ -816,6 +819,47 @@ class AppController extends ChangeNotifier {
     unawaited(_saveCache());
   }
 
+  Future<void> _repairCachedGroups() async {
+    if (session == null || groups.isEmpty) return;
+    var changed = false;
+    for (final group in groups.values) {
+      changed = _ensureOwnGroupMembership(group) || changed;
+    }
+    if (changed) await _saveCache();
+  }
+
+  bool _ensureOwnGroupMembership(ChatThread group) {
+    if (session == null || !group.isGroup) return false;
+    final normalized = _normalizedGroupMembers(group.members);
+    final sameMembers =
+        normalized.length == group.members.length &&
+        normalized.every(group.members.contains);
+    final normalizedAdmins = group.admins
+        .where((admin) => normalized.contains(admin))
+        .toSet()
+        .toList();
+    final sameAdmins =
+        normalizedAdmins.length == group.admins.length &&
+        normalizedAdmins.every(group.admins.contains);
+    if (sameMembers && sameAdmins) return false;
+    group.members
+      ..clear()
+      ..addAll(normalized);
+    group.admins
+      ..clear()
+      ..addAll(normalizedAdmins);
+    return true;
+  }
+
+  List<String> _normalizedGroupMembers(Iterable<String> members) {
+    final result = <String>{
+      if (myNodeId.isNotEmpty) myNodeId,
+      ...members.where((id) => id.trim().isNotEmpty).map((id) => id.trim()),
+    }.toList();
+    result.sort();
+    return result;
+  }
+
   ChatThread _ensureGroupThread({
     required String groupId,
     required String groupName,
@@ -825,6 +869,11 @@ class AppController extends ChangeNotifier {
     String about = '',
     String avatarData = '',
   }) {
+    final normalizedMembers = _normalizedGroupMembers(members);
+    final normalizedAdmins = admins
+        .where((admin) => normalizedMembers.contains(admin))
+        .toSet()
+        .toList();
     final existing = groups[groupId];
     if (existing != null) {
       if (groupName.isNotEmpty) {
@@ -836,15 +885,15 @@ class AppController extends ChangeNotifier {
           avatarData: avatarData.isEmpty ? null : avatarData,
         );
       }
-      if (members.isNotEmpty) {
+      if (normalizedMembers.isNotEmpty) {
         existing.members
           ..clear()
-          ..addAll(members);
+          ..addAll(normalizedMembers);
       }
-      if (admins.isNotEmpty) {
+      if (normalizedAdmins.isNotEmpty || admins.isNotEmpty) {
         existing.admins
           ..clear()
-          ..addAll(admins);
+          ..addAll(normalizedAdmins);
       }
       return existing;
     }
@@ -859,9 +908,9 @@ class AppController extends ChangeNotifier {
       isGroup: true,
       groupId: groupId,
       groupName: groupName.isEmpty ? 'Группа' : groupName,
-      members: members,
+      members: normalizedMembers,
       ownerNode: ownerNode,
-      admins: admins,
+      admins: normalizedAdmins,
     );
     groups[groupId] = thread;
     return thread;
