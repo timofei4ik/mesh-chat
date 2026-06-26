@@ -10,6 +10,7 @@ import '../models/app_settings.dart';
 import '../models/profile.dart';
 import '../models/session.dart';
 import '../services/app_settings_store.dart';
+import '../services/ble_chat_service.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
@@ -93,6 +94,7 @@ class AppController extends ChangeNotifier {
   final ChatCacheStore _cache = ChatCacheStore();
   final MeshSocket _socket = MeshSocket();
   final MeshCrypto _crypto = MeshCrypto();
+  final BleChatService ble = BleChatService();
   final CallService _calls = CallService();
   final Map<String, CallService> _groupCalls = {};
   final NotificationService _notifications = NotificationService();
@@ -119,6 +121,10 @@ class AppController extends ChangeNotifier {
   bool _webPushSubscribeInFlight = false;
   final Map<String, _IncomingFile> _incomingFiles = {};
   final Map<String, _GroupKey> _groupKeys = {};
+
+  AppController() {
+    ble.onPacket = _handleBluetoothPacket;
+  }
 
   bool get hasSession => session != null;
   String get myNodeId => session?.nodeId ?? '';
@@ -516,6 +522,15 @@ class AppController extends ChangeNotifier {
         await _handleCallIce(packet);
     }
     notifyListeners();
+  }
+
+  Future<void> _handleBluetoothPacket(Map<String, dynamic> packet) async {
+    await _handlePacket({
+      ...packet,
+      'sender_transport': 'bluetooth',
+      'protocol_version':
+          packet['protocol_version'] ?? MeshSocket.protocolVersion,
+    });
   }
 
   void _applyOnlineUsers(dynamic rawUsers) {
@@ -2106,6 +2121,78 @@ class AppController extends ChangeNotifier {
     _replaceMessage(id, (message) => message.copyWith(pending: false));
   }
 
+  Future<String?> startBluetoothNearby() async {
+    final current = session;
+    if (current == null) return 'No active session';
+    await _crypto.initialize(current.login, current.password);
+    try {
+      await ble.start(profile: ownProfile, publicKey: _crypto.publicKey);
+      return null;
+    } catch (error) {
+      return 'Bluetooth start failed: $error';
+    }
+  }
+
+  Future<void> stopBluetoothNearby() => ble.stop();
+
+  Future<String?> sendBluetoothMessage(BlePeer peer, String text) async {
+    final current = session;
+    final trimmed = text.trim();
+    if (current == null) return 'No active session';
+    if (trimmed.isEmpty) return null;
+    var connectedPeer = peer;
+    try {
+      connectedPeer = await ble.connect(peer);
+    } catch (error) {
+      return 'Bluetooth connect failed: $error';
+    }
+    if (connectedPeer.nodeId.isEmpty) {
+      return 'Could not read MeshChat profile over Bluetooth';
+    }
+    if (connectedPeer.nodeId == myNodeId) return 'Cannot send to yourself';
+    final recipient = Profile(
+      nodeId: connectedPeer.nodeId,
+      displayName: connectedPeer.displayName.isEmpty
+          ? connectedPeer.name
+          : connectedPeer.displayName,
+      publicUsername: connectedPeer.publicUsername,
+      publicKey: connectedPeer.publicKey,
+      online: true,
+    );
+    profiles[recipient.nodeId] = _mergeProfile(recipient, online: true);
+    final id = const Uuid().v4();
+    final thread = _ensureThread(recipient);
+    thread.messages.add(
+      ChatMessage(
+        id: id,
+        senderNode: myNodeId,
+        receiverNode: recipient.nodeId,
+        text: trimmed,
+        createdAt: DateTime.now(),
+        delivered: true,
+      ),
+    );
+    unawaited(_saveCache());
+    notifyListeners();
+    final wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
+    try {
+      await ble.sendPacket(connectedPeer, {
+        'type': 'chat_message',
+        'packet_id': id,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': recipient.nodeId,
+        'ttl': 1,
+        'sender': current.login,
+        'message': wireText,
+      });
+      return null;
+    } catch (error) {
+      _replaceMessage(id, (message) => message.copyWith(failed: true));
+      return 'Bluetooth send failed: $error';
+    }
+  }
+
   Future<String?> sendFile(
     Profile recipient,
     String filename,
@@ -3127,6 +3214,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    await ble.stop();
     await _socket.close();
     await _store.clear();
     session = null;
@@ -3168,6 +3256,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _callTicker?.cancel();
+    ble.dispose();
     _socket.close();
     super.dispose();
   }

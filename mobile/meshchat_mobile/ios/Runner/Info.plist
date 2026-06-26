@@ -32,6 +32,10 @@
 	<string>MeshChat needs photo library access to attach photos and files.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>MeshChat needs permission to save received media when requested.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>MeshChat needs Bluetooth access to find and chat with nearby devices.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>MeshChat needs Bluetooth access to advertise nearby chat availability.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

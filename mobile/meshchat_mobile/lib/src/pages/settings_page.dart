@@ -5,6 +5,7 @@ import '../models/app_settings.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_socket.dart';
 import '../widgets/profile_avatar.dart';
+import 'bluetooth_nearby_page.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
@@ -56,6 +57,15 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
+  void openBluetoothNearby(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BluetoothNearbyPage(controller: controller),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = controller.session;
@@ -91,6 +101,16 @@ class SettingsPage extends StatelessWidget {
               ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => openConnection(context),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.bluetooth),
+              title: const Text('Bluetooth Nearby'),
+              subtitle: const Text('Text chat with nearby MeshChat devices'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => openBluetoothNearby(context),
             ),
           ),
           const SizedBox(height: 12),

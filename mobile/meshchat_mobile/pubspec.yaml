@@ -27,6 +27,7 @@ dependencies:
   open_filex: ^4.7.0
   dart_webrtc: ^1.8.1
   flutter_webrtc: ^1.5.2
+  bluetooth_low_energy: ^6.2.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
