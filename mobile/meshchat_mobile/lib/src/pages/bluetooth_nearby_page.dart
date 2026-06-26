@@ -55,6 +55,14 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     }
   }
 
+  Future<void> refreshScan() async {
+    try {
+      await widget.controller.ble.refreshScan();
+    } catch (error) {
+      if (mounted) _showSnack('Bluetooth refresh failed: $error');
+    }
+  }
+
   Future<void> connect(BlePeer peer) async {
     setState(() => busy = true);
     try {
@@ -62,6 +70,13 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     } catch (error) {
       if (mounted) _showSnack('Bluetooth connect failed: $error');
     }
+    if (!mounted) return;
+    setState(() => busy = false);
+  }
+
+  Future<void> disconnect(BlePeer peer) async {
+    setState(() => busy = true);
+    await widget.controller.ble.disconnect(peer);
     if (!mounted) return;
     setState(() => busy = false);
   }
@@ -120,6 +135,11 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                 icon: const Icon(Icons.clear_all),
               ),
               IconButton(
+                tooltip: 'Refresh scan',
+                onPressed: busy || !service.running ? null : refreshScan,
+                icon: const Icon(Icons.refresh),
+              ),
+              IconButton(
                 tooltip: 'Wide scan',
                 onPressed: busy ? null : wideScan,
                 icon: const Icon(Icons.travel_explore_outlined),
@@ -172,8 +192,8 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                   title: const Text('Mode'),
                   subtitle: Text(
                     service.wideScanning
-                        ? 'Wide scan is active. Non-MeshChat BLE devices may appear; Connect will filter them.'
-                        : 'Text-only BLE MVP. Keep both apps open and nearby. Files and groups will be added after device tests.',
+                        ? 'Wide scan is active. It helps Windows see iPhone, but unrelated BLE devices can appear.'
+                        : 'Nearby text chat over Bluetooth. Keep both apps open, Bluetooth enabled, and devices close.',
                   ),
                 ),
               ),
@@ -208,6 +228,7 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                         ),
                         subtitle: Text(
                           [
+                            peer.connected ? 'Connected' : _lastSeenText(peer),
                             if (peer.publicUsername.isNotEmpty)
                               '@${peer.publicUsername}',
                             if (peer.nodeId.isNotEmpty) peer.nodeId,
@@ -217,17 +238,30 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         isThreeLine: true,
-                        trailing: FilledButton.tonalIcon(
-                          onPressed: busy
-                              ? null
-                              : () =>
-                                    peer.connected ? send(peer) : connect(peer),
-                          icon: Icon(
-                            peer.connected
-                                ? Icons.send_outlined
-                                : Icons.link_outlined,
-                          ),
-                          label: Text(peer.connected ? 'Send' : 'Connect'),
+                        trailing: Wrap(
+                          spacing: 8,
+                          children: [
+                            Icon(_signalIcon(peer.rssi), color: Colors.white54),
+                            FilledButton.tonalIcon(
+                              onPressed: busy
+                                  ? null
+                                  : () => peer.connected
+                                        ? send(peer)
+                                        : connect(peer),
+                              icon: Icon(
+                                peer.connected
+                                    ? Icons.send_outlined
+                                    : Icons.link_outlined,
+                              ),
+                              label: Text(peer.connected ? 'Send' : 'Connect'),
+                            ),
+                            if (peer.connected)
+                              IconButton(
+                                tooltip: 'Disconnect',
+                                onPressed: busy ? null : () => disconnect(peer),
+                                icon: const Icon(Icons.link_off),
+                              ),
+                          ],
                         ),
                       ),
                     ),
@@ -244,5 +278,19 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  IconData _signalIcon(int rssi) {
+    if (rssi >= -60) return Icons.network_wifi_3_bar;
+    if (rssi >= -75) return Icons.network_wifi_2_bar;
+    return Icons.network_wifi_1_bar;
+  }
+
+  String _lastSeenText(BlePeer peer) {
+    final lastSeen = peer.lastSeen;
+    if (lastSeen == null) return 'Seen recently';
+    final seconds = DateTime.now().difference(lastSeen).inSeconds;
+    if (seconds < 4) return 'Seen now';
+    return 'Seen ${seconds}s ago';
   }
 }

@@ -14,6 +14,7 @@ class BlePeer {
     this.publicKey = '',
     this.rssi = 0,
     this.connected = false,
+    this.lastSeen,
   });
 
   final String id;
@@ -24,6 +25,7 @@ class BlePeer {
   final String publicKey;
   final int rssi;
   final bool connected;
+  final DateTime? lastSeen;
 }
 
 class BleChatService extends ChangeNotifier {
@@ -32,6 +34,7 @@ class BleChatService extends ChangeNotifier {
   bool get supported => false;
   bool get running => false;
   bool get scanning => false;
+  bool get wideScanning => false;
   String get status => 'Bluetooth is not available in the web version';
   List<BlePeer> get peers => const [];
 
@@ -41,11 +44,16 @@ class BleChatService extends ChangeNotifier {
 
   Future<void> stop() async {}
   Future<void> startScan() async {}
+  Future<void> startWideScan() async {}
   Future<void> stopScan() async {}
+  Future<void> refreshScan() async {}
+  void clearPeers() {}
 
   Future<BlePeer> connect(BlePeer peer) {
     throw UnsupportedError('Bluetooth is not available in the web version');
   }
+
+  Future<void> disconnect(BlePeer peer) async {}
 
   Future<void> sendPacket(BlePeer peer, Map<String, dynamic> packet) {
     throw UnsupportedError('Bluetooth is not available in the web version');

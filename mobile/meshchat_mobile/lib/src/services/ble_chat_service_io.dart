@@ -21,6 +21,7 @@ class BlePeer {
     this.publicKey = '',
     this.rssi = 0,
     this.connected = false,
+    this.lastSeen,
   });
 
   final String id;
@@ -31,6 +32,7 @@ class BlePeer {
   final String publicKey;
   final int rssi;
   final bool connected;
+  final DateTime? lastSeen;
 
   BlePeer copyWith({
     String? name,
@@ -40,6 +42,7 @@ class BlePeer {
     String? publicKey,
     int? rssi,
     bool? connected,
+    DateTime? lastSeen,
   }) {
     return BlePeer(
       id: id,
@@ -50,12 +53,16 @@ class BlePeer {
       publicKey: publicKey ?? this.publicKey,
       rssi: rssi ?? this.rssi,
       connected: connected ?? this.connected,
+      lastSeen: lastSeen ?? this.lastSeen,
     );
   }
 }
 
 class BleChatService extends ChangeNotifier {
   static const _peerTtl = Duration(seconds: 18);
+  static const _connectTimeout = Duration(seconds: 12);
+  static const _gattTimeout = Duration(seconds: 10);
+  static const _writeTimeout = Duration(seconds: 8);
 
   static final serviceUuid = UUID.fromString(
     '6d657368-6368-6174-8000-000000000001',
@@ -85,10 +92,21 @@ class BleChatService extends ChangeNotifier {
       Platform.isAndroid || Platform.isIOS || Platform.isWindows;
 
   List<BlePeer> get peers {
-    final values = _discovered.values.map((entry) {
+    final deduped = <String, BlePeer>{};
+    for (final entry in _discovered.values) {
       final connected = _connected[entry.peer.id]?.peer;
-      return connected ?? entry.peer;
-    }).toList();
+      final peer = connected ?? entry.peer;
+      final key = peer.nodeId.isEmpty ? peer.id : peer.nodeId;
+      final previous = deduped[key];
+      if (previous == null ||
+          peer.connected ||
+          (peer.lastSeen ?? DateTime(0)).isAfter(
+            previous.lastSeen ?? DateTime(0),
+          )) {
+        deduped[key] = peer;
+      }
+    }
+    final values = deduped.values.toList();
     values.sort((a, b) {
       if (a.connected != b.connected) return a.connected ? -1 : 1;
       return b.rssi.compareTo(a.rssi);
@@ -172,6 +190,16 @@ class BleChatService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> refreshScan() async {
+    final wasWide = wideScanning || Platform.isWindows;
+    await stopScan();
+    if (wasWide) {
+      await startWideScan();
+    } else {
+      await startScan();
+    }
+  }
+
   Future<void> stopScan() async {
     if (!scanning) return;
     await _central.stopDiscovery().catchError((_) {});
@@ -189,13 +217,15 @@ class BleChatService extends ChangeNotifier {
 
     status = 'Connecting to ${peer.name}';
     notifyListeners();
-    await _central.connect(discovered.peripheral);
+    await _central.connect(discovered.peripheral).timeout(_connectTimeout);
     if (Platform.isAndroid) {
       await _central
           .requestMTU(discovered.peripheral, mtu: 512)
           .catchError((_) => 0);
     }
-    final services = await _central.discoverGATT(discovered.peripheral);
+    final services = await _central
+        .discoverGATT(discovered.peripheral)
+        .timeout(_gattTimeout);
     GATTCharacteristic? infoCharacteristic;
     GATTCharacteristic? inboxCharacteristic;
     for (final service in services) {
@@ -214,10 +244,9 @@ class BleChatService extends ChangeNotifier {
     }
     var updated = peer.copyWith(connected: true);
     if (infoCharacteristic != null) {
-      final raw = await _central.readCharacteristic(
-        discovered.peripheral,
-        infoCharacteristic,
-      );
+      final raw = await _central
+          .readCharacteristic(discovered.peripheral, infoCharacteristic)
+          .timeout(_gattTimeout);
       updated = _peerFromInfo(peer, raw).copyWith(connected: true);
     }
     _connected[peer.id] = _ConnectedBlePeer(
@@ -229,9 +258,23 @@ class BleChatService extends ChangeNotifier {
       peripheral: discovered.peripheral,
       peer: updated,
     );
+    _removeDuplicateNodePeers(updated);
     status = 'Connected to ${updated.displayNameOrName}';
     notifyListeners();
     return updated;
+  }
+
+  Future<void> disconnect(BlePeer peer) async {
+    final connected = _connected.remove(peer.id);
+    if (connected != null) {
+      await _central.disconnect(connected.peripheral).catchError((_) {});
+      _discovered[peer.id] = _DiscoveredBlePeer(
+        peripheral: connected.peripheral,
+        peer: connected.peer.copyWith(connected: false),
+      );
+      status = 'Disconnected from ${connected.peer.displayNameOrName}';
+      notifyListeners();
+    }
   }
 
   Future<void> sendPacket(BlePeer peer, Map<String, dynamic> packet) async {
@@ -251,24 +294,39 @@ class BleChatService extends ChangeNotifier {
         .catchError((_) => 180);
     final chunkSize = max(40, min(160, maxWrite - 96));
     final total = (encoded.length / chunkSize).ceil();
-    for (var index = 0; index < total; index++) {
-      final start = index * chunkSize;
-      final end = min(encoded.length, start + chunkSize);
-      final frame = utf8.encode(
-        jsonEncode({
-          'v': 1,
-          'id': packetId,
-          'i': index,
-          'n': total,
-          'd': encoded.substring(start, end),
-        }),
+    try {
+      for (var index = 0; index < total; index++) {
+        final start = index * chunkSize;
+        final end = min(encoded.length, start + chunkSize);
+        final frame = utf8.encode(
+          jsonEncode({
+            'v': 1,
+            'id': packetId,
+            'i': index,
+            'n': total,
+            'd': encoded.substring(start, end),
+          }),
+        );
+        await _central
+            .writeCharacteristic(
+              connected.peripheral,
+              connected.inbox,
+              value: Uint8List.fromList(frame),
+              type: GATTCharacteristicWriteType.withResponse,
+            )
+            .timeout(_writeTimeout);
+      }
+      status = 'Bluetooth message sent to ${connected.peer.displayNameOrName}';
+      notifyListeners();
+    } catch (error) {
+      _connected.remove(peer.id);
+      _discovered[peer.id] = _DiscoveredBlePeer(
+        peripheral: connected.peripheral,
+        peer: connected.peer.copyWith(connected: false),
       );
-      await _central.writeCharacteristic(
-        connected.peripheral,
-        connected.inbox,
-        value: Uint8List.fromList(frame),
-        type: GATTCharacteristicWriteType.withResponse,
-      );
+      status = 'Bluetooth send failed: $error';
+      notifyListeners();
+      rethrow;
     }
   }
 
@@ -287,6 +345,7 @@ class BleChatService extends ChangeNotifier {
           peer: (existing ?? BlePeer(id: id, name: name)).copyWith(
             name: name,
             rssi: event.rssi,
+            lastSeen: DateTime.now(),
           ),
           lastSeen: DateTime.now(),
         );
@@ -460,6 +519,14 @@ class BleChatService extends ChangeNotifier {
 
   void _clearDisconnectedPeers() {
     _discovered.removeWhere((id, _) => !_connected.containsKey(id));
+  }
+
+  void _removeDuplicateNodePeers(BlePeer peer) {
+    if (peer.nodeId.isEmpty) return;
+    _discovered.removeWhere((id, entry) {
+      if (id == peer.id) return false;
+      return entry.peer.nodeId == peer.nodeId;
+    });
   }
 
   @override
