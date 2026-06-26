@@ -227,6 +227,17 @@ class ServerStorageMixin:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS server_chat_deletes(
+                owner_node TEXT NOT NULL,
+                peer_node TEXT NOT NULL,
+                deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(owner_node, peer_node)
+            )
+            """
+        )
+
         cursor = conn.execute(
             "PRAGMA table_info(server_group_messages)"
         )
@@ -1183,6 +1194,40 @@ class ServerStorageMixin:
                     message_id,
                 )
             )
+
+            self.db.commit()
+
+        elif packet_type == "chat_delete":
+
+            source_node = packet.get("source_node")
+            destination_node = packet.get("destination_node")
+            chat_node_id = packet.get("chat_node_id") or destination_node
+
+            if not source_node or not destination_node:
+                return
+
+            for owner_node, peer_node in (
+                (source_node, chat_node_id),
+                (destination_node, source_node)
+            ):
+
+                self.db.execute(
+                    """
+                    INSERT OR REPLACE INTO server_chat_deletes(
+                        owner_node,
+                        peer_node,
+                        deleted_at
+                    )
+                    VALUES(?,?,STRFTIME(
+                        '%Y-%m-%d %H:%M:%f',
+                        'now'
+                    ))
+                    """,
+                    (
+                        owner_node,
+                        peer_node
+                    )
+                )
 
             self.db.commit()
 

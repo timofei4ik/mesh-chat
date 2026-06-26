@@ -131,6 +131,34 @@ class ServerSyncMixin:
             for row in cursor.fetchall()
         ]
 
+        cursor.execute(
+            """
+            SELECT peer_node
+            FROM server_chat_deletes
+            WHERE owner_node=?
+            """,
+            (
+                node_id,
+            )
+        )
+
+        deleted_peers = {
+            row[0]
+            for row in cursor.fetchall()
+            if row[0]
+        }
+
+        if deleted_peers:
+
+            direct_messages = [
+                message
+                for message in direct_messages
+                if (
+                    message.get("sender_node") not in deleted_peers
+                    and message.get("receiver_node") not in deleted_peers
+                )
+            ]
+
         for group in groups:
 
             cursor.execute(
@@ -252,6 +280,25 @@ class ServerSyncMixin:
             file_params.extend(
                 group_ids
             )
+
+        if deleted_peers:
+
+            placeholders = ",".join(
+                "?"
+                for _ in deleted_peers
+            )
+
+            file_conditions.append(
+                f"""
+                (
+                    sender_node NOT IN ({placeholders})
+                    AND receiver_node NOT IN ({placeholders})
+                )
+                """
+            )
+
+            file_params.extend(deleted_peers)
+            file_params.extend(deleted_peers)
 
         cursor.execute(
             f"""

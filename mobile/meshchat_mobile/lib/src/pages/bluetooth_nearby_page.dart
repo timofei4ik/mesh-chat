@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -296,11 +297,12 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                 onPressed: busy ? null : showPairQr,
                 icon: const Icon(Icons.qr_code_2),
               ),
-              IconButton(
-                tooltip: 'Scan QR',
-                onPressed: busy ? null : scanPairQr,
-                icon: const Icon(Icons.qr_code_scanner),
-              ),
+              if (!kIsWeb)
+                IconButton(
+                  tooltip: 'Scan QR',
+                  onPressed: busy ? null : scanPairQr,
+                  icon: const Icon(Icons.qr_code_scanner),
+                ),
               IconButton(
                 tooltip: 'Wide scan',
                 onPressed: busy ? null : wideScan,
