@@ -1,0 +1,36 @@
+# Python/runtime junk
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+
+# Local databases and account data
+*.db
+accounts/
+data/
+
+# Build outputs
+build/
+dist/
+release/
+*.spec
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Flutter/Dart outputs
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+
+# Generated release archives/installers kept outside source
+*.apk
+*.ipa
+*.zip

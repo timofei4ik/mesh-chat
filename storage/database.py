@@ -1,14 +1,184 @@
-import sqlite3
-import uuid
-import traceback
+﻿import sqlite3
+import os
+import sys
+import hashlib
+from pathlib import Path
+
+from storage.database_messages import DatabaseMessagesMixin
+from storage.database_pending import DatabasePendingMixin
+from storage.database_groups import DatabaseGroupsMixin
+from storage.database_contacts import DatabaseContactsMixin
+from storage.database_settings import DatabaseSettingsMixin
+from storage.database_files import DatabaseFilesMixin
 
 
-class Database:
+def get_database_dir():
 
-    def __init__(self):
+    if getattr(
+        sys,
+        "frozen",
+        False
+    ):
+
+        base_dir = os.environ.get(
+            "APPDATA"
+        )
+
+        if not base_dir:
+
+            base_dir = str(
+                Path.home()
+            )
+
+        data_dir = Path(
+            base_dir
+        ) / "MeshChat"
+
+        data_dir.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        return data_dir
+
+    return Path(".")
+
+
+def get_database_path():
+
+    override_path = os.environ.get(
+        "MESHCHAT_DB_PATH"
+    )
+
+    if override_path:
+
+        return override_path
+
+    return str(
+        get_database_dir() / "messages.db"
+    )
+
+
+def get_account_database_path(
+    login
+):
+
+    raw_login = (
+        login
+        or ""
+    ).strip()
+
+    login = raw_login.lower()
+
+    if not login:
+
+        return get_database_path()
+
+    safe_login = "".join(
+        char
+        if (
+            char.isalnum()
+            or char in (
+                "-",
+                "_",
+                "."
+            )
+        )
+        else "_"
+        for char in login
+    ).strip(
+        "._ "
+    )
+
+    digest = hashlib.sha256(
+        login.encode(
+            "utf-8"
+        )
+    ).hexdigest()[:16]
+
+    if not safe_login:
+
+        safe_login = digest
+
+    account_dir = (
+        get_database_dir()
+        / "accounts"
+        / safe_login
+    )
+
+    account_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    new_path = account_dir / "messages.db"
+    old_path = get_database_dir() / f"messages_account_{digest}.db"
+
+    if (
+        old_path.exists()
+        and not new_path.exists()
+    ):
+
+        old_path.replace(
+            new_path
+        )
+
+    return str(
+        new_path
+    )
+
+
+def list_account_profiles():
+
+    accounts_dir = get_database_dir() / "accounts"
+
+    if not accounts_dir.exists():
+
+        return []
+
+    profiles = []
+
+    for account_dir in sorted(
+        accounts_dir.iterdir()
+    ):
+
+        db_path = account_dir / "messages.db"
+
+        if (
+            account_dir.is_dir()
+            and db_path.exists()
+        ):
+
+            profiles.append(
+                {
+                    "login": account_dir.name,
+                    "path": str(
+                        db_path
+                    )
+                }
+            )
+
+    return profiles
+
+
+class Database(
+    DatabaseMessagesMixin,
+    DatabasePendingMixin,
+    DatabaseGroupsMixin,
+    DatabaseContactsMixin,
+    DatabaseSettingsMixin,
+    DatabaseFilesMixin
+):
+
+    def __init__(
+        self,
+        path=None
+    ):
+
+        self.path = path or get_database_path()
 
         self.conn = sqlite3.connect(
-            "messages.db",
+            self.path,
             check_same_thread=False
         )
 
@@ -71,13 +241,75 @@ class Database:
 
             port INTEGER,
 
+            avatar_path TEXT,
+
+            public_username TEXT,
+
+            about TEXT,
+
+            encryption_public_key TEXT,
+
             last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
         self.conn.commit()
 
-        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contact_status(
+
+            node_id TEXT PRIMARY KEY,
+
+            status TEXT NOT NULL,
+
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        self.conn.commit()
+
+        cursor.execute(
+            "PRAGMA table_info(users)"
+        )
+
+        user_columns = {
+            row[1]
+            for row in cursor.fetchall()
+        }
+
+        if "avatar_path" not in user_columns:
+
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN avatar_path TEXT"
+            )
+
+            self.conn.commit()
+
+        if "about" not in user_columns:
+
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN about TEXT"
+            )
+
+            self.conn.commit()
+
+        if "public_username" not in user_columns:
+
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN public_username TEXT"
+            )
+
+            self.conn.commit()
+
+        if "encryption_public_key" not in user_columns:
+
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN encryption_public_key TEXT"
+            )
+
+            self.conn.commit()
+
+
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS files(
 
@@ -114,6 +346,65 @@ class Database:
 
             self.conn.commit()
 
+        cursor.execute(
+            "PRAGMA table_info(files)"
+        )
+
+        file_columns = {
+            row[1]
+            for row in cursor.fetchall()
+        }
+
+        if "file_id" not in file_columns:
+
+            cursor.execute(
+                "ALTER TABLE files ADD COLUMN file_id TEXT"
+            )
+
+            self.conn.commit()
+
+        cursor.execute(
+            """
+            DELETE FROM files
+            WHERE file_id IS NOT NULL
+            AND id NOT IN (
+                SELECT MIN(id)
+                FROM files
+                WHERE file_id IS NOT NULL
+                GROUP BY file_id
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_files_file_id
+            ON files(file_id)
+            WHERE file_id IS NOT NULL
+            """
+        )
+
+        cursor.execute(
+            """
+            DELETE FROM messages
+            WHERE message_id IS NOT NULL
+            AND id NOT IN (
+                SELECT MIN(id)
+                FROM messages
+                WHERE message_id IS NOT NULL
+                GROUP BY message_id
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_message_id
+            ON messages(message_id)
+            WHERE message_id IS NOT NULL
+            """
+        )
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS pending_messages(
 
@@ -135,219 +426,184 @@ class Database:
 
         self.conn.commit()
 
-
-    def save_message(
-        self,
-        sender,
-        receiver,
-        message,
-        message_id=None
-    ):
-        
-        print(
-            "SAVE:",
-            sender,
-            receiver,
-            message
-        )
-
-        cursor = self.conn.cursor()
-
         cursor.execute(
-            """
-            INSERT INTO messages(
-                message_id,
-                sender,
-                receiver,
-                message
-            )
-            VALUES(?,?,?,?)
-            """,
-            (
-                message_id,
-                sender,
-                receiver,
-                message
-            )
+            "PRAGMA table_info(pending_messages)"
         )
 
-        self.conn.commit()
-
-    def add_pending_message(
-        self,
-        message_id,
-        sender_node,
-        receiver_node,
-        message
-    ):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO pending_messages(
-                message_id,
-                sender_node,
-                receiver_node,
-                message
-            )
-            VALUES(?,?,?,?)
-            """,
-            (
-                message_id,
-                sender_node,
-                receiver_node,
-                message
-            )
-        )
-
-        self.conn.commit()
-
-    def get_pending_messages(
-        self,
-        sender_node
-    ):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                message_id,
-                receiver_node,
-                message,
-                attempts
-
-            FROM pending_messages
-
-            WHERE sender_node=?
-
-            ORDER BY created_at
-            """,
-            (
-                sender_node,
-            )
-        )
-
-        return cursor.fetchall()
-
-    def get_pending_message_ids(
-        self,
-        sender_node,
-        receiver_node
-    ):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT message_id
-
-            FROM pending_messages
-
-            WHERE sender_node=?
-            AND receiver_node=?
-            """,
-            (
-                sender_node,
-                receiver_node
-            )
-        )
-
-        return {
-            row[0]
+        pending_columns = {
+            row[1]
             for row in cursor.fetchall()
         }
 
-    def mark_pending_attempt(
-        self,
-        message_id
-    ):
+        if "packet_json" not in pending_columns:
 
-        cursor = self.conn.cursor()
+            cursor.execute(
+                "ALTER TABLE pending_messages ADD COLUMN packet_json TEXT"
+            )
+
+            self.conn.commit()
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups(
+
+            group_id TEXT PRIMARY KEY,
+
+            name TEXT,
+
+            owner_node TEXT,
+
+            admins_json TEXT DEFAULT '[]'
+        )
+        """)
+
+        cursor.execute(
+            "PRAGMA table_info(groups)"
+        )
+
+        group_columns = {
+            row[1]
+            for row in cursor.fetchall()
+        }
+
+        if "owner_node" not in group_columns:
+
+            cursor.execute(
+                "ALTER TABLE groups ADD COLUMN owner_node TEXT"
+            )
+
+        if "admins_json" not in group_columns:
+
+            cursor.execute(
+                "ALTER TABLE groups ADD COLUMN admins_json TEXT DEFAULT '[]'"
+            )
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_members(
+
+            group_id TEXT,
+
+            node_id TEXT,
+
+            PRIMARY KEY(
+                group_id,
+                node_id
+            )
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_encryption_keys(
+
+            group_id TEXT,
+
+            key_id TEXT,
+
+            key_envelope TEXT NOT NULL,
+
+            active INTEGER DEFAULT 0,
+
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY(
+                group_id,
+                key_id
+            )
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_messages(
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            group_id TEXT,
+
+            message_id TEXT,
+
+            sender_node TEXT,
+
+            sender_name TEXT,
+
+            message TEXT,
+
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
         cursor.execute(
             """
-            UPDATE pending_messages
-
-            SET attempts=attempts+1,
-                last_attempt=CURRENT_TIMESTAMP
-
-            WHERE message_id=?
-            """,
-            (
-                message_id,
+            DELETE FROM group_messages
+            WHERE message_id IS NOT NULL
+            AND id NOT IN (
+                SELECT MIN(id)
+                FROM group_messages
+                WHERE message_id IS NOT NULL
+                GROUP BY message_id
             )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_group_messages_message_id
+            ON group_messages(message_id)
+            WHERE message_id IS NOT NULL
+            """
         )
 
         self.conn.commit()
 
-    def remove_pending_message(
-        self,
-        message_id
-    ):
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message_reactions(
 
-        cursor = self.conn.cursor()
+            scope TEXT,
 
-        cursor.execute(
-            """
-            DELETE FROM pending_messages
+            message_id TEXT,
 
-            WHERE message_id=?
-            """,
-            (
+            reactor_node TEXT,
+
+            reaction TEXT,
+
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY(
+                scope,
                 message_id,
+                reactor_node,
+                reaction
             )
         )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS message_pins(
+
+            scope TEXT,
+
+            message_id TEXT,
+
+            text TEXT,
+
+            pinner_node TEXT,
+
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY(
+                scope,
+                message_id
+            )
+        )
+        """)
 
         self.conn.commit()
 
-    def get_messages(
-        self,
-        user1,
-        user2
-    ):
 
-        cursor = self.conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT sender,
-                   receiver,
-                   message,
-                   timestamp
-
-            FROM messages
-
-            WHERE
-
-            (
-                sender=? AND receiver=?
-            )
-
-            OR
-
-            (
-                sender=? AND receiver=?
-            )
-
-            ORDER BY id
-            """,
-            (
-                user1,
-                user2,
-                user2,
-                user1
-            )
-        )
-
-        return cursor.fetchall()
-    
     def get_contacts(
             self,
             username
     ):
-        
+
         cursor = self.conn.cursor()
 
         cursor.execute(
@@ -371,420 +627,27 @@ class Database:
             )
         )
 
-        return [
+        contacts = [
             row[0]
             for row in cursor.fetchall()
+            if not self.is_contact_blocked(row[0])
         ]
-    
-    def add_unread(
-    self,
-    sender,
-    receiver
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO unread(
-                sender,
-                receiver,
-                count
-            )
-
-            VALUES(?,?,1)
-
-            ON CONFLICT(sender,receiver)
-
-            DO UPDATE SET
-
-            count=count+1
-            """,
-            (
-                sender,
-                receiver
-            )
-        )
-
-        self.conn.commit()
-
-    def get_unread(
-    self,
-    sender,
-    receiver
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT count
-
-            FROM unread
-
-            WHERE sender=?
-            AND receiver=?
-            """,
-            (
-                sender,
-                receiver
-            )
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-
-            return row[0]
-
-        return 0
-    
-    def clear_unread(
-    self,
-    sender,
-    receiver
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            DELETE FROM unread
-
-            WHERE sender=?
-            AND receiver=?
-            """,
-            (
-                sender,
-                receiver
-            )
-        )
-
-        self.conn.commit()
-
-    def get_setting(
-    self,
-    key,
-    default=None
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT value
-
-            FROM settings
-
-            WHERE key=?
-            """,
-            (key,)
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-            return row[0]
-
-        return default
-    
-    def set_setting(
-    self,
-    key,
-    value
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT OR REPLACE
-            INTO settings(
-                key,
-                value
-            )
-
-            VALUES(?,?)
-            """,
-            (
-                key,
-                value
-            )
-        )
-
-        self.conn.commit()
-
-    def get_or_create_node_id(
-    self,
-    port
-    ):
-
-        key = f"node_id_{port}"
-
-        node_id = self.get_setting(
-            key
-        )
-
-        if node_id:
-            return node_id
-
-        node_id = str(
-            uuid.uuid4()
-        )
-
-        self.set_setting(
-            key,
-            node_id
-        )
-
-        return node_id
-    
-    def update_user(
-    self,
-    node_id,
-    name,
-    ip,
-    port
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO users(
-
-                node_id,
-                name,
-                ip,
-                port,
-                last_seen
-
-            )
-
-            VALUES(
-                ?,?,?,?,
-                CURRENT_TIMESTAMP
-            )
-            """,
-            (
-                node_id,
-                name,
-                ip,
-                port
-            )
-        )
-
-        self.conn.commit()
-
-    def get_user_name(
-    self,
-    node_id
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT name
-
-            FROM users
-
-            WHERE node_id=?
-            """,
-            (
-                node_id,
-            )
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-            return row[0]
-
-        return node_id[:8]
-    
-    def get_user_info(
-    self,
-    node_id
-):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                name,
-                ip,
-                port
-
-            FROM users
-
-            WHERE node_id=?
-            """,
-            (
-                node_id,
-            )
-        )
-
-        return cursor.fetchone()
-
-    def get_bluetooth_contacts(self):
-
-        cursor = self.conn.cursor()
 
         cursor.execute(
             """
             SELECT node_id
-
-            FROM users
-
-            WHERE ip LIKE 'BT:%'
+            FROM contact_status
+            WHERE status IN ('friend', 'outgoing', 'incoming', 'blocked')
             """
         )
 
-        return [
+        contacts.extend(
             row[0]
             for row in cursor.fetchall()
-        ]
-    
-    def save_file(
-    self,
-    sender_node,
-    receiver_node,
-    filename,
-    data
-    ):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO files(
-                sender_node,
-                receiver_node,
-                filename,
-                data
-            )
-            VALUES(?,?,?,?)
-            """,
-            (
-                sender_node,
-                receiver_node,
-                filename,
-                data
-            )
         )
 
-        self.conn.commit()
-
-    def get_files(
-        self,
-        node1,
-        node2
-    ):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT filename,
-                data,
-                sender_node
-            FROM files
-
-            WHERE
-
-            (
-                sender_node=? AND receiver_node=?
-            )
-
-            OR
-
-            (
-                sender_node=? AND receiver_node=?
-            )
-
-            ORDER BY id
-            """,
-            (
-                node1,
-                node2,
-                node2,
-                node1
+        return list(
+            dict.fromkeys(
+                contacts
             )
         )
-
-        return cursor.fetchall()
-    
-    def get_chat_history(
-        self,
-        node1,
-        node2
-    ):
-
-        cursor = self.conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                'message' as item_type,
-                message_id,
-                sender,
-                receiver,
-                message as content,
-                timestamp
-
-            FROM messages
-
-            WHERE
-
-            (
-                sender=? AND receiver=?
-            )
-
-            OR
-
-            (
-                sender=? AND receiver=?
-            )
-
-            UNION ALL
-
-            SELECT
-                'file' as item_type,
-                NULL as message_id,
-                sender_node,
-                receiver_node,
-                filename as content,
-                timestamp
-
-            FROM files
-
-            WHERE
-
-            (
-                sender_node=? AND receiver_node=?
-            )
-
-            OR
-
-            (
-                sender_node=? AND receiver_node=?
-            )
-
-            ORDER BY timestamp
-            """,
-            (
-                node1,
-                node2,
-                node2,
-                node1,
-
-                node1,
-                node2,
-                node2,
-                node1
-            )
-        )
-
-        return cursor.fetchall()

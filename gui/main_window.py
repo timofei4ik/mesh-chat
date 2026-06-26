@@ -1,6 +1,12 @@
-import socket
+﻿import socket
 import threading
+import json
+import base64
+import time
 from PyQt6.QtCore import (
+    QByteArray,
+    QBuffer,
+    QIODevice,
     QTimer,
     pyqtSignal,
     Qt
@@ -15,26 +21,43 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPushButton,
+    QCheckBox,
     QMessageBox,
+    QMenu,
     QSystemTrayIcon,
     QApplication,
     QStyle,
-    QTabWidget
+    QTabWidget,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog
 )
 
 from gui.request_dialog import ChatRequestDialog
 from gui.chat_window import ChatWindow
-from storage.database import Database
+from gui.main_window_server import ServerMixin
+from gui.main_window_tray import TrayMixin
+from gui.main_window_bluetooth import BluetoothMixin
+from gui.main_window_groups import GroupsMixin
+from gui.main_window_chats import MainChatsMixin
+from gui.main_window_pending import MainPendingMixin
+from gui.main_window_packets import MainPacketMixin
+from gui.app_icon import app_icon, app_logo
+from gui.avatar import round_pixmap
+from storage.database import Database, get_database_dir
 from PyQt6.QtWidgets import QInputDialog
 from network.packet_cache import PacketCache
 from PyQt6.QtWidgets import QListWidgetItem
+from PyQt6.QtGui import QPixmap
 from network.router import forward_packet
 from network.message_id import generate_message_id
-from network.bluetooth_transport import send_bluetooth_packet
-from network.bluetooth_discovery import (
-    get_local_bluetooth_address,
-    get_paired_bluetooth_devices
+from network.protocol import (
+    chat_message_packet,
+    message_received_packet,
 )
+from network.server_url import normalize_server_url
+from network.bluetooth_discovery import get_local_bluetooth_address
+from security.e2ee import EncryptionIdentity
 
 
 from network.client import (
@@ -43,8 +66,7 @@ from network.client import (
 )
 
 
-
-class MainWindow(QWidget):
+class MainWindow(ServerMixin, TrayMixin, BluetoothMixin, GroupsMixin, MainChatsMixin, MainPendingMixin, MainPacketMixin, QWidget):
 
     incoming_request = pyqtSignal(dict)
     incoming_response = pyqtSignal(dict)
@@ -54,7 +76,8 @@ class MainWindow(QWidget):
         str,  #sender
         str,  #sender_node_id
         str,  #filename
-        str   #data
+        str,  #data
+        str   #file_id
     )
 
     message_received_signal = pyqtSignal(
@@ -76,18 +99,40 @@ class MainWindow(QWidget):
         str
     )
 
+    server_users_signal = pyqtSignal(
+        list
+    )
+
+    server_status_signal = pyqtSignal(
+        str
+    )
+
+    server_test_done_signal = pyqtSignal(
+        str
+    )
+
     def __init__(
         self,
         username,
         discovery,
         node_id,
-        bluetooth_channel=None
+        bluetooth_channel=None,
+        server_url="",
+        server_token="",
+        server_login="",
+        server_password=""
     ):
 
         self.chat_windows = {}
+        self.group_windows = {}
         self.file_chunks = {}
+        self.server_file_sync_chunks = {}
         self.pending_sent_files = {}
         self.pending_retry_in_progress = False
+        self.server_transport = None
+        self.server_users = {}
+        self.visible_users = []
+        self.showing_archive = False
 
         self.port = discovery.tcp_port
         self.bluetooth_channel = bluetooth_channel
@@ -100,6 +145,62 @@ class MainWindow(QWidget):
         self.discovery = discovery
         self.db = Database()
         self.packet_cache = PacketCache()
+        self.server_url = server_url or self.db.get_setting(
+            "server_url"
+        ) or ""
+
+        self.server_url = normalize_server_url(
+            self.server_url
+        )
+
+        self.server_token = server_token or self.db.get_setting(
+            "server_token"
+        ) or ""
+
+        self.server_login = server_login or self.db.get_setting(
+            "server_login"
+        ) or ""
+
+        self.server_password = server_password or self.db.get_setting(
+            "server_password"
+        ) or ""
+
+        self.encryption = EncryptionIdentity(
+            self.db,
+            self.server_password,
+            self.server_login
+        )
+
+        self.encryption_public_key = (
+            self.encryption.public_key_text
+        )
+
+        self.profile_avatar_path = self.db.get_setting(
+            "profile_avatar_path"
+        ) or ""
+
+        self.profile_about = self.db.get_setting(
+            "profile_about"
+        ) or ""
+
+        self.profile_avatar_data = self.db.get_setting(
+            "profile_avatar_data"
+        ) or ""
+
+        self.public_username = (
+            self.db.get_setting(
+                "public_username"
+            )
+            or self.server_login
+            or ""
+        ).strip().lower().lstrip("@")
+
+        self.compress_images = (
+            self.db.get_setting(
+                "compress_images",
+                "1"
+            ) != "0"
+        )
 
         self.message_received_signal.connect(
             self.show_message
@@ -123,6 +224,10 @@ class MainWindow(QWidget):
             f"MeshChat - {username}"
         )
 
+        self.setWindowIcon(
+            app_icon()
+        )
+
         self.incoming_response.connect(
             self.show_chat_response
         )
@@ -133,56 +238,128 @@ class MainWindow(QWidget):
         )
 
         self.tray_icon = None
+        self.force_quit = False
         self.setup_notifications()
 
         layout = QVBoxLayout()
 
+        self.logo_label = QLabel()
+
+        self.logo_label.setPixmap(
+            app_logo(46)
+        )
+
+        self.header_avatar_label = QLabel()
+
+        self.header_avatar_label.setFixedSize(
+            46,
+            46
+        )
+
         self.me_label = QLabel(
-            f"Вы: {username}\nID: {node_id[:8]}"
+            f"You: {username}\nID: {node_id[:8]}"
         )
 
         self.users_label = QLabel(
-            "Пользователи сети"
+            "Network users"
         )
 
         self.users_list = QListWidget()
 
         self.chats_label = QLabel(
-            "Мои чаты"
+            "My chats"
         )
-
         self.chats_list = QListWidget()
 
         self.info_label = QLabel(
-            "Выберите пользователя"
+            "Select a user"
         )
 
         self.chat_button = QPushButton(
-            "Начать чат"
+            "Start chat"
+        )
+
+        self.create_group_button = QPushButton(
+            "Create group"
+        )
+
+        self.archive_button = QPushButton(
+            "Archive"
+        )
+
+        self.username_search_input = QLineEdit()
+        self.username_search_input.setPlaceholderText(
+            "@username"
+        )
+
+        self.username_search_button = QPushButton(
+            "Find"
         )
 
         self.rename_button = QPushButton(
-            "Изменить имя"
+            "Change name"
         )
 
         self.bluetooth_button = QPushButton(
-            "Bluetooth чат"
+            "Bluetooth chat"
         )
 
         self.bluetooth_scan_button = QPushButton(
-            "Найти Bluetooth"
+            "Find Bluetooth"
         )
 
         self.bluetooth_status_label = QLabel(
-            "Bluetooth не запущен"
+            "Bluetooth is not running"
         )
 
         self.settings_name_input = QLineEdit(
             username
         )
 
+        self.settings_avatar_label = QLabel()
+
+        self.settings_avatar_label.setFixedSize(
+            64,
+            64
+        )
+
+        self.settings_avatar_button = QPushButton(
+            "Choose avatar"
+        )
+
+        self.settings_about_input = QLineEdit(
+            self.profile_about
+        )
+
+        self.settings_about_input.setPlaceholderText(
+            "About"
+        )
+
+        self.settings_public_username_input = QLineEdit(
+            self.public_username
+        )
+        self.settings_public_username_input.setPlaceholderText(
+            "username"
+        )
+
+        self.settings_compress_images_checkbox = QCheckBox(
+            "Compress photos before sending"
+        )
+
+        self.settings_compress_images_checkbox.setChecked(
+            self.compress_images
+        )
+
         self.settings_save_button = QPushButton(
-            "Сохранить"
+            "Save"
+        )
+
+        self.settings_server_test_button = QPushButton(
+            "Test server"
+        )
+
+        self.settings_logout_button = QPushButton(
+            "Logout"
         )
 
         self.settings_node_label = QLabel(
@@ -194,11 +371,55 @@ class MainWindow(QWidget):
         )
 
         self.settings_database_label = QLabel(
-            "messages.db"
+            self.db.path
         )
 
         self.settings_bluetooth_label = QLabel(
             ""
+        )
+
+        self.settings_server_input = QLineEdit(
+            self.server_url
+        )
+
+        self.settings_server_input.setPlaceholderText(
+            "wss://example.ngrok-free.app"
+        )
+
+        self.settings_server_token_input = QLineEdit(
+            self.server_token
+        )
+
+        self.settings_server_token_input.setEchoMode(
+            QLineEdit.EchoMode.Password
+        )
+
+        self.settings_server_token_input.setPlaceholderText(
+            "invite token"
+        )
+
+        self.settings_server_login_input = QLineEdit(
+            self.server_login
+        )
+
+        self.settings_server_login_input.setPlaceholderText(
+            "login"
+        )
+
+        self.settings_server_password_input = QLineEdit(
+            self.server_password
+        )
+
+        self.settings_server_password_input.setEchoMode(
+            QLineEdit.EchoMode.Password
+        )
+
+        self.settings_server_password_input.setPlaceholderText(
+            "password"
+        )
+
+        self.settings_server_status_label = QLabel(
+            "Server is not configured"
         )
 
         self.chat_button.setEnabled(
@@ -237,9 +458,29 @@ class MainWindow(QWidget):
 
         self.chats_tab = QWidget()
         chats_layout = QVBoxLayout()
+        username_search_layout = QHBoxLayout()
+
+        username_search_layout.addWidget(
+            self.username_search_input
+        )
+        username_search_layout.addWidget(
+            self.username_search_button
+        )
 
         chats_layout.addWidget(
             self.chats_label
+        )
+
+        chats_layout.addWidget(
+            self.create_group_button
+        )
+
+        chats_layout.addWidget(
+            self.archive_button
+        )
+
+        chats_layout.addLayout(
+            username_search_layout
         )
 
         chats_layout.addWidget(
@@ -279,7 +520,7 @@ class MainWindow(QWidget):
         )
 
         bluetooth_hint = QLabel(
-            "Подключайтесь вручную или найдите спаренные устройства MeshChat."
+            "Connect manually or find paired MeshChat devices."
         )
 
         bluetooth_hint.setWordWrap(
@@ -331,8 +572,40 @@ class MainWindow(QWidget):
         settings_form = QFormLayout()
 
         settings_form.addRow(
-            "Имя:",
+            "Name:",
             self.settings_name_input
+        )
+
+        avatar_row = QHBoxLayout()
+
+        avatar_row.addWidget(
+            self.settings_avatar_label
+        )
+
+        avatar_row.addWidget(
+            self.settings_avatar_button
+        )
+
+        avatar_row.addStretch()
+
+        settings_form.addRow(
+            "Avatar:",
+            avatar_row
+        )
+
+        settings_form.addRow(
+            "About:",
+            self.settings_about_input
+        )
+
+        settings_form.addRow(
+            "@username:",
+            self.settings_public_username_input
+        )
+
+        settings_form.addRow(
+            "Photo:",
+            self.settings_compress_images_checkbox
         )
 
         settings_form.addRow(
@@ -341,7 +614,7 @@ class MainWindow(QWidget):
         )
 
         settings_form.addRow(
-            "TCP порт:",
+            "TCP port:",
             self.settings_port_label
         )
 
@@ -351,8 +624,45 @@ class MainWindow(QWidget):
         )
 
         settings_form.addRow(
-            "База:",
+            "Server:",
+            self.settings_server_input
+        )
+
+        settings_form.addRow(
+            "Invite token:",
+            self.settings_server_token_input
+        )
+
+        settings_form.addRow(
+            "Login:",
+            self.settings_server_login_input
+        )
+
+        settings_form.addRow(
+            "Password:",
+            self.settings_server_password_input
+        )
+
+        settings_form.addRow(
+            "Status:",
+            self.settings_server_status_label
+        )
+
+        settings_form.addRow(
+            "Database:",
             self.settings_database_label
+        )
+
+        settings_form.labelForField(
+            self.settings_server_login_input
+        ).setText(
+            "Login:"
+        )
+
+        settings_form.labelForField(
+            self.settings_server_status_label
+        ).setText(
+            "Status:"
         )
 
         settings_layout.addLayout(
@@ -363,18 +673,21 @@ class MainWindow(QWidget):
             self.settings_save_button
         )
 
+        settings_layout.addWidget(
+            self.settings_server_test_button
+        )
+
+        settings_layout.addWidget(
+            self.settings_logout_button
+        )
+
         self.settings_tab.setLayout(
             settings_layout
         )
 
         self.tabs.addTab(
-            self.network_tab,
-            "Сеть"
-        )
-
-        self.tabs.addTab(
             self.chats_tab,
-            "Чаты"
+            "Chats"
         )
 
         self.tabs.addTab(
@@ -384,11 +697,27 @@ class MainWindow(QWidget):
 
         self.tabs.addTab(
             self.settings_tab,
-            "Настройки"
+            "Settings"
         )
 
-        layout.addWidget(
+        header_layout = QHBoxLayout()
+
+        header_layout.addWidget(
+            self.logo_label
+        )
+
+        header_layout.addWidget(
+            self.header_avatar_label
+        )
+
+        header_layout.addWidget(
             self.me_label
+        )
+
+        header_layout.addStretch()
+
+        layout.addLayout(
+            header_layout
         )
 
         layout.addWidget(
@@ -407,12 +736,40 @@ class MainWindow(QWidget):
             self.start_chat
         )
 
+        self.create_group_button.clicked.connect(
+            self.create_group_dialog
+        )
+
+        self.archive_button.clicked.connect(
+            self.toggle_archive
+        )
+
+        self.username_search_button.clicked.connect(
+            self.lookup_username
+        )
+
+        self.username_search_input.returnPressed.connect(
+            self.lookup_username
+        )
+
         self.rename_button.clicked.connect(
             self.change_name
         )
 
+        self.settings_avatar_button.clicked.connect(
+            self.choose_profile_avatar
+        )
+
         self.settings_save_button.clicked.connect(
             self.save_settings
+        )
+
+        self.settings_server_test_button.clicked.connect(
+            self.test_server_connection
+        )
+
+        self.settings_logout_button.clicked.connect(
+            self.logout_server_account
         )
 
         self.bluetooth_button.clicked.connect(
@@ -429,6 +786,18 @@ class MainWindow(QWidget):
 
         self.pending_message_sent.connect(
             self.mark_pending_message_sent
+        )
+
+        self.server_users_signal.connect(
+            self.update_server_users
+        )
+
+        self.server_status_signal.connect(
+            self.update_server_status
+        )
+
+        self.server_test_done_signal.connect(
+            self.finish_server_connection_test
         )
 
         self.incoming_request.connect(
@@ -449,6 +818,14 @@ class MainWindow(QWidget):
 
         self.chats_list.itemDoubleClicked.connect(
             self.open_saved_chat
+        )
+
+        self.chats_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+
+        self.chats_list.customContextMenuRequested.connect(
+            self.show_chat_context_menu
         )
 
         self.packet_cache_timer = QTimer()
@@ -472,81 +849,584 @@ class MainWindow(QWidget):
         )
 
         self.update_bluetooth_status()
+        self.update_profile_avatar_labels()
 
-    def setup_notifications(self):
+        self.start_server_transport()
 
-        if not QSystemTrayIcon.isSystemTrayAvailable():
+
+    def update_profile_avatar_labels(self):
+
+        self.header_avatar_label.setPixmap(
+            round_pixmap(
+                self.profile_avatar_path,
+                46,
+                self.username,
+                self.node_id
+            )
+        )
+
+        self.settings_avatar_label.setPixmap(
+            round_pixmap(
+                self.profile_avatar_path,
+                64,
+                self.username,
+                self.node_id
+            )
+        )
+
+
+    def choose_profile_avatar(self):
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose avatar",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
+        )
+
+        if not path:
             return
 
-        icon = QApplication.style().standardIcon(
-            QStyle.StandardPixmap.SP_MessageBoxInformation
+        self.profile_avatar_path = path
+        self.profile_avatar_data = self.encode_avatar_file(
+            path
         )
+        self.update_profile_avatar_labels()
 
-        self.tray_icon = QSystemTrayIcon(
-            icon,
-            self
-        )
 
-        self.tray_icon.setToolTip(
-            "MeshChat"
-        )
-
-        self.tray_icon.show()
-
-    def notify(
+    def encode_avatar_file(
         self,
-        title,
-        message
+        path
     ):
 
-        if not self.tray_icon:
-            return
-
-        if not self.tray_icon.isVisible():
-            self.tray_icon.show()
-
-        self.tray_icon.showMessage(
-            title,
-            message,
-            QSystemTrayIcon.MessageIcon.Information,
-            5000
+        pixmap = QPixmap(
+            path
         )
 
-    def set_bluetooth_channel(
+        if pixmap.isNull():
+            return ""
+
+        pixmap = pixmap.scaled(
+            256,
+            256,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        data = QByteArray()
+        buffer = QBuffer(
+            data
+        )
+
+        buffer.open(
+            QIODevice.OpenModeFlag.WriteOnly
+        )
+
+        pixmap.save(
+            buffer,
+            "PNG"
+        )
+
+        return base64.b64encode(
+            bytes(data)
+        ).decode(
+            "ascii"
+        )
+
+
+    def save_profile_avatar_data(
         self,
-        channel
+        node_id,
+        avatar_data
     ):
 
-        self.bluetooth_channel = channel
-        self.update_bluetooth_status()
+        if not avatar_data:
+            return ""
 
-        print(
-            "MeshChat Bluetooth channel:",
-            channel
-        )
+        try:
 
-    def update_bluetooth_status(self):
-
-        if self.bluetooth_channel is None:
-
-            status = "Bluetooth сервер не запущен"
-
-        else:
-
-            address = self.bluetooth_address or "не найден"
-
-            status = (
-                f"MAC: {address} | "
-                f"channel: {self.bluetooth_channel}"
+            raw = base64.b64decode(
+                avatar_data
             )
 
-        self.bluetooth_status_label.setText(
-            status
+        except Exception:
+
+            return ""
+
+        profile_dir = get_database_dir() / "avatars"
+
+        profile_dir.mkdir(
+            parents=True,
+            exist_ok=True
         )
 
-        self.settings_bluetooth_label.setText(
-            status
+        avatar_path = profile_dir / f"{node_id}.png"
+
+        avatar_path.write_bytes(
+            raw
         )
+
+        return str(
+            avatar_path
+        )
+
+
+    def apply_profile_data(
+        self,
+        profile
+    ):
+
+        if not profile:
+            return
+
+        node_id = profile.get(
+            "node_id"
+        )
+
+        if not node_id:
+            return
+
+        display_name = profile.get(
+            "display_name"
+        ) or node_id[:8]
+
+        about = profile.get(
+            "about"
+        ) or ""
+
+        avatar_data = profile.get(
+            "avatar_data"
+        ) or ""
+
+        public_username = (
+            profile.get(
+                "public_username"
+            )
+            or ""
+        ).strip().lower().lstrip("@")
+
+        avatar_path = self.save_profile_avatar_data(
+            node_id,
+            avatar_data
+        )
+
+        self.db.update_user(
+            node_id,
+            display_name,
+            "SERVER" if node_id != self.node_id else "LOCAL",
+            0 if node_id != self.node_id else self.port
+        )
+
+        self.db.update_user_profile(
+            node_id,
+            avatar_path or None,
+            about,
+            public_username or None,
+            profile.get("encryption_public_key") or None
+        )
+
+        if node_id == self.node_id:
+
+            if display_name:
+
+                self.username = display_name
+                self.settings_name_input.setText(
+                    display_name
+                )
+                self.me_label.setText(
+                    f"You: {display_name}\nID: {self.node_id[:8]}"
+                )
+                self.setWindowTitle(
+                    f"MeshChat - {display_name}"
+                )
+                self.db.set_setting(
+                    "username",
+                    display_name
+                )
+
+            if avatar_path:
+                self.profile_avatar_path = avatar_path
+
+            if avatar_data:
+                self.profile_avatar_data = avatar_data
+
+            self.profile_about = about
+            self.settings_about_input.setText(
+                about
+            )
+
+            if public_username:
+
+                self.public_username = public_username
+                self.settings_public_username_input.setText(
+                    public_username
+                )
+
+            self.db.set_setting(
+                "profile_avatar_path",
+                self.profile_avatar_path
+            )
+
+            self.db.set_setting(
+                "profile_avatar_data",
+                self.profile_avatar_data
+            )
+
+            self.db.set_setting(
+                "profile_about",
+                self.profile_about
+            )
+
+            self.db.set_setting(
+                "public_username",
+                self.public_username
+            )
+
+            self.update_profile_avatar_labels()
+
+        chat = self.chat_windows.get(
+            node_id
+        )
+
+        if chat and hasattr(
+            chat,
+            "update_peer_header"
+        ):
+
+            chat.update_peer_header()
+
+
+    def build_profile_packet(self):
+
+        if (
+            self.profile_avatar_path
+            and not self.profile_avatar_data
+        ):
+
+            self.profile_avatar_data = self.encode_avatar_file(
+                self.profile_avatar_path
+            )
+
+            self.db.set_setting(
+                "profile_avatar_data",
+                self.profile_avatar_data
+            )
+
+        return {
+            "type": "profile_update",
+            "source_node": self.node_id,
+            "login": self.server_login,
+            "display_name": self.username,
+            "public_username": self.public_username,
+            "about": self.profile_about,
+            "avatar_data": self.profile_avatar_data,
+            "encryption_public_key": self.encryption_public_key
+        }
+
+    def encrypt_direct_message(
+        self,
+        peer_node_id,
+        text
+    ):
+
+        public_key = self.db.get_user_encryption_key(
+            peer_node_id
+        )
+
+        return self.encryption.encrypt_text(
+            public_key,
+            text
+        )
+
+    def decrypt_direct_message(
+        self,
+        text
+    ):
+
+        return self.encryption.decrypt_text(
+            text
+        )
+
+    def encrypt_direct_file(
+        self,
+        peer_node_id,
+        filename,
+        data
+    ):
+
+        public_key = self.db.get_user_encryption_key(
+            peer_node_id
+        )
+
+        if not public_key:
+            return filename, data
+
+        return (
+            self.encryption.encrypt_text(
+                public_key,
+                filename
+            ),
+            self.encryption.encrypt_bytes(
+                public_key,
+                data
+            )
+        )
+
+    def decrypt_direct_file(
+        self,
+        filename,
+        data_hex
+    ):
+
+        try:
+            data = self.encryption.decrypt_bytes(
+                bytes.fromhex(
+                    data_hex
+                )
+            )
+            filename = self.encryption.decrypt_text(
+                filename
+            )
+            return filename, data.hex()
+        except (ValueError, TypeError):
+            return filename, data_hex
+
+    def create_group_encryption_key(
+        self,
+        group_id
+    ):
+
+        key_id = (
+            f"{int(time.time() * 1000):013d}-"
+            f"{generate_message_id()}"
+        )
+        group_key = self.encryption.generate_group_key()
+        own_envelope = self.encryption.wrap_group_key(
+            self.encryption_public_key,
+            group_key
+        )
+
+        self.db.save_group_encryption_key(
+            group_id,
+            key_id,
+            own_envelope,
+            True
+        )
+
+        return key_id, group_key
+
+    def get_group_encryption_key(
+        self,
+        group_id,
+        key_id=None,
+        create=False
+    ):
+
+        row = self.db.get_group_encryption_key(
+            group_id,
+            key_id
+        )
+
+        if row:
+
+            try:
+                return (
+                    row[0],
+                    self.encryption.unwrap_group_key(
+                        row[1]
+                    )
+                )
+            except ValueError:
+                pass
+
+        if create and key_id is None:
+            return self.create_group_encryption_key(
+                group_id
+            )
+
+        return "", None
+
+    def build_group_key_envelope(
+        self,
+        group_id,
+        member_node,
+        key_id=None
+    ):
+
+        resolved_key_id, group_key = self.get_group_encryption_key(
+            group_id,
+            key_id,
+            create=True
+        )
+
+        public_key = (
+            self.encryption_public_key
+            if member_node == self.node_id
+            else self.db.get_user_encryption_key(
+                member_node
+            )
+        )
+
+        if not group_key or not public_key:
+            return resolved_key_id, ""
+
+        return (
+            resolved_key_id,
+            self.encryption.wrap_group_key(
+                public_key,
+                group_key
+            )
+        )
+
+    def accept_group_key_envelope(
+        self,
+        group_id,
+        key_id,
+        envelope,
+        active=True
+    ):
+
+        if not group_id or not key_id or not envelope:
+            return False
+
+        try:
+            group_key = self.encryption.unwrap_group_key(
+                envelope
+            )
+        except ValueError:
+            return False
+
+        own_envelope = self.encryption.wrap_group_key(
+            self.encryption_public_key,
+            group_key
+        )
+
+        current = self.db.get_group_encryption_key(
+            group_id
+        )
+
+        make_active = (
+            active
+            and (
+                not current
+                or key_id >= current[0]
+            )
+        )
+
+        self.db.save_group_encryption_key(
+            group_id,
+            key_id,
+            own_envelope,
+            make_active
+        )
+
+        return True
+
+    def encrypt_group_text(
+        self,
+        group_id,
+        text
+    ):
+
+        key_id, group_key = self.get_group_encryption_key(
+            group_id,
+            create=True
+        )
+
+        return (
+            key_id,
+            self.encryption.encrypt_group_text(
+                group_key,
+                text
+            )
+        )
+
+    def decrypt_group_text(
+        self,
+        group_id,
+        key_id,
+        text
+    ):
+
+        if not key_id:
+            return text
+
+        _, group_key = self.get_group_encryption_key(
+            group_id,
+            key_id
+        )
+
+        if not group_key:
+            return "[Encrypted message: group key unavailable]"
+
+        try:
+            return self.encryption.decrypt_group_text(
+                group_key,
+                text
+            )
+        except Exception:
+            return "[Encrypted message: decrypt failed]"
+
+    def encrypt_group_file(self, group_id, filename, data):
+        key_id, group_key = self.get_group_encryption_key(
+            group_id,
+            create=True
+        )
+        return (
+            key_id,
+            self.encryption.encrypt_group_text(group_key, filename),
+            self.encryption.encrypt_group_bytes(group_key, data)
+        )
+
+    def decrypt_group_file(
+        self,
+        group_id,
+        key_id,
+        filename,
+        data_hex
+    ):
+        if not key_id:
+            return filename, data_hex
+
+        _, group_key = self.get_group_encryption_key(
+            group_id,
+            key_id
+        )
+        if not group_key:
+            return filename, data_hex
+
+        try:
+            return (
+                self.encryption.decrypt_group_text(group_key, filename),
+                self.encryption.decrypt_group_bytes(
+                    group_key,
+                    bytes.fromhex(data_hex)
+                ).hex()
+            )
+        except Exception:
+            return filename, data_hex
+
+    def group_members_missing_encryption_keys(
+        self,
+        group_id,
+        members=None
+    ):
+
+        members = members or self.db.get_group_members(
+            group_id
+        )
+
+        return [
+            member
+            for member in members
+            if (
+                member != self.node_id
+                and not self.db.get_user_encryption_key(
+                    member
+                )
+            )
+        ]
+
 
     def save_settings(self):
 
@@ -556,8 +1436,8 @@ class MainWindow(QWidget):
 
             QMessageBox.warning(
                 self,
-                "Настройки",
-                "Введите имя."
+                "Settings",
+                "Enter a name."
             )
 
             return
@@ -565,7 +1445,7 @@ class MainWindow(QWidget):
         self.username = name
 
         self.me_label.setText(
-            f"Вы: {name}\nID: {self.node_id[:8]}"
+            f"You: {name}\nID: {self.node_id[:8]}"
         )
 
         self.setWindowTitle(
@@ -577,1246 +1457,127 @@ class MainWindow(QWidget):
             name
         )
 
-        QMessageBox.information(
-            self,
-            "Настройки",
-            "Настройки сохранены."
-        )
-
-    def scan_bluetooth_contacts(self):
-
-        if self.bluetooth_channel is None:
-
-            QMessageBox.warning(
-                self,
-                "Bluetooth",
-                "Запустите приложение с --bluetooth-channel 0."
-            )
-
-            return
-
-        if not self.bluetooth_address:
-
-            QMessageBox.warning(
-                self,
-                "Bluetooth",
-                "Не удалось определить Bluetooth MAC этого компьютера."
-            )
-
-            return
-
-        self.bluetooth_scan_button.setEnabled(
-            False
-        )
-
-        threading.Thread(
-            target=self.run_bluetooth_scan,
-            daemon=True
-        ).start()
-
-    def run_bluetooth_scan(self):
-
-        devices = get_paired_bluetooth_devices()
-        attempts = 0
-
-        print(
-            "Bluetooth paired devices:",
-            devices
-        )
-
-        for device in devices:
-
-            address = device["address"]
-
-            if address == self.bluetooth_address:
-                continue
-
-            packet = {
-
-                "packet_id":
-                generate_message_id(),
-
-                "type":
-                "bluetooth_hello",
-
-                "source_node":
-                self.node_id,
-
-                "sender":
-                self.username,
-
-                "source_bluetooth_address":
-                self.bluetooth_address,
-
-                "source_bluetooth_channel":
-                self.bluetooth_channel or 0
-            }
-
-            for channel in range(
-                1,
-                31
-            ):
-
-                if send_bluetooth_packet(
-                    address,
-                    channel,
-                    packet
-                ):
-
-                    attempts += 1
-
-        self.bluetooth_scan_done.emit(
-            attempts
-        )
-
-    def show_bluetooth_scan_result(
-        self,
-        attempts
-    ):
-
-        self.bluetooth_scan_button.setEnabled(
-            True
-        )
-
-        QMessageBox.information(
-            self,
-            "Bluetooth",
-            f"Отправлено запросов обнаружения: {attempts}"
-        )
-
-    def handle_bluetooth_hello(
-        self,
-        packet
-    ):
-
-        peer_node_id = packet.get(
-            "source_node"
-        )
-
-        peer_name = packet.get(
-            "sender"
-        ) or "Bluetooth"
-
-        peer_address = (
-            packet.get("remote_bluetooth_address")
-            or packet.get("source_bluetooth_address")
-        )
-
-        peer_channel = packet.get(
-            "source_bluetooth_channel",
-            0
-        )
-
-        if not peer_node_id or not peer_address:
-            return
-
-        self.save_bluetooth_contact(
-            peer_node_id,
-            peer_name,
-            peer_address,
-            peer_channel
-        )
-
-        if self.bluetooth_address:
-
-            response = {
-
-                "packet_id":
-                generate_message_id(),
-
-                "type":
-                "bluetooth_hello_response",
-
-                "source_node":
-                self.node_id,
-
-                "destination_node":
-                peer_node_id,
-
-                "sender":
-                self.username,
-
-                "source_bluetooth_address":
-                self.bluetooth_address,
-
-                "source_bluetooth_channel":
-                self.bluetooth_channel or 0
-            }
-
-            send_bluetooth_packet(
-                peer_address,
-                peer_channel,
-                response
-            )
-
-        self.notify(
-            "Bluetooth",
-            f"Найден {peer_name}"
-        )
-
-        self.refresh_chats()
-
-    def handle_bluetooth_hello_response(
-        self,
-        packet
-    ):
-
-        peer_node_id = packet.get(
-            "source_node"
-        )
-
-        peer_name = packet.get(
-            "sender"
-        ) or "Bluetooth"
-
-        peer_address = (
-            packet.get("remote_bluetooth_address")
-            or packet.get("source_bluetooth_address")
-        )
-
-        peer_channel = packet.get(
-            "source_bluetooth_channel",
-            0
-        )
-
-        if not peer_node_id or not peer_address:
-            return
-
-        self.save_bluetooth_contact(
-            peer_node_id,
-            peer_name,
-            peer_address,
-            peer_channel
-        )
-
-        self.notify(
-            "Bluetooth",
-            f"Добавлен {peer_name}"
-        )
-
-        self.refresh_chats()
-
-    def save_bluetooth_contact(
-        self,
-        peer_node_id,
-        peer_name,
-        bluetooth_address,
-        bluetooth_channel
-    ):
-
-        self.db.update_user(
-            peer_node_id,
-            peer_name,
-            f"BT:{bluetooth_address}",
-            bluetooth_channel
-        )
-
-    def retry_pending_messages(self):
-
-        if self.pending_retry_in_progress:
-            return
-
-        self.pending_retry_in_progress = True
-
-        threading.Thread(
-            target=self.run_pending_retry,
-            daemon=True
-        ).start()
-
-    def run_pending_retry(self):
-
-        try:
-
-            pending_messages = self.db.get_pending_messages(
-                self.node_id
-            )
-
-            for (
-                message_id,
-                receiver_node,
-                message,
-                attempts
-            ) in pending_messages:
-
-                packet = {
-
-                    "packet_id":
-                    message_id,
-
-                    "type":
-                    "chat_message",
-
-                    "source_node":
-                    self.node_id,
-
-                    "destination_node":
-                    receiver_node,
-
-                    "ttl":
-                    5,
-
-                    "sender":
-                    self.username,
-
-                    "message":
-                    message
-                }
-
-                sent = self.send_pending_packet(
-                    receiver_node,
-                    packet
-                )
-
-                if sent:
-
-                    self.db.remove_pending_message(
-                        message_id
-                    )
-
-                    self.pending_message_sent.emit(
-                        message_id
-                    )
-
-                else:
-
-                    self.db.mark_pending_attempt(
-                        message_id
-                    )
-
-        finally:
-
-            self.pending_retry_in_progress = False
-
-    def send_pending_packet(
-        self,
-        receiver_node,
-        packet
-    ):
-
-        info = self.db.get_user_info(
-            receiver_node
-        )
-
-        if info:
-
-            _, ip, port = info
-
-            if (
-                isinstance(
-                    ip,
-                    str
-                )
-                and ip.startswith("BT:")
-            ):
-
-                return send_bluetooth_packet(
-                    ip[3:],
-                    port,
-                    packet
-                )
-
-        peer = self.discovery.get_user_by_node_id(
-            receiver_node
-        )
-
-        if not peer:
-            return False
-
-        ip, port = peer
-
-        return send_packet(
-            ip,
-            port,
-            packet
-        )
-
-    def mark_pending_message_sent(
-        self,
-        message_id
-    ):
-
-        for chat in self.chat_windows.values():
-
-            chat.mark_message_sent(
-                message_id
-            )
-
-    def refresh_users(self):
-
-        users = self.discovery.get_users()
-
-        current = None
-
-        if self.selected_user:
-            current = self.selected_user[0]
-
-        self.users_list.clear()
-
-        for node_id, name, ip, port in users:
-
-            self.users_list.addItem(
-                f"{name} [{node_id[:8]}]"
-            )
-
-        self.refresh_chats()
-
-    def user_selected(self):
-
-        row = self.users_list.currentRow()
-
-        users = self.discovery.get_users()
-
-        if row < 0:
-            return
-
-        if row >= len(users):
-            return
-
-        self.selected_user = users[row]
-
-        node_id, name, ip, port = self.selected_user
-
-        self.info_label.setText(
-            f"""
-            Имя: {name}
-
-            Node ID:
-            {node_id[:8]}
-
-            IP:
-            {ip}
-
-            Порт:
-            {port}
-            """
-    )
-
-        self.chat_button.setEnabled(
-            True
-        )
-
-    def start_chat(self):
-
-        if not self.selected_user:
-            return
-
-        peer_node_id, name, ip, port = self.selected_user
-
-        sender_ip = socket.gethostbyname(
-            socket.gethostname()
-        )
-
-        packet = {
-
-            "packet_id": generate_message_id(),
-
-            "type": "chat_request",
-
-            "source_node": self.node_id,
-
-            "destination_node": peer_node_id,
-
-            "ttl": 5,
-
-            "from_name": self.username,
-
-            "from_node_id": self.node_id,
-
-            "sender_ip": sender_ip,
-
-            "sender_port": self.discovery.tcp_port
-        }
-
-        send_packet(
-            ip,
-            port,
-            packet
-        )
-
-        QMessageBox.information(
-            self,
-            "MeshChat",
-            f"Запрос отправлен пользователю {name}"
-        )
-
-    def handle_packet(self, packet):
-
-        if not isinstance(packet, dict):
-            return
-
-        source_node = packet.get(
-            "source_node"
-        )
-
-        if source_node == self.node_id:
-            return
-
-        packet_id = packet.get("packet_id")
-
-        if packet_id:
-            if self.packet_cache.exists(packet_id):
-                return
-            self.packet_cache.add(packet_id)
-
-        packet_type = packet.get("type")
-
-        destination_node = packet.get(
-            "destination_node"
-        )
-
-        if destination_node:
-
-            if destination_node != self.node_id:
-
-                
-                forward_packet(
-                    self.discovery,
-                    self.node_id,
-                    packet
-                )
-
-                return
-
-        if packet_type == "chat_request":
-
-            self.incoming_request.emit(packet)
-
-        elif packet_type == "bluetooth_hello":
-
-            self.handle_bluetooth_hello(
-                packet
-            )
-
-        elif packet_type == "bluetooth_hello_response":
-
-            self.handle_bluetooth_hello_response(
-                packet
-            )
-
-        elif packet_type == "chat_response":
-
-            self.incoming_response.emit(packet)
-
-        elif packet_type == "chat_message":
-
-            sender_node_id = packet.get("source_node")
-            sender = packet.get("sender")
-            message = packet.get("message")
-            sender_ip = packet.get("sender_ip")
-            sender_port = packet.get("sender_port")
-
-            ack_packet = {
-
-                "packet_id":
-                generate_message_id(),
-
-                "type":
-                "message_received",
-
-                "source_node":
-                self.node_id,
-
-                "destination_node":
-                sender_node_id,
-
-                "ttl":
-                5,
-
-                "message_id":
-                packet.get("packet_id")
-            }
-
-            self.send_packet_to_contact(
-                sender_node_id,
-                ack_packet
-            )
-
-
-            if not sender_node_id or not message:
-                return
-
-            if sender and sender_ip:
-
-                self.db.update_user(
-                    sender_node_id,
-                    sender,
-                    sender_ip or "",
-                    sender_port or 0
-                )
-
-            self.notify(
-                f"Новое сообщение от {sender}",
-                message
-            )
-
-            if sender_node_id in self.chat_windows:
-
-
-                self.chat_windows[sender_node_id].receive_message(
-                    sender,
-                    sender_node_id,
-                    message,
-                    packet.get("packet_id")
-                )
-
-            else:
-
-                self.db.save_message(
-                    sender_node_id,
-                    self.node_id,
-                    message,
-                    packet.get("packet_id")
-                )
-
-                self.db.add_unread(
-                    sender_node_id,
-                    self.node_id
-                )
-
-        elif packet_type == "file_chunk":
-
-            sender = packet.get(
-                "sender"
-            )
-
-            sender_node_id = packet.get(
-                "source_node"
-            )
-
-            file_id = packet.get(
-                "file_id"
-            )
-
-            filename = packet.get(
-                "filename"
-            )
-
-            chunk_index = packet.get(
-                "chunk_index"
-            )
-
-            total_chunks = packet.get(
-                "total_chunks"
-            )
-
-            data = packet.get(
-                "data"
-            )
-
-            if file_id not in self.file_chunks:
-
-                self.file_chunks[
-                    file_id
-                ] = {
-
-                    "sender": sender,
-
-                    "sender_node_id": sender_node_id,
-
-                    "filename": filename,
-
-                    "total_chunks": total_chunks,
-
-                    "chunks": {}
-                }
-
-            self.file_chunks[
-                file_id
-            ][
-                "chunks"
-            ][
-                chunk_index
-            ] = data
-
-            file_info = self.file_chunks[
-                file_id
-            ]
-
-            if len(
-                file_info["chunks"]
-            ) == file_info["total_chunks"]:
-                
-                print(
-            "FILE COMPLETE:",
-            filename
-        )
-                        
-                ack_packet = {
-
-                    "packet_id":
-                    generate_message_id(),
-
-                    "type":
-                    "file_complete",
-
-                    "source_node":
-                    self.node_id,
-
-                    "destination_node":
-                    sender_node_id,
-
-                    "file_id":
-                        file_id
-                }
-
-                self.send_packet_to_contact(
-                    sender_node_id,
-                    ack_packet
-                )
-
-                full_data = "".join(
-
-                    file_info[
-                        "chunks"
-                    ][i]
-
-                    for i in range(
-                        file_info[
-                            "total_chunks"
-                        ]
-                    )
-                )
-
-                self.db.save_file(
-                    sender_node_id,
-                    self.node_id,
-                    filename,
-                    full_data
-                )
-
-                self.notify(
-                    f"Файл от {sender}",
-                    filename
-                )
-
-                if sender_node_id in self.chat_windows:
-
-                    self.file_received_signal.emit(
-                        sender,
-                        sender_node_id,
-                        filename,
-                        full_data
-                    )
-
-                del self.file_chunks[
-                    file_id
-                ]
-
-        elif packet_type == "file_complete":
-
-            file_id = packet.get(
-                "file_id"
-            )
-
-            if file_id in self.pending_sent_files:
-
-                filename = self.pending_sent_files[
-                    file_id
-                ]
-
-                print(
-                    "FILE DELIVERED:",
-                    filename
-                )
-
-                del self.pending_sent_files[
-                    file_id
-                ]
-
-        elif packet_type == "typing":
-
-            sender = packet.get(
-                "sender"
-            )
-
-            sender_node_id = packet.get(
-                "source_node"
-            )
-
-            self.typing_signal.emit(
-                sender,
-                sender_node_id
-            )
-
-        elif packet_type == "message_received":
-
-            message_id = packet.get(
-                "message_id"
-            )
-
-            if message_id:
-
-                self.db.remove_pending_message(
-                    message_id
-                )
-
-            for chat in self.chat_windows.values():
-
-                chat.mark_message_delivered(
-                    message_id
-                )
-    
-    def show_chat_request(
-            self,
-            packet
-    ):
-        
-        username = packet.get(
-            "from_name"
-        )
-
-        peer_node_id = packet.get(
-            "from_node_id"
-        )
-
-        sender_ip = packet.get(
-            "sender_ip"
-        )
-
-        sender_port = packet.get(
-            "sender_port"
-        )
-
-        self.notify(
-            "Новый запрос",
-            f"{username} хочет начать чат"
-        )
-
-        accepted = ChatRequestDialog.show(
-            self,
-            username
-        )
-
-
-        if accepted:
-
-            self.open_chat(
-                username,
-                peer_node_id,
-                sender_ip,
-                sender_port
-            )
-
-        send_chat_response(
-            sender_ip,
-            sender_port,
-            accepted,
-            self.node_id,
-            peer_node_id
-        )
-
-    def open_chat(
-        self,
-        peer_name,
-        peer_node_id,
-        peer_ip,
-        peer_port,
-        transport=None,
-        bluetooth_address=None,
-        bluetooth_channel=None
-    ):
-        
-        if transport is None:
-
-            transport = "tcp"
-
-            if isinstance(
-                peer_ip,
-                str
-            ) and peer_ip.startswith("BT:"):
-
-                transport = "bluetooth"
-                bluetooth_address = peer_ip[3:]
-                bluetooth_channel = peer_port
-
-        if peer_node_id in self.chat_windows:
-
-            self.chat_windows[
-                peer_node_id
-            ].show()
-
-            return
-
-        chat = ChatWindow(
-            self.username,
-            self.node_id,
-            peer_name,
-            peer_node_id,
-            peer_ip,
-            peer_port,
-            self.register_pending_file,
-            transport,
-            bluetooth_address,
-            bluetooth_channel
-        )
-
-        chat.show()
-
-        self.chat_windows[
-            peer_node_id
-        ] = chat
-
-    def show_chat_response(
-            self,
-            packet
-    ):
-        
-        accepted = packet.get(
-            "accepted"
-        )
-
-        if accepted:
-
-            if not self.selected_user:
-                return
-
-            peer_node_id, name, ip, port = self.selected_user
-
-            self.open_chat(
-                name,
-                peer_node_id,
-                ip,
-                port
-            )
-
-        else:
-
-            QMessageBox.information(
-                self,
-                "MeshChat",
-                "Запрос отклонён"
-            )
-
-    def open_bluetooth_chat_dialog(self):
-
-        peer_name, ok = QInputDialog.getText(
-            self,
-            "Bluetooth чат",
-            "Имя контакта:"
-        )
-
-        if not ok:
-            return
-
-        peer_name = peer_name.strip()
-
-        if not peer_name:
-            return
-
-        peer_node_id, ok = QInputDialog.getText(
-            self,
-            "Bluetooth чат",
-            "Node ID второго компьютера:"
-        )
-
-        if not ok:
-            return
-
-        peer_node_id = peer_node_id.strip()
-
-        if not peer_node_id:
-            return
-
-        if peer_node_id == self.node_id:
-
-            QMessageBox.warning(
-                self,
-                "Bluetooth чат",
-                "Это ваш Node ID. Введите Node ID второго компьютера."
-            )
-
-            return
-
-        bluetooth_address, ok = QInputDialog.getText(
-            self,
-            "Bluetooth чат",
-            "Bluetooth MAC второго компьютера:"
-        )
-
-        if not ok:
-            return
-
-        bluetooth_address = bluetooth_address.strip()
-
-        if not bluetooth_address:
-            return
-
-        bluetooth_channel, ok = QInputDialog.getInt(
-            self,
-            "Bluetooth чат",
-            "Bluetooth channel второго компьютера:",
-            0,
-            0,
-            30
-        )
-
-        if not ok:
-            return
-
-        peer_ip = f"BT:{bluetooth_address}"
-
-        self.save_bluetooth_contact(
-            peer_node_id,
-            peer_name,
-            bluetooth_address,
-            bluetooth_channel
-        )
-
-        self.open_chat(
-            peer_name,
-            peer_node_id,
-            peer_ip,
-            bluetooth_channel,
-            "bluetooth",
-            bluetooth_address,
-            bluetooth_channel
-        )
-
-    def refresh_chats(self):
-
-
-        contacts = self.db.get_contacts(
-            self.node_id
-        )
-
-        contacts = list(
-            dict.fromkeys(
-                contacts
-                + self.db.get_bluetooth_contacts()
-            )
-        )
-
-        self.chats_list.clear()
-
-        for contact in contacts:
-
-            display_name = self.db.get_user_name(
-                contact
-            )
-
-            unread = self.db.get_unread(
-                contact,
-                self.node_id
-            )
-
-            online = self.discovery.get_user_by_node_id(
-                contact
-            )
-
-            prefix = "○"
-
-            if online:
-                prefix = "●"
-
-            info = self.db.get_user_info(
-                contact
-            )
-
-            if (
-                info
-                and isinstance(
-                    info[1],
-                    str
-                )
-                and info[1].startswith("BT:")
-            ):
-
-                prefix = "BT"
-
-            title = f"{prefix} {display_name}"
-
-            if unread > 0:
-
-                title += f" ({unread})"
-
-            item = QListWidgetItem(
-                title
-            )
-
-            item.setData(
-                100,
-                contact
-            )
-
-            self.chats_list.addItem(
-                item
-            )
-
-    def open_saved_chat(
-    self,
-    item
-):
-
-        peer_node_id = item.data(
-            100
-        )
-
-        peer = self.discovery.get_user_by_node_id(
-            peer_node_id
-        )
-
-        if peer:
-
-            ip, port = peer
-
-        else:
-
-            info = self.db.get_user_info(
-                peer_node_id
-            )
-
-            if info:
-
-                _, ip, port = info
-
-            else:
-
-                ip = "127.0.0.1"
-                port = 0
-
-        peer_name = self.db.get_user_name(
-            peer_node_id
-        )
-
-        self.open_chat(
-            peer_name,
-            peer_node_id,
-            ip,
-            port
-        )
-
-    def change_name(self):
-
-        name, ok = QInputDialog.getText(
-            self,
-            "Изменение имени",
-            "Введите новое имя:"
-        )
-
-        if not ok:
-            return
-
-        name = name.strip()
-
-        if not name:
-            return
-
-        self.settings_name_input.setText(
+        self.db.set_setting(
+            "username",
             name
         )
 
-        self.save_settings()
-
-    def route_packet(
-        self,
-        packet
-    ):
-
-        ttl = packet.get(
-            "ttl",
-            0
+        self.profile_about = self.settings_about_input.text().strip()
+        self.public_username = (
+            self.settings_public_username_input.text()
+            .strip()
+            .lower()
+            .lstrip("@")
         )
 
-        if ttl <= 0:
-            return False
-
-        packet["ttl"] = ttl - 1
-
-        return True
-
-    def send_packet_to_contact(
-        self,
-        peer_node_id,
-        packet
-    ):
-
-        info = self.db.get_user_info(
-            peer_node_id
+        self.db.set_setting(
+            "profile_avatar_path",
+            self.profile_avatar_path
         )
 
-        if info:
+        self.db.set_setting(
+            "profile_avatar_data",
+            self.profile_avatar_data
+        )
 
-            _, ip, port = info
+        self.db.set_setting(
+            "profile_about",
+            self.profile_about
+        )
 
-            if (
-                isinstance(
-                    ip,
-                    str
-                )
-                and ip.startswith("BT:")
-            ):
+        self.db.set_setting(
+            "public_username",
+            self.public_username
+        )
 
-                return send_bluetooth_packet(
-                    ip[3:],
-                    port,
-                    packet
-                )
+        self.compress_images = (
+            self.settings_compress_images_checkbox.isChecked()
+        )
 
-        forward_packet(
-            self.discovery,
+        self.db.set_setting(
+            "compress_images",
+            "1" if self.compress_images else "0"
+        )
+
+        self.db.update_user(
             self.node_id,
-            packet
+            name,
+            "LOCAL",
+            self.port
         )
 
-        return True
+        self.db.update_user_profile(
+            self.node_id,
+            self.profile_avatar_path,
+            self.profile_about,
+            self.public_username or None,
+            self.encryption_public_key
+        )
 
-    def register_pending_file(
-        self,
-        file_id,
-        filename
-    ):
+        self.update_profile_avatar_labels()
 
-        self.pending_sent_files[
-            file_id
-        ] = filename
+        if self.server_transport:
 
-
-    def show_file_message(
-        self,
-        sender,
-        sender_node_id,
-        filename,
-        data
-    ):
-
-        if sender_node_id in self.chat_windows:
-
-            self.chat_windows[
-                sender_node_id
-            ].receive_file(
-                sender,
-                sender_node_id,
-                filename,
-                data
+            self.send_server_packet(
+                self.build_profile_packet()
             )
 
-    def show_message(
-        self,
-        sender,
-        sender_node_id,
-        message
-    ):
+        new_server_url = normalize_server_url(
+            self.settings_server_input.text()
+        )
 
-        if sender_node_id in self.chat_windows:
+        self.settings_server_input.setText(
+            new_server_url
+        )
 
-            self.chat_windows[
-                sender_node_id
-            ].receive_message(
-                sender,
-                sender_node_id,
-                message
-            )
+        self.db.set_setting(
+            "server_url",
+            new_server_url
+        )
 
-    def show_typing(
-        self,
-        sender,
-        sender_node_id
-    ):
+        new_server_token = self.settings_server_token_input.text().strip()
 
-        if sender_node_id in self.chat_windows:
+        self.db.set_setting(
+            "server_token",
+            new_server_token
+        )
 
-            self.chat_windows[
-                sender_node_id
-            ].show_typing(
-                sender
-            )
+        new_server_login = self.settings_server_login_input.text().strip()
+
+        self.db.set_setting(
+            "server_login",
+            new_server_login
+        )
+
+        new_server_password = self.settings_server_password_input.text()
+
+        self.db.set_setting(
+            "server_password",
+            new_server_password
+        )
+
+        self.save_global_server_settings(
+            new_server_url,
+            new_server_token,
+            new_server_login,
+            new_server_password
+        )
+
+        if (
+            new_server_url != self.server_url
+            or new_server_token != self.server_token
+            or new_server_login != self.server_login
+            or new_server_password != self.server_password
+        ):
+
+            self.server_url = new_server_url
+            self.server_token = new_server_token
+            self.server_login = new_server_login
+            self.server_password = new_server_password
+            self.start_server_transport()
+
+        QMessageBox.information(
+            self,
+            "Settings",
+            "Settings saved."
+        )
