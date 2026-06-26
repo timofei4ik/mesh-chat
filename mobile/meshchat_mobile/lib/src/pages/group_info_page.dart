@@ -112,6 +112,12 @@ class GroupInfoPage extends StatelessWidget {
     _showSnack(context, error ?? 'Role updated');
   }
 
+  Future<void> startGroupCall(BuildContext context) async {
+    final error = await controller.startGroupCall(thread);
+    if (!context.mounted) return;
+    if (error != null) _showSnack(context, error);
+  }
+
   Future<void> editGroupProfile(BuildContext context) async {
     var avatarData = thread.profile.avatarData;
     final nameInput = TextEditingController(text: thread.profile.displayName);
@@ -206,6 +212,11 @@ class GroupInfoPage extends StatelessWidget {
           appBar: AppBar(
             title: const Text('Group info'),
             actions: [
+              IconButton.filledTonal(
+                tooltip: 'Group call',
+                onPressed: () => startGroupCall(context),
+                icon: const Icon(Icons.add_call),
+              ),
               if (isOwner)
                 IconButton(
                   tooltip: 'Edit group',
@@ -248,10 +259,24 @@ class GroupInfoPage extends StatelessWidget {
               ],
               if (isOwner) ...[
                 const SizedBox(height: 18),
-                FilledButton.icon(
-                  onPressed: () => addMember(context),
-                  icon: const Icon(Icons.person_add_alt_1_outlined),
-                  label: const Text('Add member'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () => startGroupCall(context),
+                        icon: const Icon(Icons.add_call),
+                        label: const Text('Group call'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.tonalIcon(
+                        onPressed: () => addMember(context),
+                        icon: const Icon(Icons.person_add_alt_1_outlined),
+                        label: const Text('Add member'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
               const SizedBox(height: 28),

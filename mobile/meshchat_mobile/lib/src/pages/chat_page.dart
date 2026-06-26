@@ -810,12 +810,10 @@ class _ChatPageState extends State<ChatPage> {
           },
         ),
         actions: [
-          IconButton(
+          IconButton.filledTonal(
             tooltip: widget.thread.isGroup ? 'Group call' : 'Call',
             icon: Icon(
-              widget.thread.isGroup
-                  ? Icons.group_outlined
-                  : Icons.call_outlined,
+              widget.thread.isGroup ? Icons.add_call : Icons.call_outlined,
             ),
             onPressed: startCall,
           ),

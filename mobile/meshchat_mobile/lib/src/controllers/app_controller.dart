@@ -1691,7 +1691,7 @@ class AppController extends ChangeNotifier {
       call.copyWith(status: CallStatus.ended, endReason: 'declined'),
     );
     notifyListeners();
-    unawaited(_endCallMedia());
+    await _endCallMedia();
   }
 
   Future<void> endCall() async {
@@ -1701,7 +1701,7 @@ class AppController extends ChangeNotifier {
     _appendCallHistory(call, 'ended_by_me');
     _setActiveCall(call.copyWith(status: CallStatus.ended, endReason: 'ended'));
     notifyListeners();
-    unawaited(_endCallMedia());
+    await _endCallMedia();
   }
 
   Future<void> toggleCallMute() async {
@@ -1905,7 +1905,7 @@ class AppController extends ChangeNotifier {
         ),
       );
       notifyListeners();
-      unawaited(_endCallMedia());
+      await _endCallMedia();
     }
   }
 
@@ -1943,7 +1943,7 @@ class AppController extends ChangeNotifier {
       ),
     );
     notifyListeners();
-    unawaited(_endCallMedia());
+    await _endCallMedia();
   }
 
   Future<void> _endCallMedia() async {

@@ -1,6 +1,9 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 class CallService {
+  static const _audioSession = MethodChannel('meshchat/audio_session');
+
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   RTCVideoRenderer? _remoteAudioRenderer;
@@ -71,6 +74,7 @@ class CallService {
   }
 
   Future<void> end() async {
+    await _stopMediaTracks();
     _remoteAudioRenderer?.srcObject = null;
     await _remoteAudioRenderer?.dispose();
     await _localStream?.dispose();
@@ -82,10 +86,12 @@ class CallService {
     _localMuted = false;
     _speakerEnabled = true;
     _pendingRemoteCandidates.clear();
+    await _deactivateCallAudio();
     await Helper.clearAndroidCommunicationDevice().catchError((_) {});
   }
 
   Future<void> _resetCurrentConnectionOnly() async {
+    await _stopMediaTracks();
     _remoteAudioRenderer?.srcObject = null;
     await _remoteAudioRenderer?.dispose();
     await _localStream?.dispose();
@@ -95,6 +101,7 @@ class CallService {
     _localStream = null;
     _peerConnection = null;
     _localMuted = false;
+    await _deactivateCallAudio();
   }
 
   Future<void> _flushPendingRemoteCandidates() async {
@@ -111,6 +118,7 @@ class CallService {
     required void Function(Map<String, dynamic> candidate) onIceCandidate,
   }) async {
     await _resetCurrentConnectionOnly();
+    await _activateCallAudio();
     await Helper.setAndroidAudioConfiguration(
       AndroidAudioConfiguration.communication,
     ).catchError((_) {});
@@ -138,7 +146,11 @@ class CallService {
     peerConnection.onAddStream = _attachRemoteAudio;
 
     final stream = await navigator.mediaDevices.getUserMedia({
-      'audio': true,
+      'audio': {
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+      },
       'video': false,
     });
     for (final track in stream.getAudioTracks()) {
@@ -146,6 +158,7 @@ class CallService {
       await peerConnection.addTrack(track, stream);
     }
     await Helper.setSpeakerphoneOnButPreferBluetooth().catchError((_) {});
+    await _activateCallAudio();
     _speakerEnabled = true;
     _localStream = stream;
     _peerConnection = peerConnection;
@@ -164,6 +177,7 @@ class CallService {
 
   Future<void> setSpeakerEnabled(bool enabled) async {
     _speakerEnabled = enabled;
+    await _activateCallAudio();
     await Helper.setSpeakerphoneOn(enabled).catchError((_) {});
     if (enabled) {
       await Helper.setSpeakerphoneOnButPreferBluetooth().catchError((_) {});
@@ -185,6 +199,45 @@ class CallService {
       _remoteAudioRenderer = renderer;
     }
     renderer.srcObject = stream;
+    await _activateCallAudio();
     await setSpeakerEnabled(_speakerEnabled).catchError((_) {});
+  }
+
+  Future<void> _stopMediaTracks() async {
+    final streams = <MediaStream>[];
+    final localStream = _localStream;
+    final remoteStream = _remoteAudioRenderer?.srcObject;
+    if (localStream != null) streams.add(localStream);
+    if (remoteStream != null) streams.add(remoteStream);
+    for (final stream in streams) {
+      for (final track in stream.getTracks()) {
+        track.enabled = false;
+        await track.stop().catchError((_) {});
+      }
+    }
+    final peerConnection = _peerConnection;
+    if (peerConnection != null) {
+      final senders = await peerConnection.getSenders().catchError(
+        (_) => <RTCRtpSender>[],
+      );
+      for (final sender in senders) {
+        final track = sender.track;
+        if (track == null) continue;
+        track.enabled = false;
+        await track.stop().catchError((_) {});
+      }
+    }
+  }
+
+  Future<void> _activateCallAudio() async {
+    try {
+      await _audioSession.invokeMethod<void>('activateCallAudio');
+    } catch (_) {}
+  }
+
+  Future<void> _deactivateCallAudio() async {
+    try {
+      await _audioSession.invokeMethod<void>('deactivateCallAudio');
+    } catch (_) {}
   }
 }
