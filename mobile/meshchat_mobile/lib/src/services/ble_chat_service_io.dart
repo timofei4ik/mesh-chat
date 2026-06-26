@@ -102,9 +102,16 @@ class BleChatService extends ChangeNotifier {
     if (running) return;
     _listen();
     await _authorizeIfNeeded();
-    await _startAdvertising(profile: profile, publicKey: publicKey);
+    try {
+      await _startAdvertising(profile: profile, publicKey: publicKey);
+    } catch (error) {
+      if (!Platform.isWindows) rethrow;
+      status = 'Bluetooth scan is running. Windows advertising failed: $error';
+    }
     running = true;
-    status = 'Bluetooth nearby is running';
+    if (!status.startsWith('Bluetooth scan is running')) {
+      status = 'Bluetooth nearby is running';
+    }
     notifyListeners();
     await startScan();
   }
@@ -316,7 +323,12 @@ class BleChatService extends ChangeNotifier {
     await _peripheral.startAdvertising(
       Advertisement(
         name: Platform.isWindows ? null : 'MeshChat ${profile.displayName}',
-        serviceUUIDs: [serviceUuid],
+        serviceUUIDs: Platform.isWindows ? [] : [serviceUuid],
+        serviceData: Platform.isWindows
+            ? {
+                serviceUuid: Uint8List.fromList([1]),
+              }
+            : const {},
       ),
     );
   }
