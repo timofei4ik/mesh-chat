@@ -115,6 +115,11 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
             title: const Text('Bluetooth Nearby'),
             actions: [
               IconButton(
+                tooltip: 'Clear stale devices',
+                onPressed: busy ? null : service.clearPeers,
+                icon: const Icon(Icons.clear_all),
+              ),
+              IconButton(
                 tooltip: 'Wide scan',
                 onPressed: busy ? null : wideScan,
                 icon: const Icon(Icons.travel_explore_outlined),

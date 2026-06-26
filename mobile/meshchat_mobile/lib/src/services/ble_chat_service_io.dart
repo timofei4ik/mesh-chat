@@ -55,6 +55,8 @@ class BlePeer {
 }
 
 class BleChatService extends ChangeNotifier {
+  static const _peerTtl = Duration(seconds: 18);
+
   static final serviceUuid = UUID.fromString(
     '6d657368-6368-6174-8000-000000000001',
   );
@@ -71,6 +73,7 @@ class BleChatService extends ChangeNotifier {
   final Map<String, _ConnectedBlePeer> _connected = {};
   final Map<String, _IncomingBlePacket> _incoming = {};
   final List<StreamSubscription> _subscriptions = [];
+  Timer? _pruneTimer;
 
   BlePacketHandler? onPacket;
   bool running = false;
@@ -102,6 +105,7 @@ class BleChatService extends ChangeNotifier {
     }
     if (running) return;
     _listen();
+    _startPruneTimer();
     await _authorizeIfNeeded();
     try {
       await _startAdvertising(profile: profile, publicKey: publicKey);
@@ -123,6 +127,8 @@ class BleChatService extends ChangeNotifier {
       await _central.disconnect(entry.peripheral).catchError((_) {});
     }
     _connected.clear();
+    _discovered.clear();
+    _incoming.clear();
     await _peripheral.stopAdvertising().catchError((_) {});
     await _peripheral.removeAllServices().catchError((_) {});
     running = false;
@@ -133,20 +139,36 @@ class BleChatService extends ChangeNotifier {
   Future<void> startScan() async {
     if (!supported || scanning) return;
     await _authorizeIfNeeded();
-    await _central.startDiscovery(serviceUUIDs: [serviceUuid]);
+    _clearDisconnectedPeers();
+    if (Platform.isWindows) {
+      await _central.startDiscovery();
+      wideScanning = true;
+    } else {
+      await _central.startDiscovery(serviceUUIDs: [serviceUuid]);
+      wideScanning = false;
+    }
     scanning = true;
-    wideScanning = false;
-    status = running ? 'Scanning for MeshChat devices' : 'Scanning';
+    status = Platform.isWindows
+        ? 'Windows wide scan: showing nearby BLE devices'
+        : running
+        ? 'Scanning for MeshChat devices'
+        : 'Scanning';
     notifyListeners();
   }
 
   Future<void> startWideScan() async {
     if (!supported || scanning) return;
     await _authorizeIfNeeded();
+    _clearDisconnectedPeers();
     await _central.startDiscovery();
     scanning = true;
     wideScanning = true;
     status = running ? 'Wide scan: showing nearby BLE devices' : 'Wide scan';
+    notifyListeners();
+  }
+
+  void clearPeers() {
+    _clearDisconnectedPeers();
     notifyListeners();
   }
 
@@ -266,6 +288,7 @@ class BleChatService extends ChangeNotifier {
             name: name,
             rssi: event.rssi,
           ),
+          lastSeen: DateTime.now(),
         );
         notifyListeners();
       }),
@@ -279,6 +302,7 @@ class BleChatService extends ChangeNotifier {
             _discovered[id] = _DiscoveredBlePeer(
               peripheral: event.peripheral,
               peer: existing.copyWith(connected: false),
+              lastSeen: DateTime.now(),
             );
           }
           _connected.remove(id);
@@ -414,8 +438,33 @@ class BleChatService extends ChangeNotifier {
     return false;
   }
 
+  void _startPruneTimer() {
+    _pruneTimer ??= Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _pruneStalePeers(),
+    );
+  }
+
+  void _pruneStalePeers() {
+    if (_discovered.isEmpty) return;
+    final now = DateTime.now();
+    var removed = false;
+    _discovered.removeWhere((id, entry) {
+      if (_connected.containsKey(id)) return false;
+      final stale = now.difference(entry.lastSeen) > _peerTtl;
+      removed = removed || stale;
+      return stale;
+    });
+    if (removed) notifyListeners();
+  }
+
+  void _clearDisconnectedPeers() {
+    _discovered.removeWhere((id, _) => !_connected.containsKey(id));
+  }
+
   @override
   void dispose() {
+    _pruneTimer?.cancel();
     for (final subscription in _subscriptions) {
       subscription.cancel();
     }
@@ -429,10 +478,15 @@ extension on BlePeer {
 }
 
 class _DiscoveredBlePeer {
-  const _DiscoveredBlePeer({required this.peripheral, required this.peer});
+  _DiscoveredBlePeer({
+    required this.peripheral,
+    required this.peer,
+    DateTime? lastSeen,
+  }) : lastSeen = lastSeen ?? DateTime.now();
 
   final Peripheral peripheral;
   final BlePeer peer;
+  final DateTime lastSeen;
 }
 
 class _ConnectedBlePeer {
