@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -87,6 +88,8 @@ class ActiveCall {
 class AppController extends ChangeNotifier {
   static const _fileChunkHexSize = 128 * 1024;
   static const maxMobileFileBytes = 64 * 1024 * 1024;
+  static const maxBluetoothFileBytes = 512 * 1024;
+  static const _bluetoothFileChunkHexSize = 8 * 1024;
   static const _maxProfilePacketBytes = 900 * 1024;
 
   final SessionStore _store = SessionStore();
@@ -2195,6 +2198,90 @@ class AppController extends ChangeNotifier {
     } catch (error) {
       _replaceMessage(id, (message) => message.copyWith(failed: true));
       return 'Bluetooth send failed: $error';
+    }
+  }
+
+  Future<String?> sendBluetoothFile(
+    BlePeer peer,
+    String filename,
+    Uint8List bytes, {
+    String caption = '',
+  }) async {
+    final current = session;
+    if (current == null) return 'No active session';
+    if (bytes.isEmpty) return 'File is empty';
+    if (bytes.length > maxBluetoothFileBytes) {
+      return 'Bluetooth files are limited to 512 KB';
+    }
+    var connectedPeer = peer;
+    try {
+      connectedPeer = await ble.connect(peer);
+    } catch (error) {
+      return 'Bluetooth connect failed: $error';
+    }
+    if (connectedPeer.nodeId.isEmpty || connectedPeer.publicKey.isEmpty) {
+      return 'Could not read MeshChat profile over Bluetooth';
+    }
+    if (connectedPeer.nodeId == myNodeId) return 'Cannot send to yourself';
+
+    final recipient = Profile(
+      nodeId: connectedPeer.nodeId,
+      displayName: connectedPeer.displayName.isEmpty
+          ? connectedPeer.name
+          : connectedPeer.displayName,
+      publicUsername: connectedPeer.publicUsername,
+      publicKey: connectedPeer.publicKey,
+      online: true,
+    );
+    profiles[recipient.nodeId] = _mergeProfile(recipient, online: true);
+
+    final id = const Uuid().v4();
+    final trimmedCaption = caption.trim();
+    final data = _hexEncode(bytes);
+    final thread = _ensureThread(recipient);
+    thread.messages.add(
+      ChatMessage(
+        id: id,
+        senderNode: myNodeId,
+        receiverNode: recipient.nodeId,
+        text: trimmedCaption,
+        createdAt: DateTime.now(),
+        kind: ChatMessageKind.file,
+        fileName: filename,
+        fileData: data,
+        fileSize: bytes.length,
+        delivered: true,
+      ),
+    );
+    unawaited(_saveCache());
+    notifyListeners();
+
+    final totalChunks = (data.length / _bluetoothFileChunkHexSize).ceil();
+    try {
+      for (var index = 0; index < totalChunks; index++) {
+        final start = index * _bluetoothFileChunkHexSize;
+        final end = min(data.length, start + _bluetoothFileChunkHexSize);
+        await ble.sendPacket(connectedPeer, {
+          'type': 'file_chunk',
+          'packet_id': const Uuid().v4(),
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': myNodeId,
+          'destination_node': recipient.nodeId,
+          'ttl': 1,
+          'sender': current.login,
+          'file_id': id,
+          'filename': filename,
+          'caption': trimmedCaption,
+          'chunk_index': index,
+          'total_chunks': totalChunks,
+          'data': data.substring(start, end),
+          'created_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      }
+      return null;
+    } catch (error) {
+      _replaceMessage(id, (message) => message.copyWith(failed: true));
+      return 'Bluetooth file send failed: $error';
     }
   }
 

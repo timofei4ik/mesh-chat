@@ -81,6 +81,7 @@ class BleChatService extends ChangeNotifier {
   final Map<String, _IncomingBlePacket> _incoming = {};
   final Set<String> _knownPeerIds = {};
   final Set<String> _autoConnecting = {};
+  final List<_QueuedBlePacket> _queue = [];
   final List<StreamSubscription> _subscriptions = [];
   Timer? _pruneTimer;
 
@@ -92,6 +93,7 @@ class BleChatService extends ChangeNotifier {
 
   bool get supported =>
       Platform.isAndroid || Platform.isIOS || Platform.isWindows;
+  int get queuedCount => _queue.length;
 
   List<BlePeer> get peers {
     final deduped = <String, BlePeer>{};
@@ -271,6 +273,7 @@ class BleChatService extends ChangeNotifier {
       _removeDuplicateNodePeers(updated);
       status = 'Connected to ${updated.displayNameOrName}';
       notifyListeners();
+      unawaited(_flushQueueFor(peer.id));
       return updated;
     } catch (error) {
       _connected.remove(peer.id);
@@ -302,6 +305,24 @@ class BleChatService extends ChangeNotifier {
     if (connected == null) {
       throw StateError('Bluetooth peer is not connected');
     }
+    try {
+      await _sendPacketToConnected(connected, packet);
+    } catch (error) {
+      _queuePacket(connected.peer, packet);
+      _connected.remove(peer.id);
+      _discovered[peer.id] = _DiscoveredBlePeer(
+        peripheral: connected.peripheral,
+        peer: connected.peer.copyWith(connected: false),
+      );
+      status = 'Bluetooth send queued: $error';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _sendPacketToConnected(
+    _ConnectedBlePeer connected,
+    Map<String, dynamic> packet,
+  ) async {
     final bytes = utf8.encode(jsonEncode(packet));
     final encoded = base64Encode(bytes);
     final packetId = const Uuid().v4();
@@ -338,15 +359,39 @@ class BleChatService extends ChangeNotifier {
       status = 'Bluetooth message sent to ${connected.peer.displayNameOrName}';
       notifyListeners();
     } catch (error) {
-      _connected.remove(peer.id);
-      _discovered[peer.id] = _DiscoveredBlePeer(
-        peripheral: connected.peripheral,
-        peer: connected.peer.copyWith(connected: false),
-      );
       status = 'Bluetooth send failed: $error';
       notifyListeners();
       rethrow;
     }
+  }
+
+  void _queuePacket(BlePeer peer, Map<String, dynamic> packet) {
+    _queue.add(_QueuedBlePacket(peer.id, peer.nodeId, packet));
+    if (_queue.length > 30) {
+      _queue.removeRange(0, _queue.length - 30);
+    }
+  }
+
+  Future<void> _flushQueueFor(String peerId) async {
+    final connected = _connected[peerId];
+    if (connected == null || _queue.isEmpty) return;
+    final pending = _queue
+        .where(
+          (item) =>
+              item.peerId == peerId ||
+              (item.nodeId.isNotEmpty && item.nodeId == connected.peer.nodeId),
+        )
+        .toList();
+    if (pending.isEmpty) return;
+    for (final item in pending) {
+      try {
+        await _sendPacketToConnected(connected, item.packet);
+        _queue.remove(item);
+      } catch (_) {
+        break;
+      }
+    }
+    notifyListeners();
   }
 
   void _listen() {
@@ -612,4 +657,12 @@ class _IncomingBlePacket {
 
   final int total;
   final Map<int, String> chunks = {};
+}
+
+class _QueuedBlePacket {
+  const _QueuedBlePacket(this.peerId, this.nodeId, this.packet);
+
+  final String peerId;
+  final String nodeId;
+  final Map<String, dynamic> packet;
 }

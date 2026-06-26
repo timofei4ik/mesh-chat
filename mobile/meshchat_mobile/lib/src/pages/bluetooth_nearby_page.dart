@@ -1,4 +1,9 @@
+import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../controllers/app_controller.dart';
 import '../services/ble_chat_service.dart';
@@ -119,6 +124,109 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     _showSnack(error ?? 'Sent over Bluetooth');
   }
 
+  Future<void> sendFile(BlePeer peer) async {
+    final result = await FilePicker.platform.pickFiles(withData: true);
+    final file = result?.files.single;
+    final bytes = file?.bytes;
+    if (file == null || bytes == null) return;
+    if (bytes.length > AppController.maxBluetoothFileBytes) {
+      _showSnack('Bluetooth files are limited to 512 KB');
+      return;
+    }
+    final caption = await _askCaption(file.name);
+    if (caption == null) return;
+    setState(() => busy = true);
+    final error = await widget.controller.sendBluetoothFile(
+      peer,
+      file.name,
+      bytes,
+      caption: caption,
+    );
+    if (!mounted) return;
+    setState(() => busy = false);
+    _showSnack(error ?? 'File sent over Bluetooth');
+  }
+
+  Future<String?> _askCaption(String filename) async {
+    final input = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(filename),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Caption',
+            prefixIcon: Icon(Icons.notes_outlined),
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text),
+            child: const Text('Send'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    return result;
+  }
+
+  Future<void> showPairQr() async {
+    final profile = widget.controller.ownProfile;
+    final data = jsonEncode({
+      'app': 'MeshChat',
+      'pair_protocol': 1,
+      'node_id': profile.nodeId,
+      'display_name': profile.displayName,
+      'public_username': profile.publicUsername,
+    });
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Bluetooth pair code'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            QrImageView(
+              data: data,
+              version: QrVersions.auto,
+              size: 220,
+              backgroundColor: Colors.white,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              profile.displayName,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (profile.publicUsername.isNotEmpty)
+              Text('@${profile.publicUsername}'),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: data));
+              if (context.mounted) Navigator.pop(context);
+            },
+            icon: const Icon(Icons.copy),
+            label: const Text('Copy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final service = widget.controller.ble;
@@ -138,6 +246,11 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                 tooltip: 'Refresh scan',
                 onPressed: busy || !service.running ? null : refreshScan,
                 icon: const Icon(Icons.refresh),
+              ),
+              IconButton(
+                tooltip: 'Pair QR',
+                onPressed: busy ? null : showPairQr,
+                icon: const Icon(Icons.qr_code_2),
               ),
               IconButton(
                 tooltip: 'Wide scan',
@@ -174,6 +287,8 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                         service.running ? 'Bluetooth enabled' : 'Bluetooth off',
                       ),
                       subtitle: Text(service.status),
+                      isThreeLine: service.queuedCount > 0,
+                      titleTextStyle: Theme.of(context).textTheme.titleMedium,
                       trailing: Switch(
                         value: service.running,
                         onChanged: busy
@@ -181,6 +296,17 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                             : (value) => value ? start() : stop(),
                       ),
                     ),
+                    if (service.queuedCount > 0)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Chip(
+                            avatar: const Icon(Icons.schedule_send, size: 18),
+                            label: Text('${service.queuedCount} queued'),
+                          ),
+                        ),
+                      ),
                     if (busy) const LinearProgressIndicator(),
                   ],
                 ),
@@ -255,6 +381,12 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                               ),
                               label: Text(peer.connected ? 'Send' : 'Connect'),
                             ),
+                            if (peer.connected)
+                              IconButton(
+                                tooltip: 'Send file',
+                                onPressed: busy ? null : () => sendFile(peer),
+                                icon: const Icon(Icons.attach_file),
+                              ),
                             if (peer.connected)
                               IconButton(
                                 tooltip: 'Disconnect',

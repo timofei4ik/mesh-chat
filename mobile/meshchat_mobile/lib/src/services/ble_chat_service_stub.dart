@@ -35,6 +35,7 @@ class BleChatService extends ChangeNotifier {
   bool get running => false;
   bool get scanning => false;
   bool get wideScanning => false;
+  int get queuedCount => 0;
   String get status => 'Bluetooth is not available in the web version';
   List<BlePeer> get peers => const [];
 
