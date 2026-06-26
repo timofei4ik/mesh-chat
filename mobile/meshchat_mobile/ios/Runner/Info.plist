@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MeshChat needs microphone access to record voice messages.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>MeshChat needs camera access to scan Bluetooth pairing QR codes.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>MeshChat needs photo library access to attach photos and files.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

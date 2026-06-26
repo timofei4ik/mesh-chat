@@ -36,6 +36,7 @@ class BleChatService extends ChangeNotifier {
   bool get scanning => false;
   bool get wideScanning => false;
   int get queuedCount => 0;
+  List<String> get pairingTargetNodeIds => const [];
   String get status => 'Bluetooth is not available in the web version';
   List<BlePeer> get peers => const [];
 
@@ -49,6 +50,7 @@ class BleChatService extends ChangeNotifier {
   Future<void> stopScan() async {}
   Future<void> refreshScan() async {}
   void clearPeers() {}
+  void addPairingTarget(String nodeId) {}
 
   Future<BlePeer> connect(BlePeer peer) {
     throw UnsupportedError('Bluetooth is not available in the web version');

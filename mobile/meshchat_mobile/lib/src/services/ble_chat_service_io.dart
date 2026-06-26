@@ -80,6 +80,7 @@ class BleChatService extends ChangeNotifier {
   final Map<String, _ConnectedBlePeer> _connected = {};
   final Map<String, _IncomingBlePacket> _incoming = {};
   final Set<String> _knownPeerIds = {};
+  final Set<String> _pairingTargetNodeIds = {};
   final Set<String> _autoConnecting = {};
   final List<_QueuedBlePacket> _queue = [];
   final List<StreamSubscription> _subscriptions = [];
@@ -94,6 +95,7 @@ class BleChatService extends ChangeNotifier {
   bool get supported =>
       Platform.isAndroid || Platform.isIOS || Platform.isWindows;
   int get queuedCount => _queue.length;
+  List<String> get pairingTargetNodeIds => _pairingTargetNodeIds.toList();
 
   List<BlePeer> get peers {
     final deduped = <String, BlePeer>{};
@@ -204,6 +206,15 @@ class BleChatService extends ChangeNotifier {
     }
   }
 
+  void addPairingTarget(String nodeId) {
+    final normalized = nodeId.trim();
+    if (normalized.isEmpty) return;
+    _pairingTargetNodeIds.add(normalized);
+    status = 'Bluetooth pairing target added';
+    notifyListeners();
+    _tryPairingTargets();
+  }
+
   Future<void> stopScan() async {
     if (!scanning) return;
     await _central.stopDiscovery().catchError((_) {});
@@ -270,6 +281,9 @@ class BleChatService extends ChangeNotifier {
         peer: updated,
       );
       _knownPeerIds.add(peer.id);
+      if (_pairingTargetNodeIds.remove(updated.nodeId)) {
+        _knownPeerIds.add(peer.id);
+      }
       _removeDuplicateNodePeers(updated);
       status = 'Connected to ${updated.displayNameOrName}';
       notifyListeners();
@@ -414,6 +428,7 @@ class BleChatService extends ChangeNotifier {
           lastSeen: DateTime.now(),
         );
         _autoConnectIfKnown(id);
+        _autoConnectIfPairingTarget(id);
         notifyListeners();
       }),
     );
@@ -611,6 +626,35 @@ class BleChatService extends ChangeNotifier {
         automatic: true,
       ).catchError((_) => peer).whenComplete(() => _autoConnecting.remove(id)),
     );
+  }
+
+  void _autoConnectIfPairingTarget(String id) {
+    if (_pairingTargetNodeIds.isEmpty ||
+        _connected.containsKey(id) ||
+        _autoConnecting.contains(id)) {
+      return;
+    }
+    final peer = _discovered[id]?.peer;
+    if (peer == null) return;
+    _autoConnecting.add(id);
+    unawaited(
+      _connect(peer, automatic: true)
+          .then((connected) {
+            if (_pairingTargetNodeIds.remove(connected.nodeId)) {
+              status = 'Bluetooth paired with ${connected.displayNameOrName}';
+              notifyListeners();
+            }
+            return connected;
+          })
+          .catchError((_) => peer)
+          .whenComplete(() => _autoConnecting.remove(id)),
+    );
+  }
+
+  void _tryPairingTargets() {
+    for (final id in _discovered.keys.toList()) {
+      _autoConnectIfPairingTarget(id);
+    }
   }
 
   @override

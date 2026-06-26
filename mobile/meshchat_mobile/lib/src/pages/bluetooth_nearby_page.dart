@@ -3,9 +3,12 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../controllers/app_controller.dart';
+import '../models/chat_message.dart';
+import '../models/chat_thread.dart';
 import '../services/ble_chat_service.dart';
 
 class BluetoothNearbyPage extends StatefulWidget {
@@ -227,6 +230,47 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     );
   }
 
+  Future<void> scanPairQr() async {
+    final raw = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const _BluetoothQrScannerPage()),
+    );
+    if (raw == null || raw.trim().isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['app'] != 'MeshChat') {
+        _showSnack('This is not a MeshChat pairing QR');
+        return;
+      }
+      final nodeId = decoded['node_id']?.toString() ?? '';
+      if (nodeId.isEmpty) {
+        _showSnack('Pairing QR does not contain node id');
+        return;
+      }
+      widget.controller.ble.addPairingTarget(nodeId);
+      if (!widget.controller.ble.running) {
+        await start();
+      } else if (!widget.controller.ble.scanning) {
+        await widget.controller.ble.startScan();
+      }
+      _showSnack('Bluetooth pairing target added');
+    } catch (error) {
+      _showSnack('Could not read pairing QR: $error');
+    }
+  }
+
+  void openPeerChat(BlePeer peer) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _BluetoothPeerChatPage(
+          controller: widget.controller,
+          initialPeer: peer,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final service = widget.controller.ble;
@@ -251,6 +295,11 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                 tooltip: 'Pair QR',
                 onPressed: busy ? null : showPairQr,
                 icon: const Icon(Icons.qr_code_2),
+              ),
+              IconButton(
+                tooltip: 'Scan QR',
+                onPressed: busy ? null : scanPairQr,
+                icon: const Icon(Icons.qr_code_scanner),
               ),
               IconButton(
                 tooltip: 'Wide scan',
@@ -372,14 +421,14 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                               onPressed: busy
                                   ? null
                                   : () => peer.connected
-                                        ? send(peer)
+                                        ? openPeerChat(peer)
                                         : connect(peer),
                               icon: Icon(
                                 peer.connected
                                     ? Icons.send_outlined
                                     : Icons.link_outlined,
                               ),
-                              label: Text(peer.connected ? 'Send' : 'Connect'),
+                              label: Text(peer.connected ? 'Chat' : 'Connect'),
                             ),
                             if (peer.connected)
                               IconButton(
@@ -424,5 +473,294 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     final seconds = DateTime.now().difference(lastSeen).inSeconds;
     if (seconds < 4) return 'Seen now';
     return 'Seen ${seconds}s ago';
+  }
+}
+
+class _BluetoothPeerChatPage extends StatefulWidget {
+  const _BluetoothPeerChatPage({
+    required this.controller,
+    required this.initialPeer,
+  });
+
+  final AppController controller;
+  final BlePeer initialPeer;
+
+  @override
+  State<_BluetoothPeerChatPage> createState() => _BluetoothPeerChatPageState();
+}
+
+class _BluetoothPeerChatPageState extends State<_BluetoothPeerChatPage> {
+  final input = TextEditingController();
+  bool busy = false;
+
+  @override
+  void dispose() {
+    input.dispose();
+    super.dispose();
+  }
+
+  BlePeer get peer {
+    for (final candidate in widget.controller.ble.peers) {
+      if (candidate.id == widget.initialPeer.id) return candidate;
+      if (candidate.nodeId.isNotEmpty &&
+          candidate.nodeId == widget.initialPeer.nodeId) {
+        return candidate;
+      }
+    }
+    return widget.initialPeer;
+  }
+
+  ChatThread? get thread {
+    final nodeId = peer.nodeId.isNotEmpty
+        ? peer.nodeId
+        : widget.initialPeer.nodeId;
+    if (nodeId.isEmpty) return null;
+    return widget.controller.threads[nodeId];
+  }
+
+  Future<void> sendText() async {
+    final text = input.text.trim();
+    if (text.isEmpty) return;
+    input.clear();
+    setState(() => busy = true);
+    final error = await widget.controller.sendBluetoothMessage(peer, text);
+    if (!mounted) return;
+    setState(() => busy = false);
+    if (error != null) _showSnack(error);
+  }
+
+  Future<void> sendFile() async {
+    final result = await FilePicker.platform.pickFiles(withData: true);
+    final file = result?.files.single;
+    final bytes = file?.bytes;
+    if (file == null || bytes == null) return;
+    if (bytes.length > AppController.maxBluetoothFileBytes) {
+      _showSnack('Bluetooth files are limited to 512 KB');
+      return;
+    }
+    setState(() => busy = true);
+    final error = await widget.controller.sendBluetoothFile(
+      peer,
+      file.name,
+      bytes,
+    );
+    if (!mounted) return;
+    setState(() => busy = false);
+    if (error != null) _showSnack(error);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        final currentPeer = peer;
+        final messages = thread?.messages ?? const <ChatMessage>[];
+        final title = currentPeer.displayName.isEmpty
+            ? currentPeer.name
+            : currentPeer.displayName;
+        return Scaffold(
+          appBar: AppBar(
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(title),
+                Text(
+                  currentPeer.connected ? 'Bluetooth connected' : 'Bluetooth',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: Colors.white60),
+                ),
+              ],
+            ),
+            actions: [
+              if (widget.controller.ble.queuedCount > 0)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Chip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text(
+                        '${widget.controller.ble.queuedCount} queued',
+                      ),
+                    ),
+                  ),
+                ),
+              IconButton(
+                tooltip: currentPeer.connected ? 'Disconnect' : 'Connect',
+                onPressed: busy
+                    ? null
+                    : () async {
+                        setState(() => busy = true);
+                        try {
+                          if (currentPeer.connected) {
+                            await widget.controller.ble.disconnect(currentPeer);
+                          } else {
+                            await widget.controller.ble.connect(currentPeer);
+                          }
+                        } catch (error) {
+                          if (mounted) _showSnack('Bluetooth failed: $error');
+                        }
+                        if (mounted) setState(() => busy = false);
+                      },
+                icon: Icon(
+                  currentPeer.connected ? Icons.link_off : Icons.link_outlined,
+                ),
+              ),
+            ],
+          ),
+          body: Column(
+            children: [
+              if (busy) const LinearProgressIndicator(),
+              Expanded(
+                child: messages.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'No Bluetooth messages yet',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      )
+                    : ListView.builder(
+                        reverse: true,
+                        padding: const EdgeInsets.all(12),
+                        itemCount: messages.length,
+                        itemBuilder: (context, index) {
+                          final message = messages[messages.length - 1 - index];
+                          final mine =
+                              message.senderNode == widget.controller.myNodeId;
+                          return Align(
+                            alignment: mine
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: Container(
+                              constraints: const BoxConstraints(maxWidth: 320),
+                              margin: const EdgeInsets.only(bottom: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 9,
+                              ),
+                              decoration: BoxDecoration(
+                                color: mine
+                                    ? const Color(0xFF2E8B57)
+                                    : const Color(0xFF2A2F37),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (message.kind == ChatMessageKind.file)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.attach_file, size: 16),
+                                        const SizedBox(width: 6),
+                                        Flexible(
+                                          child: Text(
+                                            message.fileName.isEmpty
+                                                ? 'File'
+                                                : message.fileName,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  if (message.text.isNotEmpty)
+                                    Text(message.text),
+                                  if (message.failed)
+                                    const Padding(
+                                      padding: EdgeInsets.only(top: 4),
+                                      child: Text(
+                                        'failed',
+                                        style: TextStyle(
+                                          color: Colors.redAccent,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        tooltip: 'File',
+                        onPressed: busy ? null : sendFile,
+                        icon: const Icon(Icons.attach_file),
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: input,
+                          minLines: 1,
+                          maxLines: 4,
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => sendText(),
+                          decoration: const InputDecoration(
+                            hintText: 'Bluetooth message',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton.filled(
+                        tooltip: 'Send',
+                        onPressed: busy ? null : sendText,
+                        icon: const Icon(Icons.send),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _BluetoothQrScannerPage extends StatefulWidget {
+  const _BluetoothQrScannerPage();
+
+  @override
+  State<_BluetoothQrScannerPage> createState() =>
+      _BluetoothQrScannerPageState();
+}
+
+class _BluetoothQrScannerPageState extends State<_BluetoothQrScannerPage> {
+  bool done = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan Bluetooth QR')),
+      body: MobileScanner(
+        onDetect: (capture) {
+          if (done) return;
+          final raw = capture.barcodes
+              .map((barcode) => barcode.rawValue)
+              .whereType<String>()
+              .firstOrNull;
+          if (raw == null || raw.isEmpty) return;
+          done = true;
+          Navigator.pop(context, raw);
+        },
+      ),
+    );
   }
 }

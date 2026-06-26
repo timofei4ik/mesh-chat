@@ -255,10 +255,21 @@ class ChatsPage extends StatelessWidget {
                 color: Colors.redAccent,
               ),
               title: const Text(
-                'Delete chat',
+                'Delete locally',
                 style: TextStyle(color: Colors.redAccent),
               ),
               onTap: () => Navigator.pop(context, 'delete'),
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.delete_forever_outlined,
+                color: Colors.redAccent,
+              ),
+              title: const Text(
+                'Delete for everyone',
+                style: TextStyle(color: Colors.redAccent),
+              ),
+              onTap: () => Navigator.pop(context, 'delete_all'),
             ),
           ],
         ),
@@ -269,13 +280,16 @@ class ChatsPage extends StatelessWidget {
     if (action == 'archive') controller.toggleThreadArchive(thread);
     if (action == 'mute') controller.toggleThreadMute(thread);
     if (action == 'profile') openProfile(context, thread.profile);
-    if (action == 'delete') {
+    if (action == 'delete' || action == 'delete_all') {
+      final forEveryone = action == 'delete_all';
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Delete chat?'),
-          content: const Text(
-            'Messages in this chat will be removed only on this device.',
+          title: Text(forEveryone ? 'Delete for everyone?' : 'Delete chat?'),
+          content: Text(
+            forEveryone
+                ? 'This will ask other devices in this chat to remove the chat too.'
+                : 'Messages in this chat will be removed only on this device.',
           ),
           actions: [
             TextButton(
@@ -291,11 +305,17 @@ class ChatsPage extends StatelessWidget {
         ),
       );
       if (confirmed == true) {
-        await controller.deleteThread(thread);
+        if (forEveryone) {
+          await controller.deleteThreadForEveryone(thread);
+        } else {
+          await controller.deleteThread(thread);
+        }
         if (context.mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Chat deleted')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(forEveryone ? 'Delete sent' : 'Chat deleted'),
+            ),
+          );
         }
       }
     }

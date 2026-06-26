@@ -151,8 +151,13 @@ class AppController extends ChangeNotifier {
   String get callParticipantsLabel {
     final call = activeCall;
     if (call == null || !call.isGroup) return '';
-    final total = call.groupMembers.length;
-    final connected = call.connectedNodes.length;
+    final total = callParticipants.length;
+    final connected = call.status == CallStatus.active
+        ? ({
+            myNodeId,
+            ...call.connectedNodes,
+          }..removeWhere((id) => id.isEmpty)).length
+        : call.connectedNodes.length;
     if (total <= 0) return '';
     return 'Подключено $connected/$total';
   }
@@ -516,6 +521,9 @@ class AppController extends ChangeNotifier {
       case 'message_delete':
       case 'group_message_delete':
         _applyDeletePacket(packet);
+      case 'chat_delete':
+      case 'group_delete':
+        await _applyThreadDeletePacket(packet);
       case 'message_pin':
       case 'group_pin':
         _applyPinPacket(packet);
@@ -694,6 +702,7 @@ class AppController extends ChangeNotifier {
     }
     _applyReactions(packet['reactions']);
     _applyPins(packet['pins']);
+    await _repairCachedGroups();
     await _saveCache();
   }
 
@@ -1447,6 +1456,57 @@ class AppController extends ChangeNotifier {
     }
     typingUntil.remove(thread.isGroup ? thread.groupId : thread.profile.nodeId);
     await _cache.deleteThread(session, thread);
+    await _saveCache();
+    notifyListeners();
+  }
+
+  Future<void> deleteThreadForEveryone(ChatThread thread) async {
+    if (session == null) return;
+    final packetBase = {
+      'type': thread.isGroup ? 'group_delete' : 'chat_delete',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'ttl': 5,
+      'sender': session!.login,
+      'group_id': thread.groupId,
+      'chat_node_id': thread.profile.nodeId,
+    };
+    final recipients = thread.isGroup
+        ? thread.members
+              .where((member) => member.isNotEmpty && member != myNodeId)
+              .toSet()
+        : {thread.profile.nodeId};
+    for (final recipient in recipients) {
+      _socket.send({
+        ...packetBase,
+        'packet_id': const Uuid().v4(),
+        'destination_node': recipient,
+      });
+    }
+    await deleteThread(thread);
+  }
+
+  Future<void> _applyThreadDeletePacket(Map<String, dynamic> packet) async {
+    final source = packet['source_node']?.toString() ?? '';
+    if (source.isEmpty || source == myNodeId || isBlocked(source)) return;
+    final groupId = packet['group_id']?.toString() ?? '';
+    if (groupId.isNotEmpty) {
+      final group = groups[groupId];
+      if (group == null || !group.members.contains(source)) return;
+      groups.remove(groupId);
+      _groupKeys.remove(groupId);
+      typingUntil.remove(groupId);
+      await _cache.deleteThread(session, group);
+    } else {
+      final chatNodeId = packet['chat_node_id']?.toString() ?? source;
+      final thread = threads[chatNodeId] ?? threads[source];
+      if (thread == null) return;
+      threads.remove(thread.profile.nodeId);
+      profiles.remove(thread.profile.nodeId);
+      typingUntil.remove(thread.profile.nodeId);
+      await _cache.deleteThread(session, thread);
+    }
     await _saveCache();
     notifyListeners();
   }
