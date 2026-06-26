@@ -43,6 +43,18 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
     }
   }
 
+  Future<void> wideScan() async {
+    final service = widget.controller.ble;
+    if (service.scanning) {
+      await service.stopScan();
+    }
+    try {
+      await service.startWideScan();
+    } catch (error) {
+      if (mounted) _showSnack('Bluetooth wide scan failed: $error');
+    }
+  }
+
   Future<void> connect(BlePeer peer) async {
     setState(() => busy = true);
     try {
@@ -103,6 +115,11 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
             title: const Text('Bluetooth Nearby'),
             actions: [
               IconButton(
+                tooltip: 'Wide scan',
+                onPressed: busy ? null : wideScan,
+                icon: const Icon(Icons.travel_explore_outlined),
+              ),
+              IconButton(
                 tooltip: service.scanning ? 'Stop scan' : 'Scan',
                 onPressed: busy ? null : scan,
                 icon: Icon(
@@ -148,8 +165,10 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
                 child: ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('Mode'),
-                  subtitle: const Text(
-                    'Text-only BLE MVP. Keep both apps open and nearby. Files and groups will be added after device tests.',
+                  subtitle: Text(
+                    service.wideScanning
+                        ? 'Wide scan is active. Non-MeshChat BLE devices may appear; Connect will filter them.'
+                        : 'Text-only BLE MVP. Keep both apps open and nearby. Files and groups will be added after device tests.',
                   ),
                 ),
               ),

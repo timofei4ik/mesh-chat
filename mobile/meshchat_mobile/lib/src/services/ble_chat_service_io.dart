@@ -75,6 +75,7 @@ class BleChatService extends ChangeNotifier {
   BlePacketHandler? onPacket;
   bool running = false;
   bool scanning = false;
+  bool wideScanning = false;
   String status = 'Bluetooth stopped';
 
   bool get supported =>
@@ -134,7 +135,18 @@ class BleChatService extends ChangeNotifier {
     await _authorizeIfNeeded();
     await _central.startDiscovery(serviceUUIDs: [serviceUuid]);
     scanning = true;
+    wideScanning = false;
     status = running ? 'Scanning for MeshChat devices' : 'Scanning';
+    notifyListeners();
+  }
+
+  Future<void> startWideScan() async {
+    if (!supported || scanning) return;
+    await _authorizeIfNeeded();
+    await _central.startDiscovery();
+    scanning = true;
+    wideScanning = true;
+    status = running ? 'Wide scan: showing nearby BLE devices' : 'Wide scan';
     notifyListeners();
   }
 
@@ -142,6 +154,7 @@ class BleChatService extends ChangeNotifier {
     if (!scanning) return;
     await _central.stopDiscovery().catchError((_) {});
     scanning = false;
+    wideScanning = false;
     status = running ? 'Bluetooth nearby is running' : 'Bluetooth stopped';
     notifyListeners();
   }
@@ -243,6 +256,9 @@ class BleChatService extends ChangeNotifier {
       _central.discovered.listen((event) {
         final id = event.peripheral.uuid.toString();
         final name = _safeAdvertisementName(event.advertisement) ?? 'MeshChat';
+        if (!wideScanning && !_advertisesMeshChat(event.advertisement)) {
+          return;
+        }
         final existing = _discovered[id]?.peer;
         _discovered[id] = _DiscoveredBlePeer(
           peripheral: event.peripheral,
@@ -386,6 +402,16 @@ class BleChatService extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  bool _advertisesMeshChat(Advertisement advertisement) {
+    try {
+      if (advertisement.serviceUUIDs.contains(serviceUuid)) return true;
+    } catch (_) {}
+    try {
+      if (advertisement.serviceData.containsKey(serviceUuid)) return true;
+    } catch (_) {}
+    return false;
   }
 
   @override
