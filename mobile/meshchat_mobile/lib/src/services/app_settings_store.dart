@@ -17,6 +17,8 @@ class AppSettingsStore {
       sendFilesOriginal: prefs.getBool('send_files_original') ?? true,
       dataSaver: prefs.getBool('data_saver') ?? false,
       blockedNodeIds: prefs.getStringList('blocked_node_ids') ?? const [],
+      deletedGroupIds: prefs.getStringList('deleted_group_ids') ?? const [],
+      deletedMessageIds: prefs.getStringList('deleted_message_ids') ?? const [],
     );
   }
 
@@ -35,6 +37,11 @@ class AppSettingsStore {
     await prefs.setBool('send_files_original', settings.sendFilesOriginal);
     await prefs.setBool('data_saver', settings.dataSaver);
     await prefs.setStringList('blocked_node_ids', settings.blockedNodeIds);
+    await prefs.setStringList('deleted_group_ids', settings.deletedGroupIds);
+    await prefs.setStringList(
+      'deleted_message_ids',
+      settings.deletedMessageIds,
+    );
   }
 
   ThemeMode _themeModeFromName(String? value) {

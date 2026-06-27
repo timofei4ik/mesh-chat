@@ -13,6 +13,8 @@ import '../models/session.dart';
 class ChatCacheStore {
   static const _maxMessagesPerThread = 500;
   static const _maxWebMessagesPerThread = 80;
+  static const _maxSqlitePayloadChars = 900 * 1024;
+  static const _maxCachedFileHex = 420 * 1024;
   static const _maxCachedWebFileHex = 220 * 1024;
   static const _maxCachedWebAvatar = 260 * 1024;
   static const _dbName = 'meshchat_cache.db';
@@ -31,10 +33,16 @@ class ChatCacheStore {
 
     final db = await _db();
     await _migrateLegacy(session, db);
+    final sessionKey = _key(session);
+    await db.delete(
+      'chat_threads',
+      where: 'session_key=? AND length(payload)>?',
+      whereArgs: [sessionKey, _maxSqlitePayloadChars],
+    );
     final rows = await db.query(
       'chat_threads',
       where: 'session_key=?',
-      whereArgs: [_key(session)],
+      whereArgs: [sessionKey],
     );
     for (final row in rows) {
       final payload = row['payload']?.toString() ?? '';
@@ -61,18 +69,24 @@ class ChatCacheStore {
     final sessionKey = _key(session);
     final batch = db.batch();
     for (final thread in threads) {
-      final trimmed = _trimThread(thread);
+      var trimmed = _trimThread(thread);
       final threadKey = trimmed.isGroup
           ? 'group:${trimmed.groupId}'
           : trimmed.profile.nodeId;
       if (threadKey.isEmpty) continue;
+      var payload = jsonEncode(trimmed.toJson());
+      if (payload.length > _maxSqlitePayloadChars) {
+        trimmed = _trimThread(thread, minimal: true);
+        payload = jsonEncode(trimmed.toJson());
+      }
+      if (payload.length > _maxSqlitePayloadChars) continue;
       batch.insert('chat_threads', {
         'session_key': sessionKey,
         'thread_key': threadKey,
         'is_group': trimmed.isGroup ? 1 : 0,
         'updated_at': (trimmed.lastMessage?.createdAt ?? DateTime.now())
             .millisecondsSinceEpoch,
-        'payload': jsonEncode(trimmed.toJson()),
+        'payload': payload,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
@@ -322,9 +336,13 @@ class ChatCacheStore {
     final messages = thread.messages.length > maxMessages
         ? thread.messages.sublist(thread.messages.length - maxMessages)
         : List.of(thread.messages);
-    final cachedMessages = forWeb
-        ? messages.map((message) => _trimMessageForWeb(message)).toList()
-        : messages;
+    final cachedMessages = messages
+        .map(
+          (message) => forWeb
+              ? _trimMessageForWeb(message)
+              : _trimMessageForCache(message),
+        )
+        .toList();
     final profile =
         forWeb && thread.profile.avatarData.length > _maxCachedWebAvatar
         ? thread.profile.copyWith(avatarData: '')
@@ -351,9 +369,17 @@ class ChatCacheStore {
   }
 
   ChatMessage _trimMessageForWeb(ChatMessage message) {
+    return _trimFileMessage(message, _maxCachedWebFileHex);
+  }
+
+  ChatMessage _trimMessageForCache(ChatMessage message) {
+    return _trimFileMessage(message, _maxCachedFileHex);
+  }
+
+  ChatMessage _trimFileMessage(ChatMessage message, int maxFileHex) {
     if (message.kind != ChatMessageKind.file) return message;
     final keepFileData =
-        message.fileData.length <= _maxCachedWebFileHex &&
+        message.fileData.length <= maxFileHex &&
         (_isImageName(message.fileName) || _isAudioName(message.fileName));
     return ChatMessage(
       id: message.id,

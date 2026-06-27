@@ -12,6 +12,8 @@ class AppSettings {
     this.sendFilesOriginal = true,
     this.dataSaver = false,
     this.blockedNodeIds = const [],
+    this.deletedGroupIds = const [],
+    this.deletedMessageIds = const [],
   });
 
   final ThemeMode themeMode;
@@ -24,6 +26,8 @@ class AppSettings {
   final bool sendFilesOriginal;
   final bool dataSaver;
   final List<String> blockedNodeIds;
+  final List<String> deletedGroupIds;
+  final List<String> deletedMessageIds;
 
   AppSettings copyWith({
     ThemeMode? themeMode,
@@ -36,6 +40,8 @@ class AppSettings {
     bool? sendFilesOriginal,
     bool? dataSaver,
     List<String>? blockedNodeIds,
+    List<String>? deletedGroupIds,
+    List<String>? deletedMessageIds,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
@@ -49,6 +55,8 @@ class AppSettings {
       sendFilesOriginal: sendFilesOriginal ?? this.sendFilesOriginal,
       dataSaver: dataSaver ?? this.dataSaver,
       blockedNodeIds: blockedNodeIds ?? this.blockedNodeIds,
+      deletedGroupIds: deletedGroupIds ?? this.deletedGroupIds,
+      deletedMessageIds: deletedMessageIds ?? this.deletedMessageIds,
     );
   }
 }

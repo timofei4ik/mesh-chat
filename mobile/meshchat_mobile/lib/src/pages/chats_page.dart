@@ -1027,33 +1027,47 @@ class _SwipeActionBackground extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final left = alignment == Alignment.centerLeft;
+    final actionColor = Color.alphaBlend(
+      color.withValues(alpha: 0.34),
+      const Color(0xFF132333),
+    );
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: DecoratedBox(
-          decoration: BoxDecoration(color: color.withValues(alpha: 0.18)),
-          child: Align(
-            alignment: alignment,
-            child: Padding(
-              padding: EdgeInsets.only(
-                left: left ? 22 : 0,
-                right: left ? 0 : 22,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: actionColor,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: color.withValues(alpha: 0.22)),
+        ),
+        child: Align(
+          alignment: alignment,
+          child: Padding(
+            padding: EdgeInsets.only(left: left ? 22 : 0, right: left ? 0 : 22),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: actionColor,
+                borderRadius: BorderRadius.circular(18),
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, color: color),
-                  const SizedBox(height: 4),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      color: color,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 13,
+                  vertical: 10,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, color: Colors.white),
+                    const SizedBox(height: 4),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

@@ -549,7 +549,7 @@ class AppController extends ChangeNotifier {
         await _applyEditPacket(packet);
       case 'message_delete':
       case 'group_message_delete':
-        _applyDeletePacket(packet);
+        await _applyDeletePacket(packet);
       case 'chat_delete':
       case 'group_delete':
         await _applyThreadDeletePacket(packet);
@@ -685,6 +685,7 @@ class AppController extends ChangeNotifier {
       profiles[peerId] = _mergeProfile(profile);
       final thread = _ensureThread(profile);
       final id = data['message_id']?.toString() ?? const Uuid().v4();
+      if (_isDeletedMessage(id)) continue;
       if (thread.messages.any((message) => message.id == id)) continue;
       final rawText = _firstString(data, const [
         'message',
@@ -831,6 +832,7 @@ class AppController extends ChangeNotifier {
       final data = Map<String, dynamic>.from(raw);
       final groupId = data['group_id']?.toString() ?? '';
       if (groupId.isEmpty) continue;
+      if (appSettings.deletedGroupIds.contains(groupId)) continue;
       _ensureGroupThread(
         groupId: groupId,
         groupName: data['group_name']?.toString() ?? 'Группа',
@@ -860,6 +862,15 @@ class AppController extends ChangeNotifier {
   Future<void> _repairCachedGroups() async {
     if (session == null || groups.isEmpty) return;
     var changed = false;
+    final deletedGroupIds = appSettings.deletedGroupIds.toSet();
+    for (final groupId in deletedGroupIds) {
+      final group = groups.remove(groupId);
+      if (group == null) continue;
+      _groupKeys.remove(groupId);
+      typingUntil.remove(groupId);
+      await _cache.deleteThread(session, group);
+      changed = true;
+    }
     final brokenGroupIds = groups.entries
         .where(
           (entry) =>
@@ -1056,6 +1067,7 @@ class AppController extends ChangeNotifier {
   }) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
+    if (appSettings.deletedGroupIds.contains(groupId)) return;
     final group = _ensureGroupThread(
       groupId: groupId,
       groupName: packet['group_name']?.toString() ?? 'Группа',
@@ -1066,6 +1078,7 @@ class AppController extends ChangeNotifier {
         packet['message_id']?.toString() ??
         packet['packet_id']?.toString() ??
         const Uuid().v4();
+    if (_isDeletedMessage(id)) return;
     await _acceptGroupKeyEnvelope(
       groupId,
       packet['group_key_id']?.toString() ?? '',
@@ -1394,6 +1407,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> deleteMessage(ChatThread thread, ChatMessage message) async {
     if (session == null || message.senderNode != myNodeId) return;
+    await _rememberDeletedMessage(message.id);
     _deleteLocalMessage(thread, message.id);
     final basePacket = {
       'type': thread.isGroup ? 'group_message_delete' : 'message_delete',
@@ -1421,6 +1435,14 @@ class AppController extends ChangeNotifier {
     } else {
       _socket.send({...basePacket, 'destination_node': thread.profile.nodeId});
     }
+  }
+
+  Future<void> deleteMessageForMe(
+    ChatThread thread,
+    ChatMessage message,
+  ) async {
+    await _rememberDeletedMessage(message.id);
+    _deleteLocalMessage(thread, message.id);
   }
 
   void togglePin(ChatThread thread, ChatMessage message) {
@@ -1491,6 +1513,7 @@ class AppController extends ChangeNotifier {
   Future<void> deleteThread(ChatThread thread) async {
     if (thread.isGroup) {
       if (thread.groupId.isNotEmpty) {
+        await _rememberDeletedGroup(thread.groupId);
         groups.remove(thread.groupId);
         _groupKeys.remove(thread.groupId);
       } else {
@@ -1546,6 +1569,7 @@ class AppController extends ChangeNotifier {
     if (groupId.isNotEmpty) {
       final group = groups[groupId];
       if (group == null || !group.members.contains(source)) return;
+      await _rememberDeletedGroup(groupId);
       groups.remove(groupId);
       _groupKeys.remove(groupId);
       typingUntil.remove(groupId);
@@ -1561,6 +1585,33 @@ class AppController extends ChangeNotifier {
     }
     await _saveCache();
     notifyListeners();
+  }
+
+  Future<void> _rememberDeletedGroup(String groupId) async {
+    if (groupId.isEmpty || appSettings.deletedGroupIds.contains(groupId)) {
+      return;
+    }
+    final deleted = {...appSettings.deletedGroupIds, groupId}.toList()..sort();
+    appSettings = appSettings.copyWith(deletedGroupIds: deleted);
+    await _settingsStore.save(appSettings);
+  }
+
+  bool _isDeletedMessage(String messageId) {
+    return messageId.isNotEmpty &&
+        appSettings.deletedMessageIds.contains(messageId);
+  }
+
+  Future<void> _rememberDeletedMessage(String messageId) async {
+    if (messageId.isEmpty ||
+        appSettings.deletedMessageIds.contains(messageId)) {
+      return;
+    }
+    final deleted = [...appSettings.deletedMessageIds, messageId];
+    final trimmed = deleted.length > 3000
+        ? deleted.sublist(deleted.length - 3000)
+        : deleted;
+    appSettings = appSettings.copyWith(deletedMessageIds: trimmed);
+    await _settingsStore.save(appSettings);
   }
 
   List<ChatMessage> searchMessages(ChatThread thread, String query) {
@@ -1651,12 +1702,13 @@ class AppController extends ChangeNotifier {
     );
   }
 
-  void _applyDeletePacket(Map<String, dynamic> packet) {
+  Future<void> _applyDeletePacket(Map<String, dynamic> packet) async {
     final messageId =
         packet['message_id']?.toString() ??
         packet['group_message_id']?.toString() ??
         '';
     if (messageId.isEmpty) return;
+    await _rememberDeletedMessage(messageId);
     for (final thread in [...threads.values, ...groups.values]) {
       if (_deleteLocalMessage(thread, messageId)) return;
     }
@@ -2870,7 +2922,11 @@ class AppController extends ChangeNotifier {
         );
     profiles[sender] = profile;
     final thread = _ensureThread(profile);
-    final id = packet['packet_id']?.toString() ?? const Uuid().v4();
+    final id =
+        packet['message_id']?.toString() ??
+        packet['packet_id']?.toString() ??
+        const Uuid().v4();
+    if (_isDeletedMessage(id)) return;
     if (!thread.messages.any((message) => message.id == id)) {
       final text = await _crypto.decryptText(
         packet['message']?.toString() ?? '',
@@ -2914,6 +2970,7 @@ class AppController extends ChangeNotifier {
     required bool fromSync,
   }) async {
     final fileId = packet['file_id']?.toString() ?? '';
+    if (_isDeletedMessage(fileId)) return;
     final filename = packet['filename']?.toString() ?? 'file';
     final chunkIndex = int.tryParse(packet['chunk_index']?.toString() ?? '');
     final totalChunks = int.tryParse(packet['total_chunks']?.toString() ?? '');
@@ -2936,6 +2993,10 @@ class AppController extends ChangeNotifier {
     final first = incoming.firstPacket;
     final groupId = first['group_id']?.toString() ?? '';
     if (groupId.isNotEmpty) {
+      if (appSettings.deletedGroupIds.contains(groupId)) {
+        _incomingFiles.remove(fileId);
+        return;
+      }
       final group = _ensureGroupThread(
         groupId: groupId,
         groupName: first['group_name']?.toString() ?? 'Группа',

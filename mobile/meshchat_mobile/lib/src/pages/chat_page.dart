@@ -622,13 +622,20 @@ class _ChatPageState extends State<ChatPage> {
               title: Text(pinned ? 'Unpin' : 'Pin'),
               onTap: () => Navigator.pop(context, 'pin'),
             ),
+            ListTile(
+              leading: const Icon(Icons.delete_sweep_outlined),
+              title: const Text('Delete for me'),
+              textColor: Colors.redAccent,
+              iconColor: Colors.redAccent,
+              onTap: () => Navigator.pop(context, 'delete_me'),
+            ),
             if (mine)
               ListTile(
-                leading: const Icon(Icons.delete_outline_rounded),
-                title: const Text('Delete'),
+                leading: const Icon(Icons.delete_forever_outlined),
+                title: const Text('Delete for everyone'),
                 textColor: Colors.redAccent,
                 iconColor: Colors.redAccent,
-                onTap: () => Navigator.pop(context, 'delete'),
+                onTap: () => Navigator.pop(context, 'delete_everyone'),
               ),
             if (canBlock)
               ListTile(
@@ -670,11 +677,15 @@ class _ChatPageState extends State<ChatPage> {
       await showEditDialog(message);
       return;
     }
-    if (action == 'delete') {
+    if (action == 'delete_me' || action == 'delete_everyone') {
       setState(() => deletingMessageIds.add(message.id));
       await Future.delayed(const Duration(milliseconds: 540));
       if (!mounted) return;
-      await widget.controller.deleteMessage(widget.thread, message);
+      if (action == 'delete_everyone') {
+        await widget.controller.deleteMessage(widget.thread, message);
+      } else {
+        await widget.controller.deleteMessageForMe(widget.thread, message);
+      }
       if (mounted) {
         setState(() => deletingMessageIds.remove(message.id));
       }
