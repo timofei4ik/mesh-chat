@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/app_settings.dart';
@@ -57,6 +58,13 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
+  void openSecurity(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SecurityPage(controller: controller)),
+    );
+  }
+
   void openBluetoothNearby(BuildContext context) {
     Navigator.push(
       context,
@@ -69,91 +77,122 @@ class SettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = controller.session;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: ListTile(
-              leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-              title: Text(session?.login ?? 'No account'),
-              subtitle: Text(session?.serverUrl ?? ''),
-            ),
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(
+        scaffoldBackgroundColor: const Color(0xFF07111E),
+        cardTheme: CardThemeData(
+          color: const Color(0xFF242D37).withValues(alpha: 0.76),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
           ),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: const Text('About / Diagnostics'),
-              subtitle: const Text('Versions, protocol and server check'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => openAbout(context),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.network_check),
-              title: const Text('Connection'),
-              subtitle: const Text(
-                'Server, protocol, login, sync and WebSocket',
+          margin: EdgeInsets.zero,
+        ),
+      ),
+      child: Scaffold(
+        backgroundColor: const Color(0xFF07111E),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          title: const Text('Settings'),
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
+              child: ListTile(
+                leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+                title: Text(session?.login ?? 'No account'),
+                subtitle: Text(session?.serverUrl ?? ''),
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => openConnection(context),
             ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.bluetooth),
-              title: const Text('Bluetooth Nearby'),
-              subtitle: const Text('Text chat with nearby MeshChat devices'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => openBluetoothNearby(context),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.storage_outlined),
-              title: const Text('Storage / Cache'),
-              subtitle: const Text('Local messages, media previews and drafts'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => openStorage(context),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _NotificationSettings(controller: controller),
-          const SizedBox(height: 12),
-          _ThemeSettings(controller: controller),
-          const SizedBox(height: 12),
-          _MediaSettings(controller: controller),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.block_outlined),
-              title: const Text('Blocked users'),
-              subtitle: Text(
-                controller.appSettings.blockedNodeIds.isEmpty
-                    ? 'No blocked users'
-                    : '${controller.appSettings.blockedNodeIds.length} blocked',
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: const Text('About / Diagnostics'),
+                subtitle: const Text('Versions, protocol and server check'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openAbout(context),
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => openBlockedUsers(context),
             ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.devices_outlined),
-              title: const Text('Active devices'),
-              subtitle: const Text('Devices recently used with this account'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => openActiveDevices(context),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.network_check),
+                title: const Text('Connection'),
+                subtitle: const Text(
+                  'Server, protocol, login, sync and WebSocket',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openConnection(context),
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.bluetooth),
+                title: const Text('Bluetooth Nearby'),
+                subtitle: const Text('Text chat with nearby MeshChat devices'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openBluetoothNearby(context),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.storage_outlined),
+                title: const Text('Storage / Cache'),
+                subtitle: const Text(
+                  'Local messages, media previews and drafts',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openStorage(context),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _NotificationSettings(controller: controller),
+            const SizedBox(height: 12),
+            _ThemeSettings(controller: controller),
+            const SizedBox(height: 12),
+            _MediaSettings(controller: controller),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.block_outlined),
+                title: const Text('Blocked users'),
+                subtitle: Text(
+                  controller.appSettings.blockedNodeIds.isEmpty
+                      ? 'No blocked users'
+                      : '${controller.appSettings.blockedNodeIds.length} blocked',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openBlockedUsers(context),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.devices_outlined),
+                title: const Text('Active devices'),
+                subtitle: const Text('Devices recently used with this account'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openActiveDevices(context),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.security_outlined),
+                title: const Text('Security'),
+                subtitle: const Text('Device ID, active devices and blocks'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openSecurity(context),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -836,6 +875,16 @@ class _MediaSettings extends StatelessWidget {
             title: Text('Files and photos'),
           ),
           SwitchListTile(
+            title: const Text('Data saver'),
+            subtitle: const Text(
+              'Skip heavy previews and reduce cache pressure',
+            ),
+            value: settings.dataSaver,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(dataSaver: value),
+            ),
+          ),
+          SwitchListTile(
             title: const Text('Compress photos by default'),
             subtitle: const Text('Keeps original files when disabled'),
             value: settings.compressPhotos,
@@ -885,6 +934,116 @@ class _CheckTile extends StatelessWidget {
         leading: Icon(icon, color: color),
         title: Text(title),
         subtitle: Text(subtitle),
+      ),
+    );
+  }
+}
+
+class SecurityPage extends StatelessWidget {
+  const SecurityPage({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final session = controller.session;
+    return Scaffold(
+      backgroundColor: const Color(0xFF07111E),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        title: const Text('Security'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.badge_outlined),
+              title: const Text('Device node ID'),
+              subtitle: Text(
+                controller.myNodeId.isEmpty ? 'Missing' : controller.myNodeId,
+              ),
+              trailing: IconButton(
+                tooltip: 'Copy',
+                icon: const Icon(Icons.copy_rounded),
+                onPressed: controller.myNodeId.isEmpty
+                    ? null
+                    : () {
+                        Clipboard.setData(
+                          ClipboardData(text: controller.myNodeId),
+                        );
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Node ID copied')),
+                        );
+                      },
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.alternate_email_rounded),
+              title: const Text('Username'),
+              subtitle: Text(
+                session?.publicUsername.isNotEmpty == true
+                    ? '@${session!.publicUsername}'
+                    : 'Not set',
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.dns_outlined),
+              title: const Text('Server'),
+              subtitle: Text(session?.serverUrl ?? 'No session'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.devices_outlined),
+              title: const Text('Active devices'),
+              subtitle: const Text('Open device list from Settings'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ActiveDevicesPage(controller: controller),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.block_outlined),
+              title: const Text('Blocked users'),
+              subtitle: Text(
+                controller.appSettings.blockedNodeIds.isEmpty
+                    ? 'No blocked users'
+                    : '${controller.appSettings.blockedNodeIds.length} blocked',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => BlockedUsersPage(controller: controller),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.lock_outline_rounded),
+              title: Text('Encryption'),
+              subtitle: Text(
+                'Text and media are encrypted before sending. Keep your account password private.',
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

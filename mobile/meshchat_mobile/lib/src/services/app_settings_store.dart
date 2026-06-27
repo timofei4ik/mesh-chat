@@ -15,6 +15,7 @@ class AppSettingsStore {
       notificationPreview: prefs.getBool('notification_preview') ?? true,
       compressPhotos: prefs.getBool('compress_photos') ?? true,
       sendFilesOriginal: prefs.getBool('send_files_original') ?? true,
+      dataSaver: prefs.getBool('data_saver') ?? false,
       blockedNodeIds: prefs.getStringList('blocked_node_ids') ?? const [],
     );
   }
@@ -32,6 +33,7 @@ class AppSettingsStore {
     await prefs.setBool('notification_preview', settings.notificationPreview);
     await prefs.setBool('compress_photos', settings.compressPhotos);
     await prefs.setBool('send_files_original', settings.sendFilesOriginal);
+    await prefs.setBool('data_saver', settings.dataSaver);
     await prefs.setStringList('blocked_node_ids', settings.blockedNodeIds);
   }
 

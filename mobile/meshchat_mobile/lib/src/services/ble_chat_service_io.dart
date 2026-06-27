@@ -74,8 +74,8 @@ class BleChatService extends ChangeNotifier {
     '6d657368-6368-6174-8000-000000000003',
   );
 
-  final CentralManager _central = CentralManager();
-  final PeripheralManager _peripheral = PeripheralManager();
+  late final CentralManager _central = CentralManager();
+  late final PeripheralManager _peripheral = PeripheralManager();
   final Map<String, _DiscoveredBlePeer> _discovered = {};
   final Map<String, _ConnectedBlePeer> _connected = {};
   final Map<String, _IncomingBlePacket> _incoming = {};

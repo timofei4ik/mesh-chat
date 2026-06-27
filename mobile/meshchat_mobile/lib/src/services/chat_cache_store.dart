@@ -94,14 +94,62 @@ class ChatCacheStore {
   Future<void> deleteThread(Session? session, ChatThread thread) async {
     if (session == null) return;
     if (kIsWeb) return;
-    final threadKey = thread.isGroup ? 'group:${thread.groupId}' : thread.profile.nodeId;
-    if (threadKey.isEmpty) return;
     final db = await _db();
+    final threadKey = thread.isGroup
+        ? thread.groupId.isNotEmpty
+              ? 'group:${thread.groupId}'
+              : ''
+        : thread.profile.nodeId;
+    if (threadKey.isEmpty) {
+      await _deleteBrokenGroupThread(session, db, thread);
+      return;
+    }
     await db.delete(
       'chat_threads',
       where: 'session_key=? AND thread_key=?',
       whereArgs: [_key(session), threadKey],
     );
+  }
+
+  Future<void> _deleteBrokenGroupThread(
+    Session session,
+    Database db,
+    ChatThread thread,
+  ) async {
+    final sessionKey = _key(session);
+    final rows = await db.query(
+      'chat_threads',
+      columns: ['thread_key', 'payload'],
+      where: 'session_key=? AND is_group=1',
+      whereArgs: [sessionKey],
+    );
+    final batch = db.batch();
+    for (final row in rows) {
+      final threadKey = row['thread_key']?.toString() ?? '';
+      final payload = row['payload']?.toString() ?? '';
+      if (payload.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(payload);
+        if (decoded is! Map) continue;
+        final cached = ChatThread.fromJson(Map<String, dynamic>.from(decoded));
+        final sameBrokenGroup =
+            cached.groupId.isEmpty &&
+            (identical(cached, thread) ||
+                cached.profile.nodeId == thread.profile.nodeId ||
+                (cached.groupName.isNotEmpty &&
+                    cached.groupName == thread.groupName));
+        if (sameBrokenGroup && threadKey.isNotEmpty) {
+          batch.delete(
+            'chat_threads',
+            where: 'session_key=? AND thread_key=?',
+            whereArgs: [sessionKey, threadKey],
+          );
+        }
+      } catch (_) {
+        // Leave unrelated broken rows alone; the next full cache save can trim them.
+      }
+    }
+    await batch.commit(noResult: true);
   }
 
   Future<CacheStats> stats(Session? session) async {

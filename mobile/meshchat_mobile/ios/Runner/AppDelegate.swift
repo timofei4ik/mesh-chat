@@ -5,6 +5,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let audioSessionChannel = "meshchat/audio_session"
+  private let proximityScreenChannel = "meshchat/proximity_screen"
 
   override func application(
     _ application: UIApplication,
@@ -12,6 +13,7 @@ import UIKit
   ) -> Bool {
     if let controller = window?.rootViewController as? FlutterViewController {
       installAudioSessionChannel(controller.binaryMessenger)
+      installProximityScreenChannel(controller.binaryMessenger)
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
@@ -20,6 +22,7 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MeshChatAudioSession") {
       installAudioSessionChannel(registrar.messenger())
+      installProximityScreenChannel(registrar.messenger())
     }
   }
 
@@ -45,6 +48,26 @@ import UIKit
             details: nil
           )
         )
+      }
+    }
+  }
+
+  private func installProximityScreenChannel(_ messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(name: proximityScreenChannel, binaryMessenger: messenger)
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "enable":
+        DispatchQueue.main.async {
+          UIDevice.current.isProximityMonitoringEnabled = true
+          result(nil)
+        }
+      case "disable":
+        DispatchQueue.main.async {
+          UIDevice.current.isProximityMonitoringEnabled = false
+          result(nil)
+        }
+      default:
+        result(FlutterMethodNotImplemented)
       }
     }
   }

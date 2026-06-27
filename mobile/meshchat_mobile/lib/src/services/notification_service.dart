@@ -2,7 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'notification_web_stub.dart'
-    if (dart.library.html) 'notification_web.dart' as web_notifications;
+    if (dart.library.html) 'notification_web.dart'
+    as web_notifications;
 
 class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
@@ -109,6 +110,58 @@ class NotificationService {
       id: _nextId++,
       title: title.trim().isEmpty ? 'MeshChat' : title.trim(),
       body: body.trim().isEmpty ? 'New message' : body.trim(),
+      notificationDetails: details,
+    );
+  }
+
+  Future<void> showCall({
+    required String title,
+    required String body,
+    bool sound = true,
+    bool vibration = true,
+  }) async {
+    if (!_initialized) await initialize();
+    if (kIsWeb) {
+      await web_notifications.showNotification(
+        title: title.trim().isEmpty ? 'MeshChat call' : title.trim(),
+        body: body.trim().isEmpty ? 'Incoming call' : body.trim(),
+        icon: 'icons/Icon-192.png',
+      );
+      return;
+    }
+
+    final android = AndroidNotificationDetails(
+      'meshchat_calls',
+      'Calls',
+      channelDescription: 'Incoming MeshChat calls',
+      importance: Importance.max,
+      priority: Priority.max,
+      category: AndroidNotificationCategory.call,
+      playSound: sound,
+      enableVibration: vibration,
+      ongoing: true,
+      autoCancel: true,
+      fullScreenIntent: true,
+      visibility: NotificationVisibility.public,
+    );
+    final darwin = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: sound,
+      interruptionLevel: InterruptionLevel.timeSensitive,
+    );
+    const windows = WindowsNotificationDetails();
+    final details = NotificationDetails(
+      android: android,
+      iOS: darwin,
+      macOS: darwin,
+      windows: windows,
+    );
+
+    await _plugin.show(
+      id: 100000 + _nextId++,
+      title: title.trim().isEmpty ? 'MeshChat call' : title.trim(),
+      body: body.trim().isEmpty ? 'Incoming call' : body.trim(),
       notificationDetails: details,
     );
   }

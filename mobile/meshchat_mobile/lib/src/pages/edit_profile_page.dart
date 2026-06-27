@@ -107,7 +107,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
     );
 
     return Scaffold(
+      backgroundColor: const Color(0xFF07111E),
       appBar: AppBar(
+        backgroundColor: Colors.transparent,
         title: const Text('Profile'),
         actions: [
           TextButton(
@@ -122,65 +124,99 @@ class _EditProfilePageState extends State<EditProfilePage> {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
-        children: [
-          Center(
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ProfileAvatar(profile: preview, radius: 56),
-                Positioned(
-                  right: -4,
-                  bottom: -4,
-                  child: IconButton.filled(
-                    tooltip: 'Choose avatar',
-                    onPressed: pickAvatar,
-                    icon: const Icon(Icons.photo_camera_outlined),
-                  ),
+      body: DecoratedBox(
+        decoration: const BoxDecoration(color: Color(0xFF07111E)),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(18, 22, 18, 18),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [
+                    Color(0xAA2A3540),
+                    Color(0xAA242D37),
+                    Color(0xAA2A3540),
+                  ],
                 ),
-              ],
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Column(
+                children: [
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      ProfileAvatar(profile: preview, radius: 62),
+                      Positioned(
+                        right: -4,
+                        bottom: -4,
+                        child: IconButton.filled(
+                          tooltip: 'Choose avatar',
+                          onPressed: pickAvatar,
+                          icon: const Icon(Icons.photo_camera_outlined),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    preview.displayName,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (preview.publicUsername.isNotEmpty)
+                    Text(
+                      '@${preview.publicUsername}',
+                      style: const TextStyle(color: Colors.white60),
+                    ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 28),
-          TextField(
-            controller: nameInput,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Name',
-              prefixIcon: Icon(Icons.badge_outlined),
+            const SizedBox(height: 18),
+            TextField(
+              controller: nameInput,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+              onChanged: (_) => setState(() {}),
             ),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: usernameInput,
-            decoration: const InputDecoration(
-              labelText: '@username',
-              prefixIcon: Icon(Icons.alternate_email),
+            const SizedBox(height: 12),
+            TextField(
+              controller: usernameInput,
+              decoration: const InputDecoration(
+                labelText: '@username',
+                prefixIcon: Icon(Icons.alternate_email),
+              ),
+              onChanged: (_) => setState(() {}),
             ),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: aboutInput,
-            minLines: 3,
-            maxLines: 5,
-            decoration: const InputDecoration(
-              labelText: 'About',
-              prefixIcon: Icon(Icons.info_outline),
+            const SizedBox(height: 12),
+            TextField(
+              controller: aboutInput,
+              minLines: 3,
+              maxLines: 5,
+              decoration: const InputDecoration(
+                labelText: 'About',
+                prefixIcon: Icon(Icons.info_outline),
+              ),
+              onChanged: (_) => setState(() {}),
             ),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 16),
-          OutlinedButton.icon(
-            onPressed: avatarData.isEmpty
-                ? null
-                : () => setState(() => avatarData = ''),
-            icon: const Icon(Icons.delete_outline),
-            label: const Text('Remove avatar'),
-          ),
-        ],
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: avatarData.isEmpty
+                  ? null
+                  : () => setState(() => avatarData = ''),
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Remove avatar'),
+            ),
+          ],
+        ),
       ),
     );
   }

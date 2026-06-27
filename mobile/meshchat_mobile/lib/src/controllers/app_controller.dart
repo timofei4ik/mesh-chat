@@ -17,9 +17,22 @@ import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
 import '../services/mesh_socket.dart';
 import '../services/notification_service.dart';
+import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
 
 enum CallStatus { ringing, outgoing, active, ended }
+
+class DiagnosticEvent {
+  const DiagnosticEvent({
+    required this.time,
+    required this.area,
+    required this.message,
+  });
+
+  final DateTime time;
+  final String area;
+  final String message;
+}
 
 class ActiveCall {
   const ActiveCall({
@@ -101,6 +114,7 @@ class AppController extends ChangeNotifier {
   final CallService _calls = CallService();
   final Map<String, CallService> _groupCalls = {};
   final NotificationService _notifications = NotificationService();
+  final ProximityScreenService _proximityScreen = ProximityScreenService();
   final Map<String, Profile> profiles = {};
   final Map<String, ChatThread> threads = {};
   final Map<String, ChatThread> groups = {};
@@ -122,12 +136,23 @@ class AppController extends ChangeNotifier {
   String _activeThreadKey = '';
   Timer? _callTicker;
   bool _webPushSubscribeInFlight = false;
+  final List<DiagnosticEvent> diagnostics = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
   final Map<String, _GroupKey> _groupKeys = {};
 
   AppController() {
     ble.onPacket = _handleBluetoothPacket;
     ble.addListener(_handleBluetoothStateChanged);
+  }
+
+  void addDiagnostic(String area, String message) {
+    diagnostics.insert(
+      0,
+      DiagnosticEvent(time: DateTime.now(), area: area, message: message),
+    );
+    if (diagnostics.length > 80) {
+      diagnostics.removeRange(80, diagnostics.length);
+    }
   }
 
   bool get hasSession => session != null;
@@ -460,6 +485,7 @@ class AppController extends ChangeNotifier {
       onPacket: _handlePacket,
       onStatus: (value) {
         status = value;
+        addDiagnostic('server', value);
         notifyListeners();
       },
     );
@@ -472,6 +498,7 @@ class AppController extends ChangeNotifier {
           status = MeshSocket.protocolError(packet);
         } else {
           status = 'Online';
+          addDiagnostic('server', 'Protocol OK, server welcome received');
           _webPushVapidPublicKey =
               packet['web_push_vapid_public_key']?.toString() ?? '';
           unawaited(_syncWebPushSubscription());
@@ -485,6 +512,7 @@ class AppController extends ChangeNotifier {
               packet['reason']?.toString() ??
               'Server error';
         }
+        addDiagnostic('server', status);
         notifyListeners();
       case 'server_users':
         _applyOnlineUsers(packet['users']);
@@ -493,6 +521,7 @@ class AppController extends ChangeNotifier {
       case 'server_sync_done':
         status = 'Online';
         lastSyncAt = DateTime.now();
+        addDiagnostic('sync', 'Sync received');
         await _saveCache();
       case 'username_lookup_result':
         _handleLookup(packet);
@@ -831,6 +860,21 @@ class AppController extends ChangeNotifier {
   Future<void> _repairCachedGroups() async {
     if (session == null || groups.isEmpty) return;
     var changed = false;
+    final brokenGroupIds = groups.entries
+        .where(
+          (entry) =>
+              entry.key.trim().isEmpty ||
+              entry.value.groupId.trim().isEmpty ||
+              entry.key != entry.value.groupId,
+        )
+        .map((entry) => entry.key)
+        .toList();
+    for (final groupId in brokenGroupIds) {
+      groups.remove(groupId);
+      _groupKeys.remove(groupId);
+      typingUntil.remove(groupId);
+      changed = true;
+    }
     for (final group in groups.values) {
       changed = _ensureOwnGroupMembership(group) || changed;
     }
@@ -1449,6 +1493,14 @@ class AppController extends ChangeNotifier {
       if (thread.groupId.isNotEmpty) {
         groups.remove(thread.groupId);
         _groupKeys.remove(thread.groupId);
+      } else {
+        groups.removeWhere(
+          (_, group) =>
+              identical(group, thread) ||
+              (group.groupId.isEmpty &&
+                  group.profile.nodeId == thread.profile.nodeId &&
+                  group.groupName == thread.groupName),
+        );
       }
     } else {
       threads.remove(thread.profile.nodeId);
@@ -1970,7 +2022,7 @@ class AppController extends ChangeNotifier {
       ),
     );
     unawaited(
-      _showNotification(
+      _showCallNotification(
         title: profile.displayName,
         body: groupId.isEmpty ? 'Incoming call' : 'Incoming group call',
       ),
@@ -3089,6 +3141,19 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<void> _showCallNotification({
+    required String title,
+    required String body,
+  }) async {
+    if (!appSettings.notificationsEnabled) return;
+    await _notifications.showCall(
+      title: title,
+      body: appSettings.notificationPreview ? body : 'Incoming call',
+      sound: appSettings.notificationSound,
+      vibration: appSettings.notificationVibration,
+    );
+  }
+
   bool _isImageName(String filename) {
     final lower = filename.toLowerCase();
     return lower.endsWith('.png') ||
@@ -3333,6 +3398,11 @@ class AppController extends ChangeNotifier {
 
   void _setActiveCall(ActiveCall? call) {
     activeCall = call;
+    unawaited(
+      _proximityScreen.setEnabled(
+        call != null && call.status != CallStatus.ended,
+      ),
+    );
     if (call == null || call.status == CallStatus.ended) {
       _callTicker?.cancel();
       _callTicker = null;
@@ -3457,6 +3527,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _callTicker?.cancel();
+    unawaited(_proximityScreen.dispose());
     ble.removeListener(_handleBluetoothStateChanged);
     ble.dispose();
     _socket.close();

@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:cross_file/cross_file.dart';
@@ -6,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart' as image_picker;
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -15,9 +18,12 @@ import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
+import '../services/call_alert_service.dart';
 import '../widgets/profile_avatar.dart';
 import 'group_info_page.dart';
 import 'profile_page.dart';
+
+enum _AttachAction { photo, file }
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.controller, required this.thread});
@@ -34,18 +40,29 @@ class _ChatPageState extends State<ChatPage> {
   final inputFocus = FocusNode();
   final scroll = ScrollController();
   final recorder = AudioRecorder();
+  final imagePicker = image_picker.ImagePicker();
   final recordLevels = List<double>.filled(22, 0.25);
   StreamSubscription<Amplitude>? amplitudeSubscription;
+  AudioPlayer? ringbackPlayer;
+  bool ringbackRunning = false;
+  final incomingCallAlert = CallAlertService();
   bool recording = false;
+  bool hasInputText = false;
   DateTime? recordStartedAt;
   ChatMessage? replyTo;
   DateTime? lastTypingSentAt;
+  final deletingMessageIds = <String>{};
 
   @override
   void initState() {
     super.initState();
     input.text = widget.thread.draft;
+    hasInputText = input.text.trim().isNotEmpty;
     input.addListener(() {
+      final hasText = input.text.trim().isNotEmpty;
+      if (hasInputText != hasText) {
+        setState(() => hasInputText = hasText);
+      }
       widget.controller.updateDraft(widget.thread, input.text);
       final now = DateTime.now();
       if (input.text.trim().isNotEmpty &&
@@ -57,17 +74,98 @@ class _ChatPageState extends State<ChatPage> {
     });
     widget.controller.markRead(widget.thread);
     widget.controller.setActiveThread(widget.thread);
+    widget.controller.addListener(syncRingback);
+    syncRingback();
   }
 
   @override
   void dispose() {
     amplitudeSubscription?.cancel();
+    widget.controller.removeListener(syncRingback);
+    unawaited(incomingCallAlert.dispose());
+    unawaited(stopRingback());
     widget.controller.setActiveThread(null);
     inputFocus.dispose();
     input.dispose();
     scroll.dispose();
     recorder.dispose();
+    ringbackPlayer?.dispose();
     super.dispose();
+  }
+
+  void syncRingback() {
+    unawaited(incomingCallAlert.sync(widget.controller));
+    final call = widget.controller.activeCall;
+    final shouldPlay =
+        call != null && !call.incoming && call.status == CallStatus.outgoing;
+    if (shouldPlay) {
+      unawaited(startRingback());
+    } else {
+      unawaited(stopRingback());
+    }
+  }
+
+  Future<void> startRingback() async {
+    if (ringbackRunning) return;
+    ringbackRunning = true;
+    final player = ringbackPlayer ??= AudioPlayer();
+    await player.setReleaseMode(ReleaseMode.loop).catchError((_) {});
+    await player
+        .play(BytesSource(_softRingbackWav()), volume: 0.30)
+        .catchError((_) {});
+  }
+
+  Future<void> stopRingback() async {
+    if (!ringbackRunning && ringbackPlayer == null) return;
+    ringbackRunning = false;
+    await ringbackPlayer?.stop().catchError((_) {});
+  }
+
+  Uint8List _softRingbackWav() {
+    const sampleRate = 22050;
+    const seconds = 2.4;
+    final samples = (sampleRate * seconds).round();
+    final dataBytes = samples * 2;
+    final bytes = Uint8List(44 + dataBytes);
+    final data = ByteData.sublistView(bytes);
+
+    void writeAscii(int offset, String value) {
+      for (var i = 0; i < value.length; i++) {
+        bytes[offset + i] = value.codeUnitAt(i);
+      }
+    }
+
+    writeAscii(0, 'RIFF');
+    data.setUint32(4, 36 + dataBytes, Endian.little);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    data.setUint32(16, 16, Endian.little);
+    data.setUint16(20, 1, Endian.little);
+    data.setUint16(22, 1, Endian.little);
+    data.setUint32(24, sampleRate, Endian.little);
+    data.setUint32(28, sampleRate * 2, Endian.little);
+    data.setUint16(32, 2, Endian.little);
+    data.setUint16(34, 16, Endian.little);
+    writeAscii(36, 'data');
+    data.setUint32(40, dataBytes, Endian.little);
+
+    for (var i = 0; i < samples; i++) {
+      final t = i / sampleRate;
+      final local = t % seconds;
+      final inTone = local < 0.42 || (local > 0.62 && local < 1.02);
+      var sample = 0.0;
+      if (inTone) {
+        final toneT = local < 0.42 ? local : local - 0.62;
+        final attack = (toneT / 0.08).clamp(0.0, 1.0);
+        final release = ((0.40 - toneT) / 0.14).clamp(0.0, 1.0);
+        final envelope = math.sin(math.pi * math.min(attack, release) / 2);
+        final base = math.sin(2 * math.pi * 523.25 * t);
+        final overtone = math.sin(2 * math.pi * 659.25 * t) * 0.34;
+        sample = (base + overtone) * 0.20 * envelope;
+      }
+      data.setInt16(44 + i * 2, (sample * 32767).round(), Endian.little);
+    }
+    return bytes;
   }
 
   Future<void> send() async {
@@ -98,21 +196,79 @@ class _ChatPageState extends State<ChatPage> {
     final file = result?.files.single;
     final bytes = file?.bytes;
     if (file == null || bytes == null) return;
-    final caption = await askFileCaption(file.name);
+    await sendAttachment(file.name, bytes);
+  }
+
+  Future<void> attachPhoto() async {
+    final image = await imagePicker.pickImage(
+      source: image_picker.ImageSource.gallery,
+      requestFullMetadata: false,
+    );
+    if (image == null) return;
+    final bytes = await image.readAsBytes();
+    final filename = image.name.trim().isEmpty
+        ? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg'
+        : image.name;
+    await sendAttachment(filename, bytes);
+  }
+
+  Future<void> showAttachMenu() async {
+    final action = await showModalBottomSheet<_AttachAction>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 18),
+          child: _ChatGlassSurface(
+            radius: 28,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _GlassSheetAction(
+                    icon: Icons.photo_library_rounded,
+                    title: 'Photo',
+                    subtitle: 'Choose from gallery',
+                    onTap: () => Navigator.pop(context, _AttachAction.photo),
+                  ),
+                  _GlassSheetAction(
+                    icon: Icons.attach_file_rounded,
+                    title: 'File',
+                    subtitle: 'Choose any document',
+                    onTap: () => Navigator.pop(context, _AttachAction.file),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (action == _AttachAction.photo) {
+      await attachPhoto();
+    } else if (action == _AttachAction.file) {
+      await attachFile();
+    }
+  }
+
+  Future<void> sendAttachment(String filename, Uint8List bytes) async {
+    final caption = await askFileCaption(filename);
     if (caption == null) return;
     final quote = replyTo;
     setState(() => replyTo = null);
     final error = widget.thread.isGroup
         ? await widget.controller.sendGroupFile(
             widget.thread,
-            file.name,
+            filename,
             bytes,
             caption: caption,
             replyTo: quote,
           )
         : await widget.controller.sendFile(
             widget.thread.profile,
-            file.name,
+            filename,
             bytes,
             caption: caption,
             replyTo: quote,
@@ -515,7 +671,13 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
     if (action == 'delete') {
+      setState(() => deletingMessageIds.add(message.id));
+      await Future.delayed(const Duration(milliseconds: 540));
+      if (!mounted) return;
       await widget.controller.deleteMessage(widget.thread, message);
+      if (mounted) {
+        setState(() => deletingMessageIds.remove(message.id));
+      }
       return;
     }
     if (action == 'pin') {
@@ -766,6 +928,16 @@ class _ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leadingWidth: 56,
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: _ChatRoundButton(
+            tooltip: 'Back',
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+            onPressed: () => Navigator.maybePop(context),
+          ),
+        ),
         titleSpacing: 0,
         title: ListenableBuilder(
           listenable: widget.controller,
@@ -776,7 +948,7 @@ class _ChatPageState extends State<ChatPage> {
               onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
               child: Row(
                 children: [
-                  ProfileAvatar(profile: profile, radius: 19),
+                  _ChatAvatarRing(profile: profile),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -810,166 +982,264 @@ class _ChatPageState extends State<ChatPage> {
           },
         ),
         actions: [
-          IconButton.filledTonal(
+          _ChatRoundButton(
             tooltip: widget.thread.isGroup ? 'Group call' : 'Call',
             icon: Icon(
               widget.thread.isGroup ? Icons.add_call : Icons.call_outlined,
             ),
             onPressed: startCall,
           ),
-          IconButton(
+          _ChatRoundButton(
             tooltip: 'Search',
-            icon: const Icon(Icons.search),
+            icon: const Icon(Icons.search_rounded),
             onPressed: showSearchDialog,
           ),
-          IconButton(
+          _ChatRoundButton(
             tooltip: 'Media',
             icon: const Icon(Icons.perm_media_outlined),
             onPressed: openMediaList,
           ),
+          const SizedBox(width: 6),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          ListenableBuilder(
-            listenable: widget.controller,
-            builder: (context, _) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _PinnedBar(thread: widget.thread, onTap: openPinnedMessages),
-                _CallBanner(controller: widget.controller),
-                if (widget.controller.isTyping(widget.thread))
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 6,
+          const Positioned.fill(child: _LiquidMeshBackground()),
+          Column(
+            children: [
+              ListenableBuilder(
+                listenable: widget.controller,
+                builder: (context, _) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _PinnedBar(
+                      thread: widget.thread,
+                      onTap: openPinnedMessages,
                     ),
-                    color: const Color(0xFF20242B),
-                    child: const Text(
-                      'typing...',
-                      style: TextStyle(fontSize: 12, color: Colors.white54),
+                    _CallBanner(controller: widget.controller),
+                    if (widget.controller.isTyping(widget.thread))
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+                        child: _ChatGlassSurface(
+                          radius: 16,
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 7,
+                            ),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                'typing...',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListenableBuilder(
+                  listenable: widget.controller,
+                  builder: (context, _) {
+                    WidgetsBinding.instance.addPostFrameCallback(
+                      (_) => scrollToBottom(),
+                    );
+                    final messages = widget.thread.messages;
+                    return ListView.builder(
+                      controller: scroll,
+                      padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
+                      itemCount: messages.length,
+                      itemBuilder: (context, index) {
+                        final message = messages[index];
+                        final showDate =
+                            index == 0 ||
+                            !sameDay(
+                              messages[index - 1].createdAt,
+                              message.createdAt,
+                            );
+                        return Column(
+                          children: [
+                            if (showDate) _DatePill(date: message.createdAt),
+                            _MessageDisintegrator(
+                              deleting: deletingMessageIds.contains(message.id),
+                              child: _MessageBubble(
+                                message: message,
+                                mine:
+                                    message.senderNode ==
+                                    widget.controller.myNodeId,
+                                dataSaver:
+                                    widget.controller.appSettings.dataSaver,
+                                onLongPress: () => showMessageActions(message),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+              SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
+                  child: _ChatGlassSurface(
+                    radius: 24,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (replyTo != null) ...[
+                            _ReplyComposer(
+                              message: replyTo!,
+                              onCancel: () => setState(() => replyTo = null),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                          Row(
+                            children: [
+                              if (!recording) ...[
+                                _ComposerIconButton(
+                                  tooltip: 'Attach',
+                                  onPressed: showAttachMenu,
+                                  icon: Icons.attach_file_rounded,
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              Expanded(
+                                child: _ComposerInputSurface(
+                                  child: recording
+                                      ? Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.mic_rounded,
+                                              color: Colors.redAccent,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: _Waveform(
+                                                levels: recordLevels,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              recordDuration(),
+                                              style: const TextStyle(
+                                                color: Colors.white70,
+                                              ),
+                                            ),
+                                          ],
+                                        )
+                                      : Focus(
+                                          focusNode: inputFocus,
+                                          onKeyEvent: handleInputKey,
+                                          child: TextField(
+                                            controller: input,
+                                            minLines: 1,
+                                            maxLines: 5,
+                                            textCapitalization:
+                                                TextCapitalization.sentences,
+                                            keyboardType:
+                                                TextInputType.multiline,
+                                            textInputAction: desktopSendHotkeys
+                                                ? TextInputAction.send
+                                                : TextInputAction.newline,
+                                            decoration: const InputDecoration(
+                                              hintText: 'Message',
+                                              isDense: true,
+                                              filled: false,
+                                              border: InputBorder.none,
+                                            ),
+                                            onSubmitted: desktopSendHotkeys
+                                                ? (_) => send()
+                                                : null,
+                                          ),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              if (recording)
+                                _ComposerIconButton(
+                                  tooltip: 'Cancel',
+                                  onPressed: cancelRecording,
+                                  icon: Icons.close_rounded,
+                                  accent: Colors.redAccent,
+                                )
+                              else
+                                AnimatedSwitcher(
+                                  duration: const Duration(milliseconds: 180),
+                                  transitionBuilder: (child, animation) =>
+                                      ScaleTransition(
+                                        scale: CurvedAnimation(
+                                          parent: animation,
+                                          curve: Curves.easeOutBack,
+                                        ),
+                                        child: FadeTransition(
+                                          opacity: animation,
+                                          child: child,
+                                        ),
+                                      ),
+                                  child: hasInputText
+                                      ? _ComposerIconButton(
+                                          key: const ValueKey('send'),
+                                          tooltip: 'Send',
+                                          onPressed: send,
+                                          icon: Icons.send_rounded,
+                                          accent: Colors.lightBlueAccent,
+                                        )
+                                      : _ComposerIconButton(
+                                          key: const ValueKey('mic'),
+                                          tooltip: 'Voice',
+                                          onPressed: toggleVoiceRecording,
+                                          icon: Icons.mic_none_rounded,
+                                        ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-              ],
-            ),
+                ),
+              ),
+            ],
           ),
-          Expanded(
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 92,
             child: ListenableBuilder(
               listenable: widget.controller,
               builder: (context, _) {
-                WidgetsBinding.instance.addPostFrameCallback(
-                  (_) => scrollToBottom(),
-                );
-                final messages = widget.thread.messages;
-                return ListView.builder(
-                  controller: scroll,
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    final message = messages[index];
-                    return _MessageBubble(
-                      message: message,
-                      mine: message.senderNode == widget.controller.myNodeId,
-                      onLongPress: () => showMessageActions(message),
+                final call = widget.controller.activeCall;
+                if (call == null ||
+                    call.collapsed ||
+                    call.status == CallStatus.ended) {
+                  return const SizedBox.shrink();
+                }
+                return TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 1, end: 0),
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, value, child) {
+                    return Opacity(
+                      opacity: 1 - value,
+                      child: Transform.translate(
+                        offset: Offset(0, 72 * value),
+                        child: child,
+                      ),
                     );
                   },
+                  child: _CallBottomSheet(controller: widget.controller),
                 );
               },
-            ),
-          ),
-          SafeArea(
-            top: false,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-              color: const Color(0xFF20242B),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (replyTo != null) ...[
-                    _ReplyComposer(
-                      message: replyTo!,
-                      onCancel: () => setState(() => replyTo = null),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  Row(
-                    children: [
-                      Expanded(
-                        child: recording
-                            ? Row(
-                                children: [
-                                  const Icon(
-                                    Icons.mic_rounded,
-                                    color: Colors.redAccent,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: _Waveform(levels: recordLevels),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    recordDuration(),
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : Focus(
-                                focusNode: inputFocus,
-                                onKeyEvent: handleInputKey,
-                                child: TextField(
-                                  controller: input,
-                                  minLines: 1,
-                                  maxLines: 5,
-                                  textCapitalization:
-                                      TextCapitalization.sentences,
-                                  keyboardType: TextInputType.multiline,
-                                  textInputAction: desktopSendHotkeys
-                                      ? TextInputAction.send
-                                      : TextInputAction.newline,
-                                  decoration: const InputDecoration(
-                                    hintText: 'Message',
-                                    isDense: true,
-                                  ),
-                                  onSubmitted: desktopSendHotkeys
-                                      ? (_) => send()
-                                      : null,
-                                ),
-                              ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        tooltip: recording ? 'Send voice' : 'Voice',
-                        onPressed: toggleVoiceRecording,
-                        icon: Icon(
-                          recording
-                              ? Icons.stop_circle_outlined
-                              : Icons.mic_none_rounded,
-                        ),
-                      ),
-                      if (!recording) ...[
-                        IconButton(
-                          tooltip: 'File',
-                          onPressed: attachFile,
-                          icon: const Icon(Icons.attach_file_rounded),
-                        ),
-                        IconButton.filled(
-                          tooltip: 'Send',
-                          onPressed: send,
-                          icon: const Icon(Icons.send_rounded),
-                        ),
-                      ] else
-                        IconButton(
-                          tooltip: 'Cancel',
-                          onPressed: cancelRecording,
-                          icon: const Icon(Icons.close_rounded),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
             ),
           ),
         ],
@@ -989,6 +1259,9 @@ class _CallBanner extends StatelessWidget {
     if (call == null) return const SizedBox.shrink();
     if (call.collapsed && call.status != CallStatus.ended) {
       return _MiniCallPanel(controller: controller);
+    }
+    if (!call.collapsed && call.status != CallStatus.ended) {
+      return const SizedBox.shrink();
     }
     if (call.status == CallStatus.ended) {
       return _CallPanel(
@@ -1073,6 +1346,964 @@ class _CallBanner extends StatelessWidget {
   }
 }
 
+class _CallBottomSheet extends StatelessWidget {
+  const _CallBottomSheet({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final call = controller.activeCall;
+    if (call == null) return const SizedBox.shrink();
+    final incoming = call.status == CallStatus.ringing && call.incoming;
+    final active = call.status == CallStatus.active;
+    final title = incoming
+        ? 'Incoming call'
+        : active
+        ? 'Call active'
+        : 'Calling...';
+    final accent = incoming || active
+        ? Colors.lightBlueAccent
+        : const Color(0xFF7D8CFF);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(34),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(34),
+            color: const Color(0xD8232D38),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.lightBlueAccent.withValues(alpha: 0.08),
+                blurRadius: 28,
+              ),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.34),
+                blurRadius: 30,
+                offset: const Offset(0, 18),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 18, 22, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: _CallGlassButton(
+                    tooltip: 'Collapse',
+                    icon: Icons.keyboard_arrow_down_rounded,
+                    onPressed: controller.toggleCallCollapsed,
+                  ),
+                ),
+                const _CallMeshLogo(),
+                const SizedBox(height: 12),
+                Text(
+                  call.peer.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 23,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '$title · ${formatDuration(controller.callElapsed)}',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 12),
+                _CallStatusStrip(controller: controller),
+                const SizedBox(height: 18),
+                _CallEqualizer(accent: accent),
+                const SizedBox(height: 24),
+                if (incoming)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _CallGlassButton(
+                        tooltip: 'Decline',
+                        icon: Icons.call_end_rounded,
+                        accent: Colors.redAccent,
+                        onPressed: controller.declineCall,
+                      ),
+                      const SizedBox(width: 34),
+                      _CallGlassButton(
+                        tooltip: 'Accept',
+                        icon: Icons.call_rounded,
+                        accent: Colors.greenAccent,
+                        onPressed: controller.acceptCall,
+                      ),
+                    ],
+                  )
+                else ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _CallGlassButton(
+                        tooltip: call.speakerOn ? 'Speaker off' : 'Speaker on',
+                        icon: call.speakerOn
+                            ? Icons.volume_up_rounded
+                            : Icons.hearing_rounded,
+                        onPressed: controller.toggleCallSpeaker,
+                      ),
+                      _CallGlassButton(
+                        tooltip: call.localMuted ? 'Unmute' : 'Mute',
+                        icon: call.localMuted
+                            ? Icons.mic_off_rounded
+                            : Icons.mic_rounded,
+                        onPressed: controller.toggleCallMute,
+                      ),
+                      _CallGlassButton(
+                        tooltip: 'Bluetooth',
+                        icon: Icons.bluetooth_rounded,
+                        onPressed: () {},
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: 138,
+                    height: 52,
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      onPressed: controller.endCall,
+                      child: const Icon(Icons.call_end_rounded, size: 28),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CallMeshLogo extends StatelessWidget {
+  const _CallMeshLogo();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 128,
+      height: 92,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned(
+            left: 0,
+            child: Container(
+              width: 86,
+              height: 86,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF39D6FF).withValues(alpha: 0.30),
+                    blurRadius: 36,
+                    spreadRadius: 6,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            right: 0,
+            child: Container(
+              width: 86,
+              height: 86,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFFB463FF).withValues(alpha: 0.28),
+                    blurRadius: 36,
+                    spreadRadius: 6,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const CustomPaint(
+            size: Size(116, 78),
+            painter: _CallMeshLogoPainter(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CallMeshLogoPainter extends CustomPainter {
+  const _CallMeshLogoPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final left = Paint()
+      ..shader = const LinearGradient(
+        colors: [Color(0xFF39D6FF), Color(0xFF6B8DFF)],
+      ).createShader(Offset.zero & size)
+      ..strokeWidth = 5.2
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    final right = Paint()
+      ..shader = const LinearGradient(
+        colors: [Color(0xFF6B8DFF), Color(0xFFB463FF)],
+      ).createShader(Offset.zero & size)
+      ..strokeWidth = 5.2
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    final nodePaint = Paint()..style = PaintingStyle.fill;
+
+    final points = [
+      Offset(size.width * 0.08, size.height * 0.86),
+      Offset(size.width * 0.18, size.height * 0.12),
+      Offset(size.width * 0.50, size.height * 0.58),
+      Offset(size.width * 0.82, size.height * 0.12),
+      Offset(size.width * 0.92, size.height * 0.86),
+    ];
+    canvas.drawLine(points[0], points[1], left);
+    canvas.drawLine(points[1], points[2], left);
+    canvas.drawLine(points[2], points[3], right);
+    canvas.drawLine(points[3], points[4], right);
+
+    for (var i = 0; i < points.length; i++) {
+      nodePaint.color = i < 3
+          ? const Color(0xFF4DD7FF)
+          : const Color(0xFFB463FF);
+      canvas.drawCircle(points[i], 6.4, nodePaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _CallGlassButton extends StatelessWidget {
+  const _CallGlassButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    this.accent = Colors.white70,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: ClipOval(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.12),
+            child: InkWell(
+              onTap: onPressed,
+              child: Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.16),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: accent.withValues(alpha: 0.18),
+                      blurRadius: 18,
+                    ),
+                  ],
+                ),
+                child: Icon(icon, color: accent, size: 27),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CallStatusStrip extends StatelessWidget {
+  const _CallStatusStrip({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final call = controller.activeCall;
+    if (call == null) return const SizedBox.shrink();
+    final connected = call.status == CallStatus.active;
+    final statusText = call.status == CallStatus.ringing && call.incoming
+        ? 'Incoming'
+        : connected
+        ? 'Connected'
+        : 'Connecting';
+    final qualityText = connected
+        ? call.quality <= 1
+              ? 'Weak'
+              : 'Good'
+        : 'Waiting audio';
+    final participants = controller.callParticipantsLabel;
+    return Wrap(
+      alignment: WrapAlignment.center,
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        _CallInfoPill(
+          icon: connected ? Icons.link_rounded : Icons.sync_rounded,
+          label: statusText,
+          accent: connected ? Colors.greenAccent : Colors.lightBlueAccent,
+        ),
+        _CallInfoPill(
+          icon: call.quality <= 1
+              ? Icons.signal_cellular_alt_1_bar
+              : Icons.network_cell,
+          label: qualityText,
+          accent: call.quality <= 1 ? Colors.orangeAccent : Colors.greenAccent,
+        ),
+        if (call.localMuted)
+          const _CallInfoPill(
+            icon: Icons.mic_off_rounded,
+            label: 'Muted',
+            accent: Colors.redAccent,
+          ),
+        if (participants.isNotEmpty)
+          _CallInfoPill(
+            icon: Icons.groups_rounded,
+            label: participants,
+            accent: Colors.purpleAccent,
+          ),
+      ],
+    );
+  }
+}
+
+class _CallInfoPill extends StatelessWidget {
+  const _CallInfoPill({
+    required this.icon,
+    required this.label,
+    required this.accent,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.085),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withValues(alpha: 0.22)),
+        boxShadow: [
+          BoxShadow(color: accent.withValues(alpha: 0.12), blurRadius: 14),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: accent),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CallEqualizer extends StatefulWidget {
+  const _CallEqualizer({required this.accent});
+
+  final Color accent;
+
+  @override
+  State<_CallEqualizer> createState() => _CallEqualizerState();
+}
+
+class _CallEqualizerState extends State<_CallEqualizer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1250),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final values = <double>[
+      0.20,
+      0.36,
+      0.52,
+      0.78,
+      0.42,
+      0.28,
+      0.62,
+      0.86,
+      0.46,
+      0.32,
+      0.58,
+      0.74,
+      0.44,
+      0.30,
+      0.54,
+      0.68,
+      0.38,
+      0.24,
+    ];
+    return SizedBox(
+      height: 58,
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              for (var index = 0; index < values.length; index++)
+                _EqualizerBar(
+                  value:
+                      values[index] *
+                      (0.68 +
+                          0.32 *
+                              math
+                                  .sin(
+                                    controller.value * math.pi * 2 +
+                                        index * 0.78,
+                                  )
+                                  .abs()),
+                  color: Color.lerp(
+                    const Color(0xFF39D6FF),
+                    const Color(0xFFB463FF),
+                    index / (values.length - 1),
+                  )!,
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _EqualizerBar extends StatelessWidget {
+  const _EqualizerBar({required this.value, required this.color});
+
+  final double value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 90),
+      width: 4.5,
+      height: 12 + value * 42,
+      margin: const EdgeInsets.symmetric(horizontal: 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: color.withValues(alpha: 0.92),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.42),
+            blurRadius: 12,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChatAvatarRing extends StatelessWidget {
+  const _ChatAvatarRing({required this.profile});
+
+  final Profile profile;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2.5),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.white.withValues(alpha: 0.12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: ProfileAvatar(profile: profile, radius: 19),
+    );
+  }
+}
+
+class _ChatRoundButton extends StatelessWidget {
+  const _ChatRoundButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final Widget icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 7),
+      child: Tooltip(
+        message: tooltip,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Material(
+              color: Colors.white.withValues(alpha: 0.10),
+              shape: CircleBorder(
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
+              ),
+              child: InkWell(
+                onTap: onPressed,
+                customBorder: const CircleBorder(),
+                child: SizedBox(width: 42, height: 42, child: icon),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ComposerInputSurface extends StatelessWidget {
+  const _ComposerInputSurface({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 42),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _ComposerIconButton extends StatelessWidget {
+  const _ComposerIconButton({
+    super.key,
+    required this.tooltip,
+    required this.onPressed,
+    required this.icon,
+    this.accent = Colors.white70,
+  });
+
+  final String tooltip;
+  final VoidCallback onPressed;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.11),
+            child: InkWell(
+              onTap: onPressed,
+              child: SizedBox(
+                width: 42,
+                height: 42,
+                child: Icon(icon, color: accent),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GlassSheetAction extends StatelessWidget {
+  const _GlassSheetAction({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      leading: CircleAvatar(
+        backgroundColor: Colors.white.withValues(alpha: 0.10),
+        child: Icon(icon, color: Colors.lightBlueAccent),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+      subtitle: Text(subtitle, style: const TextStyle(color: Colors.white60)),
+      onTap: onTap,
+    );
+  }
+}
+
+class _MessageDisintegrator extends StatelessWidget {
+  const _MessageDisintegrator({required this.deleting, required this.child});
+
+  final bool deleting;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(end: deleting ? 1 : 0),
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.easeInOutCubic,
+      builder: (context, value, child) {
+        final opacity = (1 - value * 1.15).clamp(0.0, 1.0);
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Opacity(
+              opacity: opacity,
+              child: Transform.scale(
+                scale: 1 - value * 0.045,
+                alignment: Alignment.center,
+                child: child,
+              ),
+            ),
+            if (value > 0)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _DisintegratePainter(progress: value),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+      child: child,
+    );
+  }
+}
+
+class _DisintegratePainter extends CustomPainter {
+  const _DisintegratePainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final fade = (1 - progress).clamp(0.0, 1.0);
+    final colors = [
+      Colors.white.withValues(alpha: 0.72 * fade),
+      Colors.lightBlueAccent.withValues(alpha: 0.82 * fade),
+      const Color(0xFFA56CFF).withValues(alpha: 0.72 * fade),
+    ];
+    for (var i = 0; i < 28; i++) {
+      final seed = i * 12.9898;
+      final x = (math.sin(seed) * 0.5 + 0.5) * size.width;
+      final y = (math.cos(seed * 1.71) * 0.5 + 0.5) * size.height;
+      final angle = -math.pi / 2 + math.sin(seed * 0.37) * math.pi;
+      final distance = progress * (12 + (i % 7) * 5);
+      final offset = Offset(
+        x + math.cos(angle) * distance,
+        y + math.sin(angle) * distance,
+      );
+      final radius = (1.3 + (i % 4) * 0.45) * (0.5 + fade * 0.5);
+      canvas.drawCircle(
+        offset,
+        radius,
+        Paint()
+          ..color = colors[i % colors.length]
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.6),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DisintegratePainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
+
+class _DatePill extends StatelessWidget {
+  const _DatePill({required this.date});
+
+  final DateTime date;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: _ChatGlassSurface(
+        radius: 999,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+          child: Text(
+            dateLabel(date),
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LiquidMeshBackground extends StatefulWidget {
+  const _LiquidMeshBackground();
+
+  @override
+  State<_LiquidMeshBackground> createState() => _LiquidMeshBackgroundState();
+}
+
+class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller;
+  late final Timer timer;
+  final random = math.Random();
+  List<int> activePoints = const [0, 6];
+  List<Color> activeColors = const [Color(0xFF45D6FF), Color(0xFFB463FF)];
+
+  @override
+  void initState() {
+    super.initState();
+    controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    );
+    timer = Timer.periodic(const Duration(milliseconds: 4300), (_) {
+      if (!mounted) return;
+      setState(() {
+        final first = random.nextInt(_LiquidMeshPainter.pointCount);
+        if (random.nextBool()) {
+          var second = random.nextInt(_LiquidMeshPainter.pointCount);
+          if (second == first) {
+            second = (second + 4) % _LiquidMeshPainter.pointCount;
+          }
+          activePoints = [first, second];
+        } else {
+          activePoints = [first];
+        }
+        activeColors = random.nextBool()
+            ? const [Color(0xFF45D6FF), Color(0xFFB463FF)]
+            : const [Color(0xFFB463FF), Color(0xFF57FFC1)];
+      });
+      controller.forward(from: 0);
+    });
+    Future<void>.delayed(const Duration(milliseconds: 700), () {
+      if (mounted) controller.forward(from: 0);
+    });
+  }
+
+  @override
+  void dispose() {
+    timer.cancel();
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(color: Color(0xFF111820)),
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) => CustomPaint(
+          painter: _LiquidMeshPainter(
+            activePoints: activePoints,
+            activeColors: activeColors,
+            pulse: math.sin(controller.value * math.pi).clamp(0, 1).toDouble(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LiquidMeshPainter extends CustomPainter {
+  const _LiquidMeshPainter({
+    this.activePoints = const [],
+    this.activeColors = const [Color(0xFF45D6FF), Color(0xFFB463FF)],
+    this.pulse = 0,
+  });
+
+  static const pointCount = 11;
+  final List<int> activePoints;
+  final List<Color> activeColors;
+  final double pulse;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cyan = Paint()
+      ..color = const Color(0xFF45D6FF).withValues(alpha: 0.025)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 72);
+    final violet = Paint()
+      ..color = const Color(0xFF9B5CFF).withValues(alpha: 0.022)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 78);
+    final green = Paint()
+      ..color = const Color(0xFF57FFC1).withValues(alpha: 0.018)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 76);
+
+    canvas.drawCircle(Offset(size.width * 0.18, size.height * 0.18), 130, cyan);
+    canvas.drawCircle(
+      Offset(size.width * 0.88, size.height * 0.30),
+      150,
+      violet,
+    );
+    canvas.drawCircle(
+      Offset(size.width * 0.54, size.height * 0.86),
+      170,
+      green,
+    );
+
+    final linePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.055)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    final nodePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.11)
+      ..style = PaintingStyle.fill;
+
+    final points = _points(size);
+    for (var i = 0; i < points.length - 1; i++) {
+      canvas.drawLine(points[i], points[i + 1], linePaint);
+    }
+    canvas.drawLine(points[2], points[6], linePaint);
+    canvas.drawLine(points[6], points[10], linePaint);
+    canvas.drawLine(points[5], points[9], linePaint);
+    for (var i = 0; i < points.length; i++) {
+      final point = points[i];
+      final activeIndex = activePoints.indexOf(i);
+      if (activeIndex >= 0 && pulse > 0) {
+        final activeColor = activeColors[activeIndex % activeColors.length];
+        final localPulse = (pulse * (activeIndex == 0 ? 1.0 : 0.88)).clamp(
+          0.0,
+          1.0,
+        );
+        final glowPaint = Paint()
+          ..color = activeColor.withValues(alpha: 0.34 * localPulse)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 19);
+        final hotPaint = Paint()
+          ..color = activeColor.withValues(alpha: 0.88 * localPulse)
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(point, 15 * localPulse, glowPaint);
+        canvas.drawCircle(point, 3.4 + 2.4 * localPulse, hotPaint);
+      }
+      canvas.drawCircle(point, 2.4, nodePaint);
+    }
+  }
+
+  List<Offset> _points(Size size) {
+    return <Offset>[
+      Offset(size.width * 0.08, size.height * 0.18),
+      Offset(size.width * 0.28, size.height * 0.10),
+      Offset(size.width * 0.44, size.height * 0.23),
+      Offset(size.width * 0.64, size.height * 0.15),
+      Offset(size.width * 0.86, size.height * 0.26),
+      Offset(size.width * 0.23, size.height * 0.42),
+      Offset(size.width * 0.50, size.height * 0.52),
+      Offset(size.width * 0.76, size.height * 0.48),
+      Offset(size.width * 0.18, size.height * 0.76),
+      Offset(size.width * 0.43, size.height * 0.83),
+      Offset(size.width * 0.72, size.height * 0.72),
+    ];
+  }
+
+  @override
+  bool shouldRepaint(covariant _LiquidMeshPainter oldDelegate) {
+    return oldDelegate.activePoints != activePoints ||
+        oldDelegate.activeColors != activeColors ||
+        oldDelegate.pulse != pulse;
+  }
+}
+
+class _ChatGlassSurface extends StatelessWidget {
+  const _ChatGlassSurface({required this.child, this.radius = 22});
+
+  final Widget child;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            gradient: const LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [Color(0xB02A3540), Color(0xB0242D37), Color(0xB02A3540)],
+              stops: [0, 0.5, 1],
+            ),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.24),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 class _CallPanel extends StatelessWidget {
   const _CallPanel({
     required this.icon,
@@ -1098,45 +2329,122 @@ class _CallPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-      color: const Color(0xFF20242B),
-      child: Row(
-        children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+      child: _GlassCallSurface(
+        accent: color,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+          child: Row(
+            children: [
+              _CallGlowIcon(icon: icon, color: color),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white70,
+                      ),
+                    ),
+                    if (participants.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _GroupCallRoster(
+                        participants: participants,
+                        connectedNodeIds: connectedNodeIds,
+                        localNodeId: localNodeId,
+                        mutedNodeIds: mutedNodeIds,
+                      ),
+                    ],
+                  ],
                 ),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: Colors.white60),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                flex: 0,
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: actions,
                 ),
-                if (participants.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  _GroupCallRoster(
-                    participants: participants,
-                    connectedNodeIds: connectedNodeIds,
-                    localNodeId: localNodeId,
-                    mutedNodeIds: mutedNodeIds,
-                  ),
-                ],
-              ],
-            ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          ...actions,
-        ],
+        ),
       ),
+    );
+  }
+}
+
+class _GlassCallSurface extends StatelessWidget {
+  const _GlassCallSurface({required this.accent, required this.child});
+
+  final Color accent;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            color: const Color(0xFF242D37).withValues(alpha: 0.76),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+            boxShadow: [
+              BoxShadow(
+                color: accent.withValues(alpha: 0.18),
+                blurRadius: 28,
+                offset: const Offset(0, 12),
+              ),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.26),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Stack(children: [child]),
+        ),
+      ),
+    );
+  }
+}
+
+class _CallGlowIcon extends StatelessWidget {
+  const _CallGlowIcon({required this.icon, required this.color});
+
+  final IconData icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.white.withValues(alpha: 0.10),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+      ),
+      child: Icon(icon, color: color, size: 21),
     );
   }
 }
@@ -1243,36 +2551,43 @@ class _MiniCallPanel extends StatelessWidget {
     if (call == null) return const SizedBox.shrink();
     final active = call.status == CallStatus.active;
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 6, 10, 6),
-      color: const Color(0xFF20242B),
-      child: Row(
-        children: [
-          Icon(
-            active ? Icons.call_rounded : Icons.call_made_rounded,
-            color: active ? Colors.greenAccent : Colors.orangeAccent,
-            size: 18,
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+      child: _GlassCallSurface(
+        accent: active ? Colors.greenAccent : Colors.orangeAccent,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 6, 8, 6),
+          child: Row(
+            children: [
+              Icon(
+                active ? Icons.call_rounded : Icons.call_made_rounded,
+                color: active ? Colors.greenAccent : Colors.orangeAccent,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${call.peer.displayName} - ${formatDuration(controller.callElapsed)} - ${controller.callQualityLabel}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Show call',
+                onPressed: controller.toggleCallCollapsed,
+                icon: const Icon(Icons.keyboard_arrow_down_rounded),
+              ),
+              IconButton(
+                tooltip: 'End',
+                onPressed: controller.endCall,
+                icon: const Icon(
+                  Icons.call_end_rounded,
+                  color: Colors.redAccent,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '${call.peer.displayName} - ${formatDuration(controller.callElapsed)} - ${controller.callQualityLabel}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Show call',
-            onPressed: controller.toggleCallCollapsed,
-            icon: const Icon(Icons.keyboard_arrow_down_rounded),
-          ),
-          IconButton(
-            tooltip: 'End',
-            onPressed: controller.endCall,
-            icon: const Icon(Icons.call_end_rounded, color: Colors.redAccent),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1415,17 +2730,19 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
     required this.mine,
+    required this.dataSaver,
     required this.onLongPress,
   });
 
   final ChatMessage message;
   final bool mine;
+  final bool dataSaver;
   final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
     final time = message.createdAt.toLocal();
-    final imageBytes = imageBytesFor(message);
+    final imageBytes = imageBytesFor(message, dataSaver: dataSaver);
 
     return Align(
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
@@ -1453,7 +2770,7 @@ class _MessageBubble extends StatelessWidget {
                 ),
                 decoration: BoxDecoration(
                   color: mine
-                      ? const Color(0xFF2F7D4A)
+                      ? const Color(0xFF2587E8)
                       : const Color(0xFF2A2E35),
                   borderRadius: BorderRadius.only(
                     topLeft: const Radius.circular(12),
@@ -1516,19 +2833,7 @@ class _MessageBubble extends StatelessWidget {
                           ],
                           if (mine) ...[
                             const SizedBox(width: 5),
-                            Icon(
-                              message.failed
-                                  ? Icons.error_outline_rounded
-                                  : message.pending
-                                  ? Icons.schedule_rounded
-                                  : message.delivered
-                                  ? Icons.done_all_rounded
-                                  : Icons.done_rounded,
-                              size: 13,
-                              color: message.failed
-                                  ? Colors.redAccent
-                                  : Colors.white60,
-                            ),
+                            _MessageStatusLabel(message: message),
                           ],
                         ],
                       ),
@@ -1567,11 +2872,15 @@ class _MessageBubble extends StatelessWidget {
     );
   }
 
-  static Uint8List? imageBytesFor(ChatMessage message) {
+  static Uint8List? imageBytesFor(
+    ChatMessage message, {
+    bool dataSaver = false,
+  }) {
     if (message.kind != ChatMessageKind.file ||
         !isImageName(message.fileName)) {
       return null;
     }
+    if (dataSaver && message.fileSize > 512 * 1024) return null;
     try {
       return hexDecode(message.fileData);
     } catch (_) {
@@ -1742,6 +3051,45 @@ class _FilePreview extends StatelessWidget {
         context,
       ).showSnackBar(const SnackBar(content: Text('Could not open file')));
     }
+  }
+}
+
+class _MessageStatusLabel extends StatelessWidget {
+  const _MessageStatusLabel({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final isFile = message.kind == ChatMessageKind.file;
+    final (icon, label, color) = message.failed
+        ? (Icons.error_outline_rounded, 'failed', Colors.redAccent)
+        : message.pending
+        ? (
+            Icons.schedule_rounded,
+            isFile && message.progress > 0
+                ? '${(message.progress * 100).clamp(1, 99).round()}%'
+                : 'sending',
+            Colors.white60,
+          )
+        : message.delivered
+        ? (Icons.done_all_rounded, 'delivered', Colors.white60)
+        : (Icons.done_rounded, 'sent', Colors.white60);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 13, color: color),
+        const SizedBox(width: 3),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: color,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -2137,4 +3485,23 @@ String messageTime(DateTime value) {
       '${local.month.toString().padLeft(2, '0')} '
       '${local.hour.toString().padLeft(2, '0')}:'
       '${local.minute.toString().padLeft(2, '0')}';
+}
+
+bool sameDay(DateTime a, DateTime b) {
+  final left = a.toLocal();
+  final right = b.toLocal();
+  return left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
+}
+
+String dateLabel(DateTime value) {
+  final local = value.toLocal();
+  final now = DateTime.now();
+  if (sameDay(local, now)) return 'Today';
+  if (sameDay(local, now.subtract(const Duration(days: 1)))) {
+    return 'Yesterday';
+  }
+  return '${local.day.toString().padLeft(2, '0')}.'
+      '${local.month.toString().padLeft(2, '0')}.${local.year}';
 }

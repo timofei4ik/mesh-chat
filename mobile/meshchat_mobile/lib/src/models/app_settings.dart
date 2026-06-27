@@ -10,6 +10,7 @@ class AppSettings {
     this.notificationPreview = true,
     this.compressPhotos = true,
     this.sendFilesOriginal = true,
+    this.dataSaver = false,
     this.blockedNodeIds = const [],
   });
 
@@ -21,6 +22,7 @@ class AppSettings {
   final bool notificationPreview;
   final bool compressPhotos;
   final bool sendFilesOriginal;
+  final bool dataSaver;
   final List<String> blockedNodeIds;
 
   AppSettings copyWith({
@@ -32,6 +34,7 @@ class AppSettings {
     bool? notificationPreview,
     bool? compressPhotos,
     bool? sendFilesOriginal,
+    bool? dataSaver,
     List<String>? blockedNodeIds,
   }) {
     return AppSettings(
@@ -44,6 +47,7 @@ class AppSettings {
       notificationPreview: notificationPreview ?? this.notificationPreview,
       compressPhotos: compressPhotos ?? this.compressPhotos,
       sendFilesOriginal: sendFilesOriginal ?? this.sendFilesOriginal,
+      dataSaver: dataSaver ?? this.dataSaver,
       blockedNodeIds: blockedNodeIds ?? this.blockedNodeIds,
     );
   }
