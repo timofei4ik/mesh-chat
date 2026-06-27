@@ -479,6 +479,19 @@ class _ConnectionStatusPageState extends State<ConnectionStatusPage> {
                 ok: widget.controller.websocketLive,
                 subtitle: widget.controller.status,
               ),
+              FilledButton.icon(
+                onPressed: () async {
+                  await widget.controller.forceResync();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Resync requested')),
+                  );
+                  run();
+                },
+                icon: const Icon(Icons.sync_rounded),
+                label: const Text('Force resync'),
+              ),
+              const SizedBox(height: 12),
               if (result != null)
                 Card(
                   child: ListTile(

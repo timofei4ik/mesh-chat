@@ -323,6 +323,7 @@ class AppController extends ChangeNotifier {
     if (session != null) {
       await _cache.load(session!, profiles, threads, groups);
       await _repairCachedGroups();
+      await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
     }
@@ -337,6 +338,15 @@ class AppController extends ChangeNotifier {
     if (!_socket.isConnected) {
       await _connect();
     }
+  }
+
+  Future<void> forceResync() async {
+    if (session == null) return;
+    status = 'Resyncing...';
+    addDiagnostic('sync', 'Manual resync requested');
+    notifyListeners();
+    await _socket.close();
+    await _connect();
   }
 
   Future<void> requestNotificationPermissions() async {
@@ -421,6 +431,7 @@ class AppController extends ChangeNotifier {
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
       await _repairCachedGroups();
+      await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
       await _connect();
@@ -455,6 +466,7 @@ class AppController extends ChangeNotifier {
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
       await _repairCachedGroups();
+      await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
       await _connect();
@@ -733,6 +745,7 @@ class AppController extends ChangeNotifier {
     _applyReactions(packet['reactions']);
     _applyPins(packet['pins']);
     await _repairCachedGroups();
+    await _repairCachedMessages();
     await _saveCache();
   }
 
@@ -890,6 +903,29 @@ class AppController extends ChangeNotifier {
       changed = _ensureOwnGroupMembership(group) || changed;
     }
     if (changed) await _saveCache();
+  }
+
+  Future<void> _repairCachedMessages() async {
+    var changed = false;
+    for (final thread in [...threads.values, ...groups.values]) {
+      changed = _dedupeThreadMessages(thread) || changed;
+    }
+    if (changed) {
+      addDiagnostic('sync', 'Removed duplicate cached messages');
+      await _saveCache();
+    }
+  }
+
+  bool _dedupeThreadMessages(ChatThread thread) {
+    final seen = <String>{};
+    final before = thread.messages.length;
+    thread.messages.removeWhere((message) {
+      if (message.id.trim().isEmpty) return true;
+      if (_isDeletedMessage(message.id)) return true;
+      return !seen.add(message.id);
+    });
+    thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return thread.messages.length != before;
   }
 
   bool _ensureOwnGroupMembership(ChatThread group) {

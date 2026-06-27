@@ -48,6 +48,9 @@ class _ChatPageState extends State<ChatPage> {
   final incomingCallAlert = CallAlertService();
   bool recording = false;
   bool voicePointerDown = false;
+  bool showJumpToBottom = false;
+  double voiceCancelDrag = 0;
+  bool voiceCancelArmed = false;
   bool hasInputText = false;
   DateTime? recordStartedAt;
   ChatMessage? replyTo;
@@ -73,6 +76,7 @@ class _ChatPageState extends State<ChatPage> {
         widget.controller.sendTyping(widget.thread);
       }
     });
+    scroll.addListener(handleScroll);
     widget.controller.markRead(widget.thread);
     widget.controller.setActiveThread(widget.thread);
     widget.controller.addListener(syncRingback);
@@ -88,6 +92,7 @@ class _ChatPageState extends State<ChatPage> {
     widget.controller.setActiveThread(null);
     inputFocus.dispose();
     input.dispose();
+    scroll.removeListener(handleScroll);
     scroll.dispose();
     recorder.dispose();
     ringbackPlayer?.dispose();
@@ -351,6 +356,7 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> startVoiceHold() async {
     if (recording || voicePointerDown) return;
     voicePointerDown = true;
+    resetVoiceHoldDrag();
     await startVoiceRecording();
     if (!recording) voicePointerDown = false;
   }
@@ -359,11 +365,35 @@ class _ChatPageState extends State<ChatPage> {
     if (!voicePointerDown && !recording) return;
     voicePointerDown = false;
     if (!recording) return;
-    if (send) {
+    final shouldSend = send && !voiceCancelArmed;
+    if (shouldSend) {
       await stopVoiceRecording();
     } else {
       await cancelRecording();
     }
+  }
+
+  void updateVoiceHoldDrag(double delta) {
+    if (!recording && !voicePointerDown) return;
+    final next = (voiceCancelDrag + delta).clamp(-120.0, 0.0);
+    final armed = next <= -72;
+    if (next == voiceCancelDrag && armed == voiceCancelArmed) return;
+    final becameArmed = armed && !voiceCancelArmed;
+    setState(() {
+      voiceCancelDrag = next;
+      voiceCancelArmed = armed;
+    });
+    if (becameArmed) {
+      HapticFeedback.selectionClick();
+    }
+  }
+
+  void resetVoiceHoldDrag() {
+    if (voiceCancelDrag == 0 && !voiceCancelArmed) return;
+    setState(() {
+      voiceCancelDrag = 0;
+      voiceCancelArmed = false;
+    });
   }
 
   Future<void> startVoiceRecording() async {
@@ -408,10 +438,13 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       recording = true;
       recordStartedAt = DateTime.now();
+      voiceCancelDrag = 0;
+      voiceCancelArmed = false;
       for (var i = 0; i < recordLevels.length; i++) {
         recordLevels[i] = 0.25;
       }
     });
+    unawaited(HapticFeedback.mediumImpact());
   }
 
   Future<bool> requestMicrophonePermission() async {
@@ -469,6 +502,8 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       recording = false;
       recordStartedAt = null;
+      voiceCancelDrag = 0;
+      voiceCancelArmed = false;
     });
     if (path == null || duration.inMilliseconds < 500) return;
     final bytes = await XFile(path).readAsBytes();
@@ -491,7 +526,11 @@ class _ChatPageState extends State<ChatPage> {
             bytes,
             replyTo: quote,
           );
-    if (!mounted || error == null) return;
+    if (error == null) {
+      unawaited(HapticFeedback.lightImpact());
+      return;
+    }
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
   }
 
@@ -503,8 +542,11 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       recording = false;
       recordStartedAt = null;
+      voiceCancelDrag = 0;
+      voiceCancelArmed = false;
     });
     voicePointerDown = false;
+    unawaited(HapticFeedback.selectionClick());
   }
 
   void showSnack(String text) {
@@ -518,6 +560,14 @@ class _ChatPageState extends State<ChatPage> {
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
     );
+  }
+
+  void handleScroll() {
+    if (!scroll.hasClients) return;
+    final hiddenBelow = scroll.position.maxScrollExtent - scroll.offset;
+    final shouldShow = hiddenBelow > 180;
+    if (shouldShow == showJumpToBottom) return;
+    setState(() => showJumpToBottom = shouldShow);
   }
 
   bool get desktopSendHotkeys {
@@ -1088,9 +1138,6 @@ class _ChatPageState extends State<ChatPage> {
                 child: ListenableBuilder(
                   listenable: widget.controller,
                   builder: (context, _) {
-                    WidgetsBinding.instance.addPostFrameCallback(
-                      (_) => scrollToBottom(),
-                    );
                     final messages = widget.thread.messages;
                     return ListView.builder(
                       controller: scroll,
@@ -1159,26 +1206,61 @@ class _ChatPageState extends State<ChatPage> {
                               Expanded(
                                 child: _ComposerInputSurface(
                                   child: recording
-                                      ? Row(
-                                          children: [
-                                            const Icon(
-                                              Icons.mic_rounded,
-                                              color: Colors.redAccent,
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Expanded(
-                                              child: _Waveform(
-                                                levels: recordLevels,
+                                      ? Transform.translate(
+                                          offset: Offset(
+                                            voiceCancelDrag * 0.22,
+                                            0,
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                voiceCancelArmed
+                                                    ? Icons.delete_rounded
+                                                    : Icons.mic_rounded,
+                                                color: voiceCancelArmed
+                                                    ? Colors.redAccent
+                                                    : Colors.lightBlueAccent,
                                               ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              recordDuration(),
-                                              style: const TextStyle(
-                                                color: Colors.white70,
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Column(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    _Waveform(
+                                                      levels: recordLevels,
+                                                    ),
+                                                    const SizedBox(height: 3),
+                                                    Text(
+                                                      voiceCancelArmed
+                                                          ? 'Release to cancel'
+                                                          : 'Release to send · slide left to cancel',
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                        color: voiceCancelArmed
+                                                            ? Colors.redAccent
+                                                            : Colors.white54,
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
-                                            ),
-                                          ],
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                recordDuration(),
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         )
                                       : Focus(
                                           focusNode: inputFocus,
@@ -1208,7 +1290,7 @@ class _ChatPageState extends State<ChatPage> {
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              if (recording)
+                              if (recording && !voicePointerDown)
                                 _ComposerIconButton(
                                   tooltip: 'Cancel',
                                   onPressed: cancelRecording,
@@ -1229,7 +1311,7 @@ class _ChatPageState extends State<ChatPage> {
                                           child: child,
                                         ),
                                       ),
-                                  child: hasInputText
+                                  child: hasInputText && !recording
                                       ? _ComposerIconButton(
                                           key: const ValueKey('send'),
                                           tooltip: 'Send',
@@ -1240,6 +1322,7 @@ class _ChatPageState extends State<ChatPage> {
                                       : _VoiceHoldButton(
                                           key: const ValueKey('mic'),
                                           onStart: startVoiceHold,
+                                          onDragUpdate: updateVoiceHoldDrag,
                                           onFinish: () =>
                                               finishVoiceHold(send: true),
                                           onCancel: () =>
@@ -1255,6 +1338,25 @@ class _ChatPageState extends State<ChatPage> {
                 ),
               ),
             ],
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 88,
+            child: IgnorePointer(
+              ignoring: !showJumpToBottom,
+              child: AnimatedOpacity(
+                opacity: showJumpToBottom ? 1 : 0,
+                duration: const Duration(milliseconds: 160),
+                child: Center(
+                  child: _ChatRoundButton(
+                    tooltip: 'Jump to latest',
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                    onPressed: scrollToBottom,
+                  ),
+                ),
+              ),
+            ),
           ),
           Positioned(
             left: 12,
@@ -2016,11 +2118,13 @@ class _VoiceHoldButton extends StatefulWidget {
   const _VoiceHoldButton({
     super.key,
     required this.onStart,
+    required this.onDragUpdate,
     required this.onFinish,
     required this.onCancel,
   });
 
   final Future<void> Function() onStart;
+  final ValueChanged<double> onDragUpdate;
   final Future<void> Function() onFinish;
   final Future<void> Function() onCancel;
 
@@ -2030,6 +2134,7 @@ class _VoiceHoldButton extends StatefulWidget {
 
 class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
   bool pressed = false;
+  int? pointer;
 
   Future<void> _start() async {
     if (pressed) return;
@@ -2039,12 +2144,14 @@ class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
 
   Future<void> _finish() async {
     if (!pressed) return;
+    pointer = null;
     setState(() => pressed = false);
     await widget.onFinish();
   }
 
   Future<void> _cancel() async {
     if (!pressed) return;
+    pointer = null;
     setState(() => pressed = false);
     await widget.onCancel();
   }
@@ -2053,11 +2160,25 @@ class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
   Widget build(BuildContext context) {
     return Tooltip(
       message: 'Hold to record',
-      child: GestureDetector(
+      child: Listener(
         behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => unawaited(_start()),
-        onTapUp: (_) => unawaited(_finish()),
-        onTapCancel: () => unawaited(_cancel()),
+        onPointerDown: (event) {
+          if (pointer != null) return;
+          pointer = event.pointer;
+          unawaited(_start());
+        },
+        onPointerMove: (event) {
+          if (pointer != event.pointer) return;
+          widget.onDragUpdate(event.delta.dx);
+        },
+        onPointerUp: (event) {
+          if (pointer != event.pointer) return;
+          unawaited(_finish());
+        },
+        onPointerCancel: (event) {
+          if (pointer != event.pointer) return;
+          unawaited(_cancel());
+        },
         child: AnimatedScale(
           duration: const Duration(milliseconds: 120),
           scale: pressed ? 1.08 : 1,
@@ -2926,25 +3047,24 @@ class _MessageBubbleState extends State<_MessageBubble> {
         children: [
           Positioned.fill(
             child: Align(
-              alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+              alignment: Alignment.centerLeft,
               child: AnimatedOpacity(
-                opacity: replyDrag > 8 ? 1 : 0,
+                opacity: (replyDrag / 24).clamp(0.0, 1.0),
                 duration: const Duration(milliseconds: 90),
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    left: mine ? 0 : 6,
-                    right: mine ? 6 : 0,
-                    bottom: 8,
-                  ),
-                  child: CircleAvatar(
-                    radius: 17,
-                    backgroundColor: Colors.lightBlueAccent.withValues(
-                      alpha: 0.18,
-                    ),
-                    child: const Icon(
-                      Icons.reply_rounded,
-                      size: 18,
-                      color: Colors.lightBlueAccent,
+                child: Transform.translate(
+                  offset: Offset((replyDrag - 26).clamp(-14.0, 0.0), 0),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 8, bottom: 8),
+                    child: CircleAvatar(
+                      radius: 17,
+                      backgroundColor: Colors.lightBlueAccent.withValues(
+                        alpha: 0.18,
+                      ),
+                      child: const Icon(
+                        Icons.reply_rounded,
+                        size: 18,
+                        color: Colors.lightBlueAccent,
+                      ),
                     ),
                   ),
                 ),
