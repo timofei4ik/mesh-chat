@@ -2174,18 +2174,26 @@ class _HomeLiquidBackground extends StatefulWidget {
 class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
     with SingleTickerProviderStateMixin {
   late final AnimationController controller;
+  late final Timer timer;
 
   @override
   void initState() {
     super.initState();
     controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 32),
-    )..repeat();
+      duration: const Duration(milliseconds: 3200),
+    );
+    timer = Timer.periodic(const Duration(milliseconds: 7200), (_) {
+      if (mounted) controller.forward(from: 0);
+    });
+    Future<void>.delayed(const Duration(milliseconds: 900), () {
+      if (mounted) controller.forward(from: 0);
+    });
   }
 
   @override
   void dispose() {
+    timer.cancel();
     controller.dispose();
     super.dispose();
   }
@@ -2194,10 +2202,15 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: const BoxDecoration(color: Color(0xFF07111E)),
-      child: AnimatedBuilder(
-        animation: controller,
-        builder: (context, _) =>
-            CustomPaint(painter: _HomeMeshPainter(t: controller.value)),
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => CustomPaint(
+            isComplex: true,
+            willChange: controller.isAnimating,
+            painter: _HomeMeshPainter(t: controller.value),
+          ),
+        ),
       ),
     );
   }
@@ -2210,7 +2223,8 @@ class _HomeMeshPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final phase = t * math.pi * 2;
+    final eased = math.sin(t * math.pi).clamp(0.0, 1.0);
+    final phase = eased * math.pi * 2;
     final cyanPulse = 0.78 + 0.22 * math.sin(phase);
     final violetPulse = 0.78 + 0.22 * math.sin(phase + math.pi * 0.75);
     final cyan = Paint()

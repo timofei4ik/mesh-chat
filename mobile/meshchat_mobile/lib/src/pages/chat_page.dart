@@ -48,6 +48,7 @@ class _ChatPageState extends State<ChatPage> {
   final incomingCallAlert = CallAlertService();
   bool recording = false;
   bool voicePointerDown = false;
+  bool didInitialScrollToBottom = false;
   bool showJumpToBottom = false;
   double voiceCancelDrag = 0;
   bool voiceCancelArmed = false;
@@ -560,6 +561,21 @@ class _ChatPageState extends State<ChatPage> {
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
     );
+  }
+
+  void jumpToBottom() {
+    if (!scroll.hasClients) return;
+    scroll.jumpTo(scroll.position.maxScrollExtent);
+    handleScroll();
+  }
+
+  void scheduleInitialScrollToBottom(int messageCount) {
+    if (didInitialScrollToBottom || messageCount == 0) return;
+    didInitialScrollToBottom = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      jumpToBottom();
+    });
   }
 
   void handleScroll() {
@@ -1139,6 +1155,7 @@ class _ChatPageState extends State<ChatPage> {
                   listenable: widget.controller,
                   builder: (context, _) {
                     final messages = widget.thread.messages;
+                    scheduleInitialScrollToBottom(messages.length);
                     return ListView.builder(
                       controller: scroll,
                       padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
@@ -2372,9 +2389,9 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
     super.initState();
     controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1800),
+      duration: const Duration(milliseconds: 2200),
     );
-    timer = Timer.periodic(const Duration(milliseconds: 4300), (_) {
+    timer = Timer.periodic(const Duration(milliseconds: 6500), (_) {
       if (!mounted) return;
       setState(() {
         final first = random.nextInt(_LiquidMeshPainter.pointCount);
@@ -2409,13 +2426,20 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: const BoxDecoration(color: Color(0xFF111820)),
-      child: AnimatedBuilder(
-        animation: controller,
-        builder: (context, _) => CustomPaint(
-          painter: _LiquidMeshPainter(
-            activePoints: activePoints,
-            activeColors: activeColors,
-            pulse: math.sin(controller.value * math.pi).clamp(0, 1).toDouble(),
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => CustomPaint(
+            isComplex: true,
+            willChange: controller.isAnimating,
+            painter: _LiquidMeshPainter(
+              activePoints: activePoints,
+              activeColors: activeColors,
+              pulse: math
+                  .sin(controller.value * math.pi)
+                  .clamp(0, 1)
+                  .toDouble(),
+            ),
           ),
         ),
       ),
