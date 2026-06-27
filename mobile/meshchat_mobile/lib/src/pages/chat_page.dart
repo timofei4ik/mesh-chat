@@ -47,6 +47,7 @@ class _ChatPageState extends State<ChatPage> {
   bool ringbackRunning = false;
   final incomingCallAlert = CallAlertService();
   bool recording = false;
+  bool voicePointerDown = false;
   bool hasInputText = false;
   DateTime? recordStartedAt;
   ChatMessage? replyTo;
@@ -347,6 +348,24 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  Future<void> startVoiceHold() async {
+    if (recording || voicePointerDown) return;
+    voicePointerDown = true;
+    await startVoiceRecording();
+    if (!recording) voicePointerDown = false;
+  }
+
+  Future<void> finishVoiceHold({required bool send}) async {
+    if (!voicePointerDown && !recording) return;
+    voicePointerDown = false;
+    if (!recording) return;
+    if (send) {
+      await stopVoiceRecording();
+    } else {
+      await cancelRecording();
+    }
+  }
+
   Future<void> startVoiceRecording() async {
     final allowed = await requestMicrophonePermission();
     if (!allowed) {
@@ -455,12 +474,22 @@ class _ChatPageState extends State<ChatPage> {
     final bytes = await XFile(path).readAsBytes();
     final filename =
         'voice_${DateTime.now().millisecondsSinceEpoch}_${duration.inSeconds}s.m4a';
+    final quote = replyTo;
+    if (quote != null && mounted) {
+      setState(() => replyTo = null);
+    }
     final error = widget.thread.isGroup
-        ? await widget.controller.sendGroupFile(widget.thread, filename, bytes)
+        ? await widget.controller.sendGroupFile(
+            widget.thread,
+            filename,
+            bytes,
+            replyTo: quote,
+          )
         : await widget.controller.sendFile(
             widget.thread.profile,
             filename,
             bytes,
+            replyTo: quote,
           );
     if (!mounted || error == null) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
@@ -475,6 +504,7 @@ class _ChatPageState extends State<ChatPage> {
       recording = false;
       recordStartedAt = null;
     });
+    voicePointerDown = false;
   }
 
   void showSnack(String text) {
@@ -1087,6 +1117,8 @@ class _ChatPageState extends State<ChatPage> {
                                 dataSaver:
                                     widget.controller.appSettings.dataSaver,
                                 onLongPress: () => showMessageActions(message),
+                                onReply: () =>
+                                    setState(() => replyTo = message),
                               ),
                             ),
                           ],
@@ -1205,11 +1237,13 @@ class _ChatPageState extends State<ChatPage> {
                                           icon: Icons.send_rounded,
                                           accent: Colors.lightBlueAccent,
                                         )
-                                      : _ComposerIconButton(
+                                      : _VoiceHoldButton(
                                           key: const ValueKey('mic'),
-                                          tooltip: 'Voice',
-                                          onPressed: toggleVoiceRecording,
-                                          icon: Icons.mic_none_rounded,
+                                          onStart: startVoiceHold,
+                                          onFinish: () =>
+                                              finishVoiceHold(send: true),
+                                          onCancel: () =>
+                                              finishVoiceHold(send: false),
                                         ),
                                 ),
                             ],
@@ -1978,6 +2012,93 @@ class _ComposerIconButton extends StatelessWidget {
   }
 }
 
+class _VoiceHoldButton extends StatefulWidget {
+  const _VoiceHoldButton({
+    super.key,
+    required this.onStart,
+    required this.onFinish,
+    required this.onCancel,
+  });
+
+  final Future<void> Function() onStart;
+  final Future<void> Function() onFinish;
+  final Future<void> Function() onCancel;
+
+  @override
+  State<_VoiceHoldButton> createState() => _VoiceHoldButtonState();
+}
+
+class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
+  bool pressed = false;
+
+  Future<void> _start() async {
+    if (pressed) return;
+    setState(() => pressed = true);
+    await widget.onStart();
+  }
+
+  Future<void> _finish() async {
+    if (!pressed) return;
+    setState(() => pressed = false);
+    await widget.onFinish();
+  }
+
+  Future<void> _cancel() async {
+    if (!pressed) return;
+    setState(() => pressed = false);
+    await widget.onCancel();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Hold to record',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (_) => unawaited(_start()),
+        onTapUp: (_) => unawaited(_finish()),
+        onTapCancel: () => unawaited(_cancel()),
+        child: AnimatedScale(
+          duration: const Duration(milliseconds: 120),
+          scale: pressed ? 1.08 : 1,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 140),
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: (pressed ? Colors.redAccent : Colors.white).withValues(
+                    alpha: pressed ? 0.22 : 0.11,
+                  ),
+                  border: Border.all(
+                    color: (pressed ? Colors.redAccent : Colors.white)
+                        .withValues(alpha: pressed ? 0.34 : 0.10),
+                  ),
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: [
+                    if (pressed)
+                      BoxShadow(
+                        color: Colors.redAccent.withValues(alpha: 0.22),
+                        blurRadius: 18,
+                      ),
+                  ],
+                ),
+                child: Icon(
+                  pressed ? Icons.mic_rounded : Icons.mic_none_rounded,
+                  color: pressed ? Colors.redAccent : Colors.white70,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _GlassSheetAction extends StatelessWidget {
   const _GlassSheetAction({
     required this.icon,
@@ -2737,151 +2858,23 @@ class _ChatFilesPage extends StatelessWidget {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.message,
     required this.mine,
     required this.dataSaver,
     required this.onLongPress,
+    required this.onReply,
   });
 
   final ChatMessage message;
   final bool mine;
   final bool dataSaver;
   final VoidCallback onLongPress;
+  final VoidCallback onReply;
 
   @override
-  Widget build(BuildContext context) {
-    final time = message.createdAt.toLocal();
-    final imageBytes = imageBytesFor(message, dataSaver: dataSaver);
-
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: onLongPress,
-        onTap: imageBytes == null
-            ? null
-            : () => _showImage(context, imageBytes),
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 340),
-          margin: const EdgeInsets.only(bottom: 8),
-          child: Column(
-            crossAxisAlignment: mine
-                ? CrossAxisAlignment.end
-                : CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: EdgeInsets.fromLTRB(
-                  11,
-                  message.kind == ChatMessageKind.file && imageBytes != null
-                      ? 6
-                      : 8,
-                  9,
-                  6,
-                ),
-                decoration: BoxDecoration(
-                  color: mine
-                      ? const Color(0xFF2587E8)
-                      : const Color(0xFF2A2E35),
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(12),
-                    topRight: const Radius.circular(12),
-                    bottomLeft: Radius.circular(mine ? 12 : 4),
-                    bottomRight: Radius.circular(mine ? 4 : 12),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (message.replyToText.isNotEmpty) ...[
-                      _ReplyQuote(text: message.replyToText),
-                      const SizedBox(height: 6),
-                    ],
-                    message.kind == ChatMessageKind.file
-                        ? _FilePreview(message: message, imageBytes: imageBytes)
-                        : Text(message.text),
-                    if (message.kind == ChatMessageKind.file &&
-                        message.pending &&
-                        message.progress > 0) ...[
-                      const SizedBox(height: 7),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(999),
-                        child: LinearProgressIndicator(
-                          value: message.progress.clamp(0.02, 1),
-                          minHeight: 4,
-                          backgroundColor: Colors.white12,
-                          valueColor: const AlwaysStoppedAnimation<Color>(
-                            Colors.white70,
-                          ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 3),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      widthFactor: 1,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            '${time.hour.toString().padLeft(2, '0')}:'
-                            '${time.minute.toString().padLeft(2, '0')}',
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: Colors.white60,
-                            ),
-                          ),
-                          if (message.edited) ...[
-                            const SizedBox(width: 5),
-                            const Text(
-                              'edited',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.white54,
-                              ),
-                            ),
-                          ],
-                          if (mine) ...[
-                            const SizedBox(width: 5),
-                            _MessageStatusLabel(message: message),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (message.reactions.isNotEmpty) ...[
-                const SizedBox(height: 3),
-                Wrap(
-                  spacing: 4,
-                  runSpacing: 4,
-                  children: [
-                    for (final entry in message.reactions.entries)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF465163),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: _ReactionBadge(
-                          reaction: entry.key,
-                          count: entry.value,
-                        ),
-                      ),
-                  ],
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  State<_MessageBubble> createState() => _MessageBubbleState();
 
   static Uint8List? imageBytesFor(
     ChatMessage message, {
@@ -2898,6 +2891,92 @@ class _MessageBubble extends StatelessWidget {
       return null;
     }
   }
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  double replyDrag = 0;
+
+  void _updateReplyDrag(DragUpdateDetails details) {
+    final delta = details.primaryDelta ?? 0;
+    if (delta <= 0 && replyDrag <= 0) return;
+    setState(() {
+      replyDrag = (replyDrag + delta).clamp(0, 86);
+    });
+  }
+
+  void _finishReplyDrag(DragEndDetails details) {
+    final shouldReply = replyDrag >= 54 || (details.primaryVelocity ?? 0) > 650;
+    if (shouldReply) widget.onReply();
+    setState(() => replyDrag = 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final message = widget.message;
+    final mine = widget.mine;
+    final imageBytes = _MessageBubble.imageBytesFor(
+      message,
+      dataSaver: widget.dataSaver,
+    );
+
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Stack(
+        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+        children: [
+          Positioned.fill(
+            child: Align(
+              alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+              child: AnimatedOpacity(
+                opacity: replyDrag > 8 ? 1 : 0,
+                duration: const Duration(milliseconds: 90),
+                child: Padding(
+                  padding: EdgeInsets.only(
+                    left: mine ? 0 : 6,
+                    right: mine ? 6 : 0,
+                    bottom: 8,
+                  ),
+                  child: CircleAvatar(
+                    radius: 17,
+                    backgroundColor: Colors.lightBlueAccent.withValues(
+                      alpha: 0.18,
+                    ),
+                    child: const Icon(
+                      Icons.reply_rounded,
+                      size: 18,
+                      color: Colors.lightBlueAccent,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          GestureDetector(
+            onHorizontalDragUpdate: _updateReplyDrag,
+            onHorizontalDragEnd: _finishReplyDrag,
+            onHorizontalDragCancel: () => setState(() => replyDrag = 0),
+            onLongPress: widget.onLongPress,
+            onTap: imageBytes == null
+                ? null
+                : () => _showImage(context, imageBytes),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOutCubic,
+              transform: Matrix4.translationValues(replyDrag, 0, 0),
+              transformAlignment: Alignment.center,
+              constraints: const BoxConstraints(maxWidth: 340),
+              margin: const EdgeInsets.only(bottom: 8),
+              child: _MessageBubbleBody(
+                message: message,
+                mine: mine,
+                imageBytes: imageBytes,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   void _showImage(BuildContext context, Uint8List bytes) {
     showDialog<void>(
@@ -2909,6 +2988,130 @@ class _MessageBubble extends StatelessWidget {
           child: Image.memory(bytes, fit: BoxFit.contain),
         ),
       ),
+    );
+  }
+}
+
+class _MessageBubbleBody extends StatelessWidget {
+  const _MessageBubbleBody({
+    required this.message,
+    required this.mine,
+    required this.imageBytes,
+  });
+
+  final ChatMessage message;
+  final bool mine;
+  final Uint8List? imageBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final time = message.createdAt.toLocal();
+    return Column(
+      crossAxisAlignment: mine
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      children: [
+        Container(
+          constraints: const BoxConstraints(maxWidth: 340),
+          padding: EdgeInsets.fromLTRB(
+            11,
+            message.kind == ChatMessageKind.file && imageBytes != null ? 6 : 8,
+            9,
+            6,
+          ),
+          decoration: BoxDecoration(
+            color: mine ? const Color(0xFF2587E8) : const Color(0xFF2A2E35),
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(12),
+              topRight: const Radius.circular(12),
+              bottomLeft: Radius.circular(mine ? 12 : 4),
+              bottomRight: Radius.circular(mine ? 4 : 12),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (message.replyToText.isNotEmpty) ...[
+                _ReplyQuote(text: message.replyToText),
+                const SizedBox(height: 6),
+              ],
+              message.kind == ChatMessageKind.file
+                  ? _FilePreview(message: message, imageBytes: imageBytes)
+                  : Text(message.text),
+              if (message.kind == ChatMessageKind.file &&
+                  message.pending &&
+                  message.progress > 0) ...[
+                const SizedBox(height: 7),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: message.progress.clamp(0.02, 1),
+                    minHeight: 4,
+                    backgroundColor: Colors.white12,
+                    valueColor: const AlwaysStoppedAnimation<Color>(
+                      Colors.white70,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 3),
+              Align(
+                alignment: Alignment.centerRight,
+                widthFactor: 1,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '${time.hour.toString().padLeft(2, '0')}:'
+                      '${time.minute.toString().padLeft(2, '0')}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Colors.white60,
+                      ),
+                    ),
+                    if (message.edited) ...[
+                      const SizedBox(width: 5),
+                      const Text(
+                        'edited',
+                        style: TextStyle(fontSize: 10, color: Colors.white54),
+                      ),
+                    ],
+                    if (mine) ...[
+                      const SizedBox(width: 5),
+                      _MessageStatusLabel(message: message),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (message.reactions.isNotEmpty) ...[
+          const SizedBox(height: 3),
+          Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: [
+              for (final entry in message.reactions.entries)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF465163),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: _ReactionBadge(
+                    reaction: entry.key,
+                    count: entry.value,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 }
