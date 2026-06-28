@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:cross_file/cross_file.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -160,7 +161,9 @@ class _MediaContent extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
         itemCount: items.length,
         separatorBuilder: (_, _) => const SizedBox(height: 8),
-        itemBuilder: (context, index) => _ListMediaTile(item: items[index]),
+        itemBuilder: (context, index) => items[index].kind == _MediaKind.voice
+            ? _VoiceListTile(item: items[index])
+            : _ListMediaTile(item: items[index]),
       );
     }
     return GridView.builder(
@@ -421,9 +424,292 @@ class _PhotoViewerPageState extends State<_PhotoViewerPage> {
                 style: const TextStyle(color: Colors.white70),
               ),
             ),
+            Positioned(
+              right: 14,
+              bottom: 22,
+              child: Row(
+                children: [
+                  _RoundGlassButton(
+                    icon: Icons.download_rounded,
+                    onTap: () => _saveCurrent(context),
+                  ),
+                  const SizedBox(width: 10),
+                  _RoundGlassButton(
+                    icon: Icons.info_outline_rounded,
+                    onTap: () => _showCurrentInfo(context),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _saveCurrent(BuildContext context) async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Saving is not available on web')),
+      );
+      return;
+    }
+    final item = widget.photos[index];
+    final bytes = item.bytes;
+    if (bytes == null) return;
+    try {
+      final dir =
+          await getDownloadsDirectory() ?? await getTemporaryDirectory();
+      final filename = _safeFilename(item.message.fileName);
+      final path = p.join(dir.path, filename);
+      await XFile.fromData(bytes, name: filename).saveTo(path);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Saved: $filename')));
+      }
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not save photo')));
+    }
+  }
+
+  void _showCurrentInfo(BuildContext context) {
+    final item = widget.photos[index];
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 18),
+          child: _GlassSurface(
+            radius: 24,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    item.subtitle,
+                    style: const TextStyle(color: Colors.white60),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VoiceListTile extends StatefulWidget {
+  const _VoiceListTile({required this.item});
+
+  final _MediaItem item;
+
+  @override
+  State<_VoiceListTile> createState() => _VoiceListTileState();
+}
+
+class _VoiceListTileState extends State<_VoiceListTile> {
+  late final AudioPlayer player;
+  Duration duration = Duration.zero;
+  Duration position = Duration.zero;
+  bool playing = false;
+  bool sourceReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    player = AudioPlayer();
+    player.onDurationChanged.listen((value) {
+      if (mounted) setState(() => duration = value);
+    });
+    player.onPositionChanged.listen((value) {
+      if (mounted) setState(() => position = value);
+    });
+    player.onPlayerComplete.listen((_) {
+      if (!mounted) return;
+      setState(() {
+        playing = false;
+        position = Duration.zero;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    player.dispose();
+    super.dispose();
+  }
+
+  Future<void> toggle() async {
+    if (playing) {
+      await player.pause();
+      if (mounted) setState(() => playing = false);
+      return;
+    }
+    try {
+      if (!sourceReady) {
+        await player.setSource(
+          BytesSource(_hexDecode(widget.item.message.fileData)),
+        );
+        sourceReady = true;
+      }
+      await player.resume();
+      if (mounted) setState(() => playing = true);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not play voice')));
+    }
+  }
+
+  Future<void> seek(double fraction) async {
+    if (duration <= Duration.zero) return;
+    final target = Duration(
+      milliseconds: (duration.inMilliseconds * fraction.clamp(0.0, 1.0))
+          .round(),
+    );
+    await player.seek(target);
+    if (mounted) setState(() => position = target);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = duration.inMilliseconds <= 0
+        ? 0.0
+        : position.inMilliseconds / duration.inMilliseconds;
+    return _GlassSurface(
+      radius: 18,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Row(
+          children: [
+            IconButton.filled(
+              onPressed: toggle,
+              icon: Icon(
+                playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.item.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 7),
+                  _MiniVoiceWaveform(
+                    progress: progress,
+                    active: playing,
+                    onSeek: seek,
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    duration > Duration.zero
+                        ? '${_durationText(position)} / ${_durationText(duration)}'
+                        : widget.item.subtitle,
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniVoiceWaveform extends StatelessWidget {
+  const _MiniVoiceWaveform({
+    required this.progress,
+    required this.active,
+    required this.onSeek,
+  });
+
+  final double progress;
+  final bool active;
+  final ValueChanged<double> onSeek;
+
+  @override
+  Widget build(BuildContext context) {
+    const levels = [
+      0.25,
+      0.58,
+      0.35,
+      0.80,
+      0.48,
+      0.68,
+      0.30,
+      0.92,
+      0.45,
+      0.62,
+      0.78,
+      0.38,
+      0.56,
+      0.86,
+      0.33,
+      0.70,
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        void seek(Offset position) {
+          if (constraints.maxWidth <= 0) return;
+          onSeek(position.dx / constraints.maxWidth);
+        }
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (details) => seek(details.localPosition),
+          onHorizontalDragUpdate: (details) => seek(details.localPosition),
+          child: SizedBox(
+            height: 28,
+            child: Row(
+              children: [
+                for (var i = 0; i < levels.length; i++)
+                  Expanded(
+                    child: Align(
+                      child: FractionallySizedBox(
+                        heightFactor: levels[i],
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 1.2),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(999),
+                            color: i < (levels.length * progress).round()
+                                ? Colors.lightBlueAccent
+                                : Colors.white.withValues(
+                                    alpha: active ? 0.40 : 0.25,
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -744,4 +1030,10 @@ String _shortDate(DateTime value) {
   return '${local.day.toString().padLeft(2, '0')}.'
       '${local.month.toString().padLeft(2, '0')}.'
       '${local.year}';
+}
+
+String _durationText(Duration value) {
+  final minutes = value.inMinutes;
+  final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return '$minutes:$seconds';
 }
