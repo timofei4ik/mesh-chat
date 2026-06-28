@@ -898,6 +898,14 @@ class _MediaSettings extends StatelessWidget {
             ),
           ),
           SwitchListTile(
+            title: const Text('Reduced animations'),
+            subtitle: const Text('Keep the glass UI, but pause glow effects'),
+            value: settings.reducedAnimations,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(reducedAnimations: value),
+            ),
+          ),
+          SwitchListTile(
             title: const Text('Compress photos by default'),
             subtitle: const Text('Keeps original files when disabled'),
             value: settings.compressPhotos,

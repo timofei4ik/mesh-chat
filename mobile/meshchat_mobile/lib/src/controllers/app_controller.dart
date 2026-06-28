@@ -119,6 +119,7 @@ class AppController extends ChangeNotifier {
   final Map<String, ChatThread> threads = {};
   final Map<String, ChatThread> groups = {};
   final Map<String, DateTime> typingUntil = {};
+  final Map<String, String> activityKinds = {};
 
   Session? session;
   List<Session> recentSessions = [];
@@ -136,9 +137,14 @@ class AppController extends ChangeNotifier {
   String _activeThreadKey = '';
   Timer? _callTicker;
   bool _webPushSubscribeInFlight = false;
+  bool _retryingQueuedMessages = false;
+  Timer? _incomingPreviewTimer;
   final List<DiagnosticEvent> diagnostics = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
   final Map<String, _GroupKey> _groupKeys = {};
+  ChatThread? incomingPreviewThread;
+  ChatMessage? incomingPreviewMessage;
+  int incomingPreviewVersion = 0;
 
   AppController() {
     ble.onPacket = _handleBluetoothPacket;
@@ -282,9 +288,79 @@ class AppController extends ChangeNotifier {
     return until != null && until.isAfter(DateTime.now());
   }
 
+  String activityLabel(ChatThread thread) {
+    final key = thread.isGroup ? thread.groupId : thread.profile.nodeId;
+    final until = typingUntil[key];
+    if (until == null || !until.isAfter(DateTime.now())) return '';
+    return activityKinds[key] == 'voice' ? 'recording voice...' : 'typing...';
+  }
+
   bool isBlocked(String nodeId) => appSettings.blockedNodeIds.contains(nodeId);
 
+  int get queuedMessageCount {
+    var count = 0;
+    for (final thread in [...threads.values, ...groups.values]) {
+      for (final message in thread.messages) {
+        if (message.senderNode != myNodeId) continue;
+        if (message.deleted) continue;
+        if (message.pending || message.failed) count++;
+      }
+    }
+    return count;
+  }
+
+  Future<void> retryQueuedMessagesNow() async {
+    if (!_socket.isConnected) {
+      status = 'Queued: waiting for server connection';
+      notifyListeners();
+      return;
+    }
+    await _retryQueuedMessages();
+  }
+
+  Future<void> cancelQueuedMessages() async {
+    var changed = false;
+    for (final thread in [...threads.values, ...groups.values]) {
+      final before = thread.messages.length;
+      thread.messages.removeWhere(
+        (message) =>
+            message.senderNode == myNodeId &&
+            !message.deleted &&
+            (message.pending || message.failed),
+      );
+      changed = changed || before != thread.messages.length;
+    }
+    if (!changed) return;
+    await _saveCache();
+    notifyListeners();
+  }
+
   void _handleBluetoothStateChanged() {
+    notifyListeners();
+  }
+
+  void clearIncomingPreview() {
+    _incomingPreviewTimer?.cancel();
+    _incomingPreviewTimer = null;
+    if (incomingPreviewMessage == null && incomingPreviewThread == null) return;
+    incomingPreviewThread = null;
+    incomingPreviewMessage = null;
+    incomingPreviewVersion++;
+    notifyListeners();
+  }
+
+  void _publishIncomingPreview(ChatThread thread, ChatMessage message) {
+    if (_isThreadActive(thread)) return;
+    incomingPreviewThread = thread;
+    incomingPreviewMessage = message;
+    incomingPreviewVersion++;
+    _incomingPreviewTimer?.cancel();
+    _incomingPreviewTimer = Timer(const Duration(seconds: 4), () {
+      incomingPreviewThread = null;
+      incomingPreviewMessage = null;
+      incomingPreviewVersion++;
+      notifyListeners();
+    });
     notifyListeners();
   }
 
@@ -514,6 +590,7 @@ class AppController extends ChangeNotifier {
           _webPushVapidPublicKey =
               packet['web_push_vapid_public_key']?.toString() ?? '';
           unawaited(_syncWebPushSubscription());
+          unawaited(_retryQueuedMessages());
         }
       case 'server_error':
         if (packet['code'] == 'incompatible_protocol') {
@@ -881,6 +958,7 @@ class AppController extends ChangeNotifier {
       if (group == null) continue;
       _groupKeys.remove(groupId);
       typingUntil.remove(groupId);
+      activityKinds.remove(groupId);
       await _cache.deleteThread(session, group);
       changed = true;
     }
@@ -897,6 +975,7 @@ class AppController extends ChangeNotifier {
       groups.remove(groupId);
       _groupKeys.remove(groupId);
       typingUntil.remove(groupId);
+      activityKinds.remove(groupId);
       changed = true;
     }
     for (final group in groups.values) {
@@ -1039,10 +1118,8 @@ class AppController extends ChangeNotifier {
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
-      _replaceMessage(
-        id,
-        (message) => message.copyWith(pending: false, failed: true),
-      );
+      status = 'Queued: waiting for server connection';
+      notifyListeners();
       return;
     }
 
@@ -1162,6 +1239,7 @@ class AppController extends ChangeNotifier {
         delivered: true,
       ),
     );
+    final received = group.messages.last;
     group.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     if (!fromSync && sender != myNodeId) {
       final active = _isThreadActive(group);
@@ -1178,6 +1256,7 @@ class AppController extends ChangeNotifier {
           ),
         );
       }
+      _publishIncomingPreview(group, received);
     }
     await _saveCache();
   }
@@ -1550,24 +1629,28 @@ class AppController extends ChangeNotifier {
     if (thread.isGroup) {
       if (thread.groupId.isNotEmpty) {
         await _rememberDeletedGroup(thread.groupId);
-        groups.remove(thread.groupId);
+        groups.removeWhere(
+          (_, group) =>
+              group.groupId == thread.groupId ||
+              identical(group, thread) ||
+              _looksLikeSameBrokenGroup(group, thread),
+        );
         _groupKeys.remove(thread.groupId);
       } else {
         groups.removeWhere(
           (_, group) =>
               identical(group, thread) ||
-              (group.groupId.isEmpty &&
-                  group.profile.nodeId == thread.profile.nodeId &&
-                  group.groupName == thread.groupName),
+              _looksLikeSameBrokenGroup(group, thread),
         );
       }
     } else {
       threads.remove(thread.profile.nodeId);
       profiles.remove(thread.profile.nodeId);
     }
-    typingUntil.remove(thread.isGroup ? thread.groupId : thread.profile.nodeId);
-    await _cache.deleteThread(session, thread);
-    await _saveCache();
+    final activityKey = thread.isGroup ? thread.groupId : thread.profile.nodeId;
+    typingUntil.remove(activityKey);
+    activityKinds.remove(activityKey);
+    await _rewriteCache();
     notifyListeners();
   }
 
@@ -1609,7 +1692,7 @@ class AppController extends ChangeNotifier {
       groups.remove(groupId);
       _groupKeys.remove(groupId);
       typingUntil.remove(groupId);
-      await _cache.deleteThread(session, group);
+      activityKinds.remove(groupId);
     } else {
       final chatNodeId = packet['chat_node_id']?.toString() ?? source;
       final thread = threads[chatNodeId] ?? threads[source];
@@ -1617,10 +1700,29 @@ class AppController extends ChangeNotifier {
       threads.remove(thread.profile.nodeId);
       profiles.remove(thread.profile.nodeId);
       typingUntil.remove(thread.profile.nodeId);
-      await _cache.deleteThread(session, thread);
+      activityKinds.remove(thread.profile.nodeId);
     }
-    await _saveCache();
+    await _rewriteCache();
     notifyListeners();
+  }
+
+  bool _looksLikeSameBrokenGroup(ChatThread cached, ChatThread target) {
+    if (!cached.isGroup || !target.isGroup) return false;
+    if (cached.groupId.isNotEmpty &&
+        target.groupId.isNotEmpty &&
+        cached.groupId == target.groupId) {
+      return true;
+    }
+    final sameProfile =
+        cached.profile.nodeId.isNotEmpty &&
+        cached.profile.nodeId == target.profile.nodeId;
+    final sameName =
+        cached.profile.displayName.trim().isNotEmpty &&
+        cached.profile.displayName == target.profile.displayName;
+    final sameGroupName =
+        cached.groupName.trim().isNotEmpty &&
+        cached.groupName == target.groupName;
+    return sameProfile || sameName || sameGroupName;
   }
 
   Future<void> _rememberDeletedGroup(String groupId) async {
@@ -1664,6 +1766,10 @@ class AppController extends ChangeNotifier {
   }
 
   void sendTyping(ChatThread thread) {
+    sendActivity(thread, 'typing');
+  }
+
+  void sendActivity(ChatThread thread, String kind) {
     if (session == null) return;
     final basePacket = {
       'type': 'typing',
@@ -1673,6 +1779,7 @@ class AppController extends ChangeNotifier {
       'ttl': 2,
       'sender': session!.login,
       'group_id': thread.groupId,
+      'activity': kind,
     };
     if (thread.isGroup) {
       for (final member in thread.members.where(
@@ -1690,11 +1797,14 @@ class AppController extends ChangeNotifier {
     if (source.isEmpty || source == myNodeId) return;
     final groupId = packet['group_id']?.toString() ?? '';
     final key = groupId.isNotEmpty ? groupId : source;
+    final activity = packet['activity']?.toString() ?? 'typing';
     typingUntil[key] = DateTime.now().add(const Duration(seconds: 4));
+    activityKinds[key] = activity == 'voice' ? 'voice' : 'typing';
     Timer(const Duration(seconds: 4), () {
       final until = typingUntil[key];
       if (until != null && until.isBefore(DateTime.now())) {
         typingUntil.remove(key);
+        activityKinds.remove(key);
         notifyListeners();
       }
     });
@@ -2356,10 +2466,8 @@ class AppController extends ChangeNotifier {
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
-      _replaceMessage(
-        id,
-        (message) => message.copyWith(pending: false, failed: true),
-      );
+      status = 'Queued: waiting for server connection';
+      notifyListeners();
       return;
     }
     final wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
@@ -2570,11 +2678,9 @@ class AppController extends ChangeNotifier {
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
-      _replaceMessage(
-        id,
-        (message) => message.copyWith(pending: false, failed: true),
-      );
-      return 'No server connection';
+      status = 'Queued: waiting for server connection';
+      notifyListeners();
+      return null;
     }
 
     final totalChunks = (data.length / _fileChunkHexSize).ceil();
@@ -2637,7 +2743,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> retryMessage(ChatThread thread, ChatMessage message) async {
-    if (!message.failed) return null;
+    if (!message.failed && !message.pending) return null;
     _deleteLocalMessage(thread, message.id);
     if (message.kind == ChatMessageKind.file) {
       if (message.fileData.isEmpty) return 'File is not cached';
@@ -2655,6 +2761,34 @@ class AppController extends ChangeNotifier {
       await sendMessage(thread.profile, message.text);
     }
     return null;
+  }
+
+  Future<void> _retryQueuedMessages() async {
+    if (_retryingQueuedMessages || session == null || !_socket.isConnected) {
+      return;
+    }
+    _retryingQueuedMessages = true;
+    try {
+      final queued = <({ChatThread thread, ChatMessage message})>[];
+      for (final thread in [...threads.values, ...groups.values]) {
+        for (final message in thread.messages) {
+          if (message.senderNode != myNodeId) continue;
+          if (!message.pending && !message.failed) continue;
+          if (message.deleted) continue;
+          queued.add((thread: thread, message: message));
+        }
+      }
+      if (queued.isEmpty) return;
+      addDiagnostic('sync', 'Retrying ${queued.length} queued messages');
+      for (final item in queued) {
+        if (!_socket.isConnected) break;
+        await retryMessage(item.thread, item.message);
+      }
+      await _saveCache();
+      notifyListeners();
+    } finally {
+      _retryingQueuedMessages = false;
+    }
   }
 
   Future<ChatThread?> createGroup({
@@ -2852,11 +2986,9 @@ class AppController extends ChangeNotifier {
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
-      _replaceMessage(
-        id,
-        (message) => message.copyWith(pending: false, failed: true),
-      );
-      return 'No server connection';
+      status = 'Queued: waiting for server connection';
+      notifyListeners();
+      return null;
     }
 
     final totalChunks = (data.length / _fileChunkHexSize).ceil();
@@ -2967,18 +3099,17 @@ class AppController extends ChangeNotifier {
       final text = await _crypto.decryptText(
         packet['message']?.toString() ?? '',
       );
-      thread.messages.add(
-        ChatMessage(
-          id: id,
-          senderNode: sender,
-          receiverNode: myNodeId,
-          text: text,
-          createdAt: DateTime.now(),
-          replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
-          replyToText: packet['reply_to_text']?.toString() ?? '',
-          delivered: true,
-        ),
+      final message = ChatMessage(
+        id: id,
+        senderNode: sender,
+        receiverNode: myNodeId,
+        text: text,
+        createdAt: DateTime.now(),
+        replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
+        replyToText: packet['reply_to_text']?.toString() ?? '',
+        delivered: true,
       );
+      thread.messages.add(message);
       final active = _isThreadActive(thread);
       if (active) {
         thread.unread = 0;
@@ -2988,6 +3119,7 @@ class AppController extends ChangeNotifier {
       if (!active && !thread.muted) {
         unawaited(_showNotification(title: profile.displayName, body: text));
       }
+      _publishIncomingPreview(thread, message);
       unawaited(_saveCache());
     }
     _socket.send({
@@ -3077,22 +3209,21 @@ class AppController extends ChangeNotifier {
         } catch (_) {
           decryptedData = fullData;
         }
-        group.messages.add(
-          ChatMessage(
-            id: fileId,
-            senderNode: sender,
-            receiverNode: groupId,
-            text: decryptedCaption,
-            createdAt: _parsePacketDate(first),
-            kind: ChatMessageKind.file,
-            fileName: decryptedName,
-            fileData: decryptedData,
-            fileSize: decryptedData.length ~/ 2,
-            replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
-            replyToText: first['reply_to_text']?.toString() ?? '',
-            delivered: true,
-          ),
+        final message = ChatMessage(
+          id: fileId,
+          senderNode: sender,
+          receiverNode: groupId,
+          text: decryptedCaption,
+          createdAt: _parsePacketDate(first),
+          kind: ChatMessageKind.file,
+          fileName: decryptedName,
+          fileData: decryptedData,
+          fileSize: decryptedData.length ~/ 2,
+          replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
+          replyToText: first['reply_to_text']?.toString() ?? '',
+          delivered: true,
         );
+        group.messages.add(message);
         group.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
         if (!fromSync && sender != myNodeId) {
           final active = _isThreadActive(group);
@@ -3109,6 +3240,7 @@ class AppController extends ChangeNotifier {
               ),
             );
           }
+          _publishIncomingPreview(group, message);
         }
         await _saveCache();
         notifyListeners();
@@ -3163,22 +3295,21 @@ class AppController extends ChangeNotifier {
         incoming.totalChunks,
         (index) => incoming.chunks[index] ?? '',
       ).join();
-      thread.messages.add(
-        ChatMessage(
-          id: fileId,
-          senderNode: sentByMe ? myNodeId : sender,
-          receiverNode: receiver,
-          text: first['caption']?.toString() ?? '',
-          createdAt: _parsePacketDate(first),
-          kind: ChatMessageKind.file,
-          fileName: filename,
-          fileData: fullData,
-          fileSize: fullData.length ~/ 2,
-          replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
-          replyToText: first['reply_to_text']?.toString() ?? '',
-          delivered: true,
-        ),
+      final message = ChatMessage(
+        id: fileId,
+        senderNode: sentByMe ? myNodeId : sender,
+        receiverNode: receiver,
+        text: first['caption']?.toString() ?? '',
+        createdAt: _parsePacketDate(first),
+        kind: ChatMessageKind.file,
+        fileName: filename,
+        fileData: fullData,
+        fileSize: fullData.length ~/ 2,
+        replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
+        replyToText: first['reply_to_text']?.toString() ?? '',
+        delivered: true,
       );
+      thread.messages.add(message);
       thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       if (!fromSync && sender != myNodeId) {
         final active = _isThreadActive(thread);
@@ -3195,6 +3326,7 @@ class AppController extends ChangeNotifier {
             ),
           );
         }
+        _publishIncomingPreview(thread, message);
       }
       await _saveCache();
       notifyListeners();
@@ -3596,7 +3728,12 @@ class AppController extends ChangeNotifier {
     threads.clear();
     groups.clear();
     typingUntil.clear();
+    activityKinds.clear();
     _incomingFiles.clear();
+    _incomingPreviewTimer?.cancel();
+    _incomingPreviewTimer = null;
+    incomingPreviewThread = null;
+    incomingPreviewMessage = null;
     _groupKeys.clear();
   }
 
@@ -3606,6 +3743,15 @@ class AppController extends ChangeNotifier {
     } catch (_) {
       // Web storage can reject writes when Safari quota is exhausted.
       // The app should keep working; sync can restore data later.
+    }
+  }
+
+  Future<void> _rewriteCache() async {
+    try {
+      await _cache.clear(session);
+      await _cache.save(session, [...threads.values, ...groups.values]);
+    } catch (_) {
+      // Keep the in-memory state even if local storage is temporarily unhappy.
     }
   }
 

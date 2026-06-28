@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import '../controllers/app_controller.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../widgets/profile_avatar.dart';
+import 'chat_media_page.dart';
 import 'profile_page.dart';
 
 class GroupInfoPage extends StatelessWidget {
@@ -106,6 +108,13 @@ class GroupInfoPage extends StatelessWidget {
     );
   }
 
+  void openMedia(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ChatMediaPage(thread: thread)),
+    );
+  }
+
   Future<void> toggleAdmin(BuildContext context, Profile profile) async {
     final error = await controller.toggleGroupAdmin(thread, profile.nodeId);
     if (!context.mounted) return;
@@ -140,9 +149,7 @@ class GroupInfoPage extends StatelessWidget {
                     );
                     final bytes = picked?.files.single.bytes;
                     if (bytes == null) return;
-                    setDialogState(() {
-                      avatarData = base64Encode(bytes);
-                    });
+                    setDialogState(() => avatarData = base64Encode(bytes));
                   },
                   child: ProfileAvatar(
                     profile: thread.profile.copyWith(avatarData: avatarData),
@@ -209,103 +216,100 @@ class GroupInfoPage extends StatelessWidget {
             thread.ownerNode.isEmpty || thread.ownerNode == controller.myNodeId;
 
         return Scaffold(
+          backgroundColor: const Color(0xFF07111E),
           appBar: AppBar(
+            backgroundColor: const Color(0xFF07111E),
             title: const Text('Group info'),
             actions: [
-              IconButton.filledTonal(
-                tooltip: 'Group call',
-                onPressed: () => startGroupCall(context),
-                icon: const Icon(Icons.add_call),
+              IconButton(
+                tooltip: 'Edit group',
+                onPressed: isOwner ? () => editGroupProfile(context) : null,
+                icon: const Icon(Icons.edit_outlined),
               ),
-              if (isOwner)
-                IconButton(
-                  tooltip: 'Edit group',
-                  onPressed: () => editGroupProfile(context),
-                  icon: const Icon(Icons.edit_outlined),
-                ),
-              if (isOwner)
-                IconButton(
-                  tooltip: 'Add member',
-                  onPressed: () => addMember(context),
-                  icon: const Icon(Icons.person_add_alt_1_outlined),
-                ),
             ],
           ),
           body: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 34),
             children: [
-              Center(child: ProfileAvatar(profile: thread.profile, radius: 56)),
-              const SizedBox(height: 18),
-              Text(
-                thread.profile.displayName,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '${members.length} members',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white60),
-              ),
-              if (thread.profile.about.trim().isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(
-                  thread.profile.about,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white70),
-                ),
-              ],
-              if (isOwner) ...[
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () => startGroupCall(context),
-                        icon: const Icon(Icons.add_call),
-                        label: const Text('Group call'),
+              _GroupGlassSurface(
+                radius: 30,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 24, 18, 22),
+                  child: Column(
+                    children: [
+                      ProfileAvatar(profile: thread.profile, radius: 68),
+                      const SizedBox(height: 16),
+                      Text(
+                        thread.profile.displayName,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w900),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: FilledButton.tonalIcon(
-                        onPressed: () => addMember(context),
-                        icon: const Icon(Icons.person_add_alt_1_outlined),
-                        label: const Text('Add member'),
+                      const SizedBox(height: 6),
+                      Text(
+                        '${members.length} members',
+                        style: const TextStyle(color: Colors.white60),
                       ),
-                    ),
-                  ],
+                      if (thread.profile.about.trim().isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          thread.profile.about,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                      const SizedBox(height: 20),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _GroupActionButton(
+                            icon: Icons.call_outlined,
+                            label: 'Call',
+                            onTap: () => startGroupCall(context),
+                          ),
+                          _GroupActionButton(
+                            icon: Icons.perm_media_outlined,
+                            label: 'Media',
+                            onTap: () => openMedia(context),
+                          ),
+                          _GroupActionButton(
+                            icon: Icons.person_add_alt_1_outlined,
+                            label: 'Add',
+                            onTap: isOwner ? () => addMember(context) : null,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-              const SizedBox(height: 28),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF20242B),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Roles',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    SizedBox(height: 6),
-                    Text('Owner: can add/remove members and admins.'),
-                    Text('Admin: marked in the member list.'),
-                    Text('Member: can read and send messages.'),
-                  ],
+              ),
+              const SizedBox(height: 16),
+              _GroupGlassSurface(
+                radius: 22,
+                child: const Padding(
+                  padding: EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Roles',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      SizedBox(height: 8),
+                      Text('Owner: can add/remove members and admins.'),
+                      Text('Admin: marked in the member list.'),
+                      Text('Member: can read and send messages.'),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 18),
-              Text(
-                'Members',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Text(
+                  'Members',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                ),
               ),
               const SizedBox(height: 10),
               if (members.isEmpty)
@@ -321,63 +325,62 @@ class GroupInfoPage extends StatelessWidget {
                       isOwner &&
                       nodeId != controller.myNodeId &&
                       nodeId != thread.ownerNode;
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF20242B),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: ListTile(
-                      leading: ProfileAvatar(profile: profile),
-                      title: Text(
-                        nodeId == controller.myNodeId
-                            ? '${profile.displayName} (you)'
-                            : profile.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        [
-                          if (profile.publicUsername.isNotEmpty)
-                            '@${profile.publicUsername}',
-                          if (role.isNotEmpty) role,
-                        ].join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white54),
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (profile.online)
-                            const Icon(
-                              Icons.circle,
-                              size: 10,
-                              color: Colors.greenAccent,
-                            ),
-                          if (canRemove)
-                            IconButton(
-                              tooltip: thread.admins.contains(nodeId)
-                                  ? 'Demote'
-                                  : 'Promote',
-                              onPressed: () => toggleAdmin(context, profile),
-                              icon: Icon(
-                                thread.admins.contains(nodeId)
-                                    ? Icons.admin_panel_settings
-                                    : Icons.admin_panel_settings_outlined,
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _GroupGlassSurface(
+                      radius: 20,
+                      child: ListTile(
+                        leading: ProfileAvatar(profile: profile),
+                        title: Text(
+                          nodeId == controller.myNodeId
+                              ? '${profile.displayName} (you)'
+                              : profile.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          [
+                            if (profile.publicUsername.isNotEmpty)
+                              '@${profile.publicUsername}',
+                            if (role.isNotEmpty) role,
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white54),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (profile.online)
+                              const Icon(
+                                Icons.circle,
+                                size: 10,
+                                color: Colors.greenAccent,
                               ),
-                            ),
-                          if (canRemove)
-                            IconButton(
-                              tooltip: 'Remove from group',
-                              onPressed: () => removeMember(context, profile),
-                              icon: const Icon(Icons.person_remove_outlined),
-                            ),
-                        ],
+                            if (canRemove)
+                              IconButton(
+                                tooltip: thread.admins.contains(nodeId)
+                                    ? 'Demote'
+                                    : 'Promote',
+                                onPressed: () => toggleAdmin(context, profile),
+                                icon: Icon(
+                                  thread.admins.contains(nodeId)
+                                      ? Icons.admin_panel_settings
+                                      : Icons.admin_panel_settings_outlined,
+                                ),
+                              ),
+                            if (canRemove)
+                              IconButton(
+                                tooltip: 'Remove from group',
+                                onPressed: () => removeMember(context, profile),
+                                icon: const Icon(Icons.person_remove_outlined),
+                              ),
+                          ],
+                        ),
+                        onTap: nodeId == controller.myNodeId
+                            ? null
+                            : () => openProfile(context, profile),
                       ),
-                      onTap: nodeId == controller.myNodeId
-                          ? null
-                          : () => openProfile(context, profile),
                     ),
                   );
                 }),
@@ -403,5 +406,89 @@ class GroupInfoPage extends StatelessWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _GroupActionButton extends StatelessWidget {
+  const _GroupActionButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        ClipOval(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Material(
+              color: Colors.white.withValues(
+                alpha: onTap == null ? 0.05 : 0.10,
+              ),
+              child: InkWell(
+                onTap: onTap,
+                child: SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: Icon(
+                    icon,
+                    color: onTap == null
+                        ? Colors.white30
+                        : Colors.lightBlueAccent,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 7),
+        Text(
+          label,
+          style: TextStyle(
+            color: onTap == null ? Colors.white30 : Colors.white70,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _GroupGlassSurface extends StatelessWidget {
+  const _GroupGlassSurface({required this.child, required this.radius});
+
+  final Widget child;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xAA182634),
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.11)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.18),
+                blurRadius: 18,
+                offset: const Offset(0, 9),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
+    );
   }
 }

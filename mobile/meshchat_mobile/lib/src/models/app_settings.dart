@@ -11,6 +11,7 @@ class AppSettings {
     this.compressPhotos = true,
     this.sendFilesOriginal = true,
     this.dataSaver = false,
+    this.reducedAnimations = false,
     this.blockedNodeIds = const [],
     this.deletedGroupIds = const [],
     this.deletedMessageIds = const [],
@@ -25,6 +26,7 @@ class AppSettings {
   final bool compressPhotos;
   final bool sendFilesOriginal;
   final bool dataSaver;
+  final bool reducedAnimations;
   final List<String> blockedNodeIds;
   final List<String> deletedGroupIds;
   final List<String> deletedMessageIds;
@@ -39,6 +41,7 @@ class AppSettings {
     bool? compressPhotos,
     bool? sendFilesOriginal,
     bool? dataSaver,
+    bool? reducedAnimations,
     List<String>? blockedNodeIds,
     List<String>? deletedGroupIds,
     List<String>? deletedMessageIds,
@@ -54,6 +57,7 @@ class AppSettings {
       compressPhotos: compressPhotos ?? this.compressPhotos,
       sendFilesOriginal: sendFilesOriginal ?? this.sendFilesOriginal,
       dataSaver: dataSaver ?? this.dataSaver,
+      reducedAnimations: reducedAnimations ?? this.reducedAnimations,
       blockedNodeIds: blockedNodeIds ?? this.blockedNodeIds,
       deletedGroupIds: deletedGroupIds ?? this.deletedGroupIds,
       deletedMessageIds: deletedMessageIds ?? this.deletedMessageIds,

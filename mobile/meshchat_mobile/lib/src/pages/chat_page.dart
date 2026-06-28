@@ -19,7 +19,9 @@ import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../services/call_alert_service.dart';
+import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
+import 'chat_media_page.dart';
 import 'group_info_page.dart';
 import 'profile_page.dart';
 
@@ -445,6 +447,7 @@ class _ChatPageState extends State<ChatPage> {
         recordLevels[i] = 0.25;
       }
     });
+    widget.controller.sendActivity(widget.thread, 'voice');
     unawaited(HapticFeedback.mediumImpact());
   }
 
@@ -633,7 +636,14 @@ class _ChatPageState extends State<ChatPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ProfilePage(profile: widget.thread.profile),
+        builder: (_) => ProfilePage(
+          profile: widget.thread.profile,
+          controller: widget.controller,
+          thread: widget.thread,
+          onMessage: () => Navigator.maybePop(context),
+          onCall: () => unawaited(startCall()),
+          onMedia: openMediaList,
+        ),
       ),
     );
   }
@@ -1019,7 +1029,7 @@ class _ChatPageState extends State<ChatPage> {
   void openMediaList() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => _ChatFilesPage(thread: widget.thread)),
+      MaterialPageRoute(builder: (_) => ChatMediaPage(thread: widget.thread)),
     );
   }
 
@@ -1111,7 +1121,11 @@ class _ChatPageState extends State<ChatPage> {
       ),
       body: Stack(
         children: [
-          const Positioned.fill(child: _LiquidMeshBackground()),
+          Positioned.fill(
+            child: _LiquidMeshBackground(
+              enabled: !widget.controller.appSettings.reducedAnimations,
+            ),
+          ),
           Column(
             children: [
               ListenableBuilder(
@@ -1129,15 +1143,15 @@ class _ChatPageState extends State<ChatPage> {
                         padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
                         child: _ChatGlassSurface(
                           radius: 16,
-                          child: const Padding(
-                            padding: EdgeInsets.symmetric(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
                               horizontal: 14,
                               vertical: 7,
                             ),
                             child: Align(
                               alignment: Alignment.centerLeft,
                               child: Text(
-                                'typing...',
+                                widget.controller.activityLabel(widget.thread),
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.white70,
@@ -1405,6 +1419,20 @@ class _ChatPageState extends State<ChatPage> {
                 );
               },
             ),
+          ),
+          InAppMessageBanner(
+            controller: widget.controller,
+            top: MediaQuery.paddingOf(context).top + 8,
+            onOpen: (thread) {
+              if (thread == widget.thread) return;
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      ChatPage(controller: widget.controller, thread: thread),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -2370,7 +2398,9 @@ class _DatePill extends StatelessWidget {
 }
 
 class _LiquidMeshBackground extends StatefulWidget {
-  const _LiquidMeshBackground();
+  const _LiquidMeshBackground({required this.enabled});
+
+  final bool enabled;
 
   @override
   State<_LiquidMeshBackground> createState() => _LiquidMeshBackgroundState();
@@ -2392,6 +2422,7 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
       duration: const Duration(milliseconds: 2200),
     );
     timer = Timer.periodic(const Duration(milliseconds: 6500), (_) {
+      if (!widget.enabled) return;
       if (!mounted) return;
       setState(() {
         final first = random.nextInt(_LiquidMeshPainter.pointCount);
@@ -2411,8 +2442,15 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
       controller.forward(from: 0);
     });
     Future<void>.delayed(const Duration(milliseconds: 700), () {
-      if (mounted) controller.forward(from: 0);
+      if (mounted && widget.enabled) controller.forward(from: 0);
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _LiquidMeshBackground oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.enabled) controller.stop();
+    if (widget.enabled && !oldWidget.enabled) controller.forward(from: 0);
   }
 
   @override
@@ -2435,10 +2473,9 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
             painter: _LiquidMeshPainter(
               activePoints: activePoints,
               activeColors: activeColors,
-              pulse: math
-                  .sin(controller.value * math.pi)
-                  .clamp(0, 1)
-                  .toDouble(),
+              pulse: widget.enabled
+                  ? math.sin(controller.value * math.pi).clamp(0, 1).toDouble()
+                  : 0,
             ),
           ),
         ),
@@ -2947,58 +2984,6 @@ class _PinnedBar extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _ChatFilesPage extends StatelessWidget {
-  const _ChatFilesPage({required this.thread});
-
-  final ChatThread thread;
-
-  @override
-  Widget build(BuildContext context) {
-    final files =
-        thread.messages
-            .where((message) => message.kind == ChatMessageKind.file)
-            .toList()
-          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return Scaffold(
-      appBar: AppBar(title: const Text('Media & files')),
-      body: files.isEmpty
-          ? const Center(child: Text('No files yet'))
-          : ListView.separated(
-              padding: const EdgeInsets.all(12),
-              itemCount: files.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final message = files[index];
-                return Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF20242B),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _FilePreview(
-                        message: message,
-                        imageBytes: _MessageBubble.imageBytesFor(message),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        messageTime(message.createdAt),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.white54,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
     );
   }
 }

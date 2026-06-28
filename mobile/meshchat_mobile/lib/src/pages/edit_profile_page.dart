@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/profile.dart';
@@ -57,7 +58,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
       showSnack('Avatar image is too large');
       return;
     }
-    final avatarBytes = await makeAvatarBytes(bytes);
+    if (!mounted) return;
+    final cropped = await showDialog<Uint8List>(
+      context: context,
+      builder: (_) => _AvatarCropDialog(bytes: bytes),
+    );
+    if (cropped == null) return;
+    final avatarBytes = await makeAvatarBytes(cropped);
     if (!mounted) return;
     if (avatarBytes.length > 96 * 1024) {
       showSnack('Avatar is too large after compression');
@@ -237,5 +244,193 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   void showSnack(String text) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+}
+
+class _AvatarCropDialog extends StatefulWidget {
+  const _AvatarCropDialog({required this.bytes});
+
+  final Uint8List bytes;
+
+  @override
+  State<_AvatarCropDialog> createState() => _AvatarCropDialogState();
+}
+
+class _AvatarCropDialogState extends State<_AvatarCropDialog> {
+  final repaintKey = GlobalKey();
+  final transform = TransformationController();
+  double zoom = 1.08;
+  bool exporting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _applyZoom();
+  }
+
+  @override
+  void dispose() {
+    transform.dispose();
+    super.dispose();
+  }
+
+  void _applyZoom() {
+    transform.value = Matrix4.diagonal3Values(zoom, zoom, 1);
+  }
+
+  Future<void> save() async {
+    if (exporting) return;
+    setState(() => exporting = true);
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final boundary =
+          repaintKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
+      if (boundary == null) return;
+      final pixelRatio = 256 / boundary.size.width;
+      final image = await boundary.toImage(pixelRatio: pixelRatio);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (!mounted || data == null) return;
+      Navigator.pop(context, data.buffer.asUint8List());
+    } finally {
+      if (mounted) setState(() => exporting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(30),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xEE16202A),
+              borderRadius: BorderRadius.circular(30),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Adjust avatar',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: 260,
+                    height: 260,
+                    child: Stack(
+                      children: [
+                        RepaintBoundary(
+                          key: repaintKey,
+                          child: ClipOval(
+                            child: SizedBox(
+                              width: 260,
+                              height: 260,
+                              child: InteractiveViewer(
+                                transformationController: transform,
+                                minScale: 0.75,
+                                maxScale: 4,
+                                boundaryMargin: const EdgeInsets.all(140),
+                                child: SizedBox(
+                                  width: 320,
+                                  height: 320,
+                                  child: Image.memory(
+                                    widget.bytes,
+                                    fit: BoxFit.cover,
+                                    gaplessPlayback: true,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.lightBlueAccent.withValues(
+                                  alpha: 0.75,
+                                ),
+                                width: 2,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.lightBlueAccent.withValues(
+                                    alpha: 0.16,
+                                  ),
+                                  blurRadius: 22,
+                                ),
+                              ],
+                            ),
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Icon(Icons.zoom_out_rounded),
+                      Expanded(
+                        child: Slider(
+                          min: 0.85,
+                          max: 2.6,
+                          value: zoom,
+                          onChanged: (value) {
+                            setState(() => zoom = value);
+                            _applyZoom();
+                          },
+                        ),
+                      ),
+                      const Icon(Icons.zoom_in_rounded),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () {
+                          setState(() => zoom = 1.08);
+                          _applyZoom();
+                        },
+                        child: const Text('Reset'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: exporting ? null : save,
+                        child: exporting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Use avatar'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

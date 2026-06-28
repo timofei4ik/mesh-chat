@@ -9,6 +9,7 @@ import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../services/call_alert_service.dart';
+import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
 import 'bluetooth_nearby_page.dart';
 import 'chat_page.dart';
@@ -249,9 +250,22 @@ class ChatsPage extends StatelessWidget {
   }
 
   void openProfile(BuildContext context, Profile profile) {
+    final thread = controller.threads[profile.nodeId];
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => ProfilePage(profile: profile)),
+      MaterialPageRoute(
+        builder: (_) => ProfilePage(
+          profile: profile,
+          controller: controller,
+          thread: thread,
+          onMessage: () {
+            Navigator.pop(context);
+            openChat(context, profile);
+          },
+          onCall: () => unawaited(controller.startCall(profile)),
+          onMedia: thread == null ? null : () => openThread(context, thread),
+        ),
+      ),
     );
   }
 
@@ -734,7 +748,11 @@ class _HomeShellState extends State<_HomeShell> {
 
     return Stack(
       children: [
-        const Positioned.fill(child: _HomeLiquidBackground()),
+        Positioned.fill(
+          child: _HomeLiquidBackground(
+            enabled: !widget.controller.appSettings.reducedAnimations,
+          ),
+        ),
         SafeArea(
           child: Column(
             children: [
@@ -744,6 +762,7 @@ class _HomeShellState extends State<_HomeShell> {
                 onNewChat: () => widget.parent.startNew(context),
                 onSearch: () => widget.parent.openGlobalSearch(context),
               ),
+              _QueuedMessagesBanner(controller: controller),
               _HomeCallBanner(controller: controller),
               if (tab == _HomeTab.chats)
                 _HomeFilterBar(
@@ -793,6 +812,11 @@ class _HomeShellState extends State<_HomeShell> {
             onSettings: () => selectTab(_HomeTab.settings),
             onBluetooth: () => selectTab(_HomeTab.bluetooth),
           ),
+        ),
+        InAppMessageBanner(
+          controller: controller,
+          top: MediaQuery.paddingOf(context).top + 8,
+          onOpen: (thread) => widget.parent.openThread(context, thread),
         ),
       ],
     );
@@ -1209,24 +1233,33 @@ class _HomeHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
       child: Column(
         children: [
-          Row(
-            children: [
-              _GlassLogoChip(),
-              const Spacer(),
-              _BluetoothStatusCard(
-                running: ble.running,
-                connected: connected,
-                online: online,
-                onTap: onBluetooth,
-              ),
-              const SizedBox(width: 10),
-              _RoundGlassButton(
-                tooltip: 'New chat',
-                icon: Icons.add_rounded,
-                onPressed: onNewChat,
-                accent: Colors.lightBlueAccent,
-              ),
-            ],
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 360;
+              return Row(
+                children: [
+                  Expanded(child: _GlassLogoChip(compact: compact)),
+                  SizedBox(width: compact ? 6 : 10),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: compact ? 126 : 168),
+                    child: _BluetoothStatusCard(
+                      running: ble.running,
+                      connected: connected,
+                      online: online,
+                      onTap: onBluetooth,
+                      compact: compact,
+                    ),
+                  ),
+                  SizedBox(width: compact ? 6 : 10),
+                  _RoundGlassButton(
+                    tooltip: 'New chat',
+                    icon: Icons.add_rounded,
+                    onPressed: onNewChat,
+                    accent: Colors.lightBlueAccent,
+                  ),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 10),
           _HomeSearchField(onTap: onSearch),
@@ -1318,12 +1351,14 @@ class _BluetoothStatusCard extends StatelessWidget {
     required this.connected,
     required this.online,
     required this.onTap,
+    this.compact = false,
   });
 
   final bool running;
   final int connected;
   final bool online;
   final VoidCallback onTap;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -1335,7 +1370,12 @@ class _BluetoothStatusCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(15),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          padding: EdgeInsets.fromLTRB(
+            compact ? 9 : 12,
+            8,
+            compact ? 9 : 12,
+            8,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1344,16 +1384,19 @@ class _BluetoothStatusCard extends StatelessWidget {
                     ? Icons.bluetooth_connected_rounded
                     : Icons.bluetooth_rounded,
                 color: Colors.white,
-                size: 22,
+                size: compact ? 20 : 22,
               ),
-              const SizedBox(width: 9),
+              SizedBox(width: compact ? 6 : 9),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
+                  Text(
                     'Bluetooth',
-                    style: TextStyle(fontSize: 12, color: Colors.white70),
+                    style: TextStyle(
+                      fontSize: compact ? 11 : 12,
+                      color: Colors.white70,
+                    ),
                   ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -1365,7 +1408,7 @@ class _BluetoothStatusCard extends StatelessWidget {
                                   : 'On'
                             : 'Off',
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: compact ? 10 : 11,
                           color: active ? Colors.greenAccent : Colors.white54,
                           fontWeight: FontWeight.w700,
                         ),
@@ -1425,15 +1468,30 @@ class _HomeSearchField extends StatelessWidget {
 }
 
 class _GlassLogoChip extends StatelessWidget {
+  const _GlassLogoChip({this.compact = false});
+
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Image.asset('assets/app_icon.png', width: 48, height: 48),
-        const SizedBox(width: 10),
-        const Text(
-          'MeshChat',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+        Image.asset(
+          'assets/app_icon.png',
+          width: compact ? 40 : 48,
+          height: compact ? 40 : 48,
+        ),
+        SizedBox(width: compact ? 7 : 10),
+        Flexible(
+          child: Text(
+            'MeshChat',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: compact ? 18 : 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
         ),
       ],
     );
@@ -2165,7 +2223,9 @@ class _RoundGlassButton extends StatelessWidget {
 }
 
 class _HomeLiquidBackground extends StatefulWidget {
-  const _HomeLiquidBackground();
+  const _HomeLiquidBackground({required this.enabled});
+
+  final bool enabled;
 
   @override
   State<_HomeLiquidBackground> createState() => _HomeLiquidBackgroundState();
@@ -2184,11 +2244,19 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
       duration: const Duration(milliseconds: 3200),
     );
     timer = Timer.periodic(const Duration(milliseconds: 7200), (_) {
+      if (!widget.enabled) return;
       if (mounted) controller.forward(from: 0);
     });
     Future<void>.delayed(const Duration(milliseconds: 900), () {
-      if (mounted) controller.forward(from: 0);
+      if (mounted && widget.enabled) controller.forward(from: 0);
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _HomeLiquidBackground oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.enabled) controller.stop();
+    if (widget.enabled && !oldWidget.enabled) controller.forward(from: 0);
   }
 
   @override
@@ -2208,7 +2276,7 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
           builder: (context, _) => CustomPaint(
             isComplex: true,
             willChange: controller.isAnimating,
-            painter: _HomeMeshPainter(t: controller.value),
+            painter: _HomeMeshPainter(t: widget.enabled ? controller.value : 0),
           ),
         ),
       ),
@@ -2268,6 +2336,65 @@ class _HomeMeshPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HomeMeshPainter oldDelegate) {
     return oldDelegate.t != t;
+  }
+}
+
+class _QueuedMessagesBanner extends StatelessWidget {
+  const _QueuedMessagesBanner({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = controller.queuedMessageCount;
+    if (count == 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 4),
+      child: _HomeGlassSurface(
+        accent: Colors.orangeAccent,
+        radius: 20,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.orangeAccent.withValues(alpha: 0.13),
+                  border: Border.all(
+                    color: Colors.orangeAccent.withValues(alpha: 0.26),
+                  ),
+                ),
+                child: const Icon(
+                  Icons.schedule_send_rounded,
+                  color: Colors.orangeAccent,
+                  size: 19,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '$count waiting to send',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+              TextButton(
+                onPressed: controller.cancelQueuedMessages,
+                child: const Text('Cancel'),
+              ),
+              FilledButton.tonal(
+                onPressed: controller.retryQueuedMessagesNow,
+                child: const Text('Send'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
