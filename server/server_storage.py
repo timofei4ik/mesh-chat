@@ -157,6 +157,7 @@ class ServerStorageMixin:
                 members_json TEXT,
                 owner_node TEXT,
                 admins_json TEXT DEFAULT '[]',
+                is_channel INTEGER DEFAULT 0,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -181,6 +182,12 @@ class ServerStorageMixin:
 
             conn.execute(
                 "ALTER TABLE server_groups ADD COLUMN admins_json TEXT DEFAULT '[]'"
+            )
+
+        if "is_channel" not in group_columns:
+
+            conn.execute(
+                "ALTER TABLE server_groups ADD COLUMN is_channel INTEGER DEFAULT 0"
             )
 
         conn.execute(
@@ -287,6 +294,7 @@ class ServerStorageMixin:
                 receiver_login TEXT,
                 group_id TEXT,
                 filename TEXT,
+                caption TEXT,
                 data TEXT,
                 group_key_id TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -327,6 +335,16 @@ class ServerStorageMixin:
         }:
             conn.execute(
                 "ALTER TABLE server_files ADD COLUMN group_key_id TEXT"
+            )
+
+        cursor = conn.execute(
+            "PRAGMA table_info(server_files)"
+        )
+        if "caption" not in {
+            row[1] for row in cursor.fetchall()
+        }:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN caption TEXT"
             )
 
         conn.commit()
@@ -806,7 +824,8 @@ class ServerStorageMixin:
         group_name,
         members,
         owner_node=None,
-        admins=None
+        admins=None,
+        is_channel=False
     ):
 
         if not group_id:
@@ -852,9 +871,10 @@ class ServerStorageMixin:
                 members_json,
                 owner_node,
                 admins_json,
+                is_channel,
                 updated_at
             )
-            VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+            VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
             """,
             (
                 group_id,
@@ -867,7 +887,8 @@ class ServerStorageMixin:
                 json.dumps(
                     admins,
                     ensure_ascii=False
-                )
+                ),
+                1 if is_channel else 0
             )
         )
 
@@ -1126,6 +1147,10 @@ class ServerStorageMixin:
                 "message"
             )
 
+            file_caption = packet.get(
+                "file_caption"
+            )
+
             sender_node = packet.get(
                 "source_node"
             )
@@ -1138,6 +1163,20 @@ class ServerStorageMixin:
                 UPDATE direct_messages
                 SET message=?
                 WHERE message_id=?
+                AND sender_node=?
+                """,
+                (
+                    file_caption if file_caption is not None else message,
+                    message_id,
+                    sender_node
+                )
+            )
+
+            self.db.execute(
+                """
+                UPDATE server_files
+                SET caption=?
+                WHERE file_id=?
                 AND sender_node=?
                 """,
                 (
@@ -1324,7 +1363,8 @@ class ServerStorageMixin:
                     members,
                     packet.get("owner_node")
                     or packet.get("source_node"),
-                    packet.get("admins")
+                    packet.get("admins"),
+                    packet.get("is_channel") is True
                 )
 
             message_id = (
@@ -1382,7 +1422,8 @@ class ServerStorageMixin:
                 packet.get("group_name"),
                 packet.get("members") or [],
                 packet.get("owner_node"),
-                packet.get("admins")
+                packet.get("admins"),
+                packet.get("is_channel") is True
             )
 
         elif packet_type == "group_delete":
@@ -1489,6 +1530,22 @@ class ServerStorageMixin:
                 SET message=?,
                     group_key_id=COALESCE(?, group_key_id)
                 WHERE message_id=?
+                AND sender_node=?
+                """,
+                (
+                    message,
+                    packet.get("group_key_id"),
+                    message_id,
+                    sender_node
+                )
+            )
+
+            self.db.execute(
+                """
+                UPDATE server_files
+                SET caption=?,
+                    group_key_id=COALESCE(?, group_key_id)
+                WHERE file_id=?
                 AND sender_node=?
                 """,
                 (
@@ -1653,11 +1710,12 @@ class ServerStorageMixin:
                     receiver_login,
                     group_id,
                     filename,
+                    caption,
                     data,
                     group_key_id,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,STRFTIME(
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
                     '%Y-%m-%d %H:%M:%f',
                     'now'
                 ))
@@ -1671,6 +1729,7 @@ class ServerStorageMixin:
                     self.get_login_by_node(receiver_node),
                     first_packet.get("group_id"),
                     filename,
+                    first_packet.get("caption") or "",
                     full_data,
                     first_packet.get("group_key_id")
                 )

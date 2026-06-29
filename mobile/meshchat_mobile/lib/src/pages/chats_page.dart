@@ -19,7 +19,7 @@ import 'global_search_page.dart';
 import 'profile_page.dart';
 import 'settings_page.dart';
 
-enum _HomeFilter { all, personal, groups, bluetooth }
+enum _HomeFilter { all, personal, groups, channels, bluetooth }
 
 enum _HomeTab { chats, settings, bluetooth }
 
@@ -30,29 +30,45 @@ class _ActionSheetGlass extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(28),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: _edgeGlassGradient(
-                base: const Color(0xFF26313B),
-                alpha: 0.86,
-                edgeBoost: 0.05,
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 18 * (1 - value)),
+          child: Transform.scale(
+            scale: 0.98 + value * 0.02,
+            alignment: Alignment.bottomCenter,
+            child: child,
+          ),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: _edgeGlassGradient(
+                  base: const Color(0xFF26313B),
+                  alpha: 0.86,
+                  edgeBoost: 0.05,
+                ),
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
               ),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-            ),
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: children,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: children,
+                  ),
                 ),
               ),
             ),
@@ -81,10 +97,28 @@ class ChatsPage extends StatelessWidget {
             onTap: () => Navigator.pop(context, 'user'),
           ),
           ListTile(
+            leading: const Icon(Icons.bookmark_border_rounded),
+            title: const Text('Saved Messages'),
+            subtitle: const Text('Private notes, files and forwards'),
+            onTap: () => Navigator.pop(context, 'saved'),
+          ),
+          ListTile(
             leading: const Icon(Icons.group_add_outlined),
             title: const Text('Create group'),
             subtitle: const Text('Start a group chat'),
             onTap: () => Navigator.pop(context, 'group'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.campaign_outlined),
+            title: const Text('Create channel'),
+            subtitle: const Text('Broadcast posts to subscribers'),
+            onTap: () => Navigator.pop(context, 'channel'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.qr_code_2_rounded),
+            title: const Text('Join by invite link'),
+            subtitle: const Text('Paste a MeshChat group/channel invite'),
+            onTap: () => Navigator.pop(context, 'join'),
           ),
         ],
       ),
@@ -92,9 +126,60 @@ class ChatsPage extends StatelessWidget {
     if (!context.mounted) return;
     if (action == 'user') {
       await findUser(context);
+    } else if (action == 'saved') {
+      final thread = controller.ensureSavedMessagesThread();
+      if (!context.mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatPage(controller: controller, thread: thread),
+        ),
+      );
     } else if (action == 'group') {
       await createGroup(context);
+    } else if (action == 'channel') {
+      await createGroup(context, isChannel: true);
+    } else if (action == 'join') {
+      await joinByInvite(context);
     }
+  }
+
+  Future<void> joinByInvite(BuildContext context) async {
+    final input = TextEditingController();
+    final link = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Join by invite'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          minLines: 1,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: 'meshchat://group/...',
+            prefixIcon: Icon(Icons.link_rounded),
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text),
+            child: const Text('Request'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (!context.mounted || link == null || link.trim().isEmpty) return;
+    final error = await controller.requestGroupJoinFromInvite(link);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(error ?? 'Join request sent')));
   }
 
   Future<void> findUser(BuildContext context) async {
@@ -138,29 +223,34 @@ class ChatsPage extends StatelessWidget {
     openChat(context, profile);
   }
 
-  Future<void> createGroup(BuildContext context) async {
+  Future<void> createGroup(
+    BuildContext context, {
+    bool isChannel = false,
+  }) async {
     final nameInput = TextEditingController();
     final membersInput = TextEditingController();
     final result = await showDialog<({String name, String members})>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('New group'),
+        title: Text(isChannel ? 'New channel' : 'New group'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: nameInput,
               autofocus: true,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Name',
-                prefixIcon: Icon(Icons.group_outlined),
+                prefixIcon: Icon(
+                  isChannel ? Icons.campaign_outlined : Icons.group_outlined,
+                ),
               ),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: membersInput,
-              decoration: const InputDecoration(
-                labelText: 'Members',
+              decoration: InputDecoration(
+                labelText: isChannel ? 'Subscribers' : 'Members',
                 hintText: '@user1, @user2',
                 prefixIcon: Icon(Icons.alternate_email),
               ),
@@ -177,7 +267,7 @@ class ChatsPage extends StatelessWidget {
               name: nameInput.text,
               members: membersInput.text,
             )),
-            child: const Text('Create'),
+            child: Text(isChannel ? 'Create channel' : 'Create'),
           ),
         ],
       ),
@@ -194,9 +284,15 @@ class ChatsPage extends StatelessWidget {
         .where((value) => value.isNotEmpty)
         .toList();
     if (usernames.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Add at least one member')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isChannel
+                ? 'Add at least one subscriber'
+                : 'Add at least one member',
+          ),
+        ),
+      );
       return;
     }
 
@@ -221,12 +317,17 @@ class ChatsPage extends StatelessWidget {
     final group = await controller.createGroup(
       name: result.name,
       members: members,
+      isChannel: isChannel,
     );
     if (!context.mounted) return;
     if (group == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Could not create group')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isChannel ? 'Could not create channel' : 'Could not create group',
+          ),
+        ),
+      );
       return;
     }
     openThread(context, group);
@@ -710,7 +811,8 @@ class _HomeShellState extends State<_HomeShell> {
     _HomeFilter.all => 0,
     _HomeFilter.personal => 1,
     _HomeFilter.groups => 2,
-    _HomeFilter.bluetooth => 3,
+    _HomeFilter.channels => 3,
+    _HomeFilter.bluetooth => 4,
   };
 
   void selectTab(_HomeTab value) {
@@ -738,7 +840,11 @@ class _HomeShellState extends State<_HomeShell> {
       _HomeFilter.personal =>
         allThreads.where((thread) => !thread.isGroup).toList(),
       _HomeFilter.groups =>
-        allThreads.where((thread) => thread.isGroup).toList(),
+        allThreads
+            .where((thread) => thread.isGroup && !thread.isChannel)
+            .toList(),
+      _HomeFilter.channels =>
+        allThreads.where((thread) => thread.isChannel).toList(),
       _HomeFilter.bluetooth =>
         allThreads
             .where((thread) => thread.profile.online && !thread.isGroup)
@@ -845,11 +951,17 @@ class _HomeTabBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final requestCount = filter == _HomeFilter.all
+        ? controller.groupJoinRequests.length
+        : 0;
+    final archiveCount = archivedCount > 0 && filter == _HomeFilter.all ? 1 : 0;
+    final headerCount = requestCount + archiveCount;
     return switch (tab) {
       _HomeTab.settings => _InlineSettingsPanel(
         controller: controller,
         onProfile: () => parent.editOwnProfile(context),
         onGroup: () => parent.createGroup(context),
+        onChannel: () => parent.createGroup(context, isChannel: true),
         onSettings: () => parent.openSettings(context),
         onDiagnostics: () => parent.openDiagnostics(context),
         onLogout: controller.logout,
@@ -873,7 +985,7 @@ class _HomeTabBody extends StatelessWidget {
           direction: filterDirection,
           child: child,
         ),
-        child: threads.isEmpty && archivedCount == 0
+        child: threads.isEmpty && archivedCount == 0 && requestCount == 0
             ? RefreshIndicator(
                 key: ValueKey('empty-$filter'),
                 color: Colors.lightBlueAccent,
@@ -899,13 +1011,19 @@ class _HomeTabBody extends StatelessWidget {
                 child: ListView.builder(
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(10, 8, 10, 110),
-                  itemCount:
-                      threads.length +
-                      (archivedCount > 0 && filter == _HomeFilter.all ? 1 : 0),
+                  itemCount: threads.length + headerCount,
                   itemBuilder: (context, index) {
-                    if (archivedCount > 0 &&
-                        filter == _HomeFilter.all &&
-                        index == 0) {
+                    if (index < requestCount) {
+                      final request = controller.groupJoinRequests[index];
+                      return _AnimatedChatEntrance(
+                        index: index,
+                        child: _JoinRequestGlassTile(
+                          request: request,
+                          controller: controller,
+                        ),
+                      );
+                    }
+                    if (index < headerCount && archiveCount > 0) {
                       return _AnimatedChatEntrance(
                         index: index,
                         child: _ArchiveGlassTile(
@@ -914,11 +1032,7 @@ class _HomeTabBody extends StatelessWidget {
                         ),
                       );
                     }
-                    final threadIndex =
-                        index -
-                        (archivedCount > 0 && filter == _HomeFilter.all
-                            ? 1
-                            : 0);
+                    final threadIndex = index - headerCount;
                     final thread = threads[threadIndex];
                     return _DismissibleChatTile(
                       key: ValueKey(
@@ -1067,30 +1181,37 @@ class _SwipeActionBackground extends StatelessWidget {
           alignment: alignment,
           child: Padding(
             padding: EdgeInsets.only(left: left ? 22 : 0, right: left ? 0 : 22),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: actionColor,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 10,
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.92, end: 1),
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutBack,
+              builder: (context, value, child) =>
+                  Transform.scale(scale: value, child: child),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: actionColor,
+                  borderRadius: BorderRadius.circular(18),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(icon, color: Colors.white),
-                    const SizedBox(height: 4),
-                    Text(
-                      label,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 13,
+                    vertical: 10,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, color: Colors.white),
+                      const SizedBox(height: 4),
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1438,28 +1559,43 @@ class _BluetoothStatusCard extends StatelessWidget {
   }
 }
 
-class _HomeSearchField extends StatelessWidget {
+class _HomeSearchField extends StatefulWidget {
   const _HomeSearchField({required this.onTap});
 
   final VoidCallback onTap;
 
   @override
+  State<_HomeSearchField> createState() => _HomeSearchFieldState();
+}
+
+class _HomeSearchFieldState extends State<_HomeSearchField> {
+  bool pressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    return _HomeGlassSurface(
-      accent: Colors.blueGrey,
-      radius: 16,
-      dim: true,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: const Padding(
-          padding: EdgeInsets.fromLTRB(12, 9, 12, 9),
-          child: Row(
-            children: [
-              Icon(Icons.search_rounded, size: 20, color: Colors.white54),
-              SizedBox(width: 8),
-              Text('Search', style: TextStyle(color: Colors.white54)),
-            ],
+    return AnimatedScale(
+      scale: pressed ? 0.985 : 1,
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.easeOutCubic,
+      child: _HomeGlassSurface(
+        accent: pressed ? Colors.lightBlueAccent : Colors.blueGrey,
+        radius: 16,
+        dim: !pressed,
+        child: InkWell(
+          onTap: widget.onTap,
+          onTapDown: (_) => setState(() => pressed = true),
+          onTapCancel: () => setState(() => pressed = false),
+          onTapUp: (_) => setState(() => pressed = false),
+          borderRadius: BorderRadius.circular(16),
+          child: const Padding(
+            padding: EdgeInsets.fromLTRB(12, 9, 12, 9),
+            child: Row(
+              children: [
+                Icon(Icons.search_rounded, size: 20, color: Colors.white54),
+                SizedBox(width: 8),
+                Text('Search', style: TextStyle(color: Colors.white54)),
+              ],
+            ),
           ),
         ),
       ),
@@ -1577,6 +1713,15 @@ class _HomeFilterBar extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: _FilterPill(
+              label: 'Channels',
+              icon: Icons.campaign_outlined,
+              selected: selected == _HomeFilter.channels,
+              onTap: () => onChanged(_HomeFilter.channels),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _FilterPill(
               label: 'Bluetooth',
               icon: Icons.bluetooth_rounded,
               selected: selected == _HomeFilter.bluetooth,
@@ -1668,6 +1813,8 @@ class _ChatGlassTile extends StatelessWidget {
       child: _HomeGlassSurface(
         accent: thread.unread > 0
             ? Colors.lightBlueAccent
+            : thread.isChannel
+            ? const Color(0xFF9B7CFF)
             : thread.isGroup
             ? Colors.lightBlueAccent
             : Colors.blueGrey,
@@ -1680,7 +1827,11 @@ class _ChatGlassTile extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
             child: Row(
               children: [
-                _GlassAvatar(profile: thread.profile, isGroup: thread.isGroup),
+                _GlassAvatar(
+                  profile: thread.profile,
+                  isGroup: thread.isGroup,
+                  isChannel: thread.isChannel,
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -1770,10 +1921,15 @@ class _ChatGlassTile extends StatelessWidget {
 }
 
 class _GlassAvatar extends StatelessWidget {
-  const _GlassAvatar({required this.profile, required this.isGroup});
+  const _GlassAvatar({
+    required this.profile,
+    required this.isGroup,
+    required this.isChannel,
+  });
 
   final Profile profile;
   final bool isGroup;
+  final bool isChannel;
 
   @override
   Widget build(BuildContext context) {
@@ -1789,13 +1945,13 @@ class _GlassAvatar extends StatelessWidget {
         children: [
           ProfileAvatar(profile: profile, radius: 26),
           if (isGroup)
-            const Positioned(
+            Positioned(
               right: -2,
               bottom: -2,
               child: CircleAvatar(
                 radius: 10,
-                backgroundColor: Color(0xFF223244),
-                child: Icon(Icons.group, size: 12),
+                backgroundColor: const Color(0xFF223244),
+                child: Icon(isChannel ? Icons.campaign : Icons.group, size: 12),
               ),
             ),
         ],
@@ -1828,11 +1984,98 @@ class _ArchiveGlassTile extends StatelessWidget {
   }
 }
 
+class _JoinRequestGlassTile extends StatelessWidget {
+  const _JoinRequestGlassTile({
+    required this.request,
+    required this.controller,
+  });
+
+  final GroupJoinRequest request;
+  final AppController controller;
+
+  Future<void> _accept(BuildContext context) async {
+    final error = await controller.acceptGroupJoinRequest(request);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(error ?? 'Request accepted')));
+  }
+
+  void _decline(BuildContext context) {
+    controller.declineGroupJoinRequest(request);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Request declined')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutBack,
+        builder: (context, value, child) => Transform.scale(
+          scale: 0.96 + value * 0.04,
+          child: Opacity(opacity: value.clamp(0.0, 1.0), child: child),
+        ),
+        child: _HomeGlassSurface(
+          accent: Colors.lightBlueAccent,
+          radius: 24,
+          selected: true,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            child: Row(
+              children: [
+                ProfileAvatar(profile: request.requester, radius: 24),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${request.requester.displayName} wants to join',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${request.isChannel ? 'Channel' : 'Group'} · ${request.groupName}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white60),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton.filledTonal(
+                  tooltip: 'Decline',
+                  onPressed: () => _decline(context),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+                const SizedBox(width: 6),
+                IconButton.filled(
+                  tooltip: 'Accept',
+                  onPressed: () => _accept(context),
+                  icon: const Icon(Icons.check_rounded),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _InlineSettingsPanel extends StatelessWidget {
   const _InlineSettingsPanel({
     required this.controller,
     required this.onProfile,
     required this.onGroup,
+    required this.onChannel,
     required this.onSettings,
     required this.onDiagnostics,
     required this.onLogout,
@@ -1841,6 +2084,7 @@ class _InlineSettingsPanel extends StatelessWidget {
   final AppController controller;
   final VoidCallback onProfile;
   final VoidCallback onGroup;
+  final VoidCallback onChannel;
   final VoidCallback onSettings;
   final VoidCallback onDiagnostics;
   final VoidCallback onLogout;
@@ -1880,6 +2124,12 @@ class _InlineSettingsPanel extends StatelessWidget {
           title: 'Create group',
           subtitle: 'New chat with several people',
           onTap: onGroup,
+        ),
+        _InlineActionTile(
+          icon: Icons.campaign_outlined,
+          title: 'Create channel',
+          subtitle: 'Broadcast posts to subscribers',
+          onTap: onChannel,
         ),
         _InlineActionTile(
           icon: Icons.tune_rounded,
@@ -2015,7 +2265,7 @@ class _InlineBluetoothPanel extends StatelessWidget {
   }
 }
 
-class _InlineActionTile extends StatelessWidget {
+class _InlineActionTile extends StatefulWidget {
   const _InlineActionTile({
     required this.icon,
     required this.title,
@@ -2031,23 +2281,53 @@ class _InlineActionTile extends StatelessWidget {
   final Color accent;
 
   @override
+  State<_InlineActionTile> createState() => _InlineActionTileState();
+}
+
+class _InlineActionTileState extends State<_InlineActionTile> {
+  bool pressed = false;
+
+  @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: _HomeGlassSurface(
-        accent: accent,
-        radius: 22,
-        child: ListTile(
-          contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-          leading: Icon(icon, color: accent.withValues(alpha: 0.95)),
-          title: Text(title),
-          subtitle: Text(
-            subtitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+      child: AnimatedScale(
+        scale: pressed ? 0.985 : 1,
+        duration: const Duration(milliseconds: 110),
+        curve: Curves.easeOutCubic,
+        child: _HomeGlassSurface(
+          accent: widget.accent,
+          radius: 22,
+          selected: pressed,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onTap,
+            onTapDown: (_) => setState(() => pressed = true),
+            onTapCancel: () => setState(() => pressed = false),
+            onTapUp: (_) => setState(() => pressed = false),
+            child: ListTile(
+              contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              leading: AnimatedScale(
+                scale: pressed ? 1.12 : 1,
+                duration: const Duration(milliseconds: 140),
+                child: Icon(
+                  widget.icon,
+                  color: widget.accent.withValues(alpha: pressed ? 1 : 0.95),
+                ),
+              ),
+              title: Text(widget.title),
+              subtitle: Text(
+                widget.subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: AnimatedRotation(
+                turns: pressed ? 0.03 : 0,
+                duration: const Duration(milliseconds: 140),
+                child: const Icon(Icons.chevron_right_rounded),
+              ),
+            ),
           ),
-          trailing: const Icon(Icons.chevron_right_rounded),
-          onTap: onTap,
         ),
       ),
     );
@@ -2159,30 +2439,90 @@ class _BottomNavItem extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        width: 96,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(20)),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: selected ? 23 : 21,
-              color: selected ? Colors.lightBlueAccent : Colors.white60,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(end: selected ? 1 : 0),
+        duration: const Duration(milliseconds: 360),
+        curve: Curves.easeOutBack,
+        builder: (context, value, _) {
+          final isSettings = icon == Icons.settings_outlined;
+          final isBluetooth = icon == Icons.bluetooth_rounded;
+          final isChats = icon == Icons.forum_rounded;
+          final rotation = isSettings ? value * math.pi * 0.75 : 0.0;
+          final scale =
+              1.0 +
+              value *
+                  (isBluetooth
+                      ? 0.13
+                      : isChats
+                      ? 0.1
+                      : 0.08);
+          final lift = isChats ? -3.0 * math.sin(value * math.pi) : 0.0;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 96,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(20)),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Transform.rotate(
+                  angle: rotation,
+                  child: Transform.translate(
+                    offset: Offset(0, lift),
+                    child: Transform.scale(
+                      scale: scale,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          if (isBluetooth && value > 0)
+                            Container(
+                              width: 26 + value * 12,
+                              height: 26 + value * 12,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.lightBlueAccent.withValues(
+                                    alpha: 0.18 * value,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Icon(
+                            icon,
+                            size: 21 + value * 2,
+                            color: Color.lerp(
+                              Colors.white60,
+                              Colors.lightBlueAccent,
+                              value,
+                            ),
+                            shadows: [
+                              if (value > 0)
+                                Shadow(
+                                  color: Colors.lightBlueAccent.withValues(
+                                    alpha: 0.45 * value,
+                                  ),
+                                  blurRadius: 12 * value,
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(height: 4 - value),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                    color: Color.lerp(Colors.white60, Colors.white, value),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                color: selected ? Colors.white : Colors.white60,
-              ),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

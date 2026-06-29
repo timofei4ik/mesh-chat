@@ -11,24 +11,50 @@ class ProfileAvatar extends StatelessWidget {
   final Profile profile;
   final double radius;
 
+  static final Map<String, MemoryImage> _imageCache = {};
+
   @override
   Widget build(BuildContext context) {
-    final bytes = _avatarBytes(profile.avatarData);
-    return CircleAvatar(
-      radius: radius,
-      backgroundColor: const Color(0xFF315A7D),
-      backgroundImage: bytes == null ? null : MemoryImage(bytes),
-      child: bytes == null
-          ? Text(
-              _initials(profile.displayName),
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: radius * 0.58,
-                fontWeight: FontWeight.w700,
-              ),
-            )
-          : null,
+    final image = _avatarImage(profile.avatarData);
+    return SizedBox(
+      width: radius * 2,
+      height: radius * 2,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          color: Color(0xFF315A7D),
+          shape: BoxShape.circle,
+        ),
+        child: ClipOval(
+          child: image == null
+              ? Center(
+                  child: Text(
+                    _initials(profile.displayName),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: radius * 0.58,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                )
+              : Image(
+                  image: image,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  filterQuality: FilterQuality.medium,
+                ),
+        ),
+      ),
     );
+  }
+
+  static MemoryImage? _avatarImage(String value) {
+    if (value.isEmpty) return null;
+    final cached = _imageCache[value];
+    if (cached != null) return cached;
+    final bytes = _avatarBytes(value);
+    if (bytes == null) return null;
+    if (_imageCache.length > 80) _imageCache.clear();
+    return _imageCache[value] = MemoryImage(bytes);
   }
 
   static Uint8List? _avatarBytes(String value) {

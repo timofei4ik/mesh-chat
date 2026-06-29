@@ -3,6 +3,8 @@ import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_thread.dart';
@@ -21,12 +23,106 @@ class GroupInfoPage extends StatelessWidget {
   final AppController controller;
   final ChatThread thread;
 
+  String get inviteLink {
+    final payload = base64Url.encode(
+      utf8.encode(
+        jsonEncode({
+          'type': thread.isChannel ? 'channel_invite' : 'group_invite',
+          'group_id': thread.groupId,
+          'name': thread.profile.displayName,
+          'is_channel': thread.isChannel,
+          'owner_node': thread.ownerNode,
+        }),
+      ),
+    );
+    return 'meshchat://group/$payload';
+  }
+
+  Future<void> showInvite(BuildContext context) async {
+    final link = inviteLink;
+    final copied = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: _GroupGlassSurface(
+            radius: 30,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    thread.isChannel
+                        ? Icons.campaign_outlined
+                        : Icons.group_add_outlined,
+                    color: Colors.lightBlueAccent,
+                    size: 34,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    thread.isChannel ? 'Channel invite' : 'Group invite',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(18),
+                    child: ColoredBox(
+                      color: Colors.white,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: QrImageView(
+                          data: link,
+                          version: QrVersions.auto,
+                          size: 190,
+                          eyeStyle: const QrEyeStyle(
+                            eyeShape: QrEyeShape.circle,
+                            color: Color(0xFF111827),
+                          ),
+                          dataModuleStyle: const QrDataModuleStyle(
+                            dataModuleShape: QrDataModuleShape.circle,
+                            color: Color(0xFF111827),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  SelectableText(
+                    link,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: link));
+                      if (context.mounted) Navigator.pop(context, true);
+                    },
+                    icon: const Icon(Icons.copy_rounded),
+                    label: const Text('Copy invite link'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!context.mounted) return;
+    if (copied == true) _showSnack(context, 'Invite copied');
+  }
+
   Future<void> addMember(BuildContext context) async {
     final input = TextEditingController();
     final username = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add member'),
+        title: Text(thread.isChannel ? 'Add subscriber' : 'Add member'),
         content: TextField(
           controller: input,
           autofocus: true,
@@ -60,7 +156,10 @@ class GroupInfoPage extends StatelessWidget {
       return;
     }
     if (thread.members.contains(profile.nodeId)) {
-      _showSnack(context, 'Already in group');
+      _showSnack(
+        context,
+        thread.isChannel ? 'Already subscribed' : 'Already in group',
+      );
       return;
     }
 
@@ -69,14 +168,17 @@ class GroupInfoPage extends StatelessWidget {
       profile.nodeId,
     ], rotateKey: true);
     if (!context.mounted) return;
-    _showSnack(context, error ?? 'Member added');
+    _showSnack(
+      context,
+      error ?? (thread.isChannel ? 'Subscriber added' : 'Member added'),
+    );
   }
 
   Future<void> removeMember(BuildContext context, Profile profile) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Remove member?'),
+        title: Text(thread.isChannel ? 'Remove subscriber?' : 'Remove member?'),
         content: Text(profile.displayName),
         actions: [
           TextButton(
@@ -98,7 +200,10 @@ class GroupInfoPage extends StatelessWidget {
       rotateKey: true,
     );
     if (!context.mounted) return;
-    _showSnack(context, error ?? 'Member removed');
+    _showSnack(
+      context,
+      error ?? (thread.isChannel ? 'Subscriber removed' : 'Member removed'),
+    );
   }
 
   void openProfile(BuildContext context, Profile profile) {
@@ -135,7 +240,7 @@ class GroupInfoPage extends StatelessWidget {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Edit group'),
+          title: Text(thread.isChannel ? 'Edit channel' : 'Edit group'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -195,7 +300,12 @@ class GroupInfoPage extends StatelessWidget {
     nameInput.dispose();
     aboutInput.dispose();
     if (!context.mounted || error == null) return;
-    _showSnack(context, error.isEmpty ? 'Group updated' : error);
+    _showSnack(
+      context,
+      error.isEmpty
+          ? (thread.isChannel ? 'Channel updated' : 'Group updated')
+          : error,
+    );
   }
 
   @override
@@ -219,10 +329,10 @@ class GroupInfoPage extends StatelessWidget {
           backgroundColor: const Color(0xFF07111E),
           appBar: AppBar(
             backgroundColor: const Color(0xFF07111E),
-            title: const Text('Group info'),
+            title: Text(thread.isChannel ? 'Channel info' : 'Group info'),
             actions: [
               IconButton(
-                tooltip: 'Edit group',
+                tooltip: thread.isChannel ? 'Edit channel' : 'Edit group',
                 onPressed: isOwner ? () => editGroupProfile(context) : null,
                 icon: const Icon(Icons.edit_outlined),
               ),
@@ -247,7 +357,9 @@ class GroupInfoPage extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        '${members.length} members',
+                        thread.isChannel
+                            ? '${members.length} subscribers'
+                            : '${members.length} members',
                         style: const TextStyle(color: Colors.white60),
                       ),
                       if (thread.profile.about.trim().isNotEmpty) ...[
@@ -262,11 +374,12 @@ class GroupInfoPage extends StatelessWidget {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          _GroupActionButton(
-                            icon: Icons.call_outlined,
-                            label: 'Call',
-                            onTap: () => startGroupCall(context),
-                          ),
+                          if (!thread.isChannel)
+                            _GroupActionButton(
+                              icon: Icons.call_outlined,
+                              label: 'Call',
+                              onTap: () => startGroupCall(context),
+                            ),
                           _GroupActionButton(
                             icon: Icons.perm_media_outlined,
                             label: 'Media',
@@ -277,6 +390,11 @@ class GroupInfoPage extends StatelessWidget {
                             label: 'Add',
                             onTap: isOwner ? () => addMember(context) : null,
                           ),
+                          _GroupActionButton(
+                            icon: Icons.qr_code_2_rounded,
+                            label: 'Invite',
+                            onTap: () => showInvite(context),
+                          ),
                         ],
                       ),
                     ],
@@ -286,36 +404,53 @@ class GroupInfoPage extends StatelessWidget {
               const SizedBox(height: 16),
               _GroupGlassSurface(
                 radius: 22,
-                child: const Padding(
-                  padding: EdgeInsets.all(14),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
+                      const Text(
                         'Roles',
                         style: TextStyle(fontWeight: FontWeight.w800),
                       ),
-                      SizedBox(height: 8),
-                      Text('Owner: can add/remove members and admins.'),
-                      Text('Admin: marked in the member list.'),
-                      Text('Member: can read and send messages.'),
+                      const SizedBox(height: 8),
+                      Text(
+                        thread.isChannel
+                            ? 'Owner: can manage subscribers and admins.'
+                            : 'Owner: can add/remove members and admins.',
+                      ),
+                      Text(
+                        thread.isChannel
+                            ? 'Admin: can publish channel posts.'
+                            : 'Admin: marked in the member list.',
+                      ),
+                      Text(
+                        thread.isChannel
+                            ? 'Subscriber: can read posts.'
+                            : 'Member: can read and send messages.',
+                      ),
                     ],
                   ),
                 ),
               ),
               const SizedBox(height: 18),
-              const Padding(
-                padding: EdgeInsets.only(left: 4),
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
                 child: Text(
-                  'Members',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                  thread.isChannel ? 'Subscribers' : 'Members',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
               ),
               const SizedBox(height: 10),
               if (members.isEmpty)
-                const Text(
-                  'Member list is not loaded yet',
-                  style: TextStyle(color: Colors.white54),
+                Text(
+                  thread.isChannel
+                      ? 'Subscriber list is not loaded yet'
+                      : 'Member list is not loaded yet',
+                  style: const TextStyle(color: Colors.white54),
                 )
               else
                 ...members.map((nodeId) {
@@ -371,7 +506,9 @@ class GroupInfoPage extends StatelessWidget {
                               ),
                             if (canRemove)
                               IconButton(
-                                tooltip: 'Remove from group',
+                                tooltip: thread.isChannel
+                                    ? 'Remove from channel'
+                                    : 'Remove from group',
                                 onPressed: () => removeMember(context, profile),
                                 icon: const Icon(Icons.person_remove_outlined),
                               ),

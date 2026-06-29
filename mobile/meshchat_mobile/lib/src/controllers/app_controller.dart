@@ -140,6 +140,7 @@ class AppController extends ChangeNotifier {
   bool _retryingQueuedMessages = false;
   Timer? _incomingPreviewTimer;
   final List<DiagnosticEvent> diagnostics = [];
+  final List<GroupJoinRequest> groupJoinRequests = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
   final Map<String, _GroupKey> _groupKeys = {};
   ChatThread? incomingPreviewThread;
@@ -214,7 +215,8 @@ class AppController extends ChangeNotifier {
     if (current == null) {
       return const Profile(nodeId: '', displayName: 'Пользователь');
     }
-    return profiles[current.nodeId] ??
+    final profile =
+        profiles[current.nodeId] ??
         Profile(
           nodeId: current.nodeId,
           displayName: current.login,
@@ -222,6 +224,41 @@ class AppController extends ChangeNotifier {
           publicKey: _crypto.publicKey,
           online: status == 'Online' || status.startsWith('Online:'),
         );
+    return profile.copyWith(
+      about: appSettings.showAbout ? profile.about : '',
+      avatarData: appSettings.showAvatar ? profile.avatarData : '',
+      online: appSettings.showOnline && profile.online,
+    );
+  }
+
+  String get savedMessagesNodeId =>
+      myNodeId.isEmpty ? 'saved:local' : 'saved:$myNodeId';
+
+  bool isSavedMessagesProfile(Profile profile) {
+    return profile.nodeId == savedMessagesNodeId ||
+        profile.nodeId.startsWith('saved:');
+  }
+
+  Profile get savedMessagesProfile => Profile(
+    nodeId: savedMessagesNodeId,
+    displayName: 'Saved Messages',
+    publicUsername: 'saved',
+    about: 'Private notes, messages and files',
+    online: false,
+  );
+
+  ChatThread ensureSavedMessagesThread() {
+    final key = savedMessagesNodeId;
+    final existing = threads[key];
+    if (existing != null) {
+      existing.profile = savedMessagesProfile;
+      return existing;
+    }
+    final thread = ChatThread(profile: savedMessagesProfile, pinned: true);
+    threads[key] = thread;
+    unawaited(_saveCache());
+    notifyListeners();
+    return thread;
   }
 
   bool _isOwnProfileAlias(Profile profile) {
@@ -649,6 +686,10 @@ class AppController extends ChangeNotifier {
         _applyTypingPacket(packet);
       case 'chat_request':
         _acceptChatRequest(packet);
+      case 'group_join_request':
+        _handleGroupJoinRequest(packet);
+      case 'group_join_response':
+        _handleGroupJoinResponse(packet);
       case 'call_offer':
         await _handleCallOffer(packet);
       case 'call_answer':
@@ -923,12 +964,18 @@ class AppController extends ChangeNotifier {
       final groupId = data['group_id']?.toString() ?? '';
       if (groupId.isEmpty) continue;
       if (appSettings.deletedGroupIds.contains(groupId)) continue;
+      if (!appSettings.allowGroupInvites &&
+          !groups.containsKey(groupId) &&
+          data['owner_node']?.toString() != myNodeId) {
+        continue;
+      }
       _ensureGroupThread(
         groupId: groupId,
         groupName: data['group_name']?.toString() ?? 'Группа',
         members: _stringList(data['members']),
         ownerNode: data['owner_node']?.toString() ?? '',
         admins: _stringList(data['admins']),
+        isChannel: data['is_channel'] == true,
         about: data['group_about']?.toString() ?? '',
         avatarData: data['group_avatar_data']?.toString() ?? '',
       );
@@ -1045,6 +1092,7 @@ class AppController extends ChangeNotifier {
     List<String> members = const [],
     String ownerNode = '',
     List<String> admins = const [],
+    bool isChannel = false,
     String about = '',
     String avatarData = '',
   }) {
@@ -1055,6 +1103,7 @@ class AppController extends ChangeNotifier {
         .toList();
     final existing = groups[groupId];
     if (existing != null) {
+      existing.isChannel = existing.isChannel || isChannel;
       if (groupName.isNotEmpty) {
         existing.profile = existing.profile.copyWith(displayName: groupName);
       }
@@ -1085,6 +1134,7 @@ class AppController extends ChangeNotifier {
     final thread = ChatThread(
       profile: profile,
       isGroup: true,
+      isChannel: isChannel,
       groupId: groupId,
       groupName: groupName.isEmpty ? 'Группа' : groupName,
       members: normalizedMembers,
@@ -1102,6 +1152,7 @@ class AppController extends ChangeNotifier {
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null || !group.isGroup) return;
+    if (group.isChannel && !_canPostToChannel(group)) return;
     final id = const Uuid().v4();
     group.messages.add(
       ChatMessage(
@@ -1140,6 +1191,7 @@ class AppController extends ChangeNotifier {
       'group_name': group.groupName.isEmpty
           ? group.profile.displayName
           : group.groupName,
+      'is_channel': group.isChannel,
       'group_message_id': id,
       'members': group.members,
       'owner_node': group.ownerNode,
@@ -1185,6 +1237,7 @@ class AppController extends ChangeNotifier {
       groupId: groupId,
       groupName: packet['group_name']?.toString() ?? 'Группа',
       members: _stringList(packet['members']),
+      isChannel: packet['is_channel'] == true,
     );
     final id =
         packet['group_message_id']?.toString() ??
@@ -1283,12 +1336,18 @@ class AppController extends ChangeNotifier {
   Future<void> _receiveGroupUpdate(Map<String, dynamic> packet) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
+    if (!appSettings.allowGroupInvites &&
+        !groups.containsKey(groupId) &&
+        packet['owner_node']?.toString() != myNodeId) {
+      return;
+    }
     final group = _ensureGroupThread(
       groupId: groupId,
       groupName: packet['group_name']?.toString() ?? 'Группа',
       members: _stringList(packet['members']),
       ownerNode: packet['owner_node']?.toString() ?? '',
       admins: _stringList(packet['admins']),
+      isChannel: packet['is_channel'] == true,
       about: packet['group_about']?.toString() ?? '',
       avatarData: packet['group_avatar_data']?.toString() ?? '',
     );
@@ -1446,7 +1505,11 @@ class AppController extends ChangeNotifier {
     String text,
   ) async {
     final trimmed = text.trim();
-    if (session == null || trimmed.isEmpty || message.senderNode != myNodeId) {
+    final isCaption = message.kind == ChatMessageKind.file;
+    if (session == null || message.senderNode != myNodeId) {
+      return;
+    }
+    if (!isCaption && trimmed.isEmpty) {
       return;
     }
     _replaceMessage(
@@ -1517,6 +1580,7 @@ class AppController extends ChangeNotifier {
       'sender': session!.login,
       'message_id': message.id,
       'message': encryptedText,
+      if (isCaption) 'file_caption': trimmed,
     });
   }
 
@@ -1879,6 +1943,9 @@ class AppController extends ChangeNotifier {
   }
 
   ChatThread _ensureThread(Profile profile) {
+    if (isSavedMessagesProfile(profile)) {
+      return ensureSavedMessagesThread();
+    }
     if (_isOwnProfileAlias(profile)) {
       return ChatThread(profile: profile);
     }
@@ -1895,6 +1962,7 @@ class AppController extends ChangeNotifier {
 
   Future<String?> startCall(Profile recipient) async {
     if (session == null) return 'No active session';
+    if (isSavedMessagesProfile(recipient)) return 'Cannot call Saved Messages';
     if (recipient.nodeId.isEmpty || recipient.nodeId == myNodeId) {
       return 'Cannot call this user';
     }
@@ -2177,6 +2245,19 @@ class AppController extends ChangeNotifier {
     final sender = packet['source_node']?.toString() ?? '';
     if (sender.isEmpty || sender == myNodeId) return;
     if (isBlocked(sender)) return;
+    if (!appSettings.allowCalls) {
+      _socket.send({
+        'type': 'call_end',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': sender,
+        'ttl': 5,
+        'call_id': packet['call_id']?.toString() ?? '',
+        'reason': 'declined',
+      });
+      return;
+    }
     final groupId = packet['group_id']?.toString() ?? '';
     final groupName = packet['group_name']?.toString() ?? '';
     if (activeCall != null && activeCall!.status != CallStatus.ended) {
@@ -2451,6 +2532,23 @@ class AppController extends ChangeNotifier {
     if (trimmed.isEmpty || session == null) return;
     final id = const Uuid().v4();
     final thread = _ensureThread(recipient);
+    if (isSavedMessagesProfile(recipient)) {
+      thread.messages.add(
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: savedMessagesNodeId,
+          text: trimmed,
+          createdAt: DateTime.now(),
+          replyToMessageId: replyTo?.id ?? '',
+          replyToText: replyTo == null ? '' : _replyPreview(replyTo),
+          delivered: true,
+        ),
+      );
+      unawaited(_saveCache());
+      notifyListeners();
+      return;
+    }
     thread.messages.add(
       ChatMessage(
         id: id,
@@ -2659,6 +2757,28 @@ class AppController extends ChangeNotifier {
     final data = _hexEncode(bytes);
     final trimmedCaption = caption.trim();
     final thread = _ensureThread(recipient);
+    if (isSavedMessagesProfile(recipient)) {
+      thread.messages.add(
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: savedMessagesNodeId,
+          text: trimmedCaption,
+          createdAt: DateTime.now(),
+          kind: ChatMessageKind.file,
+          fileName: filename,
+          fileData: data,
+          fileSize: bytes.length,
+          replyToMessageId: replyTo?.id ?? '',
+          replyToText: replyTo == null ? '' : _replyPreview(replyTo),
+          delivered: true,
+          progress: 1,
+        ),
+      );
+      unawaited(_saveCache());
+      notifyListeners();
+      return null;
+    }
     thread.messages.add(
       ChatMessage(
         id: id,
@@ -2742,6 +2862,24 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<String?> saveMessageToSaved(ChatMessage message) async {
+    if (session == null) return 'No active session';
+    if (message.deleted) return 'Message was deleted';
+    final target = ensureSavedMessagesThread();
+    if (message.kind == ChatMessageKind.file) {
+      if (message.fileData.isEmpty) return 'File is not cached';
+      final filename = message.fileName.isEmpty
+          ? 'meshchat_file'
+          : message.fileName;
+      final bytes = _hexDecode(message.fileData);
+      return sendFile(target.profile, filename, bytes, caption: message.text);
+    }
+    final text = message.text.trim();
+    if (text.isEmpty) return 'Message is empty';
+    await sendMessage(target.profile, text);
+    return null;
+  }
+
   Future<String?> retryMessage(ChatThread thread, ChatMessage message) async {
     if (!message.failed && !message.pending) return null;
     _deleteLocalMessage(thread, message.id);
@@ -2794,6 +2932,7 @@ class AppController extends ChangeNotifier {
   Future<ChatThread?> createGroup({
     required String name,
     required List<Profile> members,
+    bool isChannel = false,
   }) async {
     final current = session;
     final groupName = name.trim();
@@ -2810,6 +2949,7 @@ class AppController extends ChangeNotifier {
       members: uniqueMembers,
       ownerNode: myNodeId,
       admins: [myNodeId],
+      isChannel: isChannel,
     );
     _rememberGroupKey(groupId, _GroupKey(keyId, _crypto.generateGroupKey()));
     await _publishGroupUpdate(group, rotateKey: false);
@@ -2840,6 +2980,148 @@ class AppController extends ChangeNotifier {
     await _saveCache();
     notifyListeners();
     return null;
+  }
+
+  Future<String?> requestGroupJoinFromInvite(String rawLink) async {
+    final current = session;
+    if (current == null) return 'No active session';
+    final invite = _decodeGroupInvite(rawLink);
+    if (invite == null) return 'Invite link is not valid';
+    final groupId = invite['group_id']?.toString() ?? '';
+    final ownerNode = invite['owner_node']?.toString() ?? '';
+    if (groupId.isEmpty || ownerNode.isEmpty) return 'Invite is incomplete';
+    if (groups.containsKey(groupId)) return 'You are already in this chat';
+    if (ownerNode == myNodeId) return 'This is your own invite';
+    _socket.send({
+      'type': 'group_join_request',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': ownerNode,
+      'ttl': 5,
+      'sender': current.login,
+      'group_id': groupId,
+      'group_name': invite['name']?.toString() ?? 'Group',
+      'is_channel': invite['is_channel'] == true,
+      'requester_profile': ownProfile.toJson(),
+    });
+    return null;
+  }
+
+  Map<String, dynamic>? _decodeGroupInvite(String rawLink) {
+    final trimmed = rawLink.trim();
+    if (trimmed.isEmpty) return null;
+    try {
+      final uri = Uri.parse(trimmed);
+      String payload = '';
+      if (uri.scheme == 'meshchat' && uri.host == 'group') {
+        payload = uri.pathSegments.isEmpty ? '' : uri.pathSegments.first;
+      } else if (trimmed.startsWith('meshchat://group/')) {
+        payload = trimmed.substring('meshchat://group/'.length);
+      }
+      if (payload.isEmpty) return null;
+      final normalized = base64Url.normalize(payload);
+      final decoded = utf8.decode(base64Url.decode(normalized));
+      final data = jsonDecode(decoded);
+      if (data is Map) return Map<String, dynamic>.from(data);
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
+  void _handleGroupJoinRequest(Map<String, dynamic> packet) {
+    final groupId = packet['group_id']?.toString() ?? '';
+    final requesterNode = packet['source_node']?.toString() ?? '';
+    final group = groups[groupId];
+    if (group == null || requesterNode.isEmpty) return;
+    final ownerOrAdmin =
+        group.ownerNode == myNodeId ||
+        group.admins.contains(myNodeId) ||
+        (group.ownerNode.isEmpty && group.members.contains(myNodeId));
+    if (!ownerOrAdmin || group.members.contains(requesterNode)) return;
+    final profileRaw = packet['requester_profile'];
+    final profile = profileRaw is Map
+        ? Profile.fromJson(Map<String, dynamic>.from(profileRaw))
+        : Profile(
+            nodeId: requesterNode,
+            displayName: packet['sender']?.toString() ?? requesterNode,
+          );
+    profiles[profile.nodeId] = _mergeProfile(profile);
+    groupJoinRequests.removeWhere(
+      (request) =>
+          request.groupId == groupId &&
+          request.requester.nodeId == requesterNode,
+    );
+    groupJoinRequests.insert(
+      0,
+      GroupJoinRequest(
+        id: packet['packet_id']?.toString() ?? const Uuid().v4(),
+        groupId: groupId,
+        groupName: packet['group_name']?.toString().isNotEmpty == true
+            ? packet['group_name'].toString()
+            : group.profile.displayName,
+        isChannel: packet['is_channel'] == true || group.isChannel,
+        requester: profile,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<String?> acceptGroupJoinRequest(GroupJoinRequest request) async {
+    final group = groups[request.groupId];
+    if (group == null) return 'Group is not available';
+    final error = await updateGroupMembers(group, [
+      ...group.members,
+      request.requester.nodeId,
+    ], rotateKey: true);
+    if (error != null) return error;
+    groupJoinRequests.removeWhere((item) => item.id == request.id);
+    _socket.send({
+      'type': 'group_join_response',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': request.requester.nodeId,
+      'ttl': 5,
+      'group_id': request.groupId,
+      'group_name': group.profile.displayName,
+      'accepted': true,
+    });
+    notifyListeners();
+    return null;
+  }
+
+  void declineGroupJoinRequest(GroupJoinRequest request) {
+    groupJoinRequests.removeWhere((item) => item.id == request.id);
+    _socket.send({
+      'type': 'group_join_response',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': request.requester.nodeId,
+      'ttl': 5,
+      'group_id': request.groupId,
+      'group_name': request.groupName,
+      'accepted': false,
+    });
+    notifyListeners();
+  }
+
+  void _handleGroupJoinResponse(Map<String, dynamic> packet) {
+    final accepted = packet['accepted'] == true;
+    final groupName = packet['group_name']?.toString() ?? 'Group';
+    addDiagnostic(
+      'groups',
+      accepted ? 'Join accepted: $groupName' : 'Join declined: $groupName',
+    );
+  }
+
+  bool _canPostToChannel(ChatThread group) {
+    if (!group.isChannel) return true;
+    return group.ownerNode == myNodeId ||
+        group.admins.contains(myNodeId) ||
+        (group.ownerNode.isEmpty && group.admins.isEmpty);
   }
 
   Future<String?> toggleGroupAdmin(ChatThread group, String nodeId) async {
@@ -2914,6 +3196,7 @@ class AppController extends ChangeNotifier {
       'group_name': groupName,
       'group_about': group.profile.about,
       'group_avatar_data': group.profile.avatarData,
+      'is_channel': group.isChannel,
       'members': group.members,
       'owner_node': group.ownerNode.isEmpty ? myNodeId : group.ownerNode,
       'admins': group.admins,
@@ -2951,6 +3234,9 @@ class AppController extends ChangeNotifier {
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (!group.isGroup) return 'Это не группа';
+    if (group.isChannel && !_canPostToChannel(group)) {
+      return 'Only channel admins can post';
+    }
     if (bytes.isEmpty) return 'Файл пустой';
     if (bytes.length > maxMobileFileBytes) return 'Файл больше 64 МБ';
 
@@ -3020,6 +3306,7 @@ class AppController extends ChangeNotifier {
           'group_name': group.groupName.isEmpty
               ? group.profile.displayName
               : group.groupName,
+          'is_channel': group.isChannel,
           'group_key_id': groupKey.id,
           'group_key_envelope': envelope,
           'group_key_sender_envelope': senderEnvelope,
@@ -3058,6 +3345,7 @@ class AppController extends ChangeNotifier {
           'group_name': group.groupName.isEmpty
               ? group.profile.displayName
               : group.groupName,
+          'is_channel': group.isChannel,
           'group_key_id': groupKey.id,
           'group_key_envelope': senderEnvelope,
           'group_key_sender_envelope': senderEnvelope,
@@ -3168,6 +3456,7 @@ class AppController extends ChangeNotifier {
       final group = _ensureGroupThread(
         groupId: groupId,
         groupName: first['group_name']?.toString() ?? 'Группа',
+        isChannel: first['is_channel'] == true,
       );
       if (!group.messages.any((message) => message.id == fileId)) {
         await _acceptGroupKeyEnvelope(
@@ -3727,6 +4016,7 @@ class AppController extends ChangeNotifier {
     profiles.clear();
     threads.clear();
     groups.clear();
+    groupJoinRequests.clear();
     typingUntil.clear();
     activityKinds.clear();
     _incomingFiles.clear();
@@ -3798,6 +4088,24 @@ class GlobalSearchResult {
 
   final ChatThread thread;
   final ChatMessage? message;
+}
+
+class GroupJoinRequest {
+  const GroupJoinRequest({
+    required this.id,
+    required this.groupId,
+    required this.groupName,
+    required this.isChannel,
+    required this.requester,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String groupId;
+  final String groupName;
+  final bool isChannel;
+  final Profile requester;
+  final DateTime createdAt;
 }
 
 class ActiveDevice {

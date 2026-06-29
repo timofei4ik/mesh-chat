@@ -6,6 +6,7 @@ class ChatThread {
     required this.profile,
     List<ChatMessage>? messages,
     this.isGroup = false,
+    this.isChannel = false,
     this.groupId = '',
     this.groupName = '',
     List<String>? members,
@@ -26,6 +27,7 @@ class ChatThread {
   Profile profile;
   final List<ChatMessage> messages;
   final bool isGroup;
+  bool isChannel;
   final String groupId;
   final String groupName;
   final List<String> members;
@@ -62,6 +64,7 @@ class ChatThread {
     final adminsRaw = json['admins'];
     final pinsRaw = json['pinned_message_ids'];
     final isGroup = json['is_group'] == true;
+    final isChannel = json['is_channel'] == true;
     final groupId = json['group_id']?.toString() ?? '';
     final groupName = json['group_name']?.toString() ?? '';
     final thread = ChatThread(
@@ -78,6 +81,7 @@ class ChatThread {
                 .toList()
           : const [],
       isGroup: isGroup,
+      isChannel: isChannel,
       groupId: groupId,
       groupName: groupName,
       members: membersRaw is List
@@ -107,6 +111,7 @@ class ChatThread {
       'profile': profile.toJson(),
       'messages': messages.map((message) => message.toJson()).toList(),
       'is_group': isGroup,
+      'is_channel': isChannel,
       'group_id': groupId,
       'group_name': groupName,
       'members': members,

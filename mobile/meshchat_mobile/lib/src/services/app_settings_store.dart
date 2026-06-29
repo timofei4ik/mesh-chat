@@ -17,6 +17,11 @@ class AppSettingsStore {
       sendFilesOriginal: prefs.getBool('send_files_original') ?? true,
       dataSaver: prefs.getBool('data_saver') ?? false,
       reducedAnimations: prefs.getBool('reduced_animations') ?? false,
+      showOnline: prefs.getBool('privacy_show_online') ?? true,
+      showAvatar: prefs.getBool('privacy_show_avatar') ?? true,
+      showAbout: prefs.getBool('privacy_show_about') ?? true,
+      allowCalls: prefs.getBool('privacy_allow_calls') ?? true,
+      allowGroupInvites: prefs.getBool('privacy_allow_group_invites') ?? true,
       blockedNodeIds: prefs.getStringList('blocked_node_ids') ?? const [],
       deletedGroupIds: prefs.getStringList('deleted_group_ids') ?? const [],
       deletedMessageIds: prefs.getStringList('deleted_message_ids') ?? const [],
@@ -38,6 +43,14 @@ class AppSettingsStore {
     await prefs.setBool('send_files_original', settings.sendFilesOriginal);
     await prefs.setBool('data_saver', settings.dataSaver);
     await prefs.setBool('reduced_animations', settings.reducedAnimations);
+    await prefs.setBool('privacy_show_online', settings.showOnline);
+    await prefs.setBool('privacy_show_avatar', settings.showAvatar);
+    await prefs.setBool('privacy_show_about', settings.showAbout);
+    await prefs.setBool('privacy_allow_calls', settings.allowCalls);
+    await prefs.setBool(
+      'privacy_allow_group_invites',
+      settings.allowGroupInvites,
+    );
     await prefs.setStringList('blocked_node_ids', settings.blockedNodeIds);
     await prefs.setStringList('deleted_group_ids', settings.deletedGroupIds);
     await prefs.setStringList(

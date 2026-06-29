@@ -34,6 +34,9 @@ class ProfilePage extends StatelessWidget {
     final username = profile.publicUsername.isEmpty
         ? ''
         : '@${profile.publicUsername}';
+    final isSavedMessages =
+        profile.nodeId.startsWith('saved:') ||
+        profile.publicUsername == 'saved';
     final currentThread = thread;
     final currentController = controller;
     final blocked =
@@ -56,13 +59,17 @@ class ProfilePage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 4),
-              _ProfileHero(profile: profile, username: username),
+              _ProfileHero(
+                profile: profile,
+                username: username,
+                showOnline: !isSavedMessages,
+              ),
               const SizedBox(height: 18),
               _ProfileActions(
                 muted: currentThread?.muted ?? false,
                 blocked: blocked,
                 onMessage: onMessage,
-                onCall: onCall,
+                onCall: isSavedMessages ? null : onCall,
                 onMute: currentThread == null || currentController == null
                     ? null
                     : () => currentController.toggleThreadMute(currentThread),
@@ -159,10 +166,15 @@ class ProfilePage extends StatelessWidget {
 }
 
 class _ProfileHero extends StatelessWidget {
-  const _ProfileHero({required this.profile, required this.username});
+  const _ProfileHero({
+    required this.profile,
+    required this.username,
+    required this.showOnline,
+  });
 
   final Profile profile;
   final String username;
+  final bool showOnline;
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +207,17 @@ class _ProfileHero extends StatelessWidget {
                     ),
                   ],
                 ),
-                child: ProfileAvatar(profile: profile, radius: 76),
+                child: Hero(
+                  tag: 'profile-avatar-${profile.nodeId}',
+                  transitionOnUserGestures: true,
+                  placeholderBuilder: (context, size, child) => child,
+                  flightShuttleBuilder:
+                      (context, animation, direction, fromContext, toContext) =>
+                          direction == HeroFlightDirection.push
+                          ? toContext.widget
+                          : fromContext.widget,
+                  child: ProfileAvatar(profile: profile, radius: 76),
+                ),
               ),
               const SizedBox(height: 16),
               Text(
@@ -211,8 +233,10 @@ class _ProfileHero extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(username, style: const TextStyle(color: Colors.white60)),
               ],
-              const SizedBox(height: 8),
-              _OnlinePill(online: profile.online),
+              if (showOnline) ...[
+                const SizedBox(height: 8),
+                _OnlinePill(online: profile.online),
+              ],
             ],
           ),
         ],
@@ -246,11 +270,12 @@ class _ProfileActions extends StatelessWidget {
           label: 'Message',
           onTap: onMessage,
         ),
-        _ProfileActionButton(
-          icon: Icons.call_outlined,
-          label: 'Call',
-          onTap: onCall,
-        ),
+        if (onCall != null)
+          _ProfileActionButton(
+            icon: Icons.call_outlined,
+            label: 'Call',
+            onTap: onCall,
+          ),
         _ProfileActionButton(
           icon: muted || blocked
               ? Icons.notifications_off_outlined

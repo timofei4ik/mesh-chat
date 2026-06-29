@@ -156,6 +156,8 @@ class SettingsPage extends StatelessWidget {
             const SizedBox(height: 12),
             _ThemeSettings(controller: controller),
             const SizedBox(height: 12),
+            _PrivacySettings(controller: controller),
+            const SizedBox(height: 12),
             _MediaSettings(controller: controller),
             const SizedBox(height: 12),
             Card(
@@ -919,6 +921,68 @@ class _MediaSettings extends StatelessWidget {
             value: settings.sendFilesOriginal,
             onChanged: (value) => controller.updateAppSettings(
               settings.copyWith(sendFilesOriginal: value),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrivacySettings extends StatelessWidget {
+  const _PrivacySettings({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = controller.appSettings;
+    return Card(
+      child: Column(
+        children: [
+          const ListTile(
+            leading: Icon(Icons.lock_outline_rounded),
+            title: Text('Privacy'),
+            subtitle: Text('Online, profile, calls and group invites'),
+          ),
+          SwitchListTile(
+            title: const Text('Show online'),
+            subtitle: const Text('Hide your active status where possible'),
+            value: settings.showOnline,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(showOnline: value),
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('Show avatar'),
+            subtitle: const Text('Keep profile photo private when disabled'),
+            value: settings.showAvatar,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(showAvatar: value),
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('Show about'),
+            subtitle: const Text('Hide profile description when disabled'),
+            value: settings.showAbout,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(showAbout: value),
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('Allow calls'),
+            subtitle: const Text('Decline incoming calls automatically'),
+            value: settings.allowCalls,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(allowCalls: value),
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('Allow group invites'),
+            subtitle: const Text('Ignore new group/channel invites'),
+            value: settings.allowGroupInvites,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(allowGroupInvites: value),
             ),
           ),
         ],

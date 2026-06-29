@@ -103,7 +103,8 @@ class ServerSyncMixin:
                             g.group_name,
                             g.members_json,
                             g.owner_node,
-                            g.admins_json
+                            g.admins_json,
+                            COALESCE(g.is_channel, 0)
             FROM server_groups g
             JOIN server_group_members m
               ON m.group_id = g.group_id
@@ -126,7 +127,8 @@ class ServerSyncMixin:
                 "owner_node": row[3],
                 "admins": json.loads(
                     row[4] or "[]"
-                )
+                ),
+                "is_channel": bool(row[5])
             }
             for row in cursor.fetchall()
         ]
@@ -310,6 +312,7 @@ class ServerSyncMixin:
                    receiver_login,
                    group_id,
                    filename,
+                   caption,
                    data,
                    group_key_id,
                    created_at
@@ -330,9 +333,10 @@ class ServerSyncMixin:
                 "receiver_login": row[5],
                 "group_id": row[6],
                 "filename": row[7],
-                "data": row[8],
-                "group_key_id": row[9],
-                "created_at": row[10]
+                "caption": row[8] or "",
+                "data": row[9],
+                "group_key_id": row[10],
+                "created_at": row[11]
             }
             for row in cursor.fetchall()
         ]

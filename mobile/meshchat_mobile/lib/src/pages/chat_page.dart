@@ -60,6 +60,14 @@ class _ChatPageState extends State<ChatPage> {
   DateTime? lastTypingSentAt;
   final deletingMessageIds = <String>{};
 
+  bool get canPostToThread {
+    final thread = widget.thread;
+    if (!thread.isChannel) return true;
+    return thread.ownerNode == widget.controller.myNodeId ||
+        thread.admins.contains(widget.controller.myNodeId) ||
+        (thread.ownerNode.isEmpty && thread.admins.isEmpty);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -180,6 +188,10 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> send() async {
     final text = input.text;
     if (text.trim().isEmpty) return;
+    if (!canPostToThread) {
+      showSnack('Only channel admins can post');
+      return;
+    }
     input.clear();
     widget.controller.updateDraft(widget.thread, '');
     final quote = replyTo;
@@ -263,6 +275,10 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> sendAttachment(String filename, Uint8List bytes) async {
+    if (!canPostToThread) {
+      showSnack('Only channel admins can post');
+      return;
+    }
     final caption = await askFileCaption(filename);
     if (caption == null) return;
     final quote = replyTo;
@@ -641,7 +657,10 @@ class _ChatPageState extends State<ChatPage> {
           controller: widget.controller,
           thread: widget.thread,
           onMessage: () => Navigator.maybePop(context),
-          onCall: () => unawaited(startCall()),
+          onCall:
+              widget.controller.isSavedMessagesProfile(widget.thread.profile)
+              ? null
+              : () => unawaited(startCall()),
           onMedia: openMediaList,
         ),
       ),
@@ -663,37 +682,23 @@ class _ChatPageState extends State<ChatPage> {
     final pinned = widget.thread.pinnedMessageIds.contains(message.id);
     final canDownload =
         message.kind == ChatMessageKind.file && message.fileData.isNotEmpty;
+    final canEdit =
+        mine &&
+        (message.kind == ChatMessageKind.text ||
+            message.kind == ChatMessageKind.file);
     final canBlock =
         !mine && !widget.thread.isGroup && message.senderNode.isNotEmpty;
     final blocked = widget.controller.isBlocked(message.senderNode);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
+      backgroundColor: Colors.transparent,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  for (final reaction in const [
-                    '\u2764\uFE0F',
-                    '\u{1F44C}',
-                    '\u{1FACE}',
-                    '\u{1F44D}',
-                  ])
-                    InkWell(
-                      borderRadius: BorderRadius.circular(24),
-                      onTap: () => Navigator.pop(context, reaction),
-                      child: Padding(
-                        padding: const EdgeInsets.all(10),
-                        child: _ReactionIcon(reaction: reaction, size: 28),
-                      ),
-                    ),
-                ],
-              ),
+            _ReactionQuickBar(
+              onSelected: (reaction) => Navigator.pop(context, reaction),
             ),
             if (mine && message.failed)
               ListTile(
@@ -711,16 +716,25 @@ class _ChatPageState extends State<ChatPage> {
               title: const Text('Forward'),
               onTap: () => Navigator.pop(context, 'forward'),
             ),
+            ListTile(
+              leading: const Icon(Icons.bookmark_add_outlined),
+              title: const Text('Save to Saved Messages'),
+              onTap: () => Navigator.pop(context, 'save'),
+            ),
             if (canDownload)
               ListTile(
                 leading: const Icon(Icons.download_rounded),
                 title: const Text('Download'),
                 onTap: () => Navigator.pop(context, 'download'),
               ),
-            if (mine && message.kind == ChatMessageKind.text)
+            if (canEdit)
               ListTile(
                 leading: const Icon(Icons.edit_rounded),
-                title: const Text('Edit'),
+                title: Text(
+                  message.kind == ChatMessageKind.file
+                      ? 'Edit caption'
+                      : 'Edit',
+                ),
                 onTap: () => Navigator.pop(context, 'edit'),
               ),
             ListTile(
@@ -773,6 +787,12 @@ class _ChatPageState extends State<ChatPage> {
     }
     if (action == 'forward') {
       await showForwardDialog(message);
+      return;
+    }
+    if (action == 'save') {
+      final error = await widget.controller.saveMessageToSaved(message);
+      if (!mounted) return;
+      showSnack(error ?? 'Saved');
       return;
     }
     if (action == 'download') {
@@ -892,15 +912,19 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> showEditDialog(ChatMessage message) async {
     final editInput = TextEditingController(text: message.text);
+    final isCaption = message.kind == ChatMessageKind.file;
     final edited = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Edit message'),
+        title: Text(isCaption ? 'Edit caption' : 'Edit message'),
         content: TextField(
           controller: editInput,
           autofocus: true,
           minLines: 1,
           maxLines: 5,
+          decoration: InputDecoration(
+            hintText: isCaption ? 'Caption' : 'Message',
+          ),
         ),
         actions: [
           TextButton(
@@ -915,7 +939,8 @@ class _ChatPageState extends State<ChatPage> {
       ),
     );
     editInput.dispose();
-    if (!mounted || edited == null || edited.trim().isEmpty) return;
+    if (!mounted || edited == null) return;
+    if (!isCaption && edited.trim().isEmpty) return;
     await widget.controller.editMessage(widget.thread, message, edited);
   }
 
@@ -1013,9 +1038,11 @@ class _ChatPageState extends State<ChatPage> {
     if (selected != null) jumpToMessage(selected);
   }
 
-  void jumpToMessage(ChatMessage message) {
+  void jumpToMessage(ChatMessage message) => jumpToMessageById(message.id);
+
+  void jumpToMessageById(String messageId) {
     final index = widget.thread.messages.indexWhere(
-      (candidate) => candidate.id == message.id,
+      (candidate) => candidate.id == messageId,
     );
     if (index < 0 || !scroll.hasClients) return;
     final offset = (index * 92.0).clamp(0.0, scroll.position.maxScrollExtent);
@@ -1026,11 +1053,43 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  void openMediaList() {
-    Navigator.push(
+  Future<void> openMediaList() async {
+    final messageId = await Navigator.push<String>(
       context,
       MaterialPageRoute(builder: (_) => ChatMediaPage(thread: widget.thread)),
     );
+    if (!mounted || messageId == null || messageId.isEmpty) return;
+    jumpToMessageById(messageId);
+  }
+
+  bool isAlbumPhoto(ChatMessage message) {
+    return !message.deleted &&
+        message.kind == ChatMessageKind.file &&
+        isImageName(message.fileName) &&
+        message.fileData.isNotEmpty &&
+        message.text.trim().isEmpty;
+  }
+
+  bool sameAlbumPhoto(ChatMessage a, ChatMessage b) {
+    return isAlbumPhoto(a) &&
+        isAlbumPhoto(b) &&
+        a.senderNode == b.senderNode &&
+        sameDay(a.createdAt, b.createdAt) &&
+        b.createdAt.difference(a.createdAt).inMinutes.abs() <= 5;
+  }
+
+  bool isCoveredByAlbum(List<ChatMessage> messages, int index) {
+    return index > 0 && sameAlbumPhoto(messages[index - 1], messages[index]);
+  }
+
+  List<ChatMessage> albumFrom(List<ChatMessage> messages, int index) {
+    final album = <ChatMessage>[messages[index]];
+    for (var next = index + 1; next < messages.length; next++) {
+      if (!sameAlbumPhoto(album.last, messages[next])) break;
+      album.add(messages[next]);
+      if (album.length >= 10) break;
+    }
+    return album;
   }
 
   Future<void> startCall() async {
@@ -1060,6 +1119,9 @@ class _ChatPageState extends State<ChatPage> {
           listenable: widget.controller,
           builder: (context, _) {
             final profile = widget.thread.profile;
+            final isSavedMessages = widget.controller.isSavedMessagesProfile(
+              profile,
+            );
             return InkWell(
               borderRadius: BorderRadius.circular(8),
               onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
@@ -1079,7 +1141,11 @@ class _ChatPageState extends State<ChatPage> {
                         ),
                         Text(
                           widget.thread.isGroup
-                              ? '${widget.thread.members.length} members'
+                              ? widget.thread.isChannel
+                                    ? '${widget.thread.members.length} subscribers'
+                                    : '${widget.thread.members.length} members'
+                              : isSavedMessages
+                              ? 'private notes'
                               : profile.online
                               ? 'online'
                               : 'offline',
@@ -1099,13 +1165,15 @@ class _ChatPageState extends State<ChatPage> {
           },
         ),
         actions: [
-          _ChatRoundButton(
-            tooltip: widget.thread.isGroup ? 'Group call' : 'Call',
-            icon: Icon(
-              widget.thread.isGroup ? Icons.add_call : Icons.call_outlined,
+          if (!widget.thread.isChannel &&
+              !widget.controller.isSavedMessagesProfile(widget.thread.profile))
+            _ChatRoundButton(
+              tooltip: widget.thread.isGroup ? 'Group call' : 'Call',
+              icon: Icon(
+                widget.thread.isGroup ? Icons.add_call : Icons.call_outlined,
+              ),
+              onPressed: startCall,
             ),
-            onPressed: startCall,
-          ),
           _ChatRoundButton(
             tooltip: 'Search',
             icon: const Icon(Icons.search_rounded),
@@ -1176,6 +1244,10 @@ class _ChatPageState extends State<ChatPage> {
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final message = messages[index];
+                        if (isCoveredByAlbum(messages, index)) {
+                          return const SizedBox.shrink();
+                        }
+                        final album = albumFrom(messages, index);
                         final showDate =
                             index == 0 ||
                             !sameDay(
@@ -1185,20 +1257,37 @@ class _ChatPageState extends State<ChatPage> {
                         return Column(
                           children: [
                             if (showDate) _DatePill(date: message.createdAt),
-                            _MessageDisintegrator(
-                              deleting: deletingMessageIds.contains(message.id),
-                              child: _MessageBubble(
-                                message: message,
+                            if (album.length > 1)
+                              _PhotoAlbumBubble(
+                                messages: album,
                                 mine:
                                     message.senderNode ==
                                     widget.controller.myNodeId,
                                 dataSaver:
                                     widget.controller.appSettings.dataSaver,
-                                onLongPress: () => showMessageActions(message),
+                                onLongPress: () =>
+                                    showMessageActions(album.last),
                                 onReply: () =>
-                                    setState(() => replyTo = message),
+                                    setState(() => replyTo = album.last),
+                              )
+                            else
+                              _MessageDisintegrator(
+                                deleting: deletingMessageIds.contains(
+                                  message.id,
+                                ),
+                                child: _MessageBubble(
+                                  message: message,
+                                  mine:
+                                      message.senderNode ==
+                                      widget.controller.myNodeId,
+                                  dataSaver:
+                                      widget.controller.appSettings.dataSaver,
+                                  onLongPress: () =>
+                                      showMessageActions(message),
+                                  onReply: () =>
+                                      setState(() => replyTo = message),
+                                ),
                               ),
-                            ),
                           ],
                         );
                       },
@@ -1214,156 +1303,198 @@ class _ChatPageState extends State<ChatPage> {
                     radius: 24,
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (replyTo != null) ...[
-                            _ReplyComposer(
-                              message: replyTo!,
-                              onCancel: () => setState(() => replyTo = null),
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                          Row(
-                            children: [
-                              if (!recording) ...[
-                                _ComposerIconButton(
-                                  tooltip: 'Attach',
-                                  onPressed: showAttachMenu,
-                                  icon: Icons.attach_file_rounded,
-                                ),
-                                const SizedBox(width: 8),
-                              ],
-                              Expanded(
-                                child: _ComposerInputSurface(
-                                  child: recording
-                                      ? Transform.translate(
-                                          offset: Offset(
-                                            voiceCancelDrag * 0.22,
-                                            0,
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Icon(
-                                                voiceCancelArmed
-                                                    ? Icons.delete_rounded
-                                                    : Icons.mic_rounded,
-                                                color: voiceCancelArmed
-                                                    ? Colors.redAccent
-                                                    : Colors.lightBlueAccent,
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Column(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
+                      child: canPostToThread
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (replyTo != null) ...[
+                                  _ReplyComposer(
+                                    message: replyTo!,
+                                    onCancel: () =>
+                                        setState(() => replyTo = null),
+                                  ),
+                                  const SizedBox(height: 8),
+                                ],
+                                Row(
+                                  children: [
+                                    if (!recording) ...[
+                                      _ComposerIconButton(
+                                        tooltip: 'Attach',
+                                        onPressed: showAttachMenu,
+                                        icon: Icons.attach_file_rounded,
+                                      ),
+                                      const SizedBox(width: 8),
+                                    ],
+                                    Expanded(
+                                      child: _ComposerInputSurface(
+                                        child: recording
+                                            ? Transform.translate(
+                                                offset: Offset(
+                                                  voiceCancelDrag * 0.22,
+                                                  0,
+                                                ),
+                                                child: Row(
                                                   children: [
-                                                    _Waveform(
-                                                      levels: recordLevels,
-                                                    ),
-                                                    const SizedBox(height: 3),
-                                                    Text(
+                                                    Icon(
                                                       voiceCancelArmed
-                                                          ? 'Release to cancel'
-                                                          : 'Release to send · slide left to cancel',
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: TextStyle(
-                                                        color: voiceCancelArmed
-                                                            ? Colors.redAccent
-                                                            : Colors.white54,
-                                                        fontSize: 11,
-                                                        fontWeight:
-                                                            FontWeight.w700,
+                                                          ? Icons.delete_rounded
+                                                          : Icons.mic_rounded,
+                                                      color: voiceCancelArmed
+                                                          ? Colors.redAccent
+                                                          : Colors
+                                                                .lightBlueAccent,
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Expanded(
+                                                      child: Column(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        children: [
+                                                          _Waveform(
+                                                            levels:
+                                                                recordLevels,
+                                                          ),
+                                                          const SizedBox(
+                                                            height: 3,
+                                                          ),
+                                                          Text(
+                                                            voiceCancelArmed
+                                                                ? 'Release to cancel'
+                                                                : 'Release to send · slide left to cancel',
+                                                            maxLines: 1,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                            style: TextStyle(
+                                                              color:
+                                                                  voiceCancelArmed
+                                                                  ? Colors
+                                                                        .redAccent
+                                                                  : Colors
+                                                                        .white54,
+                                                              fontSize: 11,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w700,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Text(
+                                                      recordDuration(),
+                                                      style: const TextStyle(
+                                                        color: Colors.white70,
                                                       ),
                                                     ),
                                                   ],
                                                 ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                recordDuration(),
-                                                style: const TextStyle(
-                                                  color: Colors.white70,
+                                              )
+                                            : Focus(
+                                                focusNode: inputFocus,
+                                                onKeyEvent: handleInputKey,
+                                                child: TextField(
+                                                  controller: input,
+                                                  minLines: 1,
+                                                  maxLines: 5,
+                                                  textCapitalization:
+                                                      TextCapitalization
+                                                          .sentences,
+                                                  keyboardType:
+                                                      TextInputType.multiline,
+                                                  textInputAction:
+                                                      desktopSendHotkeys
+                                                      ? TextInputAction.send
+                                                      : TextInputAction.newline,
+                                                  decoration:
+                                                      const InputDecoration(
+                                                        hintText: 'Message',
+                                                        isDense: true,
+                                                        filled: false,
+                                                        border:
+                                                            InputBorder.none,
+                                                      ),
+                                                  onSubmitted:
+                                                      desktopSendHotkeys
+                                                      ? (_) => send()
+                                                      : null,
                                                 ),
                                               ),
-                                            ],
-                                          ),
-                                        )
-                                      : Focus(
-                                          focusNode: inputFocus,
-                                          onKeyEvent: handleInputKey,
-                                          child: TextField(
-                                            controller: input,
-                                            minLines: 1,
-                                            maxLines: 5,
-                                            textCapitalization:
-                                                TextCapitalization.sentences,
-                                            keyboardType:
-                                                TextInputType.multiline,
-                                            textInputAction: desktopSendHotkeys
-                                                ? TextInputAction.send
-                                                : TextInputAction.newline,
-                                            decoration: const InputDecoration(
-                                              hintText: 'Message',
-                                              isDense: true,
-                                              filled: false,
-                                              border: InputBorder.none,
-                                            ),
-                                            onSubmitted: desktopSendHotkeys
-                                                ? (_) => send()
-                                                : null,
-                                          ),
-                                        ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              if (recording && !voicePointerDown)
-                                _ComposerIconButton(
-                                  tooltip: 'Cancel',
-                                  onPressed: cancelRecording,
-                                  icon: Icons.close_rounded,
-                                  accent: Colors.redAccent,
-                                )
-                              else
-                                AnimatedSwitcher(
-                                  duration: const Duration(milliseconds: 180),
-                                  transitionBuilder: (child, animation) =>
-                                      ScaleTransition(
-                                        scale: CurvedAnimation(
-                                          parent: animation,
-                                          curve: Curves.easeOutBack,
-                                        ),
-                                        child: FadeTransition(
-                                          opacity: animation,
-                                          child: child,
-                                        ),
                                       ),
-                                  child: hasInputText && !recording
-                                      ? _ComposerIconButton(
-                                          key: const ValueKey('send'),
-                                          tooltip: 'Send',
-                                          onPressed: send,
-                                          icon: Icons.send_rounded,
-                                          accent: Colors.lightBlueAccent,
-                                        )
-                                      : _VoiceHoldButton(
-                                          key: const ValueKey('mic'),
-                                          onStart: startVoiceHold,
-                                          onDragUpdate: updateVoiceHoldDrag,
-                                          onFinish: () =>
-                                              finishVoiceHold(send: true),
-                                          onCancel: () =>
-                                              finishVoiceHold(send: false),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    if (recording && !voicePointerDown)
+                                      _ComposerIconButton(
+                                        tooltip: 'Cancel',
+                                        onPressed: cancelRecording,
+                                        icon: Icons.close_rounded,
+                                        accent: Colors.redAccent,
+                                      )
+                                    else
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
                                         ),
+                                        transitionBuilder: (child, animation) =>
+                                            ScaleTransition(
+                                              scale: CurvedAnimation(
+                                                parent: animation,
+                                                curve: Curves.easeOutBack,
+                                              ),
+                                              child: FadeTransition(
+                                                opacity: animation,
+                                                child: child,
+                                              ),
+                                            ),
+                                        child: hasInputText && !recording
+                                            ? _ComposerIconButton(
+                                                key: const ValueKey('send'),
+                                                tooltip: 'Send',
+                                                onPressed: send,
+                                                icon: Icons.send_rounded,
+                                                accent: Colors.lightBlueAccent,
+                                              )
+                                            : _VoiceHoldButton(
+                                                key: const ValueKey('mic'),
+                                                onStart: startVoiceHold,
+                                                onDragUpdate:
+                                                    updateVoiceHoldDrag,
+                                                onFinish: () =>
+                                                    finishVoiceHold(send: true),
+                                                onCancel: () => finishVoiceHold(
+                                                  send: false,
+                                                ),
+                                              ),
+                                      ),
+                                  ],
                                 ),
-                            ],
-                          ),
-                        ],
-                      ),
+                              ],
+                            )
+                          : const Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.campaign_outlined,
+                                    color: Colors.white54,
+                                  ),
+                                  SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Only channel admins can post',
+                                      style: TextStyle(color: Colors.white60),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                     ),
                   ),
                 ),
@@ -2049,14 +2180,25 @@ class _ChatAvatarRing extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(2.5),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: Colors.white.withValues(alpha: 0.12),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+    final tag = 'profile-avatar-${profile.nodeId}';
+    return Hero(
+      tag: tag,
+      transitionOnUserGestures: true,
+      placeholderBuilder: (context, size, child) => child,
+      flightShuttleBuilder:
+          (context, animation, direction, fromContext, toContext) =>
+              direction == HeroFlightDirection.push
+              ? toContext.widget
+              : fromContext.widget,
+      child: Container(
+        padding: const EdgeInsets.all(2.5),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.12),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        ),
+        child: ProfileAvatar(profile: profile, radius: 19),
       ),
-      child: ProfileAvatar(profile: profile, radius: 19),
     );
   }
 }
@@ -2252,9 +2394,32 @@ class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
                       ),
                   ],
                 ),
-                child: Icon(
-                  pressed ? Icons.mic_rounded : Icons.mic_none_rounded,
-                  color: pressed ? Colors.redAccent : Colors.white70,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (pressed)
+                      TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0, end: 1),
+                        duration: const Duration(milliseconds: 520),
+                        curve: Curves.easeOutCubic,
+                        builder: (context, value, _) => Container(
+                          width: 22 + value * 17,
+                          height: 22 + value * 17,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.redAccent.withValues(
+                                alpha: (0.34 * (1 - value)).clamp(0.0, 1.0),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    Icon(
+                      pressed ? Icons.mic_rounded : Icons.mic_none_rounded,
+                      color: pressed ? Colors.redAccent : Colors.white70,
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2988,6 +3153,151 @@ class _PinnedBar extends StatelessWidget {
   }
 }
 
+class _PhotoAlbumBubble extends StatelessWidget {
+  const _PhotoAlbumBubble({
+    required this.messages,
+    required this.mine,
+    required this.dataSaver,
+    required this.onLongPress,
+    required this.onReply,
+  });
+
+  final List<ChatMessage> messages;
+  final bool mine;
+  final bool dataSaver;
+  final VoidCallback onLongPress;
+  final VoidCallback onReply;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = messages.take(4).toList(growable: false);
+    final last = messages.last;
+    final time = last.createdAt.toLocal();
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: GestureDetector(
+        onLongPress: onLongPress,
+        onHorizontalDragEnd: (details) {
+          if ((details.primaryVelocity ?? 0) > 650) onReply();
+        },
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 286),
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.fromLTRB(6, 6, 6, 5),
+          decoration: BoxDecoration(
+            color: mine ? const Color(0xFF2587E8) : const Color(0xFF2A2E35),
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(12),
+              topRight: const Radius.circular(12),
+              bottomLeft: Radius.circular(mine ? 12 : 4),
+              bottomRight: Radius.circular(mine ? 4 : 12),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: SizedBox(
+                  width: 274,
+                  height: messages.length == 2 ? 136 : 214,
+                  child: GridView.builder(
+                    padding: EdgeInsets.zero,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: visible.length,
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: messages.length == 2 ? 2 : 2,
+                      mainAxisSpacing: 3,
+                      crossAxisSpacing: 3,
+                      childAspectRatio: messages.length == 2 ? 1 : 1.26,
+                    ),
+                    itemBuilder: (context, index) {
+                      final message = visible[index];
+                      final bytes = _MessageBubble.imageBytesFor(
+                        message,
+                        dataSaver: dataSaver,
+                      );
+                      return GestureDetector(
+                        onTap: bytes == null
+                            ? null
+                            : () => _showAlbumImage(context, bytes),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            DecoratedBox(
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF101D2B),
+                              ),
+                              child: bytes == null
+                                  ? const Icon(
+                                      Icons.image_not_supported_outlined,
+                                      color: Colors.white38,
+                                    )
+                                  : Image.memory(
+                                      bytes,
+                                      fit: BoxFit.cover,
+                                      gaplessPlayback: true,
+                                    ),
+                            ),
+                            if (index == 3 && messages.length > 4)
+                              DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.45),
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    '+${messages.length - 4}',
+                                    style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${time.hour.toString().padLeft(2, '0')}:'
+                    '${time.minute.toString().padLeft(2, '0')}',
+                    style: const TextStyle(fontSize: 10, color: Colors.white60),
+                  ),
+                  if (mine) ...[
+                    const SizedBox(width: 5),
+                    _MessageStatusLabel(message: last),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAlbumImage(BuildContext context, Uint8List bytes) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(14),
+        backgroundColor: Colors.black,
+        child: InteractiveViewer(
+          child: Image.memory(bytes, fit: BoxFit.contain),
+        ),
+      ),
+    );
+  }
+}
+
 class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.message,
@@ -3006,6 +3316,8 @@ class _MessageBubble extends StatefulWidget {
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
 
+  static final Map<String, Uint8List> _imageBytesCache = {};
+
   static Uint8List? imageBytesFor(
     ChatMessage message, {
     bool dataSaver = false,
@@ -3015,8 +3327,17 @@ class _MessageBubble extends StatefulWidget {
       return null;
     }
     if (dataSaver && message.fileSize > 512 * 1024) return null;
+    final cacheKey =
+        '${message.id}:${message.fileSize}:${message.fileData.length}';
+    final cached = _imageBytesCache[cacheKey];
+    if (cached != null) return cached;
     try {
-      return hexDecode(message.fileData);
+      final bytes = hexDecode(message.fileData);
+      if (_imageBytesCache.length > 96) {
+        _imageBytesCache.clear();
+      }
+      _imageBytesCache[cacheKey] = bytes;
+      return bytes;
     } catch (_) {
       return null;
     }
@@ -3025,6 +3346,15 @@ class _MessageBubble extends StatefulWidget {
 
 class _MessageBubbleState extends State<_MessageBubble> {
   double replyDrag = 0;
+  bool appeared = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => appeared = true);
+    });
+  }
 
   void _updateReplyDrag(DragUpdateDetails details) {
     final delta = details.primaryDelta ?? 0;
@@ -3049,60 +3379,78 @@ class _MessageBubbleState extends State<_MessageBubble> {
       dataSaver: widget.dataSaver,
     );
 
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: Stack(
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: appeared ? 1 : 0),
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value.clamp(0.0, 1.0),
+        child: Transform.translate(
+          offset: Offset((mine ? 18 : -18) * (1 - value), 8 * (1 - value)),
+          child: Transform.scale(
+            scale: 0.98 + value * 0.02,
+            alignment: mine ? Alignment.bottomRight : Alignment.bottomLeft,
+            child: child,
+          ),
+        ),
+      ),
+      child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-        children: [
-          Positioned.fill(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: AnimatedOpacity(
-                opacity: (replyDrag / 24).clamp(0.0, 1.0),
-                duration: const Duration(milliseconds: 90),
-                child: Transform.translate(
-                  offset: Offset((replyDrag - 26).clamp(-14.0, 0.0), 0),
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 8, bottom: 8),
-                    child: CircleAvatar(
-                      radius: 17,
-                      backgroundColor: Colors.lightBlueAccent.withValues(
-                        alpha: 0.18,
-                      ),
-                      child: const Icon(
-                        Icons.reply_rounded,
-                        size: 18,
-                        color: Colors.lightBlueAccent,
+        child: Stack(
+          alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+          children: [
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: AnimatedOpacity(
+                  opacity: (replyDrag / 24).clamp(0.0, 1.0),
+                  duration: const Duration(milliseconds: 90),
+                  child: Transform.translate(
+                    offset: Offset((replyDrag - 26).clamp(-14.0, 0.0), 0),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 8),
+                      child: CircleAvatar(
+                        radius: 17,
+                        backgroundColor: Colors.lightBlueAccent.withValues(
+                          alpha: 0.18,
+                        ),
+                        child: const Icon(
+                          Icons.reply_rounded,
+                          size: 18,
+                          color: Colors.lightBlueAccent,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-          GestureDetector(
-            onHorizontalDragUpdate: _updateReplyDrag,
-            onHorizontalDragEnd: _finishReplyDrag,
-            onHorizontalDragCancel: () => setState(() => replyDrag = 0),
-            onLongPress: widget.onLongPress,
-            onTap: imageBytes == null
-                ? null
-                : () => _showImage(context, imageBytes),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 120),
-              curve: Curves.easeOutCubic,
-              transform: Matrix4.translationValues(replyDrag, 0, 0),
-              transformAlignment: Alignment.center,
-              constraints: const BoxConstraints(maxWidth: 340),
-              margin: const EdgeInsets.only(bottom: 8),
-              child: _MessageBubbleBody(
-                message: message,
-                mine: mine,
-                imageBytes: imageBytes,
+            GestureDetector(
+              onHorizontalDragUpdate: _updateReplyDrag,
+              onHorizontalDragEnd: _finishReplyDrag,
+              onHorizontalDragCancel: () => setState(() => replyDrag = 0),
+              onLongPress: widget.onLongPress,
+              onTap: imageBytes == null
+                  ? null
+                  : () => _showImage(context, imageBytes),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                curve: Curves.easeOutCubic,
+                transform: Matrix4.translationValues(replyDrag, 0, 0),
+                transformAlignment: Alignment.center,
+                constraints: const BoxConstraints(maxWidth: 340),
+                margin: const EdgeInsets.only(bottom: 8),
+                child: RepaintBoundary(
+                  child: _MessageBubbleBody(
+                    message: message,
+                    mine: mine,
+                    imageBytes: imageBytes,
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -3418,20 +3766,32 @@ class _MessageStatusLabel extends StatelessWidget {
         : message.delivered
         ? (Icons.done_all_rounded, 'delivered', Colors.white60)
         : (Icons.done_rounded, 'sent', Colors.white60);
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 13, color: color),
-        const SizedBox(width: 3),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            color: color,
-            fontWeight: FontWeight.w700,
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(
+        '${message.id}-${message.pending}-${message.delivered}-${message.failed}',
+      ),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutBack,
+      builder: (context, value, child) => Opacity(
+        opacity: value.clamp(0.0, 1.0),
+        child: Transform.scale(scale: 0.82 + value * 0.18, child: child),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 3),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              color: color,
+              fontWeight: FontWeight.w700,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -3719,6 +4079,73 @@ class _Waveform extends StatelessWidget {
 const _mooseReaction = '\u{1FACE}';
 const _mooseReactionAsset = 'assets/moose_reaction.png';
 
+class _ReactionQuickBar extends StatelessWidget {
+  const _ReactionQuickBar({required this.onSelected});
+
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    const reactions = [
+      '\u2764\uFE0F',
+      '\u{1F44C}',
+      _mooseReaction,
+      '\u{1F44D}',
+    ];
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.88, end: 1),
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutBack,
+      builder: (context, scale, child) => Opacity(
+        opacity: scale.clamp(0.0, 1.0),
+        child: Transform.scale(scale: scale, child: child),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xFF182231).withValues(alpha: 0.88),
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF46D9FF).withValues(alpha: 0.12),
+                    blurRadius: 24,
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    for (final reaction in reactions)
+                      InkWell(
+                        borderRadius: BorderRadius.circular(22),
+                        onTap: () => onSelected(reaction),
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: _ReactionIcon(reaction: reaction, size: 30),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ReactionIcon extends StatelessWidget {
   const _ReactionIcon({required this.reaction, required this.size});
 
@@ -3747,18 +4174,28 @@ class _ReactionBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _ReactionIcon(reaction: reaction, size: 14),
-        if (count > 1) ...[
-          const SizedBox(width: 3),
-          Text(
-            count.toString(),
-            style: const TextStyle(fontSize: 12, color: Colors.white),
-          ),
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('$reaction-$count'),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutBack,
+      builder: (context, value, child) => Transform.scale(
+        scale: 0.78 + value * 0.22,
+        child: Opacity(opacity: value.clamp(0.0, 1.0), child: child),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ReactionIcon(reaction: reaction, size: 14),
+          if (count > 1) ...[
+            const SizedBox(width: 3),
+            Text(
+              count.toString(),
+              style: const TextStyle(fontSize: 12, color: Colors.white),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }

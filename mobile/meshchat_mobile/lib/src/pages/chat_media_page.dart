@@ -26,6 +26,10 @@ class ChatMediaPage extends StatefulWidget {
 class _ChatMediaPageState extends State<ChatMediaPage> {
   MediaSection selected = MediaSection.media;
 
+  void openSourceMessage(String messageId) {
+    Navigator.pop(context, messageId);
+  }
+
   @override
   Widget build(BuildContext context) {
     final buckets = _MediaBuckets.fromThread(widget.thread);
@@ -130,6 +134,7 @@ class _ChatMediaPageState extends State<ChatMediaPage> {
                         section: selected,
                         items: items,
                         mediaItems: buckets.media,
+                        onOpenMessage: openSourceMessage,
                       ),
               ),
             ),
@@ -146,11 +151,13 @@ class _MediaContent extends StatelessWidget {
     required this.section,
     required this.items,
     required this.mediaItems,
+    required this.onOpenMessage,
   });
 
   final MediaSection section;
   final List<_MediaItem> items;
   final List<_MediaItem> mediaItems;
+  final ValueChanged<String> onOpenMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -162,8 +169,8 @@ class _MediaContent extends StatelessWidget {
         itemCount: items.length,
         separatorBuilder: (_, _) => const SizedBox(height: 8),
         itemBuilder: (context, index) => items[index].kind == _MediaKind.voice
-            ? _VoiceListTile(item: items[index])
-            : _ListMediaTile(item: items[index]),
+            ? _VoiceListTile(item: items[index], onOpenMessage: onOpenMessage)
+            : _ListMediaTile(item: items[index], onOpenMessage: onOpenMessage),
       );
     }
     return GridView.builder(
@@ -190,8 +197,11 @@ class _MediaContent extends StatelessWidget {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) =>
-                    _PhotoViewerPage(photos: photos, initialIndex: photoIndex),
+                builder: (_) => _PhotoViewerPage(
+                  photos: photos,
+                  initialIndex: photoIndex,
+                  onOpenMessage: onOpenMessage,
+                ),
               ),
             );
           }
@@ -257,9 +267,10 @@ class _GridMediaTile extends StatelessWidget {
 }
 
 class _ListMediaTile extends StatelessWidget {
-  const _ListMediaTile({required this.item});
+  const _ListMediaTile({required this.item, required this.onOpenMessage});
 
   final _MediaItem item;
+  final ValueChanged<String> onOpenMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -289,9 +300,13 @@ class _ListMediaTile extends StatelessWidget {
           style: const TextStyle(color: Colors.white54),
         ),
         onTap: () => _handleItemTap(context, item),
-        trailing: const Icon(
-          Icons.chevron_right_rounded,
-          color: Colors.white38,
+        trailing: IconButton(
+          tooltip: 'Go to message',
+          icon: const Icon(
+            Icons.chat_bubble_outline_rounded,
+            color: Colors.white54,
+          ),
+          onPressed: () => onOpenMessage(item.message.id),
         ),
       ),
     );
@@ -358,10 +373,15 @@ class _CenteredPreviewIcon extends StatelessWidget {
 }
 
 class _PhotoViewerPage extends StatefulWidget {
-  const _PhotoViewerPage({required this.photos, required this.initialIndex});
+  const _PhotoViewerPage({
+    required this.photos,
+    required this.initialIndex,
+    required this.onOpenMessage,
+  });
 
   final List<_MediaItem> photos;
   final int initialIndex;
+  final ValueChanged<String> onOpenMessage;
 
   @override
   State<_PhotoViewerPage> createState() => _PhotoViewerPageState();
@@ -437,6 +457,17 @@ class _PhotoViewerPageState extends State<_PhotoViewerPage> {
                   _RoundGlassButton(
                     icon: Icons.info_outline_rounded,
                     onTap: () => _showCurrentInfo(context),
+                  ),
+                  const SizedBox(width: 10),
+                  _RoundGlassButton(
+                    icon: Icons.chat_bubble_outline_rounded,
+                    onTap: () {
+                      final messageId = widget.photos[index].message.id;
+                      Navigator.pop(context);
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        widget.onOpenMessage(messageId);
+                      });
+                    },
                   ),
                 ],
               ),
@@ -515,9 +546,10 @@ class _PhotoViewerPageState extends State<_PhotoViewerPage> {
 }
 
 class _VoiceListTile extends StatefulWidget {
-  const _VoiceListTile({required this.item});
+  const _VoiceListTile({required this.item, required this.onOpenMessage});
 
   final _MediaItem item;
+  final ValueChanged<String> onOpenMessage;
 
   @override
   State<_VoiceListTile> createState() => _VoiceListTileState();
@@ -631,6 +663,15 @@ class _VoiceListTileState extends State<_VoiceListTile> {
                     style: const TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: 'Go to message',
+              onPressed: () => widget.onOpenMessage(widget.item.message.id),
+              icon: const Icon(
+                Icons.chat_bubble_outline_rounded,
+                color: Colors.white54,
               ),
             ),
           ],
@@ -991,12 +1032,21 @@ String _linkTitle(String link) {
 
 Uint8List? _tryHexDecode(String value) {
   if (value.isEmpty || value.length.isOdd) return null;
+  final cached = _hexDecodeCache[value];
+  if (cached != null) return cached;
   try {
-    return _hexDecode(value);
+    final bytes = _hexDecode(value);
+    if (_hexDecodeCache.length > 96) {
+      _hexDecodeCache.clear();
+    }
+    _hexDecodeCache[value] = bytes;
+    return bytes;
   } on FormatException {
     return null;
   }
 }
+
+final Map<String, Uint8List> _hexDecodeCache = {};
 
 Uint8List _hexDecode(String hex) {
   final result = Uint8List(hex.length ~/ 2);
