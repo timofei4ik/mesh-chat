@@ -1010,7 +1010,7 @@ class _HomeTabBody extends StatelessWidget {
                 onRefresh: controller.handleAppResumed,
                 child: ListView.builder(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 110),
+                  padding: const EdgeInsets.fromLTRB(10, 14, 10, 112),
                   itemCount: threads.length + headerCount,
                   itemBuilder: (context, index) {
                     if (index < requestCount) {
@@ -1681,60 +1681,55 @@ class _HomeFilterBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 4, 14, 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: _FilterPill(
+      padding: const EdgeInsets.fromLTRB(14, 5, 14, 8),
+      child: SizedBox(
+        height: 44,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
+          children: [
+            _FilterPill(
               label: 'All',
               icon: Icons.all_inbox_rounded,
               selected: selected == _HomeFilter.all,
               onTap: () => onChanged(_HomeFilter.all),
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _FilterPill(
+            const SizedBox(width: 9),
+            _FilterPill(
               label: 'Personal',
               icon: Icons.person_outline_rounded,
               selected: selected == _HomeFilter.personal,
               onTap: () => onChanged(_HomeFilter.personal),
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _FilterPill(
+            const SizedBox(width: 9),
+            _FilterPill(
               label: 'Groups',
               icon: Icons.groups_rounded,
               selected: selected == _HomeFilter.groups,
               onTap: () => onChanged(_HomeFilter.groups),
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _FilterPill(
+            const SizedBox(width: 9),
+            _FilterPill(
               label: 'Channels',
               icon: Icons.campaign_outlined,
               selected: selected == _HomeFilter.channels,
               onTap: () => onChanged(_HomeFilter.channels),
             ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _FilterPill(
+            const SizedBox(width: 9),
+            _FilterPill(
               label: 'Bluetooth',
               icon: Icons.bluetooth_rounded,
               selected: selected == _HomeFilter.bluetooth,
               onTap: () => onChanged(_HomeFilter.bluetooth),
             ),
-          ),
-          const SizedBox(width: 8),
-          _RoundFilterButton(
-            icon: Icons.tune_rounded,
-            tooltip: 'Settings',
-            onTap: onSettings,
-          ),
-        ],
+            const SizedBox(width: 9),
+            _RoundFilterButton(
+              icon: Icons.tune_rounded,
+              tooltip: 'Settings',
+              onTap: onSettings,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1757,33 +1752,34 @@ class _FilterPill extends StatelessWidget {
   Widget build(BuildContext context) {
     return _HomeGlassSurface(
       accent: selected ? Colors.lightBlueAccent : Colors.blueGrey,
-      radius: 18,
+      radius: 22,
       selected: selected,
       dim: !selected,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        borderRadius: BorderRadius.circular(22),
+        child: Container(
+          constraints: const BoxConstraints(minWidth: 106),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
                 icon,
-                size: 17,
+                size: 18,
                 color: selected ? Colors.lightBlueAccent : Colors.white70,
               ),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                    color: selected ? Colors.white : Colors.white70,
-                  ),
+              const SizedBox(width: 7),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.fade,
+                softWrap: false,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                  color: selected ? Colors.white : Colors.white70,
                 ),
               ),
             ],

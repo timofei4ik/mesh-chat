@@ -41,6 +41,10 @@ class ChatMessage {
 
   ChatMessage copyWith({
     String? text,
+    ChatMessageKind? kind,
+    String? fileName,
+    String? fileData,
+    int? fileSize,
     bool? pending,
     bool? delivered,
     bool? failed,
@@ -55,10 +59,10 @@ class ChatMessage {
       receiverNode: receiverNode,
       text: text ?? this.text,
       createdAt: createdAt,
-      kind: kind,
-      fileName: fileName,
-      fileData: fileData,
-      fileSize: fileSize,
+      kind: kind ?? this.kind,
+      fileName: fileName ?? this.fileName,
+      fileData: fileData ?? this.fileData,
+      fileSize: fileSize ?? this.fileSize,
       replyToMessageId: replyToMessageId,
       replyToText: replyToText,
       reactions: reactions ?? this.reactions,
@@ -72,6 +76,12 @@ class ChatMessage {
   }
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    final fileName = json['file_name']?.toString() ?? '';
+    final fileData = json['file_data']?.toString() ?? '';
+    final rawKind = json['kind']?.toString() ?? '';
+    final kind = rawKind.isEmpty && (fileName.isNotEmpty || fileData.isNotEmpty)
+        ? ChatMessageKind.file
+        : ChatMessageKind.fromName(rawKind);
     return ChatMessage(
       id: json['id']?.toString() ?? '',
       senderNode: json['sender_node']?.toString() ?? '',
@@ -80,9 +90,9 @@ class ChatMessage {
       createdAt:
           DateTime.tryParse(json['created_at']?.toString() ?? '') ??
           DateTime.now(),
-      kind: ChatMessageKind.fromName(json['kind']?.toString() ?? ''),
-      fileName: json['file_name']?.toString() ?? '',
-      fileData: json['file_data']?.toString() ?? '',
+      kind: kind,
+      fileName: fileName,
+      fileData: fileData,
       fileSize: int.tryParse(json['file_size']?.toString() ?? '') ?? 0,
       replyToMessageId: json['reply_to_message_id']?.toString() ?? '',
       replyToText: json['reply_to_text']?.toString() ?? '',

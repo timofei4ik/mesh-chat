@@ -293,10 +293,10 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatThread> get sortedThreads {
-    final result = [
+    final result = _dedupeVisibleThreads([
       ...threads.values,
       ...groups.values,
-    ].where((thread) => !thread.archived).toList();
+    ].where((thread) => !thread.archived).toList());
     result.sort((a, b) {
       if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
       final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
@@ -307,16 +307,61 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatThread> get archivedThreads {
-    final result = [
+    final result = _dedupeVisibleThreads([
       ...threads.values,
       ...groups.values,
-    ].where((thread) => thread.archived).toList();
+    ].where((thread) => thread.archived).toList());
     result.sort((a, b) {
       final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
       final bTime = b.lastMessage?.createdAt ?? DateTime(1970);
       return bTime.compareTo(aTime);
     });
     return result;
+  }
+
+  List<ChatThread> _dedupeVisibleThreads(List<ChatThread> source) {
+    final personal = <String, ChatThread>{};
+    final result = <ChatThread>[];
+    for (final thread in source) {
+      if (thread.isGroup || isSavedMessagesProfile(thread.profile)) {
+        result.add(thread);
+        continue;
+      }
+      final key = _threadIdentityKey(thread);
+      final existing = personal[key];
+      if (existing == null) {
+        personal[key] = thread;
+        continue;
+      }
+      personal[key] = _preferVisibleThread(existing, thread);
+    }
+    result.addAll(personal.values);
+    return result;
+  }
+
+  String _threadIdentityKey(ChatThread thread) {
+    final profile = thread.profile;
+    final username = profile.publicUsername.trim().toLowerCase();
+    if (username.isNotEmpty) return 'username:$username';
+    if (profile.avatarData.isNotEmpty && profile.displayName.trim().isNotEmpty) {
+      final avatarKey = profile.avatarData.length <= 96
+          ? profile.avatarData
+          : profile.avatarData.substring(0, 96);
+      return 'visual:${profile.displayName.trim().toLowerCase()}:$avatarKey';
+    }
+    return 'node:${profile.nodeId}';
+  }
+
+  ChatThread _preferVisibleThread(ChatThread a, ChatThread b) {
+    if (a.pinned != b.pinned) return a.pinned ? a : b;
+    final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
+    final bTime = b.lastMessage?.createdAt ?? DateTime(1970);
+    final timeCompare = aTime.compareTo(bTime);
+    if (timeCompare != 0) return timeCompare > 0 ? a : b;
+    if (a.messages.length != b.messages.length) {
+      return a.messages.length > b.messages.length ? a : b;
+    }
+    return a.unread >= b.unread ? a : b;
   }
 
   bool isTyping(ChatThread thread) {
@@ -849,7 +894,7 @@ class AppController extends ChangeNotifier {
           : 'Online: synced $addedMessages';
     }
 
-    _applyGroups(packet['groups']);
+    await _applyGroups(packet['groups']);
     for (final raw
         in packet['group_messages'] is List
             ? packet['group_messages'] as List
@@ -957,7 +1002,7 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  void _applyGroups(dynamic rawGroups) {
+  Future<void> _applyGroups(dynamic rawGroups) async {
     for (final raw in rawGroups is List ? rawGroups : const []) {
       if (raw is! Map) continue;
       final data = Map<String, dynamic>.from(raw);
@@ -984,12 +1029,10 @@ class AppController extends ChangeNotifier {
               ? data['group_keys'] as List
               : const []) {
         if (rawKey is! Map) continue;
-        unawaited(
-          _acceptGroupKeyEnvelope(
-            groupId,
-            rawKey['key_id']?.toString() ?? '',
-            rawKey['key_envelope']?.toString() ?? '',
-          ),
+        await _acceptGroupKeyEnvelope(
+          groupId,
+          rawKey['key_id']?.toString() ?? '',
+          rawKey['key_envelope']?.toString() ?? '',
         );
       }
     }
@@ -1043,15 +1086,40 @@ class AppController extends ChangeNotifier {
   }
 
   bool _dedupeThreadMessages(ChatThread thread) {
-    final seen = <String>{};
     final before = thread.messages.length;
-    thread.messages.removeWhere((message) {
-      if (message.id.trim().isEmpty) return true;
-      if (_isDeletedMessage(message.id)) return true;
-      return !seen.add(message.id);
-    });
+    final byId = <String, ChatMessage>{};
+    for (final message in thread.messages) {
+      if (message.id.trim().isEmpty) continue;
+      if (_isDeletedMessage(message.id)) continue;
+      final existing = byId[message.id];
+      byId[message.id] = existing == null
+          ? message
+          : _preferRicherMessage(existing, message);
+    }
+    thread.messages
+      ..clear()
+      ..addAll(byId.values);
     thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return thread.messages.length != before;
+  }
+
+  ChatMessage _preferRicherMessage(ChatMessage a, ChatMessage b) {
+    final aScore = _messageRichnessScore(a);
+    final bScore = _messageRichnessScore(b);
+    if (aScore != bScore) return aScore > bScore ? a : b;
+    if (a.delivered != b.delivered) return a.delivered ? a : b;
+    if (a.pending != b.pending) return a.pending ? b : a;
+    return a.createdAt.isAfter(b.createdAt) ? a : b;
+  }
+
+  int _messageRichnessScore(ChatMessage message) {
+    var score = 0;
+    if (message.kind == ChatMessageKind.file) score += 8;
+    if (message.fileData.isNotEmpty) score += 16;
+    if (message.fileName.isNotEmpty) score += 4;
+    if (message.fileSize > 0) score += 2;
+    if (message.text.isNotEmpty) score += 1;
+    return score;
   }
 
   bool _ensureOwnGroupMembership(ChatThread group) {
@@ -1096,15 +1164,30 @@ class AppController extends ChangeNotifier {
     String about = '',
     String avatarData = '',
   }) {
-    final normalizedMembers = _normalizedGroupMembers(members);
+    final hasIncomingMembers = members.any((id) => id.trim().isNotEmpty);
+    final normalizedMembers = hasIncomingMembers
+        ? _normalizedGroupMembers(members)
+        : const <String>[];
+    final adminBase = hasIncomingMembers
+        ? normalizedMembers
+        : (groups[groupId]?.members ?? const <String>[]);
     final normalizedAdmins = admins
-        .where((admin) => normalizedMembers.contains(admin))
+        .where((admin) => adminBase.contains(admin))
         .toSet()
         .toList();
     final existing = groups[groupId];
     if (existing != null) {
       existing.isChannel = existing.isChannel || isChannel;
-      if (groupName.isNotEmpty) {
+      final incomingName = groupName.trim();
+      final isDefaultIncomingName =
+          incomingName == 'Р“СЂСѓРїРїР°' || incomingName == 'Группа';
+      final currentName = existing.profile.displayName.trim();
+      final currentIsDefault =
+          currentName.isEmpty ||
+          currentName == 'Р“СЂСѓРїРїР°' ||
+          currentName == 'Группа';
+      if (incomingName.isNotEmpty &&
+          (!isDefaultIncomingName || currentIsDefault)) {
         existing.profile = existing.profile.copyWith(displayName: groupName);
       }
       if (about.isNotEmpty || avatarData.isNotEmpty) {
@@ -1113,7 +1196,7 @@ class AppController extends ChangeNotifier {
           avatarData: avatarData.isEmpty ? null : avatarData,
         );
       }
-      if (normalizedMembers.isNotEmpty) {
+      if (hasIncomingMembers && normalizedMembers.isNotEmpty) {
         existing.members
           ..clear()
           ..addAll(normalizedMembers);
@@ -1137,7 +1220,9 @@ class AppController extends ChangeNotifier {
       isChannel: isChannel,
       groupId: groupId,
       groupName: groupName.isEmpty ? 'Группа' : groupName,
-      members: normalizedMembers,
+      members: normalizedMembers.isEmpty
+          ? _normalizedGroupMembers(const [])
+          : normalizedMembers,
       ownerNode: ownerNode,
       admins: normalizedAdmins,
     );
@@ -3458,82 +3543,79 @@ class AppController extends ChangeNotifier {
         groupName: first['group_name']?.toString() ?? 'Группа',
         isChannel: first['is_channel'] == true,
       );
-      if (!group.messages.any((message) => message.id == fileId)) {
-        await _acceptGroupKeyEnvelope(
-          groupId,
-          first['group_key_id']?.toString() ?? '',
-          first['group_key_envelope']?.toString() ??
-              first['group_key_sender_envelope']?.toString() ??
-              '',
+      await _acceptGroupKeyEnvelope(
+        groupId,
+        first['group_key_id']?.toString() ?? '',
+        first['group_key_envelope']?.toString() ??
+            first['group_key_sender_envelope']?.toString() ??
+            '',
+      );
+      final sender = first['sender_node']?.toString().isNotEmpty == true
+          ? first['sender_node'].toString()
+          : first['source_node']?.toString() ?? '';
+      if (isBlocked(sender)) {
+        _incomingFiles.remove(fileId);
+        return;
+      }
+      final fullData = List<String>.generate(
+        incoming.totalChunks,
+        (index) => incoming.chunks[index] ?? '',
+      ).join();
+      final decryptedName = await _crypto.decryptGroupText(
+        _groupKeys[groupId]?.key,
+        filename,
+      );
+      final decryptedCaption = await _crypto.decryptGroupText(
+        _groupKeys[groupId]?.key,
+        first['caption']?.toString() ?? '',
+      );
+      var decryptedData = fullData;
+      try {
+        decryptedData = _hexEncode(
+          Uint8List.fromList(
+            await _crypto.decryptGroupBytes(
+              _groupKeys[groupId]?.key,
+              _hexDecode(fullData),
+            ),
+          ),
         );
-        final sender = first['sender_node']?.toString().isNotEmpty == true
-            ? first['sender_node'].toString()
-            : first['source_node']?.toString() ?? '';
-        if (isBlocked(sender)) {
-          _incomingFiles.remove(fileId);
-          return;
+      } catch (_) {
+        decryptedData = fullData;
+      }
+      final message = ChatMessage(
+        id: fileId,
+        senderNode: sender,
+        receiverNode: groupId,
+        text: decryptedCaption,
+        createdAt: _parsePacketDate(first),
+        kind: ChatMessageKind.file,
+        fileName: decryptedName,
+        fileData: decryptedData,
+        fileSize: decryptedData.length ~/ 2,
+        replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
+        replyToText: first['reply_to_text']?.toString() ?? '',
+        delivered: true,
+      );
+      final inserted = _upsertFileMessage(group, message);
+      if (inserted && !fromSync && sender != myNodeId) {
+        final active = _isThreadActive(group);
+        if (active) {
+          group.unread = 0;
+        } else {
+          group.unread++;
         }
-        final fullData = List<String>.generate(
-          incoming.totalChunks,
-          (index) => incoming.chunks[index] ?? '',
-        ).join();
-        final decryptedName = await _crypto.decryptGroupText(
-          _groupKeys[groupId]?.key,
-          filename,
-        );
-        final decryptedCaption = await _crypto.decryptGroupText(
-          _groupKeys[groupId]?.key,
-          first['caption']?.toString() ?? '',
-        );
-        var decryptedData = fullData;
-        try {
-          decryptedData = _hexEncode(
-            Uint8List.fromList(
-              await _crypto.decryptGroupBytes(
-                _groupKeys[groupId]?.key,
-                _hexDecode(fullData),
-              ),
+        if (!active && !group.muted) {
+          unawaited(
+            _showNotification(
+              title: group.profile.displayName,
+              body: _fileNotificationBody(decryptedName),
             ),
           );
-        } catch (_) {
-          decryptedData = fullData;
         }
-        final message = ChatMessage(
-          id: fileId,
-          senderNode: sender,
-          receiverNode: groupId,
-          text: decryptedCaption,
-          createdAt: _parsePacketDate(first),
-          kind: ChatMessageKind.file,
-          fileName: decryptedName,
-          fileData: decryptedData,
-          fileSize: decryptedData.length ~/ 2,
-          replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
-          replyToText: first['reply_to_text']?.toString() ?? '',
-          delivered: true,
-        );
-        group.messages.add(message);
-        group.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-        if (!fromSync && sender != myNodeId) {
-          final active = _isThreadActive(group);
-          if (active) {
-            group.unread = 0;
-          } else {
-            group.unread++;
-          }
-          if (!active && !group.muted) {
-            unawaited(
-              _showNotification(
-                title: group.profile.displayName,
-                body: _fileNotificationBody(decryptedName),
-              ),
-            );
-          }
-          _publishIncomingPreview(group, message);
-        }
-        await _saveCache();
-        notifyListeners();
+        _publishIncomingPreview(group, message);
       }
+      await _saveCache();
+      notifyListeners();
       _incomingFiles.remove(fileId);
       return;
     }
@@ -3579,48 +3661,88 @@ class AppController extends ChangeNotifier {
         );
     profiles[peerId] = profile;
     final thread = _ensureThread(profile);
-    if (!thread.messages.any((message) => message.id == fileId)) {
-      final fullData = List<String>.generate(
-        incoming.totalChunks,
-        (index) => incoming.chunks[index] ?? '',
-      ).join();
-      final message = ChatMessage(
-        id: fileId,
-        senderNode: sentByMe ? myNodeId : sender,
-        receiverNode: receiver,
-        text: first['caption']?.toString() ?? '',
-        createdAt: _parsePacketDate(first),
-        kind: ChatMessageKind.file,
-        fileName: filename,
-        fileData: fullData,
-        fileSize: fullData.length ~/ 2,
-        replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
-        replyToText: first['reply_to_text']?.toString() ?? '',
-        delivered: true,
-      );
-      thread.messages.add(message);
-      thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      if (!fromSync && sender != myNodeId) {
-        final active = _isThreadActive(thread);
-        if (active) {
-          thread.unread = 0;
-        } else {
-          thread.unread++;
-        }
-        if (!active && !thread.muted) {
-          unawaited(
-            _showNotification(
-              title: profile.displayName,
-              body: _fileNotificationBody(filename),
-            ),
-          );
-        }
-        _publishIncomingPreview(thread, message);
+    final fullData = List<String>.generate(
+      incoming.totalChunks,
+      (index) => incoming.chunks[index] ?? '',
+    ).join();
+    final message = ChatMessage(
+      id: fileId,
+      senderNode: sentByMe ? myNodeId : sender,
+      receiverNode: receiver,
+      text: first['caption']?.toString() ?? '',
+      createdAt: _parsePacketDate(first),
+      kind: ChatMessageKind.file,
+      fileName: filename,
+      fileData: fullData,
+      fileSize: fullData.length ~/ 2,
+      replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
+      replyToText: first['reply_to_text']?.toString() ?? '',
+      delivered: true,
+    );
+    final inserted = _upsertFileMessage(thread, message);
+    if (inserted && !fromSync && sender != myNodeId) {
+      final active = _isThreadActive(thread);
+      if (active) {
+        thread.unread = 0;
+      } else {
+        thread.unread++;
       }
-      await _saveCache();
-      notifyListeners();
+      if (!active && !thread.muted) {
+        unawaited(
+          _showNotification(
+            title: profile.displayName,
+            body: _fileNotificationBody(filename),
+          ),
+        );
+      }
+      _publishIncomingPreview(thread, message);
     }
+    await _saveCache();
+    notifyListeners();
     _incomingFiles.remove(fileId);
+  }
+
+  bool _upsertFileMessage(ChatThread thread, ChatMessage incoming) {
+    final index = thread.messages.indexWhere(
+      (message) => message.id == incoming.id,
+    );
+    if (index < 0) {
+      thread.messages.add(incoming);
+      thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      return true;
+    }
+    final current = thread.messages[index];
+    final shouldUpgrade =
+        current.kind != ChatMessageKind.file ||
+        current.fileData.isEmpty ||
+        current.fileName.isEmpty ||
+        current.fileSize <= 0;
+    if (!shouldUpgrade) return false;
+    final shouldReplaceText =
+        incoming.text.isNotEmpty &&
+        (current.text.isEmpty ||
+            current.text.startsWith(MeshCrypto.groupPrefix) ||
+            current.text.startsWith('['));
+    final shouldReplaceName =
+        incoming.fileName.isNotEmpty &&
+        (current.fileName.isEmpty ||
+            current.fileName.startsWith(MeshCrypto.groupPrefix) ||
+            current.fileData.isEmpty);
+    thread.messages[index] = current.copyWith(
+      kind: ChatMessageKind.file,
+      text: shouldReplaceText ? incoming.text : current.text,
+      fileName: shouldReplaceName ? incoming.fileName : current.fileName,
+      fileData: incoming.fileData.isNotEmpty
+          ? incoming.fileData
+          : current.fileData,
+      fileSize: incoming.fileSize > 0 ? incoming.fileSize : current.fileSize,
+      delivered: true,
+      pending: false,
+      failed: false,
+      progress: 1,
+    );
+    thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return false;
   }
 
   Future<String> _decryptHistoryText(String rawText) async {

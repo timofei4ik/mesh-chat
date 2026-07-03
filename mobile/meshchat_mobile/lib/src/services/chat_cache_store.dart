@@ -351,6 +351,7 @@ class ChatCacheStore {
       profile: profile,
       messages: cachedMessages,
       isGroup: thread.isGroup,
+      isChannel: thread.isChannel,
       groupId: thread.groupId,
       groupName: thread.groupName,
       members: List.of(thread.members),

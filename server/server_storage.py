@@ -1226,6 +1226,18 @@ class ServerStorageMixin:
 
             self.db.execute(
                 """
+                DELETE FROM server_files
+                WHERE file_id=?
+                AND sender_node=?
+                """,
+                (
+                    message_id,
+                    sender_node
+                )
+            )
+
+            self.db.execute(
+                """
                 DELETE FROM server_pins
                 WHERE message_id=?
                 """,
@@ -1590,6 +1602,18 @@ class ServerStorageMixin:
                 """,
                 (
                     message_id,
+                )
+            )
+
+            self.db.execute(
+                """
+                DELETE FROM server_files
+                WHERE file_id=?
+                AND sender_node=?
+                """,
+                (
+                    message_id,
+                    sender_node
                 )
             )
 

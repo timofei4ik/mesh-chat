@@ -283,6 +283,8 @@ class ServerSyncMixin:
                 group_ids
             )
 
+        file_where = f"({' OR '.join(file_conditions)})"
+
         if deleted_peers:
 
             placeholders = ",".join(
@@ -290,11 +292,11 @@ class ServerSyncMixin:
                 for _ in deleted_peers
             )
 
-            file_conditions.append(
+            file_where += (
                 f"""
-                (
-                    sender_node NOT IN ({placeholders})
-                    AND receiver_node NOT IN ({placeholders})
+                AND (
+                    COALESCE(sender_node, '') NOT IN ({placeholders})
+                    AND COALESCE(receiver_node, '') NOT IN ({placeholders})
                 )
                 """
             )
@@ -317,7 +319,7 @@ class ServerSyncMixin:
                    group_key_id,
                    created_at
             FROM server_files
-            WHERE {' OR '.join(file_conditions)}
+            WHERE {file_where}
             ORDER BY created_at
             """,
             file_params
@@ -339,6 +341,12 @@ class ServerSyncMixin:
                 "created_at": row[11]
             }
             for row in cursor.fetchall()
+        ]
+
+        message_ids += [
+            file_info["file_id"]
+            for file_info in files
+            if file_info.get("file_id")
         ]
 
         reactions = []
