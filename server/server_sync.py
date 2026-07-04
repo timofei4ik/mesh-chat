@@ -104,7 +104,9 @@ class ServerSyncMixin:
                             g.members_json,
                             g.owner_node,
                             g.admins_json,
-                            COALESCE(g.is_channel, 0)
+                            COALESCE(g.is_channel, 0),
+                            COALESCE(g.group_about, ''),
+                            COALESCE(g.group_avatar_data, '')
             FROM server_groups g
             JOIN server_group_members m
               ON m.group_id = g.group_id
@@ -128,7 +130,9 @@ class ServerSyncMixin:
                 "admins": json.loads(
                     row[4] or "[]"
                 ),
-                "is_channel": bool(row[5])
+                "is_channel": bool(row[5]),
+                "group_about": row[6] or "",
+                "group_avatar_data": row[7] or ""
             }
             for row in cursor.fetchall()
         ]

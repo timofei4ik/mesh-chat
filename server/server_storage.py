@@ -154,6 +154,8 @@ class ServerStorageMixin:
             CREATE TABLE IF NOT EXISTS server_groups(
                 group_id TEXT PRIMARY KEY,
                 group_name TEXT,
+                group_about TEXT DEFAULT '',
+                group_avatar_data TEXT DEFAULT '',
                 members_json TEXT,
                 owner_node TEXT,
                 admins_json TEXT DEFAULT '[]',
@@ -176,6 +178,18 @@ class ServerStorageMixin:
 
             conn.execute(
                 "ALTER TABLE server_groups ADD COLUMN owner_node TEXT"
+            )
+
+        if "group_about" not in group_columns:
+
+            conn.execute(
+                "ALTER TABLE server_groups ADD COLUMN group_about TEXT DEFAULT ''"
+            )
+
+        if "group_avatar_data" not in group_columns:
+
+            conn.execute(
+                "ALTER TABLE server_groups ADD COLUMN group_avatar_data TEXT DEFAULT ''"
             )
 
         if "admins_json" not in group_columns:
@@ -825,7 +839,9 @@ class ServerStorageMixin:
         members,
         owner_node=None,
         admins=None,
-        is_channel=False
+        is_channel=False,
+        group_about=None,
+        group_avatar_data=None
     ):
 
         if not group_id:
@@ -839,6 +855,30 @@ class ServerStorageMixin:
 
         existing_owner, existing_admins = self.get_group_roles(
             group_id
+        )
+
+        existing_meta = self.db.execute(
+            """
+            SELECT group_about,
+                   group_avatar_data
+            FROM server_groups
+            WHERE group_id=?
+            """,
+            (
+                group_id,
+            )
+        ).fetchone()
+        existing_about = existing_meta[0] if existing_meta else ""
+        existing_avatar = existing_meta[1] if existing_meta else ""
+        group_about = (
+            group_about
+            if group_about not in (None, "")
+            else existing_about
+        )
+        group_avatar_data = (
+            group_avatar_data
+            if group_avatar_data not in (None, "")
+            else existing_avatar
         )
 
         owner_node = (
@@ -868,17 +908,21 @@ class ServerStorageMixin:
             INSERT OR REPLACE INTO server_groups(
                 group_id,
                 group_name,
+                group_about,
+                group_avatar_data,
                 members_json,
                 owner_node,
                 admins_json,
                 is_channel,
                 updated_at
             )
-            VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
             """,
             (
                 group_id,
                 group_name or group_id,
+                group_about or "",
+                group_avatar_data or "",
                 json.dumps(
                     members,
                     ensure_ascii=False
@@ -1376,7 +1420,9 @@ class ServerStorageMixin:
                     packet.get("owner_node")
                     or packet.get("source_node"),
                     packet.get("admins"),
-                    packet.get("is_channel") is True
+                    packet.get("is_channel") is True,
+                    packet.get("group_about"),
+                    packet.get("group_avatar_data")
                 )
 
             message_id = (
@@ -1435,7 +1481,9 @@ class ServerStorageMixin:
                 packet.get("members") or [],
                 packet.get("owner_node"),
                 packet.get("admins"),
-                packet.get("is_channel") is True
+                packet.get("is_channel") is True,
+                packet.get("group_about"),
+                packet.get("group_avatar_data")
             )
 
         elif packet_type == "group_delete":
