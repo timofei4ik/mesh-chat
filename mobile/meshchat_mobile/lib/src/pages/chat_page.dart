@@ -37,7 +37,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final input = TextEditingController();
   final inputFocus = FocusNode();
   final scroll = ScrollController();
@@ -71,8 +71,12 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     input.text = widget.thread.draft;
     hasInputText = input.text.trim().isNotEmpty;
+    inputFocus.addListener(() {
+      if (inputFocus.hasFocus) scheduleKeyboardScrollToBottom();
+    });
     input.addListener(() {
       final hasText = input.text.trim().isNotEmpty;
       if (hasInputText != hasText) {
@@ -96,6 +100,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     amplitudeSubscription?.cancel();
     widget.controller.removeListener(syncRingback);
     unawaited(incomingCallAlert.dispose());
@@ -108,6 +113,12 @@ class _ChatPageState extends State<ChatPage> {
     recorder.dispose();
     ringbackPlayer?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    if (inputFocus.hasFocus) scheduleKeyboardScrollToBottom();
   }
 
   void syncRingback() {
@@ -586,6 +597,18 @@ class _ChatPageState extends State<ChatPage> {
     if (!scroll.hasClients) return;
     scroll.jumpTo(scroll.position.maxScrollExtent);
     handleScroll();
+  }
+
+  void scheduleKeyboardScrollToBottom() {
+    void settleScroll() {
+      if (!mounted || !scroll.hasClients) return;
+      jumpToBottom();
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => settleScroll());
+    Future<void>.delayed(const Duration(milliseconds: 120), settleScroll);
+    Future<void>.delayed(const Duration(milliseconds: 280), settleScroll);
+    Future<void>.delayed(const Duration(milliseconds: 480), settleScroll);
   }
 
   void scheduleInitialScrollToBottom(int messageCount) {
@@ -1418,6 +1441,8 @@ class _ChatPageState extends State<ChatPage> {
                                                         border:
                                                             InputBorder.none,
                                                       ),
+                                                  onTap:
+                                                      scheduleKeyboardScrollToBottom,
                                                   onSubmitted:
                                                       desktopSendHotkeys
                                                       ? (_) => send()
