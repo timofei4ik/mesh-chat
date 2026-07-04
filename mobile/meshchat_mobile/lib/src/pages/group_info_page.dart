@@ -313,17 +313,28 @@ class GroupInfoPage extends StatelessWidget {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
+        final effectiveOwnerNode = _effectiveOwnerNode();
         final members = thread.members
             .where((nodeId) => nodeId.isNotEmpty)
+            .where(
+              (nodeId) =>
+                  nodeId == effectiveOwnerNode ||
+                  !_isLegacyOwnerPlaceholder(nodeId),
+            )
             .toSet()
             .toList();
+        if (effectiveOwnerNode.isNotEmpty &&
+            !members.contains(effectiveOwnerNode)) {
+          members.add(effectiveOwnerNode);
+        }
         members.sort((a, b) {
           final aName = _profileFor(a).displayName.toLowerCase();
           final bName = _profileFor(b).displayName.toLowerCase();
           return aName.compareTo(bName);
         });
         final isOwner =
-            thread.ownerNode.isEmpty || thread.ownerNode == controller.myNodeId;
+            effectiveOwnerNode.isEmpty ||
+            effectiveOwnerNode == controller.myNodeId;
 
         return Scaffold(
           backgroundColor: const Color(0xFF07111E),
@@ -459,7 +470,7 @@ class GroupInfoPage extends StatelessWidget {
                   final canRemove =
                       isOwner &&
                       nodeId != controller.myNodeId &&
-                      nodeId != thread.ownerNode;
+                      nodeId != effectiveOwnerNode;
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: _GroupGlassSurface(
@@ -530,11 +541,39 @@ class GroupInfoPage extends StatelessWidget {
 
   Profile _profileFor(String nodeId) {
     return controller.profiles[nodeId] ??
-        Profile(nodeId: nodeId, displayName: nodeId.substring(0, 8));
+        Profile(
+          nodeId: nodeId,
+          displayName: nodeId.length <= 8 ? nodeId : nodeId.substring(0, 8),
+        );
+  }
+
+  String _effectiveOwnerNode() {
+    final owner = thread.ownerNode.trim();
+    if (owner.isEmpty || owner == controller.myNodeId) {
+      return controller.myNodeId;
+    }
+    if (_isLegacyOwnerPlaceholder(owner) &&
+        thread.members.contains(controller.myNodeId)) {
+      return controller.myNodeId;
+    }
+    return owner;
+  }
+
+  bool _isLegacyOwnerPlaceholder(String nodeId) {
+    final value = nodeId.trim();
+    if (value.isEmpty ||
+        value == controller.myNodeId ||
+        controller.profiles.containsKey(value)) {
+      return false;
+    }
+    final uuidLike = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+    ).hasMatch(value);
+    return !uuidLike && value.length <= 12;
   }
 
   String _roleFor(String nodeId) {
-    if (nodeId == thread.ownerNode) return 'owner';
+    if (nodeId == _effectiveOwnerNode()) return 'owner';
     if (thread.admins.contains(nodeId)) return 'admin';
     return '';
   }

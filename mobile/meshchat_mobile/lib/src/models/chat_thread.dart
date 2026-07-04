@@ -31,7 +31,7 @@ class ChatThread {
   final String groupId;
   final String groupName;
   final List<String> members;
-  final String ownerNode;
+  String ownerNode;
   final List<String> admins;
   String groupKeyId;
   String groupKeyData;

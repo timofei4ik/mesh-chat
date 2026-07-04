@@ -293,10 +293,12 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatThread> get sortedThreads {
-    final result = _dedupeVisibleThreads([
-      ...threads.values,
-      ...groups.values,
-    ].where((thread) => !thread.archived).toList());
+    final result = _dedupeVisibleThreads(
+      [
+        ...threads.values,
+        ...groups.values,
+      ].where((thread) => !thread.archived).toList(),
+    );
     result.sort((a, b) {
       if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
       final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
@@ -307,10 +309,12 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatThread> get archivedThreads {
-    final result = _dedupeVisibleThreads([
-      ...threads.values,
-      ...groups.values,
-    ].where((thread) => thread.archived).toList());
+    final result = _dedupeVisibleThreads(
+      [
+        ...threads.values,
+        ...groups.values,
+      ].where((thread) => thread.archived).toList(),
+    );
     result.sort((a, b) {
       final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
       final bTime = b.lastMessage?.createdAt ?? DateTime(1970);
@@ -343,7 +347,8 @@ class AppController extends ChangeNotifier {
     final profile = thread.profile;
     final username = profile.publicUsername.trim().toLowerCase();
     if (username.isNotEmpty) return 'username:$username';
-    if (profile.avatarData.isNotEmpty && profile.displayName.trim().isNotEmpty) {
+    if (profile.avatarData.isNotEmpty &&
+        profile.displayName.trim().isNotEmpty) {
       final avatarKey = profile.avatarData.length <= 96
           ? profile.avatarData
           : profile.avatarData.substring(0, 96);
@@ -1124,7 +1129,16 @@ class AppController extends ChangeNotifier {
 
   bool _ensureOwnGroupMembership(ChatThread group) {
     if (session == null || !group.isGroup) return false;
+    final oldOwner = group.ownerNode.trim();
     final normalized = _normalizedGroupMembers(group.members);
+    final normalizedOwner = _normalizedGroupOwner(oldOwner, normalized);
+    if (normalizedOwner != oldOwner && oldOwner.isNotEmpty) {
+      normalized.remove(oldOwner);
+    }
+    if (normalizedOwner.isNotEmpty && !normalized.contains(normalizedOwner)) {
+      normalized.add(normalizedOwner);
+      normalized.sort();
+    }
     final sameMembers =
         normalized.length == group.members.length &&
         normalized.every(group.members.contains);
@@ -1132,10 +1146,15 @@ class AppController extends ChangeNotifier {
         .where((admin) => normalized.contains(admin))
         .toSet()
         .toList();
+    if (normalizedOwner == myNodeId && !normalizedAdmins.contains(myNodeId)) {
+      normalizedAdmins.add(myNodeId);
+    }
     final sameAdmins =
         normalizedAdmins.length == group.admins.length &&
         normalizedAdmins.every(group.admins.contains);
-    if (sameMembers && sameAdmins) return false;
+    final sameOwner = group.ownerNode == normalizedOwner;
+    if (sameMembers && sameAdmins && sameOwner) return false;
+    group.ownerNode = normalizedOwner;
     group.members
       ..clear()
       ..addAll(normalized);
@@ -1143,6 +1162,26 @@ class AppController extends ChangeNotifier {
       ..clear()
       ..addAll(normalizedAdmins);
     return true;
+  }
+
+  String _normalizedGroupOwner(String ownerNode, List<String> members) {
+    final owner = ownerNode.trim();
+    if (owner.isEmpty || owner == myNodeId) return myNodeId;
+    if (_isLegacyGroupOwnerPlaceholder(owner) && members.contains(myNodeId)) {
+      return myNodeId;
+    }
+    return owner;
+  }
+
+  bool _isLegacyGroupOwnerPlaceholder(String nodeId) {
+    final value = nodeId.trim();
+    if (value.isEmpty || value == myNodeId || profiles.containsKey(value)) {
+      return false;
+    }
+    final uuidLike = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+    ).hasMatch(value);
+    return !uuidLike && value.length <= 12;
   }
 
   List<String> _normalizedGroupMembers(Iterable<String> members) {
@@ -1167,14 +1206,29 @@ class AppController extends ChangeNotifier {
     final hasIncomingMembers = members.any((id) => id.trim().isNotEmpty);
     final normalizedMembers = hasIncomingMembers
         ? _normalizedGroupMembers(members)
-        : const <String>[];
-    final adminBase = hasIncomingMembers
+        : <String>[];
+    final ownerBaseMembers = hasIncomingMembers
         ? normalizedMembers
-        : (groups[groupId]?.members ?? const <String>[]);
+        : _normalizedGroupMembers(groups[groupId]?.members ?? const <String>[]);
+    final normalizedOwner = _normalizedGroupOwner(ownerNode, ownerBaseMembers);
+    if (normalizedOwner != ownerNode.trim() && ownerNode.trim().isNotEmpty) {
+      normalizedMembers.remove(ownerNode.trim());
+      ownerBaseMembers.remove(ownerNode.trim());
+    }
+    if (normalizedOwner.isNotEmpty &&
+        hasIncomingMembers &&
+        !normalizedMembers.contains(normalizedOwner)) {
+      normalizedMembers.add(normalizedOwner);
+      normalizedMembers.sort();
+    }
+    final adminBase = hasIncomingMembers ? normalizedMembers : ownerBaseMembers;
     final normalizedAdmins = admins
         .where((admin) => adminBase.contains(admin))
         .toSet()
         .toList();
+    if (normalizedOwner == myNodeId && !normalizedAdmins.contains(myNodeId)) {
+      normalizedAdmins.add(myNodeId);
+    }
     final existing = groups[groupId];
     if (existing != null) {
       existing.isChannel = existing.isChannel || isChannel;
@@ -1206,6 +1260,9 @@ class AppController extends ChangeNotifier {
           ..clear()
           ..addAll(normalizedAdmins);
       }
+      if (normalizedOwner.isNotEmpty) {
+        existing.ownerNode = normalizedOwner;
+      }
       return existing;
     }
     final profile = Profile(
@@ -1223,7 +1280,7 @@ class AppController extends ChangeNotifier {
       members: normalizedMembers.isEmpty
           ? _normalizedGroupMembers(const [])
           : normalizedMembers,
-      ownerNode: ownerNode,
+      ownerNode: normalizedOwner,
       admins: normalizedAdmins,
     );
     groups[groupId] = thread;
