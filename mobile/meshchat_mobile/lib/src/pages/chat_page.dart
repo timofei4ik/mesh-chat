@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
@@ -272,6 +273,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final locationInput = TextEditingController();
     final noteInput = TextEditingController();
     String? error;
+    var locating = false;
     final result = await showModalBottomSheet<_MeetingPoint>(
       context: context,
       isScrollControlled: true,
@@ -320,6 +322,42 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       decoration: const InputDecoration(
                         labelText: 'Coordinates or link',
                         hintText: '59.9343, 30.3351',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        onPressed: locating
+                            ? null
+                            : () async {
+                                setSheetState(() {
+                                  locating = true;
+                                  error = null;
+                                });
+                                final current = await getCurrentLocationText();
+                                if (!context.mounted) return;
+                                setSheetState(() {
+                                  locating = false;
+                                  if (current.error != null) {
+                                    error = current.error;
+                                  } else {
+                                    locationInput.text = current.text!;
+                                  }
+                                });
+                              },
+                        icon: locating
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.my_location_rounded),
+                        label: Text(
+                          locating ? 'Finding location...' : 'Use my location',
+                        ),
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -384,6 +422,46 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     locationInput.dispose();
     noteInput.dispose();
     return result;
+  }
+
+  Future<({String? text, String? error})> getCurrentLocationText() async {
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) {
+        return (
+          text: null,
+          error: 'Location services are disabled on this device',
+        );
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied) {
+        return (text: null, error: 'Location permission was denied');
+      }
+      if (permission == LocationPermission.deniedForever) {
+        return (
+          text: null,
+          error: 'Location permission is blocked in system settings',
+        );
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 12),
+        ),
+      );
+      return (
+        text:
+            '${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}',
+        error: null,
+      );
+    } catch (_) {
+      return (text: null, error: 'Could not read current location');
+    }
   }
 
   Future<void> showAttachMenu() async {
