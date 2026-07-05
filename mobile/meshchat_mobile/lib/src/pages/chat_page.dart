@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -13,6 +14,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
@@ -25,7 +27,7 @@ import 'chat_media_page.dart';
 import 'group_info_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, file }
+enum _AttachAction { photo, file, meetingPoint }
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.controller, required this.thread});
@@ -244,6 +246,146 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     await sendAttachment(filename, bytes);
   }
 
+  Future<void> sendMeetingPoint() async {
+    if (!widget.thread.isGroup) {
+      showSnack('Meeting points are available in groups');
+      return;
+    }
+    if (!canPostToThread) {
+      showSnack('Only channel admins can post');
+      return;
+    }
+    final point = await askMeetingPoint();
+    if (point == null) return;
+    final quote = replyTo;
+    setState(() => replyTo = null);
+    await widget.controller.sendGroupMessage(
+      widget.thread,
+      point.toMessageText(),
+      replyTo: quote,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
+  }
+
+  Future<_MeetingPoint?> askMeetingPoint() async {
+    final titleInput = TextEditingController(text: 'Meeting point');
+    final locationInput = TextEditingController();
+    final noteInput = TextEditingController();
+    String? error;
+    final result = await showModalBottomSheet<_MeetingPoint>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              14,
+              0,
+              14,
+              MediaQuery.viewInsetsOf(context).bottom + 16,
+            ),
+            child: _ChatGlassSurface(
+              radius: 28,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        Icons.add_location_alt_rounded,
+                        color: Colors.lightBlueAccent,
+                      ),
+                      title: Text('Meeting point'),
+                      subtitle: Text('Paste coordinates or a map link'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: titleInput,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        labelText: 'Name',
+                        hintText: 'Cafe, entrance, meeting place',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: locationInput,
+                      minLines: 1,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Coordinates or link',
+                        hintText: '59.9343, 30.3351',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: noteInput,
+                      minLines: 1,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Note',
+                        hintText: 'Optional',
+                      ),
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        error!,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Cancel'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: () {
+                              final parsed = _MeetingPoint.tryParse(
+                                title: titleInput.text,
+                                rawLocation: locationInput.text,
+                                note: noteInput.text,
+                              );
+                              if (parsed == null) {
+                                setSheetState(() {
+                                  error =
+                                      'Could not find coordinates in this text';
+                                });
+                                return;
+                              }
+                              Navigator.pop(context, parsed);
+                            },
+                            icon: const Icon(Icons.near_me_rounded),
+                            label: const Text('Send'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    titleInput.dispose();
+    locationInput.dispose();
+    noteInput.dispose();
+    return result;
+  }
+
   Future<void> showAttachMenu() async {
     final action = await showModalBottomSheet<_AttachAction>(
       context: context,
@@ -271,6 +413,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     subtitle: 'Choose any document',
                     onTap: () => Navigator.pop(context, _AttachAction.file),
                   ),
+                  if (widget.thread.isGroup)
+                    _GlassSheetAction(
+                      icon: Icons.add_location_alt_rounded,
+                      title: 'Meeting point',
+                      subtitle: 'Share a place and route button',
+                      onTap: () =>
+                          Navigator.pop(context, _AttachAction.meetingPoint),
+                    ),
                 ],
               ),
             ),
@@ -282,6 +432,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       await attachPhoto();
     } else if (action == _AttachAction.file) {
       await attachFile();
+    } else if (action == _AttachAction.meetingPoint) {
+      await sendMeetingPoint();
     }
   }
 
@@ -3508,6 +3660,7 @@ class _MessageBubbleBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final time = message.createdAt.toLocal();
+    final meetingPoint = _MeetingPoint.fromMessageText(message.text);
     return Column(
       crossAxisAlignment: mine
           ? CrossAxisAlignment.end
@@ -3540,7 +3693,9 @@ class _MessageBubbleBody extends StatelessWidget {
               ],
               message.kind == ChatMessageKind.file
                   ? _FilePreview(message: message, imageBytes: imageBytes)
-                  : Text(message.text),
+                  : meetingPoint == null
+                  ? Text(message.text)
+                  : _MeetingPointPreview(point: meetingPoint),
               if (message.kind == ChatMessageKind.file &&
                   message.pending &&
                   message.progress > 0) ...[
@@ -3640,6 +3795,162 @@ class _ReplyQuote extends StatelessWidget {
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontSize: 12, color: Colors.white70),
+      ),
+    );
+  }
+}
+
+class _MeetingPointPreview extends StatelessWidget {
+  const _MeetingPointPreview({required this.point});
+
+  final _MeetingPoint point;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 300),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: Colors.lightBlueAccent.withValues(alpha: 0.25),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF43D9FF), Color(0xFF9C63FF)],
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.lightBlueAccent.withValues(alpha: 0.20),
+                        blurRadius: 16,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.location_on_rounded,
+                    color: Colors.white,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        point.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        point.coordinateLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (point.note.trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                point.note.trim(),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _MeetingPointButton(
+                    icon: Icons.map_rounded,
+                    label: 'Open',
+                    onTap: () => point.open(context, route: false),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _MeetingPointButton(
+                    icon: Icons.near_me_rounded,
+                    label: 'Route',
+                    onTap: () => point.open(context, route: true),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MeetingPointButton extends StatelessWidget {
+  const _MeetingPointButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white.withValues(alpha: 0.10),
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: Colors.white),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -4269,6 +4580,112 @@ String formatSize(int bytes) {
   return '$bytes B';
 }
 
+class _MeetingPoint {
+  const _MeetingPoint({
+    required this.title,
+    required this.latitude,
+    required this.longitude,
+    this.note = '',
+  });
+
+  static const prefix = '::meshchat_meeting_v1::';
+
+  final String title;
+  final double latitude;
+  final double longitude;
+  final String note;
+
+  String get coordinateLabel {
+    return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+  }
+
+  String toMessageText() {
+    return '$prefix${jsonEncode({'title': title.trim().isEmpty ? 'Meeting point' : title.trim(), 'lat': latitude, 'lng': longitude, 'note': note.trim()})}';
+  }
+
+  static _MeetingPoint? fromMessageText(String text) {
+    if (!text.startsWith(prefix)) return null;
+    try {
+      final raw = jsonDecode(text.substring(prefix.length));
+      if (raw is! Map) return null;
+      final lat = double.tryParse(raw['lat']?.toString() ?? '');
+      final lng = double.tryParse(raw['lng']?.toString() ?? '');
+      if (lat == null || lng == null || !_validCoordinates(lat, lng)) {
+        return null;
+      }
+      return _MeetingPoint(
+        title: raw['title']?.toString().trim().isEmpty == false
+            ? raw['title'].toString().trim()
+            : 'Meeting point',
+        latitude: lat,
+        longitude: lng,
+        note: raw['note']?.toString() ?? '',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static _MeetingPoint? tryParse({
+    required String title,
+    required String rawLocation,
+    required String note,
+  }) {
+    final coordinates = _extractCoordinates(rawLocation);
+    if (coordinates == null) return null;
+    return _MeetingPoint(
+      title: title.trim().isEmpty ? 'Meeting point' : title.trim(),
+      latitude: coordinates.$1,
+      longitude: coordinates.$2,
+      note: note.trim(),
+    );
+  }
+
+  static (double, double)? _extractCoordinates(String value) {
+    final normalized = value
+        .replaceAll('%2C', ',')
+        .replaceAll('%2c', ',')
+        .replaceAll(';', ',');
+    final patterns = [
+      RegExp(r'@(-?\d{1,2}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)'),
+      RegExp(r'll=(-?\d{1,2}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)'),
+      RegExp(r'[?&]q=(-?\d{1,2}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)'),
+      RegExp(r'(-?\d{1,2}(?:[.,]\d+)?)\s*,\s*(-?\d{1,3}(?:[.,]\d+)?)'),
+    ];
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(normalized);
+      if (match == null) continue;
+      final lat = double.tryParse(match.group(1)!.replaceAll(',', '.'));
+      final lng = double.tryParse(match.group(2)!.replaceAll(',', '.'));
+      if (lat != null && lng != null && _validCoordinates(lat, lng)) {
+        return (lat, lng);
+      }
+    }
+    return null;
+  }
+
+  static bool _validCoordinates(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  Future<void> open(BuildContext context, {required bool route}) async {
+    final destination = '$latitude,$longitude';
+    final uri = route
+        ? Uri.parse(
+            'https://www.google.com/maps/dir/?api=1&destination=$destination',
+          )
+        : Uri.parse(
+            'https://www.google.com/maps/search/?api=1&query=$destination',
+          );
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not open maps')));
+    }
+  }
+}
+
 String formatDuration(Duration value) {
   final minutes = value.inMinutes;
   final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
@@ -4279,6 +4696,8 @@ String replyPreview(ChatMessage message) {
   if (message.kind == ChatMessageKind.file) {
     return message.fileName.isEmpty ? 'File' : message.fileName;
   }
+  final point = _MeetingPoint.fromMessageText(message.text);
+  if (point != null) return 'Meeting point: ${point.title}';
   final text = message.text.trim();
   if (text.isEmpty) return 'Message';
   return text.length > 90 ? '${text.substring(0, 90)}...' : text;
