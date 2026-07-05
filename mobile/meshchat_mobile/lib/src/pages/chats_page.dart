@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -752,7 +753,22 @@ class ChatsPage extends StatelessWidget {
           ? 'Photo'
           : 'File: ${message.fileName.isEmpty ? 'unnamed' : message.fileName}';
     }
+    final meeting = _meetingPointPreview(message.text);
+    if (meeting != null) return meeting;
     return message.text;
+  }
+
+  static String? _meetingPointPreview(String text) {
+    const prefix = '::meshchat_meeting_v1::';
+    if (!text.startsWith(prefix)) return null;
+    try {
+      final raw = jsonDecode(text.substring(prefix.length));
+      if (raw is! Map) return 'Meeting point';
+      final title = raw['title']?.toString().trim() ?? '';
+      return title.isEmpty ? 'Meeting point' : 'Meeting point: $title';
+    } catch (_) {
+      return 'Meeting point';
+    }
   }
 
   static bool _isImageName(String name) {
