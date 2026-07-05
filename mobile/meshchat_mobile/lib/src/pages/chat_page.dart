@@ -26,6 +26,7 @@ import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
 import 'group_info_page.dart';
+import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
 enum _AttachAction { photo, file, meetingPoint }
@@ -1315,6 +1316,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     jumpToMessageById(messageId);
   }
 
+  Future<void> openMeetingPoints() async {
+    final messageId = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeetingPointsPage(
+          controller: widget.controller,
+          thread: widget.thread,
+        ),
+      ),
+    );
+    if (!mounted || messageId == null || messageId.isEmpty) return;
+    jumpToMessageById(messageId);
+  }
+
   bool isAlbumPhoto(ChatMessage message) {
     return !message.deleted &&
         message.kind == ChatMessageKind.file &&
@@ -1432,6 +1447,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             icon: const Icon(Icons.search_rounded),
             onPressed: showSearchDialog,
           ),
+          if (widget.thread.isGroup)
+            _ChatRoundButton(
+              tooltip: 'Meeting points',
+              icon: const Icon(Icons.map_outlined),
+              onPressed: openMeetingPoints,
+            ),
           _ChatRoundButton(
             tooltip: 'Media',
             icon: const Icon(Icons.perm_media_outlined),
