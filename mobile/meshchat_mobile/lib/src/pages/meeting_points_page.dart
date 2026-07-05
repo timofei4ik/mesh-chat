@@ -2,11 +2,11 @@ import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
+import 'meeting_point_map_page.dart';
 
 class MeetingPointsPage extends StatelessWidget {
   const MeetingPointsPage({
@@ -466,21 +466,16 @@ class _MeetingPoint {
   }
 
   Future<void> open(BuildContext context, {required bool route}) async {
-    final destination = '$latitude,$longitude';
-    final uri = route
-        ? Uri.parse(
-            'https://www.google.com/maps/dir/?api=1&destination=$destination',
-          )
-        : Uri.parse(
-            'https://www.google.com/maps/search/?api=1&query=$destination',
-          );
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-      return;
-    }
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(
+    await Navigator.push<void>(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Could not open map')));
+      MaterialPageRoute(
+        builder: (_) => MeetingPointMapPage(
+          title: title,
+          latitude: latitude,
+          longitude: longitude,
+          note: note,
+        ),
+      ),
+    );
   }
 }

@@ -15,7 +15,6 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
@@ -26,6 +25,7 @@ import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
 import 'group_info_page.dart';
+import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
@@ -328,37 +328,78 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     const SizedBox(height: 10),
                     Align(
                       alignment: Alignment.centerLeft,
-                      child: OutlinedButton.icon(
-                        onPressed: locating
-                            ? null
-                            : () async {
-                                setSheetState(() {
-                                  locating = true;
-                                  error = null;
-                                });
-                                final current = await getCurrentLocationText();
-                                if (!context.mounted) return;
-                                setSheetState(() {
-                                  locating = false;
-                                  if (current.error != null) {
-                                    error = current.error;
-                                  } else {
-                                    locationInput.text = current.text!;
-                                  }
-                                });
-                              },
-                        icon: locating
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.my_location_rounded),
-                        label: Text(
-                          locating ? 'Finding location...' : 'Use my location',
-                        ),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: locating
+                                ? null
+                                : () async {
+                                    setSheetState(() {
+                                      locating = true;
+                                      error = null;
+                                    });
+                                    final current =
+                                        await getCurrentLocationText();
+                                    if (!context.mounted) return;
+                                    setSheetState(() {
+                                      locating = false;
+                                      if (current.error != null) {
+                                        error = current.error;
+                                      } else {
+                                        locationInput.text = current.text!;
+                                      }
+                                    });
+                                  },
+                            icon: locating
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.my_location_rounded),
+                            label: Text(
+                              locating
+                                  ? 'Finding location...'
+                                  : 'Use my location',
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              final parsed = _MeetingPoint.tryParse(
+                                title: titleInput.text,
+                                rawLocation: locationInput.text,
+                                note: noteInput.text,
+                              );
+                              final picked =
+                                  await Navigator.push<MeetingPointMapResult>(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => MeetingPointMapPage(
+                                        title: titleInput.text.trim().isEmpty
+                                            ? 'Meeting point'
+                                            : titleInput.text.trim(),
+                                        latitude: parsed?.latitude ?? 59.934300,
+                                        longitude:
+                                            parsed?.longitude ?? 30.335100,
+                                        note: noteInput.text,
+                                        picking: true,
+                                      ),
+                                    ),
+                                  );
+                              if (!context.mounted || picked == null) return;
+                              setSheetState(() {
+                                error = null;
+                                locationInput.text = picked.coordinateText;
+                              });
+                            },
+                            icon: const Icon(Icons.map_rounded),
+                            label: const Text('Pick on map'),
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -4768,20 +4809,17 @@ class _MeetingPoint {
   }
 
   Future<void> open(BuildContext context, {required bool route}) async {
-    final destination = '$latitude,$longitude';
-    final uri = route
-        ? Uri.parse(
-            'https://www.google.com/maps/dir/?api=1&destination=$destination',
-          )
-        : Uri.parse(
-            'https://www.google.com/maps/search/?api=1&query=$destination',
-          );
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!opened && context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Could not open maps')));
-    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeetingPointMapPage(
+          title: title,
+          latitude: latitude,
+          longitude: longitude,
+          note: note,
+        ),
+      ),
+    );
   }
 }
 
