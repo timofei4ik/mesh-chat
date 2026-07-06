@@ -122,6 +122,8 @@ class AppController extends ChangeNotifier {
   final Map<String, ChatThread> threads = {};
   final Map<String, ChatThread> groups = {};
   final Map<String, StoryItem> stories = {};
+  final List<StoryItem> storyArchive = [];
+  final Set<String> hiddenStoryOwners = {};
   final Map<String, DateTime> typingUntil = {};
   final Map<String, String> activityKinds = {};
 
@@ -330,13 +332,34 @@ class AppController extends ChangeNotifier {
   List<StoryItem> get activeStories {
     final expired = stories.values.any((story) => story.expired);
     if (expired) unawaited(_pruneStories());
-    final result = stories.values.where((story) => !story.expired).toList()
-      ..sort((a, b) {
-        if (a.ownerNode == myNodeId && b.ownerNode != myNodeId) return -1;
-        if (b.ownerNode == myNodeId && a.ownerNode != myNodeId) return 1;
-        return b.createdAt.compareTo(a.createdAt);
-      });
+    final result =
+        stories.values
+            .where(
+              (story) =>
+                  !story.expired &&
+                  (story.ownerNode == myNodeId ||
+                      !hiddenStoryOwners.contains(story.ownerNode)),
+            )
+            .toList()
+          ..sort((a, b) {
+            if (a.ownerNode == myNodeId && b.ownerNode != myNodeId) return -1;
+            if (b.ownerNode == myNodeId && a.ownerNode != myNodeId) return 1;
+            return b.createdAt.compareTo(a.createdAt);
+          });
     return result;
+  }
+
+  int unreadStoriesFor(String ownerNode) {
+    if (ownerNode == myNodeId) return 0;
+    return stories.values
+        .where(
+          (story) =>
+              story.ownerNode == ownerNode &&
+              !story.expired &&
+              !hiddenStoryOwners.contains(story.ownerNode) &&
+              !story.viewedByNodeIds.contains(myNodeId),
+        )
+        .length;
   }
 
   List<ChatThread> _dedupeVisibleThreads(List<ChatThread> source) {
@@ -1893,7 +1916,11 @@ class AppController extends ChangeNotifier {
       excludedNodeIds: excludedNodeIds,
     );
     stories[story.id] = story;
+    storyArchive
+      ..removeWhere((item) => item.id == story.id)
+      ..insert(0, story);
     await _saveStories();
+    await _saveStoryArchive();
     notifyListeners();
 
     final recipients = _storyRecipients(
@@ -1941,6 +1968,46 @@ class AppController extends ChangeNotifier {
     });
   }
 
+  Future<void> replyToStory(StoryItem story, String text) async {
+    if (session == null || story.ownerNode == myNodeId || story.expired) return;
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    final profile =
+        profiles[story.ownerNode] ??
+        Profile(nodeId: story.ownerNode, displayName: story.ownerName);
+    await sendMessage(profile, trimmed, replyTo: _storyReplyMessage(story));
+  }
+
+  ChatMessage _storyReplyMessage(StoryItem story) {
+    final preview = story.text.trim().isNotEmpty
+        ? story.text.trim()
+        : story.mediaType == StoryMediaType.video
+        ? 'Story video'
+        : story.mediaType == StoryMediaType.image
+        ? 'Story photo'
+        : 'Story';
+    return ChatMessage(
+      id: story.id,
+      senderNode: story.ownerNode,
+      receiverNode: myNodeId,
+      text: 'Story: $preview',
+      createdAt: story.createdAt,
+    );
+  }
+
+  Future<void> hideStoriesFrom(String ownerNode) async {
+    if (ownerNode.isEmpty || ownerNode == myNodeId) return;
+    hiddenStoryOwners.add(ownerNode);
+    await _storyStore.saveHiddenOwners(session, hiddenStoryOwners);
+    notifyListeners();
+  }
+
+  Future<void> unhideStoriesFrom(String ownerNode) async {
+    if (!hiddenStoryOwners.remove(ownerNode)) return;
+    await _storyStore.saveHiddenOwners(session, hiddenStoryOwners);
+    notifyListeners();
+  }
+
   Future<void> markStoryViewed(StoryItem story) async {
     if (session == null || story.ownerNode == myNodeId || story.expired) return;
     final current = stories[story.id] ?? story;
@@ -1966,6 +2033,8 @@ class AppController extends ChangeNotifier {
     if (story.ownerNode != myNodeId) return 'Only your story can be deleted';
     stories.remove(story.id);
     await _saveStories();
+    storyArchive.removeWhere((item) => item.id == story.id);
+    await _saveStoryArchive();
     notifyListeners();
 
     final recipients = _storyRecipients(
@@ -2061,12 +2130,20 @@ class AppController extends ChangeNotifier {
       if (story.ownerNode != myNodeId && isBlocked(story.ownerNode)) continue;
       incomingIds.add(story.id);
       stories[story.id] = story;
+      if (story.ownerNode == myNodeId) {
+        storyArchive.removeWhere((item) => item.id == story.id);
+        storyArchive.add(story);
+      }
       changed = true;
     }
     final before = stories.length;
     stories.removeWhere((storyId, story) => !incomingIds.contains(storyId));
     if (before != stories.length) changed = true;
-    if (changed) await _saveStories();
+    if (changed) {
+      storyArchive.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _saveStories();
+      await _saveStoryArchive();
+    }
   }
 
   Future<void> _applyStoryReactionPacket(Map<String, dynamic> packet) async {
@@ -2094,6 +2171,16 @@ class AppController extends ChangeNotifier {
     stories[storyId] = story.copyWith(
       viewedByNodeIds: [...story.viewedByNodeIds, viewer],
     );
+    final archiveIndex = storyArchive.indexWhere((item) => item.id == storyId);
+    if (archiveIndex >= 0) {
+      storyArchive[archiveIndex] = storyArchive[archiveIndex].copyWith(
+        viewedByNodeIds: [
+          ...storyArchive[archiveIndex].viewedByNodeIds,
+          viewer,
+        ],
+      );
+      await _saveStoryArchive();
+    }
     await _saveStories();
   }
 
@@ -2104,19 +2191,29 @@ class AppController extends ChangeNotifier {
     final story = stories[storyId];
     if (story == null || story.ownerNode != source) return;
     stories.remove(storyId);
+    storyArchive.removeWhere((item) => item.id == storyId);
+    await _saveStoryArchive();
     await _saveStories();
   }
 
   Future<void> _loadStories() async {
     final current = session;
     stories.clear();
+    storyArchive.clear();
+    hiddenStoryOwners.clear();
     if (current == null) return;
     stories.addAll(await _storyStore.load(current));
+    storyArchive.addAll(await _storyStore.loadArchive(current));
+    hiddenStoryOwners.addAll(await _storyStore.loadHiddenOwners(current));
     await _pruneStories();
   }
 
   Future<void> _saveStories() async {
     await _storyStore.save(session, stories.values);
+  }
+
+  Future<void> _saveStoryArchive() async {
+    await _storyStore.saveArchive(session, storyArchive);
   }
 
   Future<void> _pruneStories() async {
@@ -4540,6 +4637,8 @@ class AppController extends ChangeNotifier {
     groups.clear();
     groupJoinRequests.clear();
     stories.clear();
+    storyArchive.clear();
+    hiddenStoryOwners.clear();
     typingUntil.clear();
     activityKinds.clear();
     _incomingFiles.clear();

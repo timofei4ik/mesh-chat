@@ -38,7 +38,62 @@ class StoryStore {
     );
   }
 
+  Future<List<StoryItem>> loadArchive(Session session) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_archiveKey(session));
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      final stories = <StoryItem>[];
+      for (final item in decoded) {
+        if (item is! Map) continue;
+        final story = StoryItem.fromJson(Map<String, dynamic>.from(item));
+        if (story.id.isEmpty) continue;
+        stories.add(story);
+      }
+      stories.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return stories;
+    } catch (_) {
+      await prefs.remove(_archiveKey(session));
+      return const [];
+    }
+  }
+
+  Future<void> saveArchive(
+    Session? session,
+    Iterable<StoryItem> stories,
+  ) async {
+    if (session == null) return;
+    final archived = stories.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _archiveKey(session),
+      jsonEncode(archived.map((story) => story.toJson()).toList()),
+    );
+  }
+
+  Future<Set<String>> loadHiddenOwners(Session session) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_hiddenKey(session))?.toSet() ?? {};
+  }
+
+  Future<void> saveHiddenOwners(Session? session, Set<String> nodeIds) async {
+    if (session == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_hiddenKey(session), nodeIds.toList()..sort());
+  }
+
   String _key(Session session) {
     return 'story_cache_${session.login}_${session.nodeId}';
+  }
+
+  String _archiveKey(Session session) {
+    return 'story_archive_${session.login}_${session.nodeId}';
+  }
+
+  String _hiddenKey(Session session) {
+    return 'story_hidden_${session.login}_${session.nodeId}';
   }
 }

@@ -849,8 +849,34 @@ class ChatsPage extends StatelessWidget {
     unawaited(controller.markStoryViewed(story));
     Navigator.push(
       context,
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 280),
+        reverseTransitionDuration: const Duration(milliseconds: 220),
+        pageBuilder: (_, _, _) =>
+            _StoryViewerPage(controller: controller, story: story),
+        transitionsBuilder: (_, animation, _, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void openStoryArchive(BuildContext context) {
+    Navigator.push(
+      context,
       MaterialPageRoute(
-        builder: (_) => _StoryViewerPage(controller: controller, story: story),
+        builder: (_) => _StoryArchivePage(controller: controller),
       ),
     );
   }
@@ -1339,6 +1365,7 @@ class _HomeTabBody extends StatelessWidget {
                       _StoriesStrip(
                         controller: controller,
                         onAdd: () => parent.openStoryComposer(context),
+                        onArchive: () => parent.openStoryArchive(context),
                         onOpen: (story) => parent.openStory(context, story),
                       ),
                       const SizedBox(height: 14),
@@ -1365,6 +1392,7 @@ class _HomeTabBody extends StatelessWidget {
                       return _StoriesStrip(
                         controller: controller,
                         onAdd: () => parent.openStoryComposer(context),
+                        onArchive: () => parent.openStoryArchive(context),
                         onOpen: (story) => parent.openStory(context, story),
                       );
                     }
@@ -1423,11 +1451,13 @@ class _StoriesStrip extends StatelessWidget {
   const _StoriesStrip({
     required this.controller,
     required this.onAdd,
+    required this.onArchive,
     required this.onOpen,
   });
 
   final AppController controller;
   final VoidCallback onAdd;
+  final VoidCallback onArchive;
   final ValueChanged<StoryItem> onOpen;
 
   @override
@@ -1444,12 +1474,13 @@ class _StoriesStrip extends StatelessWidget {
           separatorBuilder: (_, _) => const SizedBox(width: 10),
           itemBuilder: (context, index) {
             if (index == 0) {
-              return _AddStoryTile(onTap: onAdd);
+              return _AddStoryTile(onTap: onAdd, onArchive: onArchive);
             }
             final story = stories[index - 1];
             return _StoryTile(
               story: story,
               mine: story.ownerNode == controller.myNodeId,
+              unreadCount: controller.unreadStoriesFor(story.ownerNode),
               onTap: () => onOpen(story),
             );
           },
@@ -1460,9 +1491,10 @@ class _StoriesStrip extends StatelessWidget {
 }
 
 class _AddStoryTile extends StatelessWidget {
-  const _AddStoryTile({required this.onTap});
+  const _AddStoryTile({required this.onTap, required this.onArchive});
 
   final VoidCallback onTap;
+  final VoidCallback onArchive;
 
   @override
   Widget build(BuildContext context) {
@@ -1471,33 +1503,66 @@ class _AddStoryTile extends StatelessWidget {
       child: _HomeGlassSurface(
         accent: Colors.lightBlueAccent,
         radius: 22,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(22),
-          onTap: onTap,
-          child: const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CircleAvatar(
-                  radius: 24,
-                  backgroundColor: Color(0x3329C8FF),
-                  child: Icon(Icons.add_rounded, color: Colors.white, size: 30),
+        child: Stack(
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: onTap,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundColor: Color(0x3329C8FF),
+                      child: Icon(
+                        Icons.add_rounded,
+                        color: Colors.white,
+                        size: 30,
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'My story',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 8),
-                Text(
-                  'My story',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
+              ),
+            ),
+            Positioned(
+              right: 5,
+              top: 5,
+              child: Tooltip(
+                message: 'Story archive',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: onArchive,
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.35),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Icon(
+                      Icons.history_rounded,
+                      size: 15,
+                      color: Colors.white70,
+                    ),
                   ),
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -1508,11 +1573,13 @@ class _StoryTile extends StatelessWidget {
   const _StoryTile({
     required this.story,
     required this.mine,
+    required this.unreadCount,
     required this.onTap,
   });
 
   final StoryItem story;
   final bool mine;
+  final int unreadCount;
   final VoidCallback onTap;
 
   @override
@@ -1533,37 +1600,83 @@ class _StoryTile extends StatelessWidget {
             child: Column(
               children: [
                 Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: video
-                        ? Container(
-                            color: const Color(0xFF101B28),
-                            alignment: Alignment.center,
-                            child: const Icon(
-                              Icons.play_circle_fill_rounded,
-                              color: Colors.white,
-                              size: 34,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: video
+                              ? Container(
+                                  decoration: const BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        Color(0xFF122238),
+                                        Color(0xFF201A38),
+                                      ],
+                                    ),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: const Icon(
+                                    Icons.play_circle_fill_rounded,
+                                    color: Colors.white,
+                                    size: 34,
+                                  ),
+                                )
+                              : image == null
+                              ? Container(
+                                  color: const Color(0xFF101B28),
+                                  alignment: Alignment.center,
+                                  child: ProfileAvatar(
+                                    profile: Profile(
+                                      nodeId: story.ownerNode,
+                                      displayName: story.ownerName,
+                                      avatarData: story.ownerAvatarData,
+                                    ),
+                                    radius: 22,
+                                  ),
+                                )
+                              : Image.memory(
+                                  image,
+                                  fit: BoxFit.cover,
+                                  width: double.infinity,
+                                  gaplessPlayback: true,
+                                ),
+                        ),
+                      ),
+                      if (unreadCount > 0)
+                        Positioned(
+                          right: 4,
+                          top: 4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 3,
                             ),
-                          )
-                        : image == null
-                        ? Container(
-                            color: const Color(0xFF101B28),
-                            alignment: Alignment.center,
-                            child: ProfileAvatar(
-                              profile: Profile(
-                                nodeId: story.ownerNode,
-                                displayName: story.ownerName,
-                                avatarData: story.ownerAvatarData,
+                            decoration: BoxDecoration(
+                              color: Colors.lightBlueAccent,
+                              borderRadius: BorderRadius.circular(999),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.lightBlueAccent.withValues(
+                                    alpha: 0.5,
+                                  ),
+                                  blurRadius: 10,
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              unreadCount > 9 ? '9+' : '$unreadCount',
+                              style: const TextStyle(
+                                color: Color(0xFF06101B),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900,
                               ),
-                              radius: 22,
                             ),
-                          )
-                        : Image.memory(
-                            image,
-                            fit: BoxFit.cover,
-                            width: double.infinity,
-                            gaplessPlayback: true,
                           ),
+                        ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 7),
@@ -1586,6 +1699,166 @@ class _StoryTile extends StatelessWidget {
   }
 }
 
+class _StoryArchivePage extends StatelessWidget {
+  const _StoryArchivePage({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          const Positioned.fill(child: _HomeLiquidBackground(enabled: true)),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      IconButton.filledTonal(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Story archive',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Expanded(
+                    child: ListenableBuilder(
+                      listenable: controller,
+                      builder: (context, _) {
+                        final archive = controller.storyArchive;
+                        if (archive.isEmpty) {
+                          return const Center(
+                            child: Text(
+                              'Your published stories will appear here',
+                              style: TextStyle(color: Colors.white54),
+                            ),
+                          );
+                        }
+                        return GridView.builder(
+                          itemCount: archive.length,
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 2,
+                                mainAxisSpacing: 12,
+                                crossAxisSpacing: 12,
+                                childAspectRatio: 0.78,
+                              ),
+                          itemBuilder: (context, index) {
+                            final story = archive[index];
+                            final image = _storyImage(story.imageData);
+                            return _HomeGlassSurface(
+                              accent: Colors.lightBlueAccent,
+                              radius: 24,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(24),
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => _StoryViewerPage(
+                                        controller: controller,
+                                        story: story,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.all(10),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
+                                          child:
+                                              story.mediaType ==
+                                                  StoryMediaType.video
+                                              ? const ColoredBox(
+                                                  color: Color(0xFF101B28),
+                                                  child: Center(
+                                                    child: Icon(
+                                                      Icons
+                                                          .play_circle_fill_rounded,
+                                                      color: Colors.white,
+                                                      size: 38,
+                                                    ),
+                                                  ),
+                                                )
+                                              : image == null
+                                              ? const ColoredBox(
+                                                  color: Color(0xFF101B28),
+                                                  child: Center(
+                                                    child: Icon(
+                                                      Icons
+                                                          .auto_stories_rounded,
+                                                      color: Colors.white70,
+                                                      size: 34,
+                                                    ),
+                                                  ),
+                                                )
+                                              : Image.memory(
+                                                  image,
+                                                  width: double.infinity,
+                                                  fit: BoxFit.cover,
+                                                ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 9),
+                                      Text(
+                                        _formatStoryArchiveDate(
+                                          story.createdAt,
+                                        ),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        '${story.viewedByNodeIds.length} views  •  ${story.likedByNodeIds.length} likes',
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StoryViewerPage extends StatefulWidget {
   const _StoryViewerPage({required this.controller, required this.story});
 
@@ -1598,6 +1871,7 @@ class _StoryViewerPage extends StatefulWidget {
 
 class _StoryViewerPageState extends State<_StoryViewerPage> {
   VideoPlayerController? videoController;
+  final TextEditingController replyController = TextEditingController();
 
   @override
   void initState() {
@@ -1625,6 +1899,7 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
   void dispose() {
     widget.controller.removeListener(_onControllerChanged);
     videoController?.dispose();
+    replyController.dispose();
     super.dispose();
   }
 
@@ -1747,6 +2022,26 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
     );
   }
 
+  Future<void> _sendReply(StoryItem story) async {
+    final text = replyController.text.trim();
+    if (text.isEmpty) return;
+    replyController.clear();
+    await widget.controller.replyToStory(story, text);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Reply sent')));
+  }
+
+  Future<void> _hideAuthor(StoryItem story) async {
+    await widget.controller.hideStoriesFrom(story.ownerNode);
+    if (!mounted) return;
+    Navigator.pop(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Stories from ${story.ownerName} hidden')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final story = widget.controller.stories[widget.story.id] ?? widget.story;
@@ -1819,6 +2114,29 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                                 : Icons.favorite_border_rounded,
                             color: Colors.pinkAccent,
                           ),
+                        ),
+                      if (!ownStory)
+                        PopupMenuButton<String>(
+                          icon: const Icon(
+                            Icons.more_horiz_rounded,
+                            color: Colors.white,
+                          ),
+                          color: const Color(0xFF172536),
+                          onSelected: (value) {
+                            if (value == 'hide') unawaited(_hideAuthor(story));
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: 'hide',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.visibility_off_rounded),
+                                  SizedBox(width: 10),
+                                  Text('Hide stories'),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       if (ownStory) ...[
                         IconButton.filledTonal(
@@ -1928,6 +2246,42 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                       ),
                     ),
                   ),
+                  if (!ownStory) ...[
+                    const SizedBox(height: 12),
+                    _HomeGlassSurface(
+                      accent: Colors.lightBlueAccent,
+                      radius: 24,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: replyController,
+                                minLines: 1,
+                                maxLines: 3,
+                                style: const TextStyle(color: Colors.white),
+                                decoration: const InputDecoration(
+                                  hintText: 'Reply to story',
+                                  hintStyle: TextStyle(color: Colors.white38),
+                                  border: InputBorder.none,
+                                  isDense: true,
+                                ),
+                                onSubmitted: (_) => _sendReply(story),
+                              ),
+                            ),
+                            IconButton.filled(
+                              onPressed: () => _sendReply(story),
+                              icon: const Icon(Icons.send_rounded),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1949,6 +2303,12 @@ String _videoMime(String extension) {
     default:
       return 'video/mp4';
   }
+}
+
+String _formatStoryArchiveDate(DateTime date) {
+  final local = date.toLocal();
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '${two(local.day)}.${two(local.month)}.${local.year} ${two(local.hour)}:${two(local.minute)}';
 }
 
 Uint8List? _storyImage(String value) {
