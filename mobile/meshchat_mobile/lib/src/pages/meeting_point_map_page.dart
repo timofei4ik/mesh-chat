@@ -156,6 +156,9 @@ class _MeetingPointMapPageState extends State<MeetingPointMapPage> {
         }
       }
     });
+    if (position != null) {
+      moveMapTo(LatLng(position.latitude, position.longitude), zoom: 15.5);
+    }
   }
 
   Future<void> openNavigation() async {
@@ -171,6 +174,18 @@ class _MeetingPointMapPageState extends State<MeetingPointMapPage> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Could not open navigation')));
+  }
+
+  void moveMapTo(LatLng point, {double? zoom}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      try {
+        mapController.move(point, zoom ?? mapController.camera.zoom);
+      } catch (_) {
+        // The native map can briefly be between layouts on iOS; ignore and keep
+        // the selected point state instead of crashing the page.
+      }
+    });
   }
 
   void finishPicking() {
@@ -202,7 +217,7 @@ class _MeetingPointMapPageState extends State<MeetingPointMapPage> {
       selectedPinIndex = index;
       selected = pin.point;
     });
-    mapController.move(pin.point, mapController.camera.zoom);
+    moveMapTo(pin.point);
   }
 
   void openMessage() {
@@ -477,20 +492,17 @@ class _MeetingPointMapPageState extends State<MeetingPointMapPage> {
                             ),
                             const SizedBox(height: 10),
                           ],
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _PillButton(
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final actions = <Widget>[
+                                _PillButton(
                                   icon: locating
                                       ? Icons.hourglass_top_rounded
                                       : Icons.my_location_rounded,
                                   label: locating ? 'Finding...' : 'My place',
                                   onTap: locating ? null : useCurrentLocation,
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _PillButton(
+                                _PillButton(
                                   icon: widget.picking
                                       ? Icons.check_rounded
                                       : creatingMeeting
@@ -507,39 +519,52 @@ class _MeetingPointMapPageState extends State<MeetingPointMapPage> {
                                       ? finishMeetingPointCreation
                                       : openNavigation,
                                 ),
-                              ),
-                              if (creatingMeeting) ...[
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: _PillButton(
+                                if (creatingMeeting)
+                                  _PillButton(
                                     icon: Icons.close_rounded,
                                     label: 'Cancel',
                                     onTap: () => setState(
                                       () => proposedMeetingPoint = null,
                                     ),
                                   ),
-                                ),
-                              ],
-                              if (!creatingMeeting &&
-                                  selectedPin?.messageId != null) ...[
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: _PillButton(
+                                if (!creatingMeeting &&
+                                    selectedPin?.messageId != null) ...[
+                                  _PillButton(
                                     icon: Icons.chat_bubble_outline_rounded,
                                     label: 'Message',
                                     onTap: openMessage,
                                   ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: _PillButton(
+                                  _PillButton(
                                     icon: Icons.delete_outline_rounded,
                                     label: 'Delete',
                                     onTap: deleteSelectedPin,
                                   ),
+                                ],
+                              ];
+                              final compact = constraints.maxWidth < 620;
+                              final width = compact
+                                  ? 176.0
+                                  : (constraints.maxWidth -
+                                            ((actions.length - 1) * 8)) /
+                                        actions.length;
+                              return SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                physics: const BouncingScrollPhysics(),
+                                child: Row(
+                                  children: [
+                                    for (
+                                      var i = 0;
+                                      i < actions.length;
+                                      i++
+                                    ) ...[
+                                      SizedBox(width: width, child: actions[i]),
+                                      if (i != actions.length - 1)
+                                        const SizedBox(width: 8),
+                                    ],
+                                  ],
                                 ),
-                              ],
-                            ],
+                              );
+                            },
                           ),
                         ],
                       ),

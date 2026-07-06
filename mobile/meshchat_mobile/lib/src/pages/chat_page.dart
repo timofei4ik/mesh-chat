@@ -441,168 +441,173 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             ),
             child: _ChatGlassSurface(
               radius: 28,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(
-                        Icons.add_location_alt_rounded,
-                        color: Colors.lightBlueAccent,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.82,
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          Icons.add_location_alt_rounded,
+                          color: Colors.lightBlueAccent,
+                        ),
+                        title: Text('Meeting point'),
+                        subtitle: Text('Paste coordinates or a map link'),
                       ),
-                      title: Text('Meeting point'),
-                      subtitle: Text('Paste coordinates or a map link'),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: titleInput,
-                      textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(
-                        labelText: 'Name',
-                        hintText: 'Cafe, entrance, meeting place',
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: titleInput,
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(
+                          labelText: 'Name',
+                          hintText: 'Cafe, entrance, meeting place',
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: locationInput,
-                      minLines: 1,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                        labelText: 'Coordinates or link',
-                        hintText: '59.9343, 30.3351',
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: locationInput,
+                        minLines: 1,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Coordinates or link',
+                          hintText: '59.9343, 30.3351',
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: locating
+                                  ? null
+                                  : () async {
+                                      setSheetState(() {
+                                        locating = true;
+                                        error = null;
+                                      });
+                                      final current =
+                                          await getCurrentLocationText();
+                                      if (!context.mounted) return;
+                                      setSheetState(() {
+                                        locating = false;
+                                        if (current.error != null) {
+                                          error = current.error;
+                                        } else {
+                                          locationInput.text = current.text!;
+                                        }
+                                      });
+                                    },
+                              icon: locating
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.my_location_rounded),
+                              label: Text(
+                                locating
+                                    ? 'Finding location...'
+                                    : 'Use my location',
+                              ),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final parsed = _MeetingPoint.tryParse(
+                                  title: titleInput.text,
+                                  rawLocation: locationInput.text,
+                                  note: noteInput.text,
+                                );
+                                final picked =
+                                    await Navigator.push<MeetingPointMapResult>(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => MeetingPointMapPage(
+                                          title: titleInput.text.trim().isEmpty
+                                              ? 'Meeting point'
+                                              : titleInput.text.trim(),
+                                          latitude:
+                                              parsed?.latitude ?? 59.934300,
+                                          longitude:
+                                              parsed?.longitude ?? 30.335100,
+                                          note: noteInput.text,
+                                          picking: true,
+                                        ),
+                                      ),
+                                    );
+                                if (!context.mounted || picked == null) return;
+                                setSheetState(() {
+                                  error = null;
+                                  locationInput.text = picked.coordinateText;
+                                });
+                              },
+                              icon: const Icon(Icons.map_rounded),
+                              label: const Text('Pick on map'),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: noteInput,
+                        minLines: 1,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Note',
+                          hintText: 'Optional',
+                        ),
+                      ),
+                      if (error != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          error!,
+                          style: const TextStyle(color: Colors.redAccent),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      Row(
                         children: [
-                          OutlinedButton.icon(
-                            onPressed: locating
-                                ? null
-                                : () async {
-                                    setSheetState(() {
-                                      locating = true;
-                                      error = null;
-                                    });
-                                    final current =
-                                        await getCurrentLocationText();
-                                    if (!context.mounted) return;
-                                    setSheetState(() {
-                                      locating = false;
-                                      if (current.error != null) {
-                                        error = current.error;
-                                      } else {
-                                        locationInput.text = current.text!;
-                                      }
-                                    });
-                                  },
-                            icon: locating
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.my_location_rounded),
-                            label: Text(
-                              locating
-                                  ? 'Finding location...'
-                                  : 'Use my location',
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Cancel'),
                             ),
                           ),
-                          OutlinedButton.icon(
-                            onPressed: () async {
-                              final parsed = _MeetingPoint.tryParse(
-                                title: titleInput.text,
-                                rawLocation: locationInput.text,
-                                note: noteInput.text,
-                              );
-                              final picked =
-                                  await Navigator.push<MeetingPointMapResult>(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => MeetingPointMapPage(
-                                        title: titleInput.text.trim().isEmpty
-                                            ? 'Meeting point'
-                                            : titleInput.text.trim(),
-                                        latitude: parsed?.latitude ?? 59.934300,
-                                        longitude:
-                                            parsed?.longitude ?? 30.335100,
-                                        note: noteInput.text,
-                                        picking: true,
-                                      ),
-                                    ),
-                                  );
-                              if (!context.mounted || picked == null) return;
-                              setSheetState(() {
-                                error = null;
-                                locationInput.text = picked.coordinateText;
-                              });
-                            },
-                            icon: const Icon(Icons.map_rounded),
-                            label: const Text('Pick on map'),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: () {
+                                final parsed = _MeetingPoint.tryParse(
+                                  title: titleInput.text,
+                                  rawLocation: locationInput.text,
+                                  note: noteInput.text,
+                                );
+                                if (parsed == null) {
+                                  setSheetState(() {
+                                    error =
+                                        'Could not find coordinates in this text';
+                                  });
+                                  return;
+                                }
+                                Navigator.pop(context, parsed);
+                              },
+                              icon: const Icon(Icons.near_me_rounded),
+                              label: const Text('Send'),
+                            ),
                           ),
                         ],
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: noteInput,
-                      minLines: 1,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                        labelText: 'Note',
-                        hintText: 'Optional',
-                      ),
-                    ),
-                    if (error != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        error!,
-                        style: const TextStyle(color: Colors.redAccent),
-                      ),
                     ],
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text('Cancel'),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: () {
-                              final parsed = _MeetingPoint.tryParse(
-                                title: titleInput.text,
-                                rawLocation: locationInput.text,
-                                note: noteInput.text,
-                              );
-                              if (parsed == null) {
-                                setSheetState(() {
-                                  error =
-                                      'Could not find coordinates in this text';
-                                });
-                                return;
-                              }
-                              Navigator.pop(context, parsed);
-                            },
-                            icon: const Icon(Icons.near_me_rounded),
-                            label: const Text('Send'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1122,6 +1127,73 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> showGroupActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: _ChatGlassSurface(
+          radius: 28,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.info_outline_rounded),
+                  title: Text(
+                    widget.thread.isChannel ? 'Channel info' : 'Group info',
+                  ),
+                  onTap: () => Navigator.pop(context, 'info'),
+                ),
+                if (!widget.thread.isChannel)
+                  ListTile(
+                    leading: const Icon(Icons.add_call),
+                    title: const Text('Group call'),
+                    onTap: () => Navigator.pop(context, 'call'),
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.search_rounded),
+                  title: const Text('Search'),
+                  onTap: () => Navigator.pop(context, 'search'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.map_outlined),
+                  title: const Text('Meeting points'),
+                  onTap: () => Navigator.pop(context, 'meeting_points'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.perm_media_outlined),
+                  title: const Text('Media'),
+                  onTap: () => Navigator.pop(context, 'media'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'info':
+        openGroupInfo();
+        break;
+      case 'call':
+        await startCall();
+        break;
+      case 'search':
+        showSearchDialog();
+        break;
+      case 'meeting_points':
+        await openMeetingPoints();
+        break;
+      case 'media':
+        await openMediaList();
+        break;
+    }
+  }
+
   Future<void> showMessageActions(ChatMessage message) async {
     final mine = message.senderNode == widget.controller.myNodeId;
     final pinned = widget.thread.pinnedMessageIds.contains(message.id);
@@ -1137,82 +1209,92 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _ReactionQuickBar(
-              onSelected: (reaction) => Navigator.pop(context, reaction),
-            ),
-            if (mine && message.failed)
-              ListTile(
-                leading: const Icon(Icons.refresh_rounded),
-                title: const Text('Retry'),
-                onTap: () => Navigator.pop(context, 'retry'),
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.62,
+        minChildSize: 0.32,
+        maxChildSize: 0.92,
+        builder: (context, scrollController) => SafeArea(
+          child: ListView(
+            controller: scrollController,
+            padding: const EdgeInsets.only(bottom: 12),
+            children: [
+              _ReactionQuickBar(
+                onSelected: (reaction) => Navigator.pop(context, reaction),
               ),
-            ListTile(
-              leading: const Icon(Icons.reply_rounded),
-              title: const Text('Reply'),
-              onTap: () => Navigator.pop(context, 'reply'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.forward_rounded),
-              title: const Text('Forward'),
-              onTap: () => Navigator.pop(context, 'forward'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.bookmark_add_outlined),
-              title: const Text('Save to Saved Messages'),
-              onTap: () => Navigator.pop(context, 'save'),
-            ),
-            if (canDownload)
-              ListTile(
-                leading: const Icon(Icons.download_rounded),
-                title: const Text('Download'),
-                onTap: () => Navigator.pop(context, 'download'),
-              ),
-            if (canEdit)
-              ListTile(
-                leading: const Icon(Icons.edit_rounded),
-                title: Text(
-                  message.kind == ChatMessageKind.file
-                      ? 'Edit caption'
-                      : 'Edit',
+              if (mine && message.failed)
+                ListTile(
+                  leading: const Icon(Icons.refresh_rounded),
+                  title: const Text('Retry'),
+                  onTap: () => Navigator.pop(context, 'retry'),
                 ),
-                onTap: () => Navigator.pop(context, 'edit'),
-              ),
-            ListTile(
-              leading: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined),
-              title: Text(pinned ? 'Unpin' : 'Pin'),
-              onTap: () => Navigator.pop(context, 'pin'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_sweep_outlined),
-              title: const Text('Delete for me'),
-              textColor: Colors.redAccent,
-              iconColor: Colors.redAccent,
-              onTap: () => Navigator.pop(context, 'delete_me'),
-            ),
-            if (mine)
               ListTile(
-                leading: const Icon(Icons.delete_forever_outlined),
-                title: const Text('Delete for everyone'),
-                textColor: Colors.redAccent,
-                iconColor: Colors.redAccent,
-                onTap: () => Navigator.pop(context, 'delete_everyone'),
+                leading: const Icon(Icons.reply_rounded),
+                title: const Text('Reply'),
+                onTap: () => Navigator.pop(context, 'reply'),
               ),
-            if (canBlock)
+              ListTile(
+                leading: const Icon(Icons.forward_rounded),
+                title: const Text('Forward'),
+                onTap: () => Navigator.pop(context, 'forward'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.bookmark_add_outlined),
+                title: const Text('Save to Saved Messages'),
+                onTap: () => Navigator.pop(context, 'save'),
+              ),
+              if (canDownload)
+                ListTile(
+                  leading: const Icon(Icons.download_rounded),
+                  title: const Text('Download'),
+                  onTap: () => Navigator.pop(context, 'download'),
+                ),
+              if (canEdit)
+                ListTile(
+                  leading: const Icon(Icons.edit_rounded),
+                  title: Text(
+                    message.kind == ChatMessageKind.file
+                        ? 'Edit caption'
+                        : 'Edit',
+                  ),
+                  onTap: () => Navigator.pop(context, 'edit'),
+                ),
               ListTile(
                 leading: Icon(
-                  blocked ? Icons.visibility_rounded : Icons.block_rounded,
+                  pinned ? Icons.push_pin : Icons.push_pin_outlined,
                 ),
-                title: Text(blocked ? 'Unblock user' : 'Block user'),
-                textColor: blocked ? null : Colors.redAccent,
-                iconColor: blocked ? null : Colors.redAccent,
-                onTap: () => Navigator.pop(context, 'block'),
+                title: Text(pinned ? 'Unpin' : 'Pin'),
+                onTap: () => Navigator.pop(context, 'pin'),
               ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.delete_sweep_outlined),
+                title: const Text('Delete for me'),
+                textColor: Colors.redAccent,
+                iconColor: Colors.redAccent,
+                onTap: () => Navigator.pop(context, 'delete_me'),
+              ),
+              if (mine)
+                ListTile(
+                  leading: const Icon(Icons.delete_forever_outlined),
+                  title: const Text('Delete for everyone'),
+                  textColor: Colors.redAccent,
+                  iconColor: Colors.redAccent,
+                  onTap: () => Navigator.pop(context, 'delete_everyone'),
+                ),
+              if (canBlock)
+                ListTile(
+                  leading: Icon(
+                    blocked ? Icons.visibility_rounded : Icons.block_rounded,
+                  ),
+                  title: Text(blocked ? 'Unblock user' : 'Block user'),
+                  textColor: blocked ? null : Colors.redAccent,
+                  iconColor: blocked ? null : Colors.redAccent,
+                  onTap: () => Navigator.pop(context, 'block'),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -1624,31 +1706,32 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           },
         ),
         actions: [
-          if (!widget.thread.isChannel &&
-              !widget.controller.isSavedMessagesProfile(widget.thread.profile))
-            _ChatRoundButton(
-              tooltip: widget.thread.isGroup ? 'Group call' : 'Call',
-              icon: Icon(
-                widget.thread.isGroup ? Icons.add_call : Icons.call_outlined,
-              ),
-              onPressed: startCall,
-            ),
-          _ChatRoundButton(
-            tooltip: 'Search',
-            icon: const Icon(Icons.search_rounded),
-            onPressed: showSearchDialog,
-          ),
           if (widget.thread.isGroup)
             _ChatRoundButton(
-              tooltip: 'Meeting points',
-              icon: const Icon(Icons.map_outlined),
-              onPressed: openMeetingPoints,
+              tooltip: 'Group actions',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onPressed: showGroupActions,
+            )
+          else ...[
+            if (!widget.controller.isSavedMessagesProfile(
+              widget.thread.profile,
+            ))
+              _ChatRoundButton(
+                tooltip: 'Call',
+                icon: const Icon(Icons.call_outlined),
+                onPressed: startCall,
+              ),
+            _ChatRoundButton(
+              tooltip: 'Search',
+              icon: const Icon(Icons.search_rounded),
+              onPressed: showSearchDialog,
             ),
-          _ChatRoundButton(
-            tooltip: 'Media',
-            icon: const Icon(Icons.perm_media_outlined),
-            onPressed: openMediaList,
-          ),
+            _ChatRoundButton(
+              tooltip: 'Media',
+              icon: const Icon(Icons.perm_media_outlined),
+              onPressed: openMediaList,
+            ),
+          ],
           const SizedBox(width: 6),
         ],
       ),
@@ -4253,7 +4336,12 @@ class _MeetingPointPreview extends StatelessWidget {
   bool get canEdit => message.senderNode == controller.myNodeId;
 
   Future<void> setStatus(String reaction) async {
-    await controller.sendReaction(thread, message, reaction);
+    if (point.statuses[controller.myNodeId] == reaction) return;
+    await controller.editMessage(
+      thread,
+      message,
+      point.withStatus(controller.myNodeId, reaction).toMessageText(),
+    );
   }
 
   Future<void> editPoint(BuildContext context) async {
@@ -4450,6 +4538,22 @@ class _MeetingPointPreview extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
+            if (point.statuses.isNotEmpty) ...[
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final entry in point.statuses.entries)
+                    _MeetingStatusChip(
+                      status: entry.value,
+                      name:
+                          controller.profiles[entry.key]?.displayName ??
+                          (entry.key == controller.myNodeId ? 'You' : 'Guest'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
             Wrap(
               spacing: 7,
               runSpacing: 7,
@@ -4523,6 +4627,36 @@ class _MeetingPointButton extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MeetingStatusChip extends StatelessWidget {
+  const _MeetingStatusChip({required this.status, required this.name});
+
+  final String status;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+      ),
+      child: Text(
+        '$status $name',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: Colors.white70,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );
@@ -5160,6 +5294,7 @@ class _MeetingPoint {
     required this.longitude,
     this.note = '',
     this.expiresAt,
+    this.statuses = const {},
   });
 
   static const prefix = '::meshchat_meeting_v1::';
@@ -5169,6 +5304,7 @@ class _MeetingPoint {
   final double longitude;
   final String note;
   final DateTime? expiresAt;
+  final Map<String, String> statuses;
 
   String get coordinateLabel {
     return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
@@ -5190,6 +5326,7 @@ class _MeetingPoint {
     double? longitude,
     String? note,
     DateTime? expiresAt,
+    Map<String, String>? statuses,
   }) {
     return _MeetingPoint(
       title: title ?? this.title,
@@ -5197,11 +5334,22 @@ class _MeetingPoint {
       longitude: longitude ?? this.longitude,
       note: note ?? this.note,
       expiresAt: expiresAt ?? this.expiresAt,
+      statuses: statuses ?? this.statuses,
     );
   }
 
+  _MeetingPoint withStatus(String nodeId, String status) {
+    final next = Map<String, String>.from(statuses);
+    if (status.trim().isEmpty) {
+      next.remove(nodeId);
+    } else {
+      next[nodeId] = status;
+    }
+    return copyWith(statuses: next);
+  }
+
   String toMessageText() {
-    return '$prefix${jsonEncode({'title': title.trim().isEmpty ? 'Meeting point' : title.trim(), 'lat': latitude, 'lng': longitude, 'note': note.trim(), if (expiresAt != null) 'expires_at': expiresAt!.toUtc().toIso8601String()})}';
+    return '$prefix${jsonEncode({'title': title.trim().isEmpty ? 'Meeting point' : title.trim(), 'lat': latitude, 'lng': longitude, 'note': note.trim(), if (expiresAt != null) 'expires_at': expiresAt!.toUtc().toIso8601String(), if (statuses.isNotEmpty) 'statuses': statuses})}';
   }
 
   static _MeetingPoint? fromMessageText(String text) {
@@ -5222,6 +5370,7 @@ class _MeetingPoint {
         longitude: lng,
         note: raw['note']?.toString() ?? '',
         expiresAt: DateTime.tryParse(raw['expires_at']?.toString() ?? ''),
+        statuses: _stringMap(raw['statuses']),
       );
     } catch (_) {
       return null;
@@ -5269,6 +5418,12 @@ class _MeetingPoint {
 
   static bool _validCoordinates(double lat, double lng) {
     return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  static Map<String, String> _stringMap(dynamic raw) {
+    if (raw is! Map) return const {};
+    return raw.map((key, value) => MapEntry(key.toString(), value.toString()))
+      ..removeWhere((key, value) => key.trim().isEmpty || value.trim().isEmpty);
   }
 
   Future<void> open(BuildContext context, {required bool route}) async {
