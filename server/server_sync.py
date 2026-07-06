@@ -353,6 +353,80 @@ class ServerSyncMixin:
             if file_info.get("file_id")
         ]
 
+        cursor.execute(
+            """
+            SELECT story_id,
+                   owner_node,
+                   story_json,
+                   recipients_json
+            FROM server_stories
+            WHERE DATETIME(created_at) >= DATETIME('now', '-1 day')
+            ORDER BY created_at DESC
+            """
+        )
+
+        stories = []
+        story_ids = []
+
+        for story_id, owner_node, story_json, recipients_json in cursor.fetchall():
+            try:
+                recipients = set(json.loads(recipients_json or "[]"))
+                story = json.loads(story_json or "{}")
+            except json.JSONDecodeError:
+                continue
+
+            if node_id != owner_node and node_id not in recipients:
+                continue
+
+            if not isinstance(story, dict):
+                continue
+
+            story["id"] = story.get("id") or story_id
+            story["owner_node"] = story.get("owner_node") or owner_node
+            stories.append(story)
+            story_ids.append(story_id)
+
+        if story_ids:
+            placeholders = ",".join(
+                "?"
+                for _ in story_ids
+            )
+            cursor.execute(
+                f"""
+                SELECT story_id,
+                       reactor_node
+                FROM server_story_reactions
+                WHERE story_id IN ({placeholders})
+                  AND liked=1
+                  AND reaction='heart'
+                """,
+                story_ids
+            )
+            story_likes = {}
+            for story_id, reactor_node in cursor.fetchall():
+                story_likes.setdefault(story_id, []).append(reactor_node)
+            for story in stories:
+                story["liked_by_node_ids"] = sorted(
+                    set(story_likes.get(story.get("id"), []))
+                )
+
+            cursor.execute(
+                f"""
+                SELECT story_id,
+                       viewer_node
+                FROM server_story_views
+                WHERE story_id IN ({placeholders})
+                """,
+                story_ids
+            )
+            story_views = {}
+            for story_id, viewer_node in cursor.fetchall():
+                story_views.setdefault(story_id, []).append(viewer_node)
+            for story in stories:
+                story["viewed_by_node_ids"] = sorted(
+                    set(story_views.get(story.get("id"), []))
+                )
+
         reactions = []
         pins = []
 
@@ -427,6 +501,13 @@ class ServerSyncMixin:
             profile_nodes.add(file_info.get("sender_node"))
             profile_nodes.add(file_info.get("receiver_node"))
 
+        for story in stories:
+            profile_nodes.add(story.get("owner_node"))
+            for reactor_node in story.get("liked_by_node_ids") or []:
+                profile_nodes.add(reactor_node)
+            for viewer_node in story.get("viewed_by_node_ids") or []:
+                profile_nodes.add(viewer_node)
+
         profile_nodes = [
             profile_node
             for profile_node in profile_nodes
@@ -494,6 +575,7 @@ class ServerSyncMixin:
             "groups": groups,
             "group_messages": group_messages,
             "files": files,
+            "stories": stories,
             "reactions": reactions,
             "pins": pins
         }

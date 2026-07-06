@@ -29,7 +29,7 @@ import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, file, meetingPoint }
+enum _AttachAction { photo, file, shareLocation }
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.controller, required this.thread});
@@ -62,6 +62,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   DateTime? recordStartedAt;
   ChatMessage? replyTo;
   DateTime? lastTypingSentAt;
+  Timer? liveLocationTimer;
+  DateTime? liveLocationUntil;
+  String? liveLocationMessageId;
   final deletingMessageIds = <String>{};
 
   bool get canPostToThread {
@@ -106,6 +109,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     amplitudeSubscription?.cancel();
+    liveLocationTimer?.cancel();
+    unawaited(deleteLastLiveLocationMessage());
     widget.controller.removeListener(syncRingback);
     unawaited(incomingCallAlert.dispose());
     unawaited(stopRingback());
@@ -267,6 +272,151 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       replyTo: quote,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
+  }
+
+  Future<void> shareMyLocation() async {
+    if (!widget.thread.isGroup) {
+      showSnack('Location sharing is available in groups');
+      return;
+    }
+    if (!canPostToThread) {
+      showSnack('Only channel admins can post');
+      return;
+    }
+    final duration = await chooseLocationShareDuration();
+    if (duration == null) return;
+    final until = duration == Duration.zero
+        ? null
+        : DateTime.now().toUtc().add(duration);
+    await sendCurrentLocationMessage(expiresAt: until);
+    if (until != null && mounted) {
+      startLiveLocationTimer(until);
+      showSnack('Live location is on');
+    }
+  }
+
+  Future<Duration?> chooseLocationShareDuration() {
+    return showModalBottomSheet<Duration>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+          child: _ChatGlassSurface(
+            radius: 26,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const ListTile(
+                    leading: Icon(
+                      Icons.my_location_rounded,
+                      color: Color(0xFF54F2C7),
+                    ),
+                    title: Text('Share location'),
+                    subtitle: Text('Send once or keep it updating.'),
+                  ),
+                  _LocationDurationTile(
+                    icon: Icons.place_rounded,
+                    title: 'Send once',
+                    subtitle: 'One location message',
+                    onTap: () => Navigator.pop(context, Duration.zero),
+                  ),
+                  _LocationDurationTile(
+                    icon: Icons.timer_rounded,
+                    title: 'Live for 15 minutes',
+                    subtitle: 'Updates while this chat is open',
+                    onTap: () =>
+                        Navigator.pop(context, const Duration(minutes: 15)),
+                  ),
+                  _LocationDurationTile(
+                    icon: Icons.schedule_rounded,
+                    title: 'Live for 1 hour',
+                    subtitle: 'Updates while this chat is open',
+                    onTap: () =>
+                        Navigator.pop(context, const Duration(hours: 1)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void startLiveLocationTimer(DateTime until) {
+    liveLocationUntil = until;
+    liveLocationTimer?.cancel();
+    liveLocationTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      final target = liveLocationUntil;
+      if (target == null || DateTime.now().toUtc().isAfter(target)) {
+        timer.cancel();
+        unawaited(deleteLastLiveLocationMessage());
+        return;
+      }
+      unawaited(sendCurrentLocationMessage(expiresAt: target, silent: true));
+    });
+  }
+
+  Future<void> deleteLastLiveLocationMessage() async {
+    final id = liveLocationMessageId;
+    if (id == null || id.isEmpty) return;
+    liveLocationMessageId = null;
+    final message = widget.thread.messages
+        .where((message) => message.id == id)
+        .cast<ChatMessage?>()
+        .firstWhere((message) => message != null, orElse: () => null);
+    if (message == null || message.deleted) return;
+    await widget.controller.deleteMessage(widget.thread, message);
+  }
+
+  Future<String?> sendCurrentLocationMessage({
+    DateTime? expiresAt,
+    bool silent = false,
+  }) async {
+    final current = await getCurrentLocationText();
+    if (!mounted) return null;
+    if (current.error != null || current.text == null) {
+      if (!silent) {
+        showSnack(current.error ?? 'Could not read current location');
+      }
+      return null;
+    }
+    final point = _SharedLocation.tryParse(
+      rawLocation: current.text!,
+      expiresAt: expiresAt,
+    );
+    if (point == null) {
+      if (!silent) showSnack('Could not read current location');
+      return null;
+    }
+    final quote = silent ? null : replyTo;
+    if (!silent) setState(() => replyTo = null);
+    final previousLiveId = silent ? liveLocationMessageId : null;
+    final sentId = await widget.controller.sendGroupMessage(
+      widget.thread,
+      point.toMessageText(),
+      replyTo: quote,
+    );
+    if (expiresAt != null && sentId != null) {
+      liveLocationMessageId = sentId;
+    }
+    if (previousLiveId != null && previousLiveId != sentId) {
+      final previous = widget.thread.messages
+          .where((message) => message.id == previousLiveId)
+          .cast<ChatMessage?>()
+          .firstWhere((message) => message != null, orElse: () => null);
+      if (previous != null && !previous.deleted) {
+        await widget.controller.deleteMessage(widget.thread, previous);
+      }
+    }
+    if (!silent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
+    }
+    return sentId;
   }
 
   Future<_MeetingPoint?> askMeetingPoint() async {
@@ -535,11 +685,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   ),
                   if (widget.thread.isGroup)
                     _GlassSheetAction(
-                      icon: Icons.add_location_alt_rounded,
-                      title: 'Meeting point',
-                      subtitle: 'Share a place and route button',
+                      icon: Icons.my_location_rounded,
+                      title: 'Share my location',
+                      subtitle: 'Show your latest place on the group map',
                       onTap: () =>
-                          Navigator.pop(context, _AttachAction.meetingPoint),
+                          Navigator.pop(context, _AttachAction.shareLocation),
                     ),
                 ],
               ),
@@ -552,8 +702,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       await attachPhoto();
     } else if (action == _AttachAction.file) {
       await attachFile();
-    } else if (action == _AttachAction.meetingPoint) {
-      await sendMeetingPoint();
+    } else if (action == _AttachAction.shareLocation) {
+      await shareMyLocation();
     }
   }
 
@@ -1591,6 +1741,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                   message.id,
                                 ),
                                 child: _MessageBubble(
+                                  controller: widget.controller,
+                                  thread: widget.thread,
                                   message: message,
                                   mine:
                                       message.senderNode ==
@@ -3617,6 +3769,8 @@ class _PhotoAlbumBubble extends StatelessWidget {
 
 class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
+    required this.controller,
+    required this.thread,
     required this.message,
     required this.mine,
     required this.dataSaver,
@@ -3624,6 +3778,8 @@ class _MessageBubble extends StatefulWidget {
     required this.onReply,
   });
 
+  final AppController controller;
+  final ChatThread thread;
   final ChatMessage message;
   final bool mine;
   final bool dataSaver;
@@ -3759,6 +3915,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 margin: const EdgeInsets.only(bottom: 8),
                 child: RepaintBoundary(
                   child: _MessageBubbleBody(
+                    controller: widget.controller,
+                    thread: widget.thread,
                     message: message,
                     mine: mine,
                     imageBytes: imageBytes,
@@ -3788,11 +3946,15 @@ class _MessageBubbleState extends State<_MessageBubble> {
 
 class _MessageBubbleBody extends StatelessWidget {
   const _MessageBubbleBody({
+    required this.controller,
+    required this.thread,
     required this.message,
     required this.mine,
     required this.imageBytes,
   });
 
+  final AppController controller;
+  final ChatThread thread;
   final ChatMessage message;
   final bool mine;
   final Uint8List? imageBytes;
@@ -3801,6 +3963,7 @@ class _MessageBubbleBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final time = message.createdAt.toLocal();
     final meetingPoint = _MeetingPoint.fromMessageText(message.text);
+    final sharedLocation = _SharedLocation.fromMessageText(message.text);
     return Column(
       crossAxisAlignment: mine
           ? CrossAxisAlignment.end
@@ -3834,8 +3997,15 @@ class _MessageBubbleBody extends StatelessWidget {
               message.kind == ChatMessageKind.file
                   ? _FilePreview(message: message, imageBytes: imageBytes)
                   : meetingPoint == null
-                  ? Text(message.text)
-                  : _MeetingPointPreview(point: meetingPoint),
+                  ? sharedLocation == null
+                        ? Text(message.text)
+                        : _SharedLocationPreview(location: sharedLocation)
+                  : _MeetingPointPreview(
+                      controller: controller,
+                      thread: thread,
+                      message: message,
+                      point: meetingPoint,
+                    ),
               if (message.kind == ChatMessageKind.file &&
                   message.pending &&
                   message.progress > 0) ...[
@@ -3940,10 +4110,238 @@ class _ReplyQuote extends StatelessWidget {
   }
 }
 
-class _MeetingPointPreview extends StatelessWidget {
-  const _MeetingPointPreview({required this.point});
+class _SharedLocationPreview extends StatelessWidget {
+  const _SharedLocationPreview({required this.location});
 
+  final _SharedLocation location;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 300),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.24)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF54F2C7).withValues(alpha: 0.24),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.greenAccent.withValues(alpha: 0.22),
+                    blurRadius: 16,
+                  ),
+                ],
+              ),
+              child: const Icon(
+                Icons.my_location_rounded,
+                color: Color(0xFF54F2C7),
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Shared location',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    location.coordinateLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            _MeetingPointButton(
+              icon: Icons.map_rounded,
+              label: 'Open',
+              onTap: () => location.open(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LocationDurationTile extends StatelessWidget {
+  const _LocationDurationTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white.withValues(alpha: 0.06),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Icon(icon, color: const Color(0xFF54F2C7)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MeetingPointPreview extends StatelessWidget {
+  const _MeetingPointPreview({
+    required this.controller,
+    required this.thread,
+    required this.message,
+    required this.point,
+  });
+
+  final AppController controller;
+  final ChatThread thread;
+  final ChatMessage message;
   final _MeetingPoint point;
+
+  bool get canEdit => message.senderNode == controller.myNodeId;
+
+  Future<void> setStatus(String reaction) async {
+    await controller.sendReaction(thread, message, reaction);
+  }
+
+  Future<void> editPoint(BuildContext context) async {
+    final titleInput = TextEditingController(text: point.title);
+    final noteInput = TextEditingController(text: point.note);
+    final latInput = TextEditingController(
+      text: point.latitude.toStringAsFixed(6),
+    );
+    final lngInput = TextEditingController(
+      text: point.longitude.toStringAsFixed(6),
+    );
+    final result = await showDialog<_MeetingPoint>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit meeting point'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleInput,
+                decoration: const InputDecoration(labelText: 'Title'),
+              ),
+              TextField(
+                controller: noteInput,
+                decoration: const InputDecoration(labelText: 'Note'),
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: latInput,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Lat'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: lngInput,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Lng'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final lat = double.tryParse(latInput.text.trim());
+              final lng = double.tryParse(lngInput.text.trim());
+              if (lat == null ||
+                  lng == null ||
+                  lat < -90 ||
+                  lat > 90 ||
+                  lng < -180 ||
+                  lng > 180) {
+                return;
+              }
+              Navigator.pop(
+                context,
+                point.copyWith(
+                  title: titleInput.text.trim(),
+                  note: noteInput.text.trim(),
+                  latitude: lat,
+                  longitude: lng,
+                ),
+              );
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    titleInput.dispose();
+    noteInput.dispose();
+    latInput.dispose();
+    lngInput.dispose();
+    if (result == null) return;
+    await controller.editMessage(thread, message, result.toMessageText());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -4024,6 +4422,13 @@ class _MeetingPointPreview extends StatelessWidget {
                 style: const TextStyle(color: Colors.white70),
               ),
             ],
+            if (point.expiresAt != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                point.expiryLabel,
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [
@@ -4042,6 +4447,34 @@ class _MeetingPointPreview extends StatelessWidget {
                     onTap: () => point.open(context, route: true),
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                _MeetingPointButton(
+                  icon: Icons.check_circle_outline_rounded,
+                  label: 'I will come',
+                  onTap: () => setStatus('✅'),
+                ),
+                _MeetingPointButton(
+                  icon: Icons.cancel_outlined,
+                  label: 'Can not',
+                  onTap: () => setStatus('🚫'),
+                ),
+                _MeetingPointButton(
+                  icon: Icons.flag_circle_outlined,
+                  label: 'Here',
+                  onTap: () => setStatus('📍'),
+                ),
+                if (canEdit)
+                  _MeetingPointButton(
+                    icon: Icons.edit_location_alt_outlined,
+                    label: 'Edit',
+                    onTap: () => editPoint(context),
+                  ),
               ],
             ),
           ],
@@ -4726,6 +5159,7 @@ class _MeetingPoint {
     required this.latitude,
     required this.longitude,
     this.note = '',
+    this.expiresAt,
   });
 
   static const prefix = '::meshchat_meeting_v1::';
@@ -4734,13 +5168,40 @@ class _MeetingPoint {
   final double latitude;
   final double longitude;
   final String note;
+  final DateTime? expiresAt;
 
   String get coordinateLabel {
     return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
   }
 
+  String get expiryLabel {
+    final value = expiresAt;
+    if (value == null) return '';
+    final local = value.toLocal();
+    return 'Active until ${local.day.toString().padLeft(2, '0')}.'
+        '${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  _MeetingPoint copyWith({
+    String? title,
+    double? latitude,
+    double? longitude,
+    String? note,
+    DateTime? expiresAt,
+  }) {
+    return _MeetingPoint(
+      title: title ?? this.title,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      note: note ?? this.note,
+      expiresAt: expiresAt ?? this.expiresAt,
+    );
+  }
+
   String toMessageText() {
-    return '$prefix${jsonEncode({'title': title.trim().isEmpty ? 'Meeting point' : title.trim(), 'lat': latitude, 'lng': longitude, 'note': note.trim()})}';
+    return '$prefix${jsonEncode({'title': title.trim().isEmpty ? 'Meeting point' : title.trim(), 'lat': latitude, 'lng': longitude, 'note': note.trim(), if (expiresAt != null) 'expires_at': expiresAt!.toUtc().toIso8601String()})}';
   }
 
   static _MeetingPoint? fromMessageText(String text) {
@@ -4760,6 +5221,7 @@ class _MeetingPoint {
         latitude: lat,
         longitude: lng,
         note: raw['note']?.toString() ?? '',
+        expiresAt: DateTime.tryParse(raw['expires_at']?.toString() ?? ''),
       );
     } catch (_) {
       return null;
@@ -4778,6 +5240,7 @@ class _MeetingPoint {
       latitude: coordinates.$1,
       longitude: coordinates.$2,
       note: note.trim(),
+      expiresAt: DateTime.now().toUtc().add(const Duration(hours: 2)),
     );
   }
 
@@ -4817,6 +5280,80 @@ class _MeetingPoint {
           latitude: latitude,
           longitude: longitude,
           note: note,
+          routeOnOpen: route,
+        ),
+      ),
+    );
+  }
+}
+
+class _SharedLocation {
+  const _SharedLocation({
+    required this.latitude,
+    required this.longitude,
+    this.expiresAt,
+  });
+
+  static const prefix = '::meshchat_location_v1::';
+
+  final double latitude;
+  final double longitude;
+  final DateTime? expiresAt;
+
+  String get coordinateLabel {
+    return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+  }
+
+  String toMessageText() {
+    return '$prefix${jsonEncode({'lat': latitude, 'lng': longitude, 'ts': DateTime.now().toUtc().toIso8601String(), if (expiresAt != null) 'expires_at': expiresAt!.toUtc().toIso8601String()})}';
+  }
+
+  static _SharedLocation? fromMessageText(String text) {
+    if (!text.startsWith(prefix)) return null;
+    try {
+      final raw = jsonDecode(text.substring(prefix.length));
+      if (raw is! Map) return null;
+      final lat = double.tryParse(raw['lat']?.toString() ?? '');
+      final lng = double.tryParse(raw['lng']?.toString() ?? '');
+      if (lat == null || lng == null || !_validCoordinates(lat, lng)) {
+        return null;
+      }
+      return _SharedLocation(
+        latitude: lat,
+        longitude: lng,
+        expiresAt: DateTime.tryParse(raw['expires_at']?.toString() ?? ''),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static _SharedLocation? tryParse({
+    required String rawLocation,
+    DateTime? expiresAt,
+  }) {
+    final coordinates = _MeetingPoint._extractCoordinates(rawLocation);
+    if (coordinates == null) return null;
+    return _SharedLocation(
+      latitude: coordinates.$1,
+      longitude: coordinates.$2,
+      expiresAt: expiresAt,
+    );
+  }
+
+  static bool _validCoordinates(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  Future<void> open(BuildContext context) async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeetingPointMapPage(
+          title: 'Shared location',
+          latitude: latitude,
+          longitude: longitude,
+          note: coordinateLabel,
         ),
       ),
     );

@@ -1,14 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
+import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
@@ -415,6 +419,10 @@ class ChatsPage extends StatelessWidget {
   }
 
   Future<void> showThreadMenu(BuildContext context, ChatThread thread) async {
+    final ownsGroup =
+        thread.isGroup &&
+        (thread.ownerNode.trim().isEmpty ||
+            thread.ownerNode == controller.myNodeId);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -453,28 +461,44 @@ class ChatsPage extends StatelessWidget {
                 title: const Text('Profile'),
                 onTap: () => Navigator.pop(context, 'profile'),
               ),
-            ListTile(
-              leading: const Icon(
-                Icons.delete_outline,
-                color: Colors.redAccent,
+            if (thread.isGroup && !ownsGroup)
+              ListTile(
+                leading: const Icon(
+                  Icons.logout_rounded,
+                  color: Colors.redAccent,
+                ),
+                title: Text(
+                  thread.isChannel ? 'Leave channel' : 'Leave group',
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+                onTap: () => Navigator.pop(context, 'leave'),
               ),
-              title: const Text(
-                'Delete locally',
-                style: TextStyle(color: Colors.redAccent),
+            if (!thread.isGroup)
+              ListTile(
+                leading: const Icon(
+                  Icons.delete_outline,
+                  color: Colors.redAccent,
+                ),
+                title: const Text(
+                  'Delete locally',
+                  style: TextStyle(color: Colors.redAccent),
+                ),
+                onTap: () => Navigator.pop(context, 'delete'),
               ),
-              onTap: () => Navigator.pop(context, 'delete'),
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.delete_forever_outlined,
-                color: Colors.redAccent,
+            if (!thread.isGroup || ownsGroup)
+              ListTile(
+                leading: const Icon(
+                  Icons.delete_forever_outlined,
+                  color: Colors.redAccent,
+                ),
+                title: Text(
+                  thread.isGroup
+                      ? (thread.isChannel ? 'Delete channel' : 'Delete group')
+                      : 'Delete for everyone',
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+                onTap: () => Navigator.pop(context, 'delete_all'),
               ),
-              title: const Text(
-                'Delete for everyone',
-                style: TextStyle(color: Colors.redAccent),
-              ),
-              onTap: () => Navigator.pop(context, 'delete_all'),
-            ),
           ],
         ),
       ),
@@ -484,14 +508,53 @@ class ChatsPage extends StatelessWidget {
     if (action == 'archive') controller.toggleThreadArchive(thread);
     if (action == 'mute') controller.toggleThreadMute(thread);
     if (action == 'profile') openProfile(context, thread.profile);
+    if (action == 'leave') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(thread.isChannel ? 'Leave channel?' : 'Leave group?'),
+          content: Text(
+            thread.isChannel
+                ? 'The channel will disappear from your chats and will not be restored after relogin.'
+                : 'The group will disappear from your chats and will not be restored after relogin.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Leave'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) {
+        final error = await controller.leaveGroup(thread);
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error ?? 'Left')));
+        }
+      }
+    }
+    if (!context.mounted) return;
     if (action == 'delete' || action == 'delete_all') {
       final forEveryone = action == 'delete_all';
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: Text(forEveryone ? 'Delete for everyone?' : 'Delete chat?'),
+          title: Text(
+            thread.isGroup
+                ? (thread.isChannel ? 'Delete channel?' : 'Delete group?')
+                : (forEveryone ? 'Delete for everyone?' : 'Delete chat?'),
+          ),
           content: Text(
-            forEveryone
+            thread.isGroup
+                ? 'Only the owner can delete it for everyone.'
+                : forEveryone
                 ? 'This will ask other devices in this chat to remove the chat too.'
                 : 'Messages in this chat will be removed only on this device.',
           ),
@@ -509,15 +572,21 @@ class ChatsPage extends StatelessWidget {
         ),
       );
       if (confirmed == true) {
+        String? error;
         if (forEveryone) {
-          await controller.deleteThreadForEveryone(thread);
+          error = await controller.deleteThreadForEveryone(thread);
         } else {
           await controller.deleteThread(thread);
         }
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(forEveryone ? 'Delete sent' : 'Chat deleted'),
+              content: Text(
+                error ??
+                    (forEveryone
+                        ? (thread.isGroup ? 'Deleted' : 'Delete sent')
+                        : 'Chat deleted'),
+              ),
             ),
           );
         }
@@ -531,6 +600,257 @@ class ChatsPage extends StatelessWidget {
       MaterialPageRoute(
         builder: (_) =>
             _ArchivedChatsPage(controller: controller, parent: this),
+      ),
+    );
+  }
+
+  Future<void> openStoryComposer(BuildContext context) async {
+    final people =
+        controller.profiles.values
+            .where(
+              (profile) =>
+                  profile.nodeId.isNotEmpty &&
+                  profile.nodeId != controller.myNodeId &&
+                  !profile.nodeId.startsWith('group:') &&
+                  !profile.nodeId.startsWith('saved:'),
+            )
+            .toList()
+          ..sort((a, b) => a.displayName.compareTo(b.displayName));
+    final textController = TextEditingController();
+    var visibility = StoryVisibility.everyone;
+    var imageData = '';
+    var videoData = '';
+    var videoMime = 'video/mp4';
+    var mediaType = StoryMediaType.none;
+    final selected = <String>{};
+    final excluded = <String>{};
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final chooser =
+              visibility == StoryVisibility.selected ||
+              visibility == StoryVisibility.excluded;
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.viewInsetsOf(context).bottom,
+            ),
+            child: _ActionSheetGlass(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(18, 12, 18, 6),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'New story',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
+                  child: TextField(
+                    controller: textController,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      hintText: 'What is happening?',
+                      prefixIcon: Icon(Icons.auto_awesome_rounded),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: () async {
+                            final picked = await FilePicker.platform.pickFiles(
+                              type: FileType.image,
+                              withData: true,
+                            );
+                            final bytes = picked?.files.single.bytes;
+                            if (bytes == null) return;
+                            if (bytes.length > 2 * 1024 * 1024) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Story photo is too large, choose up to 2 MB',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+                            setSheetState(() {
+                              imageData = base64Encode(bytes);
+                              videoData = '';
+                              mediaType = StoryMediaType.image;
+                            });
+                          },
+                          icon: const Icon(Icons.photo_rounded),
+                          label: Text(
+                            imageData.isEmpty ? 'Add photo' : 'Photo selected',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: () async {
+                            final picked = await FilePicker.platform.pickFiles(
+                              type: FileType.video,
+                              withData: true,
+                            );
+                            final file = picked?.files.single;
+                            final bytes = file?.bytes;
+                            if (bytes == null) return;
+                            if (bytes.length > 8 * 1024 * 1024) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Story video is too large, choose up to 8 MB',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+                            setSheetState(() {
+                              videoData = base64Encode(bytes);
+                              videoMime = _videoMime(file?.extension ?? '');
+                              imageData = '';
+                              mediaType = StoryMediaType.video;
+                            });
+                          },
+                          icon: const Icon(Icons.movie_rounded),
+                          label: Text(
+                            videoData.isEmpty ? 'Add video' : 'Video selected',
+                          ),
+                        ),
+                      ),
+                      if (imageData.isNotEmpty || videoData.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: () => setSheetState(() {
+                            imageData = '';
+                            videoData = '';
+                            mediaType = StoryMediaType.none;
+                          }),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+                  child: DropdownButtonFormField<StoryVisibility>(
+                    initialValue: visibility,
+                    decoration: const InputDecoration(
+                      labelText: 'Who can see it',
+                      prefixIcon: Icon(Icons.visibility_rounded),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: StoryVisibility.everyone,
+                        child: Text('Everyone I know'),
+                      ),
+                      DropdownMenuItem(
+                        value: StoryVisibility.chats,
+                        child: Text('Only people with chats'),
+                      ),
+                      DropdownMenuItem(
+                        value: StoryVisibility.selected,
+                        child: Text('Only selected people'),
+                      ),
+                      DropdownMenuItem(
+                        value: StoryVisibility.excluded,
+                        child: Text('Everyone except...'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setSheetState(() => visibility = value);
+                    },
+                  ),
+                ),
+                if (chooser)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                      itemCount: people.length,
+                      itemBuilder: (context, index) {
+                        final person = people[index];
+                        final bucket = visibility == StoryVisibility.selected
+                            ? selected
+                            : excluded;
+                        return CheckboxListTile(
+                          value: bucket.contains(person.nodeId),
+                          onChanged: (value) => setSheetState(() {
+                            if (value == true) {
+                              bucket.add(person.nodeId);
+                            } else {
+                              bucket.remove(person.nodeId);
+                            }
+                          }),
+                          secondary: ProfileAvatar(profile: person, radius: 18),
+                          title: Text(person.displayName),
+                          subtitle: person.publicUsername.isEmpty
+                              ? null
+                              : Text('@${person.publicUsername}'),
+                        );
+                      },
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 12),
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.pop(context, 'publish'),
+                    icon: const Icon(Icons.auto_awesome_rounded),
+                    label: const Text('Publish story'),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+    if (result != 'publish') return;
+    final error = await controller.publishStory(
+      text: textController.text,
+      imageData: imageData,
+      videoData: videoData,
+      videoMime: videoMime,
+      mediaType: mediaType,
+      visibility: visibility,
+      selectedNodeIds: selected.toList(),
+      excludedNodeIds: excluded.toList(),
+    );
+    if (!context.mounted) return;
+    if (error != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error)));
+    }
+  }
+
+  void openStory(BuildContext context, StoryItem story) {
+    unawaited(controller.markStoryViewed(story));
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _StoryViewerPage(controller: controller, story: story),
       ),
     );
   }
@@ -755,6 +1075,9 @@ class ChatsPage extends StatelessWidget {
     }
     final meeting = _meetingPointPreview(message.text);
     if (meeting != null) return meeting;
+    if (message.text.startsWith('::meshchat_location_v1::')) {
+      return 'Shared location';
+    }
     return message.text;
   }
 
@@ -971,7 +1294,8 @@ class _HomeTabBody extends StatelessWidget {
         ? controller.groupJoinRequests.length
         : 0;
     final archiveCount = archivedCount > 0 && filter == _HomeFilter.all ? 1 : 0;
-    final headerCount = requestCount + archiveCount;
+    final storyCount = filter == _HomeFilter.all ? 1 : 0;
+    final headerCount = storyCount + requestCount + archiveCount;
     return switch (tab) {
       _HomeTab.settings => _InlineSettingsPanel(
         controller: controller,
@@ -1011,6 +1335,14 @@ class _HomeTabBody extends StatelessWidget {
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(24, 92, 24, 140),
                   children: [
+                    if (storyCount > 0) ...[
+                      _StoriesStrip(
+                        controller: controller,
+                        onAdd: () => parent.openStoryComposer(context),
+                        onOpen: (story) => parent.openStory(context, story),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
                     _HomeEmptyState(
                       filter: filter,
                       onNewChat: () => parent.startNew(context),
@@ -1029,8 +1361,17 @@ class _HomeTabBody extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(10, 14, 10, 112),
                   itemCount: threads.length + headerCount,
                   itemBuilder: (context, index) {
-                    if (index < requestCount) {
-                      final request = controller.groupJoinRequests[index];
+                    if (index < storyCount) {
+                      return _StoriesStrip(
+                        controller: controller,
+                        onAdd: () => parent.openStoryComposer(context),
+                        onOpen: (story) => parent.openStory(context, story),
+                      );
+                    }
+                    final afterStories = index - storyCount;
+                    if (afterStories < requestCount) {
+                      final request =
+                          controller.groupJoinRequests[afterStories];
                       return _AnimatedChatEntrance(
                         index: index,
                         child: _JoinRequestGlassTile(
@@ -1039,7 +1380,8 @@ class _HomeTabBody extends StatelessWidget {
                         ),
                       );
                     }
-                    if (index < headerCount && archiveCount > 0) {
+                    if (afterStories < requestCount + archiveCount &&
+                        archiveCount > 0) {
                       return _AnimatedChatEntrance(
                         index: index,
                         child: _ArchiveGlassTile(
@@ -1074,6 +1416,549 @@ class _HomeTabBody extends StatelessWidget {
               ),
       ),
     };
+  }
+}
+
+class _StoriesStrip extends StatelessWidget {
+  const _StoriesStrip({
+    required this.controller,
+    required this.onAdd,
+    required this.onOpen,
+  });
+
+  final AppController controller;
+  final VoidCallback onAdd;
+  final ValueChanged<StoryItem> onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final stories = controller.activeStories;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
+      child: SizedBox(
+        height: 112,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          itemCount: stories.length + 1,
+          separatorBuilder: (_, _) => const SizedBox(width: 10),
+          itemBuilder: (context, index) {
+            if (index == 0) {
+              return _AddStoryTile(onTap: onAdd);
+            }
+            final story = stories[index - 1];
+            return _StoryTile(
+              story: story,
+              mine: story.ownerNode == controller.myNodeId,
+              onTap: () => onOpen(story),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _AddStoryTile extends StatelessWidget {
+  const _AddStoryTile({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 84,
+      child: _HomeGlassSurface(
+        accent: Colors.lightBlueAccent,
+        radius: 22,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: onTap,
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircleAvatar(
+                  radius: 24,
+                  backgroundColor: Color(0x3329C8FF),
+                  child: Icon(Icons.add_rounded, color: Colors.white, size: 30),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'My story',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StoryTile extends StatelessWidget {
+  const _StoryTile({
+    required this.story,
+    required this.mine,
+    required this.onTap,
+  });
+
+  final StoryItem story;
+  final bool mine;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final image = _storyImage(story.imageData);
+    final video = story.mediaType == StoryMediaType.video;
+    return SizedBox(
+      width: 92,
+      child: _HomeGlassSurface(
+        accent: mine ? Colors.lightBlueAccent : Colors.purpleAccent,
+        radius: 22,
+        selected: mine,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: video
+                        ? Container(
+                            color: const Color(0xFF101B28),
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.play_circle_fill_rounded,
+                              color: Colors.white,
+                              size: 34,
+                            ),
+                          )
+                        : image == null
+                        ? Container(
+                            color: const Color(0xFF101B28),
+                            alignment: Alignment.center,
+                            child: ProfileAvatar(
+                              profile: Profile(
+                                nodeId: story.ownerNode,
+                                displayName: story.ownerName,
+                                avatarData: story.ownerAvatarData,
+                              ),
+                              radius: 22,
+                            ),
+                          )
+                        : Image.memory(
+                            image,
+                            fit: BoxFit.cover,
+                            width: double.infinity,
+                            gaplessPlayback: true,
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  mine ? 'You' : story.ownerName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StoryViewerPage extends StatefulWidget {
+  const _StoryViewerPage({required this.controller, required this.story});
+
+  final AppController controller;
+  final StoryItem story;
+
+  @override
+  State<_StoryViewerPage> createState() => _StoryViewerPageState();
+}
+
+class _StoryViewerPageState extends State<_StoryViewerPage> {
+  VideoPlayerController? videoController;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onControllerChanged);
+    final story = widget.story;
+    if (story.mediaType == StoryMediaType.video && story.videoData.isNotEmpty) {
+      final raw = story.videoData.contains(',')
+          ? story.videoData.substring(story.videoData.indexOf(',') + 1)
+          : story.videoData;
+      videoController =
+          VideoPlayerController.networkUrl(
+              Uri.parse('data:${story.videoMime};base64,$raw'),
+            )
+            ..setLooping(true)
+            ..initialize().then((_) {
+              if (!mounted) return;
+              setState(() {});
+              videoController?.play();
+            });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onControllerChanged);
+    videoController?.dispose();
+    super.dispose();
+  }
+
+  void _onControllerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _deleteStory(StoryItem story) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete story?'),
+        content: const Text('It will disappear for everyone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    final error = await widget.controller.deleteStory(story);
+    if (!mounted) return;
+    if (error != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error)));
+      return;
+    }
+    Navigator.pop(context);
+  }
+
+  void _showViewers(StoryItem story) {
+    final profiles = widget.controller.profiles;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final viewers = story.viewedByNodeIds;
+        return _HomeGlassSurface(
+          accent: Colors.lightBlueAccent,
+          radius: 28,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Viewed by ${viewers.length}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (viewers.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 18),
+                      child: Text(
+                        'No views yet',
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: viewers.length,
+                        separatorBuilder: (_, _) =>
+                            const Divider(color: Colors.white10, height: 1),
+                        itemBuilder: (context, index) {
+                          final nodeId = viewers[index];
+                          final profile = profiles[nodeId];
+                          final name =
+                              profile?.displayName.trim().isNotEmpty == true
+                              ? profile!.displayName
+                              : nodeId;
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: ProfileAvatar(
+                              profile:
+                                  profile ??
+                                  Profile(nodeId: nodeId, displayName: name),
+                              radius: 20,
+                            ),
+                            title: Text(
+                              name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            trailing: story.likedByNodeIds.contains(nodeId)
+                                ? const Icon(
+                                    Icons.favorite_rounded,
+                                    color: Colors.pinkAccent,
+                                  )
+                                : null,
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final story = widget.controller.stories[widget.story.id] ?? widget.story;
+    final ownStory = story.ownerNode == widget.controller.myNodeId;
+    final image = _storyImage(story.imageData);
+    final left = story.createdAt
+        .add(const Duration(hours: 24))
+        .difference(DateTime.now());
+    final hoursLeft = math.max(0, left.inHours);
+    return Scaffold(
+      body: Stack(
+        children: [
+          const Positioned.fill(child: _HomeLiquidBackground(enabled: true)),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      IconButton.filledTonal(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                      ),
+                      const SizedBox(width: 10),
+                      ProfileAvatar(
+                        profile: Profile(
+                          nodeId: story.ownerNode,
+                          displayName: story.ownerName,
+                          avatarData: story.ownerAvatarData,
+                        ),
+                        radius: 22,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              story.ownerName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 17,
+                              ),
+                            ),
+                            Text(
+                              hoursLeft <= 0
+                                  ? 'Expires soon'
+                                  : 'Disappears in $hoursLeft h',
+                              style: const TextStyle(color: Colors.white54),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (story.ownerNode != widget.controller.myNodeId)
+                        IconButton.filledTonal(
+                          tooltip: 'Like',
+                          onPressed: () async {
+                            await widget.controller.likeStory(story);
+                            if (mounted) setState(() {});
+                          },
+                          icon: Icon(
+                            story.likedByNodeIds.contains(
+                                  widget.controller.myNodeId,
+                                )
+                                ? Icons.favorite_rounded
+                                : Icons.favorite_border_rounded,
+                            color: Colors.pinkAccent,
+                          ),
+                        ),
+                      if (ownStory) ...[
+                        IconButton.filledTonal(
+                          tooltip: 'Views',
+                          onPressed: () => _showViewers(story),
+                          icon: Badge.count(
+                            count: story.viewedByNodeIds.length,
+                            isLabelVisible: story.viewedByNodeIds.isNotEmpty,
+                            child: const Icon(
+                              Icons.visibility_rounded,
+                              color: Colors.lightBlueAccent,
+                            ),
+                          ),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Delete story',
+                          onPressed: () => _deleteStory(story),
+                          icon: const Icon(
+                            Icons.delete_outline_rounded,
+                            color: Colors.redAccent,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Expanded(
+                    child: _HomeGlassSurface(
+                      accent: Colors.lightBlueAccent,
+                      radius: 30,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            if (story.mediaType == StoryMediaType.video &&
+                                videoController != null)
+                              Expanded(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: videoController!.value.isInitialized
+                                      ? AspectRatio(
+                                          aspectRatio: videoController!
+                                              .value
+                                              .aspectRatio,
+                                          child: VideoPlayer(videoController!),
+                                        )
+                                      : const Center(
+                                          child: CircularProgressIndicator(),
+                                        ),
+                                ),
+                              )
+                            else if (image != null)
+                              Expanded(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: Image.memory(
+                                    image,
+                                    fit: BoxFit.contain,
+                                    width: double.infinity,
+                                    gaplessPlayback: true,
+                                  ),
+                                ),
+                              )
+                            else
+                              const Spacer(),
+                            if (story.text.isNotEmpty) ...[
+                              if (image != null ||
+                                  story.mediaType == StoryMediaType.video)
+                                const SizedBox(height: 14),
+                              Text(
+                                story.text,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 24,
+                                  height: 1.25,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                            if (story.likedByNodeIds.isNotEmpty) ...[
+                              const SizedBox(height: 14),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(
+                                    Icons.favorite_rounded,
+                                    color: Colors.pinkAccent,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '${story.likedByNodeIds.length}',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                            if (image == null &&
+                                story.mediaType != StoryMediaType.video)
+                              const Spacer(),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _videoMime(String extension) {
+  switch (extension.toLowerCase().replaceFirst('.', '')) {
+    case 'mov':
+      return 'video/quicktime';
+    case 'webm':
+      return 'video/webm';
+    case 'm4v':
+      return 'video/x-m4v';
+    default:
+      return 'video/mp4';
+  }
+}
+
+Uint8List? _storyImage(String value) {
+  if (value.isEmpty) return null;
+  final comma = value.indexOf(',');
+  final raw = comma >= 0 ? value.substring(comma + 1) : value;
+  try {
+    return base64Decode(raw);
+  } catch (_) {
+    return null;
   }
 }
 

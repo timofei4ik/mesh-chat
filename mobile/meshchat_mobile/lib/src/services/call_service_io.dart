@@ -266,13 +266,28 @@ class CallService {
 
   Map<String, dynamic> _mediaConstraints() {
     if (!_isMobile) {
-      return {'audio': true, 'video': false};
+      return {
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+          'googEchoCancellation': true,
+          'googAutoGainControl': true,
+          'googNoiseSuppression': true,
+          'googHighpassFilter': true,
+        },
+        'video': false,
+      };
     }
     return {
       'audio': {
         'echoCancellation': true,
         'noiseSuppression': true,
         'autoGainControl': true,
+        'googEchoCancellation': true,
+        'googAutoGainControl': true,
+        'googNoiseSuppression': true,
+        'googHighpassFilter': true,
       },
       'video': false,
     };

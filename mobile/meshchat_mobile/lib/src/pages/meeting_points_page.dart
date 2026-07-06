@@ -58,6 +58,13 @@ class MeetingPointsPage extends StatelessWidget {
                           ],
                         ),
                       ),
+                      if (points.isNotEmpty) ...[
+                        const SizedBox(width: 10),
+                        _RoundGlassButton(
+                          icon: Icons.map_rounded,
+                          onTap: () => _openPointsMap(context, points),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -76,6 +83,8 @@ class MeetingPointsPage extends StatelessWidget {
                               senderName: _senderName(entry.message),
                               onJump: () =>
                                   Navigator.pop(context, entry.message.id),
+                              onDelete: () =>
+                                  _deletePoint(context, entry.message),
                             );
                           },
                         ),
@@ -98,6 +107,78 @@ class MeetingPointsPage extends StatelessWidget {
     if (id.isEmpty) return 'unknown';
     return id.length <= 8 ? id : id.substring(0, 8);
   }
+
+  Future<void> _openPointsMap(
+    BuildContext context,
+    List<_MeetingPointEntry> points,
+  ) async {
+    final first = points.first.point;
+    final result = await Navigator.push<Object?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeetingPointMapPage(
+          title: thread.profile.displayName,
+          latitude: first.latitude,
+          longitude: first.longitude,
+          pins: [
+            for (final entry in points)
+              MeetingPointMapPin(
+                title: entry.point.title,
+                latitude: entry.point.latitude,
+                longitude: entry.point.longitude,
+                note: entry.point.note,
+                senderName: _senderName(entry.message),
+                timestamp: _timestamp(entry.message.createdAt.toLocal()),
+                messageId: entry.message.id,
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || result == null) return;
+    if (result is String && result.isNotEmpty) {
+      Navigator.pop(context, result);
+    } else if (result is MeetingPointMapDeleteResult) {
+      final message = _messageById(result.messageId);
+      if (message != null) await _deletePoint(context, message);
+    }
+  }
+
+  ChatMessage? _messageById(String id) {
+    for (final message in thread.messages) {
+      if (message.id == id) return message;
+    }
+    return null;
+  }
+
+  Future<void> _deletePoint(BuildContext context, ChatMessage message) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete meeting point?'),
+        content: const Text('This will delete the meeting point message.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    await controller.deleteMessage(thread, message);
+  }
+
+  static String _timestamp(DateTime time) {
+    return '${time.day.toString().padLeft(2, '0')}.'
+        '${time.month.toString().padLeft(2, '0')} '
+        '${time.hour.toString().padLeft(2, '0')}:'
+        '${time.minute.toString().padLeft(2, '0')}';
+  }
 }
 
 class _MeetingPointTile extends StatelessWidget {
@@ -105,21 +186,19 @@ class _MeetingPointTile extends StatelessWidget {
     required this.entry,
     required this.senderName,
     required this.onJump,
+    required this.onDelete,
   });
 
   final _MeetingPointEntry entry;
   final String senderName;
   final VoidCallback onJump;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     final point = entry.point;
     final time = entry.message.createdAt.toLocal();
-    final timestamp =
-        '${time.day.toString().padLeft(2, '0')}.'
-        '${time.month.toString().padLeft(2, '0')} '
-        '${time.hour.toString().padLeft(2, '0')}:'
-        '${time.minute.toString().padLeft(2, '0')}';
+    final timestamp = MeetingPointsPage._timestamp(time);
     return _GlassSurface(
       radius: 24,
       child: InkWell(
@@ -213,6 +292,12 @@ class _MeetingPointTile extends StatelessWidget {
                     icon: Icons.chat_bubble_outline_rounded,
                     label: 'Message',
                     onTap: onJump,
+                  ),
+                  const SizedBox(width: 8),
+                  _PillButton(
+                    icon: Icons.delete_outline_rounded,
+                    label: 'Delete',
+                    onTap: onDelete,
                   ),
                 ],
               ),
@@ -413,6 +498,7 @@ class _MeetingPointEntry {
       if (message.deleted) continue;
       final point = _MeetingPoint.fromMessageText(message.text);
       if (point == null) continue;
+      if (point.isExpired) continue;
       result.add(_MeetingPointEntry(message: message, point: point));
     }
     return result.reversed.toList();
@@ -425,6 +511,7 @@ class _MeetingPoint {
     required this.latitude,
     required this.longitude,
     this.note = '',
+    this.expiresAt,
   });
 
   static const prefix = '::meshchat_meeting_v1::';
@@ -433,6 +520,12 @@ class _MeetingPoint {
   final double latitude;
   final double longitude;
   final String note;
+  final DateTime? expiresAt;
+
+  bool get isExpired {
+    final value = expiresAt;
+    return value != null && DateTime.now().toUtc().isAfter(value.toUtc());
+  }
 
   String get coordinateLabel {
     return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
@@ -455,6 +548,7 @@ class _MeetingPoint {
         latitude: lat,
         longitude: lng,
         note: raw['note']?.toString() ?? '',
+        expiresAt: DateTime.tryParse(raw['expires_at']?.toString() ?? ''),
       );
     } catch (_) {
       return null;
@@ -474,6 +568,7 @@ class _MeetingPoint {
           latitude: latitude,
           longitude: longitude,
           note: note,
+          routeOnOpen: route,
         ),
       ),
     );

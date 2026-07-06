@@ -10,6 +10,7 @@ import '../models/chat_thread.dart';
 import '../models/app_settings.dart';
 import '../models/profile.dart';
 import '../models/session.dart';
+import '../models/story_item.dart';
 import '../services/app_settings_store.dart';
 import '../services/ble_chat_service.dart';
 import '../services/call_service.dart';
@@ -19,6 +20,7 @@ import '../services/mesh_socket.dart';
 import '../services/notification_service.dart';
 import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
+import '../services/story_store.dart';
 
 enum CallStatus { ringing, outgoing, active, ended }
 
@@ -108,6 +110,7 @@ class AppController extends ChangeNotifier {
   final SessionStore _store = SessionStore();
   final AppSettingsStore _settingsStore = AppSettingsStore();
   final ChatCacheStore _cache = ChatCacheStore();
+  final StoryStore _storyStore = StoryStore();
   final MeshSocket _socket = MeshSocket();
   final MeshCrypto _crypto = MeshCrypto();
   final BleChatService ble = BleChatService();
@@ -118,6 +121,7 @@ class AppController extends ChangeNotifier {
   final Map<String, Profile> profiles = {};
   final Map<String, ChatThread> threads = {};
   final Map<String, ChatThread> groups = {};
+  final Map<String, StoryItem> stories = {};
   final Map<String, DateTime> typingUntil = {};
   final Map<String, String> activityKinds = {};
 
@@ -323,6 +327,18 @@ class AppController extends ChangeNotifier {
     return result;
   }
 
+  List<StoryItem> get activeStories {
+    final expired = stories.values.any((story) => story.expired);
+    if (expired) unawaited(_pruneStories());
+    final result = stories.values.where((story) => !story.expired).toList()
+      ..sort((a, b) {
+        if (a.ownerNode == myNodeId && b.ownerNode != myNodeId) return -1;
+        if (b.ownerNode == myNodeId && a.ownerNode != myNodeId) return 1;
+        return b.createdAt.compareTo(a.createdAt);
+      });
+    return result;
+  }
+
   List<ChatThread> _dedupeVisibleThreads(List<ChatThread> source) {
     final personal = <String, ChatThread>{};
     final result = <ChatThread>[];
@@ -485,6 +501,7 @@ class AppController extends ChangeNotifier {
     session = await _store.load();
     if (session != null) {
       await _cache.load(session!, profiles, threads, groups);
+      await _loadStories();
       await _repairCachedGroups();
       await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
@@ -593,6 +610,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      await _loadStories();
       await _repairCachedGroups();
       await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
@@ -628,6 +646,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      await _loadStories();
       await _repairCachedGroups();
       await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
@@ -734,6 +753,14 @@ class AppController extends ChangeNotifier {
         _applyPinPacket(packet);
       case 'typing':
         _applyTypingPacket(packet);
+      case 'story_update':
+        await _applyStoryPacket(packet);
+      case 'story_reaction':
+        await _applyStoryReactionPacket(packet);
+      case 'story_view':
+        await _applyStoryViewPacket(packet);
+      case 'story_delete':
+        await _applyStoryDeletePacket(packet);
       case 'chat_request':
         _acceptChatRequest(packet);
       case 'group_join_request':
@@ -912,6 +939,7 @@ class AppController extends ChangeNotifier {
     }
     _applyReactions(packet['reactions']);
     _applyPins(packet['pins']);
+    await _applyStories(packet['stories']);
     await _repairCachedGroups();
     await _repairCachedMessages();
     await _saveCache();
@@ -1175,9 +1203,7 @@ class AppController extends ChangeNotifier {
 
   bool _isLegacyGroupOwnerPlaceholder(String nodeId) {
     final value = nodeId.trim();
-    if (value.isEmpty || value == myNodeId || profiles.containsKey(value)) {
-      return false;
-    }
+    if (value.isEmpty || value == myNodeId) return false;
     final uuidLike = RegExp(
       r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
     ).hasMatch(value);
@@ -1187,7 +1213,10 @@ class AppController extends ChangeNotifier {
   List<String> _normalizedGroupMembers(Iterable<String> members) {
     final result = <String>{
       if (myNodeId.isNotEmpty) myNodeId,
-      ...members.where((id) => id.trim().isNotEmpty).map((id) => id.trim()),
+      ...members
+          .where((id) => id.trim().isNotEmpty)
+          .map((id) => id.trim())
+          .where((id) => !_isLegacyGroupOwnerPlaceholder(id)),
     }.toList();
     result.sort();
     return result;
@@ -1287,14 +1316,14 @@ class AppController extends ChangeNotifier {
     return thread;
   }
 
-  Future<void> sendGroupMessage(
+  Future<String?> sendGroupMessage(
     ChatThread group,
     String text, {
     ChatMessage? replyTo,
   }) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty || session == null || !group.isGroup) return;
-    if (group.isChannel && !_canPostToChannel(group)) return;
+    if (trimmed.isEmpty || session == null || !group.isGroup) return null;
+    if (group.isChannel && !_canPostToChannel(group)) return null;
     final id = const Uuid().v4();
     group.messages.add(
       ChatMessage(
@@ -1313,7 +1342,7 @@ class AppController extends ChangeNotifier {
     if (!_socket.isConnected) {
       status = 'Queued: waiting for server connection';
       notifyListeners();
-      return;
+      return id;
     }
 
     final groupKey = _getOrCreateGroupKey(group.groupId);
@@ -1366,6 +1395,7 @@ class AppController extends ChangeNotifier {
       });
     }
     _replaceMessage(id, (message) => message.copyWith(pending: false));
+    return id;
   }
 
   Future<void> _receiveGroupMessage(
@@ -1478,6 +1508,7 @@ class AppController extends ChangeNotifier {
   Future<void> _receiveGroupUpdate(Map<String, dynamic> packet) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
+    if (appSettings.deletedGroupIds.contains(groupId)) return;
     if (!appSettings.allowGroupInvites &&
         !groups.containsKey(groupId) &&
         packet['owner_node']?.toString() != myNodeId) {
@@ -1831,6 +1862,272 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<String?> publishStory({
+    required String text,
+    required String imageData,
+    required String videoData,
+    required String videoMime,
+    required StoryMediaType mediaType,
+    required StoryVisibility visibility,
+    required List<String> selectedNodeIds,
+    required List<String> excludedNodeIds,
+  }) async {
+    if (session == null) return 'No active session';
+    final trimmed = text.trim();
+    if (trimmed.isEmpty && imageData.isEmpty && videoData.isEmpty) {
+      return 'Story is empty';
+    }
+    final story = StoryItem(
+      id: const Uuid().v4(),
+      ownerNode: myNodeId,
+      ownerName: ownProfile.displayName,
+      ownerAvatarData: ownProfile.avatarData,
+      createdAt: DateTime.now(),
+      text: trimmed,
+      imageData: imageData,
+      videoData: videoData,
+      videoMime: videoMime,
+      mediaType: mediaType,
+      visibility: visibility,
+      allowedNodeIds: selectedNodeIds,
+      excludedNodeIds: excludedNodeIds,
+    );
+    stories[story.id] = story;
+    await _saveStories();
+    notifyListeners();
+
+    final recipients = _storyRecipients(
+      visibility: visibility,
+      selectedNodeIds: selectedNodeIds,
+      excludedNodeIds: excludedNodeIds,
+    );
+    final basePacket = {
+      'type': 'story_update',
+      'packet_id': story.id,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'ttl': 5,
+      'sender': session!.login,
+      'story': story.toJson(),
+    };
+    for (final recipient in recipients) {
+      _socket.send({...basePacket, 'destination_node': recipient});
+    }
+    return null;
+  }
+
+  Future<void> likeStory(StoryItem story) async {
+    if (session == null || story.ownerNode == myNodeId || story.expired) return;
+    final current = stories[story.id] ?? story;
+    final liked = current.likedByNodeIds.contains(myNodeId);
+    final nextLikes = current.likedByNodeIds
+        .where((id) => id != myNodeId)
+        .toList();
+    if (!liked) nextLikes.add(myNodeId);
+    stories[story.id] = current.copyWith(likedByNodeIds: nextLikes);
+    await _saveStories();
+    notifyListeners();
+    _socket.send({
+      'type': 'story_reaction',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': story.ownerNode,
+      'ttl': 5,
+      'sender': session!.login,
+      'story_id': story.id,
+      'reaction': 'heart',
+      'liked': !liked,
+    });
+  }
+
+  Future<void> markStoryViewed(StoryItem story) async {
+    if (session == null || story.ownerNode == myNodeId || story.expired) return;
+    final current = stories[story.id] ?? story;
+    if (current.viewedByNodeIds.contains(myNodeId)) return;
+    final nextViews = [...current.viewedByNodeIds, myNodeId];
+    stories[story.id] = current.copyWith(viewedByNodeIds: nextViews);
+    await _saveStories();
+    notifyListeners();
+    _socket.send({
+      'type': 'story_view',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': story.ownerNode,
+      'ttl': 5,
+      'sender': session!.login,
+      'story_id': story.id,
+    });
+  }
+
+  Future<String?> deleteStory(StoryItem story) async {
+    if (session == null) return 'No active session';
+    if (story.ownerNode != myNodeId) return 'Only your story can be deleted';
+    stories.remove(story.id);
+    await _saveStories();
+    notifyListeners();
+
+    final recipients = _storyRecipients(
+      visibility: story.visibility,
+      selectedNodeIds: story.allowedNodeIds,
+      excludedNodeIds: story.excludedNodeIds,
+    )..add('SERVER');
+    final basePacket = {
+      'type': 'story_delete',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'ttl': 5,
+      'sender': session!.login,
+      'story_id': story.id,
+    };
+    for (final recipient in recipients) {
+      _socket.send({...basePacket, 'destination_node': recipient});
+    }
+    return null;
+  }
+
+  Set<String> _storyRecipients({
+    required StoryVisibility visibility,
+    required List<String> selectedNodeIds,
+    required List<String> excludedNodeIds,
+  }) {
+    final known = <String>{};
+    final chatPeers = <String>{};
+    for (final profile in profiles.values) {
+      if (_canTargetStory(profile.nodeId)) known.add(profile.nodeId);
+    }
+    for (final thread in threads.values) {
+      if (_canTargetStory(thread.profile.nodeId)) {
+        known.add(thread.profile.nodeId);
+        chatPeers.add(thread.profile.nodeId);
+      }
+    }
+    if (visibility == StoryVisibility.chats) return chatPeers;
+    if (visibility == StoryVisibility.selected) {
+      return selectedNodeIds.where(_canTargetStory).toSet();
+    }
+    if (visibility == StoryVisibility.excluded) {
+      final excluded = excludedNodeIds.toSet();
+      return known.where((nodeId) => !excluded.contains(nodeId)).toSet();
+    }
+    return known;
+  }
+
+  bool _canTargetStory(String nodeId) {
+    return nodeId.isNotEmpty &&
+        nodeId != myNodeId &&
+        !nodeId.startsWith('group:') &&
+        !nodeId.startsWith('saved:') &&
+        !isBlocked(nodeId);
+  }
+
+  Future<void> _applyStoryPacket(Map<String, dynamic> packet) async {
+    final raw = packet['story'];
+    if (raw is! Map) return;
+    final story = StoryItem.fromJson(Map<String, dynamic>.from(raw));
+    if (story.id.isEmpty ||
+        story.ownerNode.isEmpty ||
+        story.ownerNode == myNodeId ||
+        story.expired ||
+        isBlocked(story.ownerNode)) {
+      return;
+    }
+    stories[story.id] = story;
+    final owner = profiles[story.ownerNode];
+    profiles[story.ownerNode] =
+        (owner ??
+                Profile(nodeId: story.ownerNode, displayName: story.ownerName))
+            .copyWith(
+              displayName: story.ownerName,
+              avatarData: story.ownerAvatarData.isNotEmpty
+                  ? story.ownerAvatarData
+                  : null,
+            );
+    await _saveStories();
+  }
+
+  Future<void> _applyStories(dynamic rawStories) async {
+    if (rawStories is! List) return;
+    var changed = false;
+    final incomingIds = <String>{};
+    for (final raw in rawStories) {
+      if (raw is! Map) continue;
+      final story = StoryItem.fromJson(Map<String, dynamic>.from(raw));
+      if (story.id.isEmpty || story.ownerNode.isEmpty || story.expired) {
+        continue;
+      }
+      if (story.ownerNode != myNodeId && isBlocked(story.ownerNode)) continue;
+      incomingIds.add(story.id);
+      stories[story.id] = story;
+      changed = true;
+    }
+    final before = stories.length;
+    stories.removeWhere((storyId, story) => !incomingIds.contains(storyId));
+    if (before != stories.length) changed = true;
+    if (changed) await _saveStories();
+  }
+
+  Future<void> _applyStoryReactionPacket(Map<String, dynamic> packet) async {
+    final storyId = packet['story_id']?.toString() ?? '';
+    final reactor = packet['source_node']?.toString() ?? '';
+    if (storyId.isEmpty || reactor.isEmpty || isBlocked(reactor)) return;
+    final story = stories[storyId];
+    if (story == null) return;
+    final liked = packet['liked'] != false;
+    final nextLikes = story.likedByNodeIds
+        .where((nodeId) => nodeId != reactor)
+        .toList();
+    if (liked) nextLikes.add(reactor);
+    stories[storyId] = story.copyWith(likedByNodeIds: nextLikes);
+    await _saveStories();
+  }
+
+  Future<void> _applyStoryViewPacket(Map<String, dynamic> packet) async {
+    final storyId = packet['story_id']?.toString() ?? '';
+    final viewer = packet['source_node']?.toString() ?? '';
+    if (storyId.isEmpty || viewer.isEmpty || isBlocked(viewer)) return;
+    final story = stories[storyId];
+    if (story == null || story.ownerNode != myNodeId) return;
+    if (story.viewedByNodeIds.contains(viewer)) return;
+    stories[storyId] = story.copyWith(
+      viewedByNodeIds: [...story.viewedByNodeIds, viewer],
+    );
+    await _saveStories();
+  }
+
+  Future<void> _applyStoryDeletePacket(Map<String, dynamic> packet) async {
+    final storyId = packet['story_id']?.toString() ?? '';
+    final source = packet['source_node']?.toString() ?? '';
+    if (storyId.isEmpty || source.isEmpty) return;
+    final story = stories[storyId];
+    if (story == null || story.ownerNode != source) return;
+    stories.remove(storyId);
+    await _saveStories();
+  }
+
+  Future<void> _loadStories() async {
+    final current = session;
+    stories.clear();
+    if (current == null) return;
+    stories.addAll(await _storyStore.load(current));
+    await _pruneStories();
+  }
+
+  Future<void> _saveStories() async {
+    await _storyStore.save(session, stories.values);
+  }
+
+  Future<void> _pruneStories() async {
+    final before = stories.length;
+    stories.removeWhere((_, story) => story.expired);
+    if (before != stories.length) {
+      await _saveStories();
+      notifyListeners();
+    }
+  }
+
   Future<void> deleteThread(ChatThread thread) async {
     if (thread.isGroup) {
       if (thread.groupId.isNotEmpty) {
@@ -1860,8 +2157,13 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> deleteThreadForEveryone(ChatThread thread) async {
-    if (session == null) return;
+  Future<String?> deleteThreadForEveryone(ChatThread thread) async {
+    if (session == null) return 'No active session';
+    if (thread.isGroup && !_ownsGroup(thread)) {
+      return thread.isChannel
+          ? 'Only channel owner can delete it'
+          : 'Only group owner can delete it';
+    }
     final packetBase = {
       'type': thread.isGroup ? 'group_delete' : 'chat_delete',
       'packet_id': const Uuid().v4(),
@@ -1885,6 +2187,45 @@ class AppController extends ChangeNotifier {
       });
     }
     await deleteThread(thread);
+    return null;
+  }
+
+  Future<String?> leaveGroup(ChatThread group) async {
+    if (session == null) return 'No active session';
+    if (!group.isGroup) return 'This is not a group';
+    if (_ownsGroup(group)) {
+      return group.isChannel
+          ? 'Channel owner can delete the channel instead'
+          : 'Group owner can delete the group instead';
+    }
+    final groupId = group.groupId;
+    if (groupId.isEmpty) return 'Group id is empty';
+    final remaining =
+        group.members
+            .where((member) => member.isNotEmpty && member != myNodeId)
+            .where((member) => !_isLegacyGroupOwnerPlaceholder(member))
+            .toSet()
+            .toList()
+          ..sort();
+    group.members
+      ..clear()
+      ..addAll(remaining);
+    group.admins.remove(myNodeId);
+    await _publishGroupUpdate(group, rotateKey: true);
+    await _rememberDeletedGroup(groupId);
+    groups.remove(groupId);
+    _groupKeys.remove(groupId);
+    typingUntil.remove(groupId);
+    activityKinds.remove(groupId);
+    await _rewriteCache();
+    notifyListeners();
+    return null;
+  }
+
+  bool _ownsGroup(ChatThread thread) {
+    if (!thread.isGroup) return false;
+    final owner = thread.ownerNode.trim();
+    return owner.isEmpty || owner == myNodeId;
   }
 
   Future<void> _applyThreadDeletePacket(Map<String, dynamic> packet) async {
@@ -1894,6 +2235,8 @@ class AppController extends ChangeNotifier {
     if (groupId.isNotEmpty) {
       final group = groups[groupId];
       if (group == null || !group.members.contains(source)) return;
+      final owner = group.ownerNode.trim();
+      if (owner.isNotEmpty && source != owner) return;
       await _rememberDeletedGroup(groupId);
       groups.remove(groupId);
       _groupKeys.remove(groupId);
@@ -4196,6 +4539,7 @@ class AppController extends ChangeNotifier {
     threads.clear();
     groups.clear();
     groupJoinRequests.clear();
+    stories.clear();
     typingUntil.clear();
     activityKinds.clear();
     _incomingFiles.clear();

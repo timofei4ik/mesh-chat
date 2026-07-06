@@ -331,6 +331,45 @@ class ServerStorageMixin:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS server_stories(
+                story_id TEXT PRIMARY KEY,
+                owner_node TEXT,
+                owner_login TEXT,
+                story_json TEXT NOT NULL,
+                recipients_json TEXT DEFAULT '[]',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS server_story_reactions(
+                story_id TEXT,
+                reactor_node TEXT,
+                reactor_login TEXT,
+                reaction TEXT,
+                liked INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(story_id, reactor_node, reaction)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS server_story_views(
+                story_id TEXT,
+                viewer_node TEXT,
+                viewer_login TEXT,
+                viewed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(story_id, viewer_node)
+            )
+            """
+        )
+
         cursor = conn.execute(
             "PRAGMA table_info(server_pins)"
         )
@@ -1180,6 +1219,191 @@ class ServerStorageMixin:
                 packet.get("avatar_data"),
                 packet.get("encryption_public_key")
             )
+
+        elif packet_type == "story_update":
+
+            story = packet.get("story")
+            if not isinstance(story, dict):
+                return
+
+            story_id = story.get("id") or packet.get("packet_id")
+            owner_node = story.get("owner_node") or packet.get("source_node")
+            destination_node = packet.get("destination_node")
+
+            if not story_id or not owner_node:
+                return
+
+            cursor = self.db.cursor()
+            cursor.execute(
+                """
+                SELECT recipients_json
+                FROM server_stories
+                WHERE story_id=?
+                """,
+                (
+                    story_id,
+                )
+            )
+            row = cursor.fetchone()
+            recipients = set()
+            if row:
+                try:
+                    recipients.update(json.loads(row[0] or "[]"))
+                except json.JSONDecodeError:
+                    pass
+            if destination_node and destination_node != "SERVER":
+                recipients.add(destination_node)
+            recipients.add(owner_node)
+
+            self.db.execute(
+                """
+                INSERT INTO server_stories(
+                    story_id,
+                    owner_node,
+                    owner_login,
+                    story_json,
+                    recipients_json,
+                    created_at
+                )
+                VALUES(?,?,?,?,?,STRFTIME('%Y-%m-%d %H:%M:%f','now'))
+                ON CONFLICT(story_id) DO UPDATE SET
+                    story_json=excluded.story_json,
+                    recipients_json=excluded.recipients_json
+                """,
+                (
+                    story_id,
+                    owner_node,
+                    self.get_login_by_node(owner_node),
+                    json.dumps(story, ensure_ascii=False),
+                    json.dumps(sorted(recipients), ensure_ascii=False)
+                )
+            )
+
+            self.db.commit()
+
+        elif packet_type == "story_reaction":
+
+            story_id = packet.get("story_id")
+            reactor_node = packet.get("source_node")
+            reaction = packet.get("reaction") or "heart"
+
+            if not story_id or not reactor_node:
+                return
+
+            if packet.get("liked") is False:
+                self.db.execute(
+                    """
+                    DELETE FROM server_story_reactions
+                    WHERE story_id=?
+                      AND reactor_node=?
+                      AND reaction=?
+                    """,
+                    (
+                        story_id,
+                        reactor_node,
+                        reaction
+                    )
+                )
+            else:
+                self.db.execute(
+                    """
+                    INSERT INTO server_story_reactions(
+                        story_id,
+                        reactor_node,
+                        reactor_login,
+                        reaction,
+                        liked,
+                        created_at
+                    )
+                    VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)
+                    ON CONFLICT(story_id, reactor_node, reaction)
+                    DO UPDATE SET
+                        liked=1,
+                        created_at=CURRENT_TIMESTAMP
+                    """,
+                    (
+                        story_id,
+                        reactor_node,
+                        self.get_login_by_node(reactor_node),
+                        reaction
+                    )
+                )
+
+            self.db.commit()
+
+        elif packet_type == "story_view":
+
+            story_id = packet.get("story_id")
+            viewer_node = packet.get("source_node")
+
+            if not story_id or not viewer_node:
+                return
+
+            self.db.execute(
+                """
+                INSERT INTO server_story_views(
+                    story_id,
+                    viewer_node,
+                    viewer_login,
+                    viewed_at
+                )
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(story_id, viewer_node)
+                DO UPDATE SET
+                    viewed_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    story_id,
+                    viewer_node,
+                    self.get_login_by_node(viewer_node)
+                )
+            )
+
+            self.db.commit()
+
+        elif packet_type == "story_delete":
+
+            story_id = packet.get("story_id")
+            owner_node = packet.get("source_node")
+
+            if not story_id or not owner_node:
+                return
+
+            cursor = self.db.cursor()
+            cursor.execute(
+                """
+                SELECT owner_node
+                FROM server_stories
+                WHERE story_id=?
+                """,
+                (
+                    story_id,
+                )
+            )
+            row = cursor.fetchone()
+            if row and row[0] != owner_node:
+                return
+
+            self.db.execute(
+                "DELETE FROM server_stories WHERE story_id=?",
+                (
+                    story_id,
+                )
+            )
+            self.db.execute(
+                "DELETE FROM server_story_reactions WHERE story_id=?",
+                (
+                    story_id,
+                )
+            )
+            self.db.execute(
+                "DELETE FROM server_story_views WHERE story_id=?",
+                (
+                    story_id,
+                )
+            )
+
+            self.db.commit()
 
         elif packet_type == "message_edit":
 

@@ -140,7 +140,15 @@ class CallService {
     peerConnection.onAddStream = _attachRemoteAudio;
 
     final stream = await navigator.mediaDevices.getUserMedia({
-      'audio': true,
+      'audio': {
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+        'googEchoCancellation': true,
+        'googAutoGainControl': true,
+        'googNoiseSuppression': true,
+        'googHighpassFilter': true,
+      },
       'video': false,
     });
     for (final track in stream.getAudioTracks()) {

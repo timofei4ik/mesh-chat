@@ -7,10 +7,12 @@ import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../controllers/app_controller.dart';
+import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
+import 'meeting_point_map_page.dart';
 import 'profile_page.dart';
 
 class GroupInfoPage extends StatelessWidget {
@@ -232,6 +234,149 @@ class GroupInfoPage extends StatelessWidget {
     if (error != null) _showSnack(context, error);
   }
 
+  Future<void> openMemberMap(BuildContext context) async {
+    final locations = _latestSharedLocations();
+    final meetingPoints = _meetingPoints();
+    final firstLocation = locations.isNotEmpty
+        ? locations.first.location
+        : null;
+    final firstMeeting = meetingPoints.isNotEmpty
+        ? meetingPoints.first.point
+        : null;
+    final initialLat =
+        firstLocation?.latitude ?? firstMeeting?.latitude ?? 59.934300;
+    final initialLng =
+        firstLocation?.longitude ?? firstMeeting?.longitude ?? 30.335100;
+    final result = await Navigator.push<Object?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeetingPointMapPage(
+          title: '${thread.profile.displayName} map',
+          latitude: initialLat,
+          longitude: initialLng,
+          allowMeetingPointCreation: true,
+          pins: [
+            for (final entry in locations)
+              MeetingPointMapPin(
+                title: _profileFor(entry.nodeId).displayName,
+                latitude: entry.location.latitude,
+                longitude: entry.location.longitude,
+                note: entry.location.coordinateLabel,
+                senderName: _profileFor(entry.nodeId).publicUsername.isEmpty
+                    ? ''
+                    : '@${_profileFor(entry.nodeId).publicUsername}',
+                timestamp: _formatLocationTime(entry.createdAt),
+                messageId: entry.messageId,
+              ),
+            for (final entry in meetingPoints)
+              MeetingPointMapPin(
+                title: entry.point.title,
+                latitude: entry.point.latitude,
+                longitude: entry.point.longitude,
+                note: 'Meeting point',
+                senderName: _profileFor(entry.nodeId).displayName,
+                timestamp: _formatLocationTime(entry.createdAt),
+                messageId: entry.messageId,
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || result == null) return;
+    if (result is String && result.isNotEmpty) {
+      Navigator.pop(context, result);
+      return;
+    }
+    if (result is MeetingPointMapDeleteResult) {
+      await _deleteMapMessage(context, result.messageId);
+      return;
+    }
+    if (result is MeetingPointMapResult) {
+      final name = controller.ownProfile.displayName.trim().isEmpty
+          ? 'Member'
+          : controller.ownProfile.displayName.trim();
+      await controller.sendGroupMessage(
+        thread,
+        _MeetingPointProposal(
+          title: '$name suggests meeting here',
+          latitude: result.latitude,
+          longitude: result.longitude,
+          expiresAt: DateTime.now().toUtc().add(const Duration(hours: 2)),
+        ).toMessageText(),
+      );
+      if (!context.mounted) return;
+      _showSnack(context, 'Meeting point sent');
+    }
+  }
+
+  Future<void> _deleteMapMessage(BuildContext context, String messageId) async {
+    final message = _messageById(messageId);
+    if (message == null) {
+      _showSnack(context, 'Message not found');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete map message?'),
+        content: const Text('This will delete the location or meeting point.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    await controller.deleteMessage(thread, message);
+    if (!context.mounted) return;
+    _showSnack(context, 'Deleted');
+  }
+
+  Future<void> leaveOrDelete(BuildContext context) async {
+    final isOwner = _isOwner;
+    final title = isOwner
+        ? (thread.isChannel ? 'Delete channel?' : 'Delete group?')
+        : (thread.isChannel ? 'Leave channel?' : 'Leave group?');
+    final content = isOwner
+        ? 'This removes it for everyone. This action cannot be undone.'
+        : 'It will disappear from your chats and will not be restored after relogin.';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(isOwner ? 'Delete' : 'Leave'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final error = isOwner
+        ? await controller.deleteThreadForEveryone(thread)
+        : await controller.leaveGroup(thread);
+    if (!context.mounted) return;
+    _showSnack(context, error ?? (isOwner ? 'Deleted' : 'Left'));
+    if (error == null) {
+      final navigator = Navigator.of(context);
+      navigator.pop();
+      if (navigator.canPop()) navigator.pop();
+    }
+  }
+
   Future<void> editGroupProfile(BuildContext context) async {
     var avatarData = thread.profile.avatarData;
     final nameInput = TextEditingController(text: thread.profile.displayName);
@@ -314,6 +459,7 @@ class GroupInfoPage extends StatelessWidget {
       listenable: controller,
       builder: (context, _) {
         final effectiveOwnerNode = _effectiveOwnerNode();
+        final visibleMemberSet = <String>{};
         final members = thread.members
             .where((nodeId) => nodeId.isNotEmpty)
             .where(
@@ -321,6 +467,7 @@ class GroupInfoPage extends StatelessWidget {
                   nodeId == effectiveOwnerNode ||
                   !_isLegacyOwnerPlaceholder(nodeId),
             )
+            .where(visibleMemberSet.add)
             .toSet()
             .toList();
         if (effectiveOwnerNode.isNotEmpty &&
@@ -390,6 +537,12 @@ class GroupInfoPage extends StatelessWidget {
                               icon: Icons.call_outlined,
                               label: 'Call',
                               onTap: () => startGroupCall(context),
+                            ),
+                          if (!thread.isChannel)
+                            _GroupActionButton(
+                              icon: Icons.map_outlined,
+                              label: 'Map',
+                              onTap: () => openMemberMap(context),
                             ),
                           _GroupActionButton(
                             icon: Icons.perm_media_outlined,
@@ -532,6 +685,32 @@ class GroupInfoPage extends StatelessWidget {
                     ),
                   );
                 }),
+              const SizedBox(height: 14),
+              _GroupGlassSurface(
+                radius: 22,
+                child: ListTile(
+                  leading: Icon(
+                    isOwner ? Icons.delete_forever_outlined : Icons.logout,
+                    color: Colors.redAccent,
+                  ),
+                  title: Text(
+                    isOwner
+                        ? (thread.isChannel ? 'Delete channel' : 'Delete group')
+                        : (thread.isChannel ? 'Leave channel' : 'Leave group'),
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  subtitle: Text(
+                    isOwner
+                        ? 'Only owner can delete it for everyone'
+                        : 'You will not be added back after relogin',
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                  onTap: () => leaveOrDelete(context),
+                ),
+              ),
             ],
           ),
         );
@@ -561,15 +740,16 @@ class GroupInfoPage extends StatelessWidget {
 
   bool _isLegacyOwnerPlaceholder(String nodeId) {
     final value = nodeId.trim();
-    if (value.isEmpty ||
-        value == controller.myNodeId ||
-        controller.profiles.containsKey(value)) {
-      return false;
-    }
+    if (value.isEmpty || value == controller.myNodeId) return false;
     final uuidLike = RegExp(
       r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
     ).hasMatch(value);
     return !uuidLike && value.length <= 12;
+  }
+
+  bool get _isOwner {
+    final owner = _effectiveOwnerNode();
+    return owner.isEmpty || owner == controller.myNodeId;
   }
 
   String _roleFor(String nodeId) {
@@ -578,10 +758,202 @@ class GroupInfoPage extends StatelessWidget {
     return '';
   }
 
+  List<_SharedLocationEntry> _latestSharedLocations() {
+    final allowedMembers = thread.members.toSet()..add(controller.myNodeId);
+    final owner = _effectiveOwnerNode();
+    if (owner.isNotEmpty) allowedMembers.add(owner);
+    final latest = <String, _SharedLocationEntry>{};
+    for (final message in thread.messages) {
+      if (message.deleted) continue;
+      if (allowedMembers.isNotEmpty &&
+          !allowedMembers.contains(message.senderNode)) {
+        continue;
+      }
+      final location = _SharedLocation.fromMessageText(message.text);
+      if (location == null) continue;
+      if (location.isExpired) continue;
+      final previous = latest[message.senderNode];
+      if (previous == null || message.createdAt.isAfter(previous.createdAt)) {
+        latest[message.senderNode] = _SharedLocationEntry(
+          nodeId: message.senderNode,
+          messageId: message.id,
+          location: location,
+          createdAt: message.createdAt,
+        );
+      }
+    }
+    final result = latest.values.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
+  }
+
+  List<_MeetingPointEntry> _meetingPoints() {
+    final result = <_MeetingPointEntry>[];
+    for (final message in thread.messages) {
+      if (message.deleted) continue;
+      final point = _MeetingPointProposal.fromMessageText(message.text);
+      if (point == null) continue;
+      if (point.isExpired) continue;
+      result.add(
+        _MeetingPointEntry(
+          nodeId: message.senderNode,
+          messageId: message.id,
+          point: point,
+          createdAt: message.createdAt,
+        ),
+      );
+    }
+    result.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
+  }
+
+  ChatMessage? _messageById(String id) {
+    for (final message in thread.messages) {
+      if (message.id == id) return message;
+    }
+    return null;
+  }
+
+  static String _formatLocationTime(DateTime value) {
+    final local = value.toLocal();
+    return '${local.day.toString().padLeft(2, '0')}.'
+        '${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
   void _showSnack(BuildContext context, String message) {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _SharedLocationEntry {
+  const _SharedLocationEntry({
+    required this.nodeId,
+    required this.messageId,
+    required this.location,
+    required this.createdAt,
+  });
+
+  final String nodeId;
+  final String messageId;
+  final _SharedLocation location;
+  final DateTime createdAt;
+}
+
+class _MeetingPointEntry {
+  const _MeetingPointEntry({
+    required this.nodeId,
+    required this.messageId,
+    required this.point,
+    required this.createdAt,
+  });
+
+  final String nodeId;
+  final String messageId;
+  final _MeetingPointProposal point;
+  final DateTime createdAt;
+}
+
+class _MeetingPointProposal {
+  const _MeetingPointProposal({
+    required this.title,
+    required this.latitude,
+    required this.longitude,
+    this.expiresAt,
+  });
+
+  static const prefix = '::meshchat_meeting_v1::';
+
+  final String title;
+  final double latitude;
+  final double longitude;
+  final DateTime? expiresAt;
+
+  bool get isExpired {
+    final value = expiresAt;
+    return value != null && DateTime.now().toUtc().isAfter(value.toUtc());
+  }
+
+  String toMessageText() {
+    return '$prefix${jsonEncode({'title': title.trim().isEmpty ? 'Meeting point' : title.trim(), 'lat': latitude, 'lng': longitude, 'note': '', if (expiresAt != null) 'expires_at': expiresAt!.toUtc().toIso8601String()})}';
+  }
+
+  static _MeetingPointProposal? fromMessageText(String text) {
+    if (!text.startsWith(prefix)) return null;
+    try {
+      final raw = jsonDecode(text.substring(prefix.length));
+      if (raw is! Map) return null;
+      final lat = double.tryParse(raw['lat']?.toString() ?? '');
+      final lng = double.tryParse(raw['lng']?.toString() ?? '');
+      if (lat == null ||
+          lng == null ||
+          lat < -90 ||
+          lat > 90 ||
+          lng < -180 ||
+          lng > 180) {
+        return null;
+      }
+      final title = raw['title']?.toString().trim() ?? '';
+      return _MeetingPointProposal(
+        title: title.isEmpty ? 'Meeting point' : title,
+        latitude: lat,
+        longitude: lng,
+        expiresAt: DateTime.tryParse(raw['expires_at']?.toString() ?? ''),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class _SharedLocation {
+  const _SharedLocation({
+    required this.latitude,
+    required this.longitude,
+    this.expiresAt,
+  });
+
+  static const prefix = '::meshchat_location_v1::';
+
+  final double latitude;
+  final double longitude;
+  final DateTime? expiresAt;
+
+  bool get isExpired {
+    final value = expiresAt;
+    return value != null && DateTime.now().toUtc().isAfter(value.toUtc());
+  }
+
+  String get coordinateLabel {
+    return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+  }
+
+  static _SharedLocation? fromMessageText(String text) {
+    if (!text.startsWith(prefix)) return null;
+    try {
+      final raw = jsonDecode(text.substring(prefix.length));
+      if (raw is! Map) return null;
+      final lat = double.tryParse(raw['lat']?.toString() ?? '');
+      final lng = double.tryParse(raw['lng']?.toString() ?? '');
+      if (lat == null ||
+          lng == null ||
+          lat < -90 ||
+          lat > 90 ||
+          lng < -180 ||
+          lng > 180) {
+        return null;
+      }
+      return _SharedLocation(
+        latitude: lat,
+        longitude: lng,
+        expiresAt: DateTime.tryParse(raw['expires_at']?.toString() ?? ''),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
 
