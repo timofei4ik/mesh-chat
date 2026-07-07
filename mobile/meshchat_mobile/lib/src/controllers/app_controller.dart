@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/chat_message.dart';
@@ -137,6 +138,7 @@ class AppController extends ChangeNotifier {
   DateTime? lastSyncAt;
   String? error;
   Completer<Profile?>? _lookupCompleter;
+  bool _lookupSendRequest = true;
   Completer<String?>? _profileUpdateCompleter;
   Completer<List<ActiveDevice>>? _activeDevicesCompleter;
   String _webPushVapidPublicKey = '';
@@ -298,12 +300,19 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  void _applyProfileToThreads(Profile profile) {
+    for (final thread in threads.values) {
+      if (thread.isGroup || thread.profile.nodeId != profile.nodeId) continue;
+      thread.profile = profile;
+    }
+  }
+
   List<ChatThread> get sortedThreads {
     final result = _dedupeVisibleThreads(
       [
         ...threads.values,
         ...groups.values,
-      ].where((thread) => !thread.archived).toList(),
+      ].where((thread) => !thread.archived && !thread.isSecret).toList(),
     );
     result.sort((a, b) {
       if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
@@ -319,7 +328,7 @@ class AppController extends ChangeNotifier {
       [
         ...threads.values,
         ...groups.values,
-      ].where((thread) => thread.archived).toList(),
+      ].where((thread) => thread.archived && !thread.isSecret).toList(),
     );
     result.sort((a, b) {
       final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
@@ -366,7 +375,9 @@ class AppController extends ChangeNotifier {
     final personal = <String, ChatThread>{};
     final result = <ChatThread>[];
     for (final thread in source) {
-      if (thread.isGroup || isSavedMessagesProfile(thread.profile)) {
+      if (thread.isGroup ||
+          thread.chatKind != 'normal' ||
+          isSavedMessagesProfile(thread.profile)) {
         result.add(thread);
         continue;
       }
@@ -383,6 +394,7 @@ class AppController extends ChangeNotifier {
   }
 
   String _threadIdentityKey(ChatThread thread) {
+    if (thread.chatKind != 'normal') return thread.storageKey;
     final profile = thread.profile;
     final username = profile.publicUsername.trim().toLowerCase();
     if (username.isNotEmpty) return 'username:$username';
@@ -409,13 +421,13 @@ class AppController extends ChangeNotifier {
   }
 
   bool isTyping(ChatThread thread) {
-    final key = thread.isGroup ? thread.groupId : thread.profile.nodeId;
+    final key = thread.isGroup ? thread.groupId : thread.storageKey;
     final until = typingUntil[key];
     return until != null && until.isAfter(DateTime.now());
   }
 
   String activityLabel(ChatThread thread) {
-    final key = thread.isGroup ? thread.groupId : thread.profile.nodeId;
+    final key = thread.isGroup ? thread.groupId : thread.storageKey;
     final until = typingUntil[key];
     if (until == null || !until.isAfter(DateTime.now())) return '';
     return activityKinds[key] == 'voice' ? 'recording voice...' : 'typing...';
@@ -507,9 +519,7 @@ class AppController extends ChangeNotifier {
   }
 
   String _threadReadKey(ChatThread thread) {
-    return thread.isGroup
-        ? 'group:${thread.groupId}'
-        : 'chat:${thread.profile.nodeId}';
+    return thread.storageKey;
   }
 
   bool _isThreadActive(ChatThread thread) {
@@ -823,9 +833,7 @@ class AppController extends ChangeNotifier {
       if (username.isNotEmpty) onlineUsernames.add(username);
       final onlineProfile = _mergeProfile(profile, online: true);
       profiles[profile.nodeId] = onlineProfile;
-      if (threads.containsKey(profile.nodeId)) {
-        threads[profile.nodeId]!.profile = onlineProfile;
-      }
+      _applyProfileToThreads(onlineProfile);
     }
     for (final entry in profiles.entries.toList()) {
       final username = entry.value.publicUsername.trim().toLowerCase();
@@ -834,12 +842,10 @@ class AppController extends ChangeNotifier {
           (username.isNotEmpty && onlineUsernames.contains(username));
       if (!online) {
         profiles[entry.key] = entry.value.copyWith(online: false);
-        if (threads.containsKey(entry.key)) {
-          threads[entry.key]!.profile = profiles[entry.key]!;
-        }
-      } else if (threads.containsKey(entry.key)) {
+        _applyProfileToThreads(profiles[entry.key]!);
+      } else {
         profiles[entry.key] = entry.value.copyWith(online: true);
-        threads[entry.key]!.profile = profiles[entry.key]!;
+        _applyProfileToThreads(profiles[entry.key]!);
       }
     }
     unawaited(_saveCache());
@@ -875,9 +881,7 @@ class AppController extends ChangeNotifier {
             profiles[profile.nodeId] ?? threads[profile.nodeId]?.profile;
         final merged = _mergeProfile(profile, online: current?.online ?? false);
         profiles[profile.nodeId] = merged;
-        if (threads.containsKey(profile.nodeId)) {
-          threads[profile.nodeId]!.profile = merged;
-        }
+        _applyProfileToThreads(merged);
       }
     }
 
@@ -913,7 +917,8 @@ class AppController extends ChangeNotifier {
                 : (data['sender_name']?.toString() ?? peerId.substring(0, 8)),
           );
       profiles[peerId] = _mergeProfile(profile);
-      final thread = _ensureThread(profile);
+      _applyProfileToThreads(profiles[peerId]!);
+      final thread = _ensurePacketThread(profiles[peerId]!, data);
       final id = data['message_id']?.toString() ?? const Uuid().v4();
       if (_isDeletedMessage(id)) continue;
       if (thread.messages.any((message) => message.id == id)) continue;
@@ -968,9 +973,13 @@ class AppController extends ChangeNotifier {
     await _saveCache();
   }
 
-  Future<Profile?> lookupUsername(String username) async {
+  Future<Profile?> lookupUsername(
+    String username, {
+    bool sendRequest = true,
+  }) async {
     if (_lookupCompleter != null) return null;
     _lookupCompleter = Completer<Profile?>();
+    _lookupSendRequest = sendRequest;
     _socket.send({
       'type': 'username_lookup',
       'source_node': myNodeId,
@@ -1560,7 +1569,9 @@ class AppController extends ChangeNotifier {
 
   void _handleLookup(Map<String, dynamic> packet) {
     final completer = _lookupCompleter;
+    final sendRequest = _lookupSendRequest;
     _lookupCompleter = null;
+    _lookupSendRequest = true;
     if (completer == null ||
         packet['ok'] != true ||
         packet['profile'] is! Map) {
@@ -1571,21 +1582,22 @@ class AppController extends ChangeNotifier {
       Map<String, dynamic>.from(packet['profile'] as Map),
     );
     profiles[profile.nodeId] = profile;
-    _ensureThread(profile);
     unawaited(_saveCache());
-    _socket.send({
-      'type': 'chat_request',
-      'packet_id': const Uuid().v4(),
-      'protocol_version': MeshSocket.protocolVersion,
-      'source_node': myNodeId,
-      'destination_node': profile.nodeId,
-      'ttl': 5,
-      'from_name': session!.login,
-      'from_node_id': myNodeId,
-      'sender_ip': 'SERVER',
-      'sender_port': 0,
-      'sender_transport': 'server',
-    });
+    if (sendRequest) {
+      _socket.send({
+        'type': 'chat_request',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': profile.nodeId,
+        'ttl': 5,
+        'from_name': session!.login,
+        'from_node_id': myNodeId,
+        'sender_ip': 'SERVER',
+        'sender_port': 0,
+        'sender_transport': 'server',
+      });
+    }
     completer.complete(profile);
   }
 
@@ -2244,10 +2256,14 @@ class AppController extends ChangeNotifier {
         );
       }
     } else {
-      threads.remove(thread.profile.nodeId);
-      profiles.remove(thread.profile.nodeId);
+      threads.removeWhere((key, value) => identical(value, thread));
+      if (!threads.values.any(
+        (item) => item.profile.nodeId == thread.profile.nodeId,
+      )) {
+        profiles.remove(thread.profile.nodeId);
+      }
     }
-    final activityKey = thread.isGroup ? thread.groupId : thread.profile.nodeId;
+    final activityKey = thread.isGroup ? thread.groupId : thread.storageKey;
     typingUntil.remove(activityKey);
     activityKinds.remove(activityKey);
     await _rewriteCache();
@@ -2270,6 +2286,8 @@ class AppController extends ChangeNotifier {
       'sender': session!.login,
       'group_id': thread.groupId,
       'chat_node_id': thread.profile.nodeId,
+      'chat_kind': thread.chatKind,
+      'chat_id': thread.threadId,
     };
     final recipients = thread.isGroup
         ? thread.members
@@ -2341,12 +2359,19 @@ class AppController extends ChangeNotifier {
       activityKinds.remove(groupId);
     } else {
       final chatNodeId = packet['chat_node_id']?.toString() ?? source;
-      final thread = threads[chatNodeId] ?? threads[source];
+      final chatId = packet['chat_id']?.toString() ?? '';
+      final thread = chatId.isNotEmpty
+          ? threads[chatId]
+          : (threads[chatNodeId] ?? threads[source]);
       if (thread == null) return;
-      threads.remove(thread.profile.nodeId);
-      profiles.remove(thread.profile.nodeId);
-      typingUntil.remove(thread.profile.nodeId);
-      activityKinds.remove(thread.profile.nodeId);
+      threads.removeWhere((_, value) => identical(value, thread));
+      if (!threads.values.any(
+        (item) => item.profile.nodeId == thread.profile.nodeId,
+      )) {
+        profiles.remove(thread.profile.nodeId);
+      }
+      typingUntil.remove(thread.storageKey);
+      activityKinds.remove(thread.storageKey);
     }
     await _rewriteCache();
     notifyListeners();
@@ -2425,6 +2450,8 @@ class AppController extends ChangeNotifier {
       'ttl': 2,
       'sender': session!.login,
       'group_id': thread.groupId,
+      'chat_kind': thread.chatKind,
+      'chat_id': thread.threadId,
       'activity': kind,
     };
     if (thread.isGroup) {
@@ -2442,7 +2469,15 @@ class AppController extends ChangeNotifier {
     final source = packet['source_node']?.toString() ?? '';
     if (source.isEmpty || source == myNodeId) return;
     final groupId = packet['group_id']?.toString() ?? '';
-    final key = groupId.isNotEmpty ? groupId : source;
+    final chatId = packet['chat_id']?.toString() ?? '';
+    final chatKind = packet['chat_kind']?.toString() ?? 'normal';
+    final key = groupId.isNotEmpty
+        ? groupId
+        : chatId.isNotEmpty
+        ? 'direct:$chatId'
+        : chatKind == 'bluetooth'
+        ? 'direct:bluetooth:$source'
+        : 'direct:normal:$source';
     final activity = packet['activity']?.toString() ?? 'typing';
     typingUntil[key] = DateTime.now().add(const Duration(seconds: 4));
     activityKinds[key] = activity == 'voice' ? 'voice' : 'typing';
@@ -2540,6 +2575,93 @@ class AppController extends ChangeNotifier {
     final thread = ChatThread(profile: mergedProfile);
     threads[profile.nodeId] = thread;
     return thread;
+  }
+
+  ChatThread? threadForProfile(Profile profile) {
+    return threads[profile.nodeId];
+  }
+
+  ChatThread? bluetoothThreadForNode(String nodeId) {
+    return threads['bluetooth:$nodeId'];
+  }
+
+  Future<ChatThread> ensureSecretThread(Profile profile, String code) async {
+    final normalizedCode = _normalizeSecretCode(code);
+    if (normalizedCode.isEmpty) {
+      return _ensureThread(profile);
+    }
+    final threadId = await _secretThreadId(profile.nodeId, normalizedCode);
+    final existing = threads[threadId];
+    final mergedProfile = _mergeProfile(profile);
+    if (existing != null) {
+      existing.profile = mergedProfile;
+      return existing;
+    }
+    final thread = ChatThread(
+      profile: mergedProfile,
+      threadId: threadId,
+      chatKind: 'secret',
+      accessCode: normalizedCode,
+      muted: true,
+    );
+    threads[threadId] = thread;
+    unawaited(_saveCache());
+    notifyListeners();
+    return thread;
+  }
+
+  ChatThread _ensureBluetoothThread(Profile profile) {
+    final mergedProfile = _mergeProfile(profile, online: true);
+    final threadId = 'bluetooth:${profile.nodeId}';
+    final existing = threads[threadId];
+    if (existing != null) {
+      existing.profile = mergedProfile;
+      return existing;
+    }
+    final thread = ChatThread(
+      profile: mergedProfile,
+      threadId: threadId,
+      chatKind: 'bluetooth',
+    );
+    threads[threadId] = thread;
+    return thread;
+  }
+
+  ChatThread _ensurePacketThread(Profile profile, Map<String, dynamic> data) {
+    final chatKind = data['chat_kind']?.toString() ?? 'normal';
+    final chatId = data['chat_id']?.toString() ?? '';
+    if (chatKind == 'secret' && chatId.isNotEmpty) {
+      final existing = threads[chatId];
+      final mergedProfile = _mergeProfile(profile);
+      if (existing != null) {
+        existing.profile = mergedProfile;
+        return existing;
+      }
+      final thread = ChatThread(
+        profile: mergedProfile,
+        threadId: chatId,
+        chatKind: 'secret',
+        muted: true,
+      );
+      threads[chatId] = thread;
+      return thread;
+    }
+    if (chatKind == 'bluetooth') {
+      return _ensureBluetoothThread(profile);
+    }
+    return _ensureThread(profile);
+  }
+
+  String _normalizeSecretCode(String value) {
+    return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+  }
+
+  Future<String> _secretThreadId(String peerNodeId, String code) async {
+    final nodes = [myNodeId, peerNodeId]..sort();
+    final digest = await Sha256().hash(
+      utf8.encode('meshchat-secret-v1:${nodes.join(':')}:$code'),
+    );
+    return 'secret:${base64Url.encode(digest.bytes).replaceAll('=', '')}';
   }
 
   Future<String?> startCall(Profile recipient) async {
@@ -3109,11 +3231,12 @@ class AppController extends ChangeNotifier {
     Profile recipient,
     String text, {
     ChatMessage? replyTo,
+    ChatThread? threadOverride,
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null) return;
     final id = const Uuid().v4();
-    final thread = _ensureThread(recipient);
+    final thread = threadOverride ?? _ensureThread(recipient);
     if (isSavedMessagesProfile(recipient)) {
       thread.messages.add(
         ChatMessage(
@@ -3160,6 +3283,8 @@ class AppController extends ChangeNotifier {
       'ttl': 5,
       'sender': session!.login,
       'message': wireText,
+      'chat_kind': thread.chatKind,
+      'chat_id': thread.threadId,
       'reply_to_message_id': replyTo?.id ?? '',
       'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
     });
@@ -3206,7 +3331,7 @@ class AppController extends ChangeNotifier {
     );
     profiles[recipient.nodeId] = _mergeProfile(recipient, online: true);
     final id = const Uuid().v4();
-    final thread = _ensureThread(recipient);
+    final thread = _ensureBluetoothThread(recipient);
     thread.messages.add(
       ChatMessage(
         id: id,
@@ -3230,6 +3355,8 @@ class AppController extends ChangeNotifier {
         'ttl': 1,
         'sender': current.login,
         'message': wireText,
+        'chat_kind': thread.chatKind,
+        'chat_id': thread.threadId,
       });
       return null;
     } catch (error) {
@@ -3275,7 +3402,7 @@ class AppController extends ChangeNotifier {
     final id = const Uuid().v4();
     final trimmedCaption = caption.trim();
     final data = _hexEncode(bytes);
-    final thread = _ensureThread(recipient);
+    final thread = _ensureBluetoothThread(recipient);
     thread.messages.add(
       ChatMessage(
         id: id,
@@ -3306,6 +3433,8 @@ class AppController extends ChangeNotifier {
           'destination_node': recipient.nodeId,
           'ttl': 1,
           'sender': current.login,
+          'chat_kind': thread.chatKind,
+          'chat_id': thread.threadId,
           'file_id': id,
           'filename': filename,
           'caption': trimmedCaption,
@@ -3328,6 +3457,7 @@ class AppController extends ChangeNotifier {
     Uint8List bytes, {
     String caption = '',
     ChatMessage? replyTo,
+    ChatThread? threadOverride,
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (bytes.isEmpty) return 'Файл пустой';
@@ -3338,7 +3468,7 @@ class AppController extends ChangeNotifier {
     final id = const Uuid().v4();
     final data = _hexEncode(bytes);
     final trimmedCaption = caption.trim();
-    final thread = _ensureThread(recipient);
+    final thread = threadOverride ?? _ensureThread(recipient);
     if (isSavedMessagesProfile(recipient)) {
       thread.messages.add(
         ChatMessage(
@@ -3399,6 +3529,8 @@ class AppController extends ChangeNotifier {
         'destination_node': recipient.nodeId,
         'ttl': 5,
         'sender': session!.login,
+        'chat_kind': thread.chatKind,
+        'chat_id': thread.threadId,
         'file_id': id,
         'filename': filename,
         'caption': trimmedCaption,
@@ -3958,8 +4090,9 @@ class AppController extends ChangeNotifier {
           nodeId: sender,
           displayName: packet['sender']?.toString() ?? sender.substring(0, 8),
         );
-    profiles[sender] = profile;
-    final thread = _ensureThread(profile);
+    profiles[sender] = _mergeProfile(profile);
+    _applyProfileToThreads(profiles[sender]!);
+    final thread = _ensurePacketThread(profiles[sender]!, packet);
     final id =
         packet['message_id']?.toString() ??
         packet['packet_id']?.toString() ??
@@ -4156,8 +4289,9 @@ class AppController extends ChangeNotifier {
               first['sender']?.toString() ??
               peerId.substring(0, 8),
         );
-    profiles[peerId] = profile;
-    final thread = _ensureThread(profile);
+    profiles[peerId] = _mergeProfile(profile);
+    _applyProfileToThreads(profiles[peerId]!);
+    final thread = _ensurePacketThread(profiles[peerId]!, first);
     final fullData = List<String>.generate(
       incoming.totalChunks,
       (index) => incoming.chunks[index] ?? '',
@@ -4561,6 +4695,7 @@ class AppController extends ChangeNotifier {
     if (needle.isEmpty) return const [];
     final results = <GlobalSearchResult>[];
     for (final thread in [...threads.values, ...groups.values]) {
+      if (thread.isSecret) continue;
       final title = thread.profile.displayName.toLowerCase();
       final username = thread.profile.publicUsername.toLowerCase();
       if (title.contains(needle) || username.contains(needle)) {

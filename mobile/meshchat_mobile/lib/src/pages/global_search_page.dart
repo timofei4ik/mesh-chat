@@ -22,6 +22,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
   final input = TextEditingController();
   _SearchFilter filter = _SearchFilter.all;
   List<GlobalSearchResult> rawResults = const [];
+  bool openingHiddenChat = false;
+  String? hiddenChatError;
 
   @override
   void dispose() {
@@ -30,7 +32,13 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
   }
 
   void search(String value) {
-    setState(() => rawResults = widget.controller.searchAllChats(value));
+    final hiddenRequest = _parseHiddenChatQuery(value);
+    setState(() {
+      hiddenChatError = null;
+      rawResults = hiddenRequest == null
+          ? widget.controller.searchAllChats(value)
+          : const [];
+    });
   }
 
   void openThread(ChatThread thread) {
@@ -41,6 +49,51 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
         builder: (_) => ChatPage(controller: widget.controller, thread: thread),
       ),
     );
+  }
+
+  Future<void> submitSearch(String value) async {
+    final hiddenRequest = _parseHiddenChatQuery(value);
+    if (hiddenRequest == null) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      openingHiddenChat = true;
+      hiddenChatError = null;
+    });
+    final profile = await widget.controller.lookupUsername(
+      hiddenRequest.username,
+      sendRequest: false,
+    );
+    if (!mounted) return;
+    if (profile == null) {
+      setState(() {
+        openingHiddenChat = false;
+        hiddenChatError = 'Nothing found';
+      });
+      return;
+    }
+    final thread = await widget.controller.ensureSecretThread(
+      profile,
+      hiddenRequest.code,
+    );
+    if (!mounted) return;
+    setState(() => openingHiddenChat = false);
+    openThread(thread);
+  }
+
+  ({String username, String code})? _parseHiddenChatQuery(String value) {
+    final query = value.trim();
+    final separator = query.indexOf('#');
+    if (separator <= 0 || separator == query.length - 1) return null;
+    final username = query.substring(0, separator).trim();
+    final code = query.substring(separator + 1).trim();
+    final normalizedUsername = username.startsWith('@')
+        ? username.substring(1)
+        : username;
+    if (normalizedUsername.length < 2 || code.length < 2) return null;
+    if (!RegExp(r'^[A-Za-z0-9_.-]+$').hasMatch(normalizedUsername)) {
+      return null;
+    }
+    return (username: normalizedUsername, code: code);
   }
 
   @override
@@ -79,6 +132,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                 child: TextField(
                   controller: input,
                   autofocus: true,
+                  textInputAction: TextInputAction.search,
                   decoration: const InputDecoration(
                     hintText: 'Messages, chats, files, links',
                     prefixIcon: Icon(Icons.search_rounded),
@@ -86,6 +140,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                     contentPadding: EdgeInsets.symmetric(vertical: 14),
                   ),
                   onChanged: search,
+                  onSubmitted: submitSearch,
                 ),
               ),
             ),
@@ -137,6 +192,15 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                       child: Text(
                         'Type to search across MeshChat',
                         style: TextStyle(color: Colors.white38),
+                      ),
+                    )
+                  : openingHiddenChat
+                  ? const Center(child: CircularProgressIndicator())
+                  : hiddenChatError != null
+                  ? Center(
+                      child: Text(
+                        hiddenChatError!,
+                        style: const TextStyle(color: Colors.white38),
                       ),
                     )
                   : results.isEmpty

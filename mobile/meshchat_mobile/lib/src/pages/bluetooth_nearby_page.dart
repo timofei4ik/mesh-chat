@@ -517,7 +517,7 @@ class _BluetoothPeerChatPageState extends State<_BluetoothPeerChatPage> {
         ? peer.nodeId
         : widget.initialPeer.nodeId;
     if (nodeId.isEmpty) return null;
-    return widget.controller.threads[nodeId];
+    return widget.controller.bluetoothThreadForNode(nodeId);
   }
 
   Future<void> sendText() async {

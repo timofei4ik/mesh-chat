@@ -340,7 +340,7 @@ class ChatsPage extends StatelessWidget {
 
   void openChat(BuildContext context, Profile profile) {
     final thread =
-        controller.threads[profile.nodeId] ?? ChatThread(profile: profile);
+        controller.threadForProfile(profile) ?? ChatThread(profile: profile);
     controller.threads[profile.nodeId] = thread;
     openThread(context, thread);
   }
@@ -356,7 +356,7 @@ class ChatsPage extends StatelessWidget {
   }
 
   void openProfile(BuildContext context, Profile profile) {
-    final thread = controller.threads[profile.nodeId];
+    final thread = controller.threadForProfile(profile);
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -1203,7 +1203,14 @@ class _HomeShellState extends State<_HomeShell> {
     final threads = switch (filter) {
       _HomeFilter.all => allThreads,
       _HomeFilter.personal =>
-        allThreads.where((thread) => !thread.isGroup).toList(),
+        allThreads
+            .where(
+              (thread) =>
+                  !thread.isGroup &&
+                  !thread.isBluetooth &&
+                  thread.chatKind == 'normal',
+            )
+            .toList(),
       _HomeFilter.groups =>
         allThreads
             .where((thread) => thread.isGroup && !thread.isChannel)
@@ -1211,9 +1218,7 @@ class _HomeShellState extends State<_HomeShell> {
       _HomeFilter.channels =>
         allThreads.where((thread) => thread.isChannel).toList(),
       _HomeFilter.bluetooth =>
-        allThreads
-            .where((thread) => thread.profile.online && !thread.isGroup)
-            .toList(),
+        allThreads.where((thread) => thread.isBluetooth).toList(),
     };
     final archivedCount = controller.archivedThreads.length;
 
@@ -1421,15 +1426,11 @@ class _HomeTabBody extends StatelessWidget {
                     final threadIndex = index - headerCount;
                     final thread = threads[threadIndex];
                     return _DismissibleChatTile(
-                      key: ValueKey(
-                        'dismiss-${thread.isGroup ? thread.groupId : thread.profile.nodeId}',
-                      ),
+                      key: ValueKey('dismiss-${thread.storageKey}'),
                       thread: thread,
                       controller: controller,
                       child: _AnimatedChatEntrance(
-                        key: ValueKey(
-                          'chat-${thread.isGroup ? thread.groupId : thread.profile.nodeId}',
-                        ),
+                        key: ValueKey('chat-${thread.storageKey}'),
                         index: index,
                         child: _ChatGlassTile(
                           thread: thread,

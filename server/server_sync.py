@@ -62,6 +62,8 @@ class ServerSyncMixin:
                    message,
                    reply_to_message_id,
                    reply_to_text,
+                   COALESCE(chat_kind, 'normal'),
+                   COALESCE(chat_id, ''),
                    created_at
             FROM direct_messages
             WHERE sender_login=?
@@ -92,7 +94,9 @@ class ServerSyncMixin:
                 "message": row[6],
                 "reply_to_message_id": row[7],
                 "reply_to_text": row[8],
-                "created_at": row[9]
+                "chat_kind": row[9],
+                "chat_id": row[10],
+                "created_at": row[11]
             }
             for row in cursor.fetchall()
         ]
@@ -139,7 +143,9 @@ class ServerSyncMixin:
 
         cursor.execute(
             """
-            SELECT peer_node
+            SELECT peer_node,
+                   COALESCE(chat_kind, 'normal'),
+                   COALESCE(chat_id, '')
             FROM server_chat_deletes
             WHERE owner_node=?
             """,
@@ -148,10 +154,24 @@ class ServerSyncMixin:
             )
         )
 
-        deleted_peers = {
-            row[0]
+        deleted_threads = [
+            {
+                "peer_node": row[0],
+                "chat_kind": row[1] or "normal",
+                "chat_id": row[2] or ""
+            }
             for row in cursor.fetchall()
             if row[0]
+        ]
+        deleted_peers = {
+            item["peer_node"]
+            for item in deleted_threads
+            if not item["chat_id"]
+        }
+        deleted_chat_ids = {
+            item["chat_id"]
+            for item in deleted_threads
+            if item["chat_id"]
         }
 
         if deleted_peers:
@@ -160,9 +180,20 @@ class ServerSyncMixin:
                 message
                 for message in direct_messages
                 if (
-                    message.get("sender_node") not in deleted_peers
-                    and message.get("receiver_node") not in deleted_peers
+                    (
+                        message.get("sender_node") not in deleted_peers
+                        and message.get("receiver_node") not in deleted_peers
+                    )
+                    or message.get("chat_id")
                 )
+            ]
+
+        if deleted_chat_ids:
+
+            direct_messages = [
+                message
+                for message in direct_messages
+                if message.get("chat_id") not in deleted_chat_ids
             ]
 
         for group in groups:
@@ -289,25 +320,6 @@ class ServerSyncMixin:
 
         file_where = f"({' OR '.join(file_conditions)})"
 
-        if deleted_peers:
-
-            placeholders = ",".join(
-                "?"
-                for _ in deleted_peers
-            )
-
-            file_where += (
-                f"""
-                AND (
-                    COALESCE(sender_node, '') NOT IN ({placeholders})
-                    AND COALESCE(receiver_node, '') NOT IN ({placeholders})
-                )
-                """
-            )
-
-            file_params.extend(deleted_peers)
-            file_params.extend(deleted_peers)
-
         cursor.execute(
             f"""
             SELECT file_id,
@@ -321,6 +333,8 @@ class ServerSyncMixin:
                    caption,
                    data,
                    group_key_id,
+                   COALESCE(chat_kind, 'normal'),
+                   COALESCE(chat_id, ''),
                    created_at
             FROM server_files
             WHERE {file_where}
@@ -342,10 +356,34 @@ class ServerSyncMixin:
                 "caption": row[8] or "",
                 "data": row[9],
                 "group_key_id": row[10],
-                "created_at": row[11]
+                "chat_kind": row[11],
+                "chat_id": row[12],
+                "created_at": row[13]
             }
             for row in cursor.fetchall()
         ]
+
+        if deleted_peers:
+
+            files = [
+                file_info
+                for file_info in files
+                if (
+                    (
+                        file_info.get("sender_node") not in deleted_peers
+                        and file_info.get("receiver_node") not in deleted_peers
+                    )
+                    or file_info.get("chat_id")
+                )
+            ]
+
+        if deleted_chat_ids:
+
+            files = [
+                file_info
+                for file_info in files
+                if file_info.get("chat_id") not in deleted_chat_ids
+            ]
 
         message_ids += [
             file_info["file_id"]

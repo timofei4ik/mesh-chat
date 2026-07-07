@@ -7,6 +7,9 @@ class ChatThread {
     List<ChatMessage>? messages,
     this.isGroup = false,
     this.isChannel = false,
+    this.threadId = '',
+    this.chatKind = 'normal',
+    this.accessCode = '',
     this.groupId = '',
     this.groupName = '',
     List<String>? members,
@@ -28,6 +31,9 @@ class ChatThread {
   final List<ChatMessage> messages;
   final bool isGroup;
   bool isChannel;
+  final String threadId;
+  final String chatKind;
+  final String accessCode;
   final String groupId;
   final String groupName;
   final List<String> members;
@@ -43,6 +49,15 @@ class ChatThread {
   int unread = 0;
 
   ChatMessage? get lastMessage => messages.isEmpty ? null : messages.last;
+
+  bool get isSecret => chatKind == 'secret';
+  bool get isBluetooth => chatKind == 'bluetooth';
+
+  String get storageKey {
+    if (isGroup) return groupId.isEmpty ? '' : 'group:$groupId';
+    if (threadId.isNotEmpty) return 'direct:$threadId';
+    return profile.nodeId.isEmpty ? '' : 'direct:normal:${profile.nodeId}';
+  }
 
   List<ChatMessage> get pinnedMessages {
     final result = <ChatMessage>[];
@@ -82,6 +97,9 @@ class ChatThread {
           : const [],
       isGroup: isGroup,
       isChannel: isChannel,
+      threadId: json['thread_id']?.toString() ?? '',
+      chatKind: json['chat_kind']?.toString() ?? 'normal',
+      accessCode: json['access_code']?.toString() ?? '',
       groupId: groupId,
       groupName: groupName,
       members: membersRaw is List
@@ -112,6 +130,9 @@ class ChatThread {
       'messages': messages.map((message) => message.toJson()).toList(),
       'is_group': isGroup,
       'is_channel': isChannel,
+      'thread_id': threadId,
+      'chat_kind': chatKind,
+      'access_code': accessCode,
       'group_id': groupId,
       'group_name': groupName,
       'members': members,

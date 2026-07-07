@@ -70,9 +70,7 @@ class ChatCacheStore {
     final batch = db.batch();
     for (final thread in threads) {
       var trimmed = _trimThread(thread);
-      final threadKey = trimmed.isGroup
-          ? 'group:${trimmed.groupId}'
-          : trimmed.profile.nodeId;
+      final threadKey = trimmed.storageKey;
       if (threadKey.isEmpty) continue;
       var payload = jsonEncode(trimmed.toJson());
       if (payload.length > _maxSqlitePayloadChars) {
@@ -109,11 +107,7 @@ class ChatCacheStore {
     if (session == null) return;
     if (kIsWeb) return;
     final db = await _db();
-    final threadKey = thread.isGroup
-        ? thread.groupId.isNotEmpty
-              ? 'group:${thread.groupId}'
-              : ''
-        : thread.profile.nodeId;
+    final threadKey = thread.storageKey;
     if (threadKey.isEmpty) {
       await _deleteBrokenGroupThread(session, db, thread);
       return;
@@ -319,7 +313,10 @@ class ChatCacheStore {
       if (thread.groupId.isNotEmpty) groups[thread.groupId] = thread;
     } else {
       profiles[thread.profile.nodeId] = thread.profile;
-      threads[thread.profile.nodeId] = thread;
+      final key = thread.threadId.isNotEmpty
+          ? thread.threadId
+          : thread.profile.nodeId;
+      threads[key] = thread;
     }
   }
 
@@ -352,6 +349,9 @@ class ChatCacheStore {
       messages: cachedMessages,
       isGroup: thread.isGroup,
       isChannel: thread.isChannel,
+      threadId: thread.threadId,
+      chatKind: thread.chatKind,
+      accessCode: thread.accessCode,
       groupId: thread.groupId,
       groupName: thread.groupName,
       members: List.of(thread.members),

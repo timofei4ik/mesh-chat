@@ -227,6 +227,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         widget.thread.profile,
         text,
         replyTo: quote,
+        threadOverride: widget.thread,
       );
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
@@ -735,6 +736,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             bytes,
             caption: caption,
             replyTo: quote,
+            threadOverride: widget.thread,
           );
     if (!mounted || error == null) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
@@ -983,6 +985,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             filename,
             bytes,
             replyTo: quote,
+            threadOverride: widget.thread,
           );
     if (error == null) {
       unawaited(HapticFeedback.lightImpact());

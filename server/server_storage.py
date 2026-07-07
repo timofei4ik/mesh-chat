@@ -148,6 +148,14 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE direct_messages ADD COLUMN reply_to_text TEXT"
             )
+        if "chat_kind" not in direct_columns:
+            conn.execute(
+                "ALTER TABLE direct_messages ADD COLUMN chat_kind TEXT DEFAULT 'normal'"
+            )
+        if "chat_id" not in direct_columns:
+            conn.execute(
+                "ALTER TABLE direct_messages ADD COLUMN chat_id TEXT DEFAULT ''"
+            )
 
         conn.execute(
             """
@@ -253,11 +261,72 @@ class ServerStorageMixin:
             CREATE TABLE IF NOT EXISTS server_chat_deletes(
                 owner_node TEXT NOT NULL,
                 peer_node TEXT NOT NULL,
+                chat_kind TEXT DEFAULT 'normal',
+                chat_id TEXT DEFAULT '',
                 deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY(owner_node, peer_node)
+                PRIMARY KEY(owner_node, peer_node, chat_kind, chat_id)
             )
             """
         )
+        cursor = conn.execute(
+            "PRAGMA table_info(server_chat_deletes)"
+        )
+        chat_delete_columns = {
+            row[1] for row in cursor.fetchall()
+        }
+        if "chat_kind" not in chat_delete_columns:
+            conn.execute(
+                "ALTER TABLE server_chat_deletes ADD COLUMN chat_kind TEXT DEFAULT 'normal'"
+            )
+        if "chat_id" not in chat_delete_columns:
+            conn.execute(
+                "ALTER TABLE server_chat_deletes ADD COLUMN chat_id TEXT DEFAULT ''"
+            )
+        cursor = conn.execute(
+            "PRAGMA table_info(server_chat_deletes)"
+        )
+        chat_delete_pk = [
+            row[1]
+            for row in sorted(
+                cursor.fetchall(),
+                key=lambda item: item[5]
+            )
+            if row[5]
+        ]
+        if chat_delete_pk == ["owner_node", "peer_node"]:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS server_chat_deletes_new(
+                    owner_node TEXT NOT NULL,
+                    peer_node TEXT NOT NULL,
+                    chat_kind TEXT DEFAULT 'normal',
+                    chat_id TEXT DEFAULT '',
+                    deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(owner_node, peer_node, chat_kind, chat_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO server_chat_deletes_new(
+                    owner_node,
+                    peer_node,
+                    chat_kind,
+                    chat_id,
+                    deleted_at
+                )
+                SELECT owner_node,
+                       peer_node,
+                       COALESCE(chat_kind, 'normal'),
+                       COALESCE(chat_id, ''),
+                       deleted_at
+                FROM server_chat_deletes
+                """
+            )
+            conn.execute("DROP TABLE server_chat_deletes")
+            conn.execute(
+                "ALTER TABLE server_chat_deletes_new RENAME TO server_chat_deletes"
+            )
 
         cursor = conn.execute(
             "PRAGMA table_info(server_group_messages)"
@@ -398,6 +467,20 @@ class ServerStorageMixin:
         }:
             conn.execute(
                 "ALTER TABLE server_files ADD COLUMN caption TEXT"
+            )
+        cursor = conn.execute(
+            "PRAGMA table_info(server_files)"
+        )
+        file_columns = {
+            row[1] for row in cursor.fetchall()
+        }
+        if "chat_kind" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN chat_kind TEXT DEFAULT 'normal'"
+            )
+        if "chat_id" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN chat_id TEXT DEFAULT ''"
             )
 
         conn.commit()
@@ -1186,9 +1269,11 @@ class ServerStorageMixin:
                     message,
                     reply_to_message_id,
                     reply_to_text,
+                    chat_kind,
+                    chat_id,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,STRFTIME(
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
                     '%Y-%m-%d %H:%M:%f',
                     'now'
                 ))
@@ -1202,7 +1287,9 @@ class ServerStorageMixin:
                     self.get_login_by_node(receiver_node),
                     packet.get("message") or "",
                     packet.get("reply_to_message_id"),
-                    packet.get("reply_to_text")
+                    packet.get("reply_to_text"),
+                    packet.get("chat_kind") or "normal",
+                    packet.get("chat_id") or ""
                 )
             )
 
@@ -1521,6 +1608,8 @@ class ServerStorageMixin:
             source_node = packet.get("source_node")
             destination_node = packet.get("destination_node")
             chat_node_id = packet.get("chat_node_id") or destination_node
+            chat_kind = packet.get("chat_kind") or "normal"
+            chat_id = packet.get("chat_id") or ""
 
             if not source_node or not destination_node:
                 return
@@ -1535,16 +1624,20 @@ class ServerStorageMixin:
                     INSERT OR REPLACE INTO server_chat_deletes(
                         owner_node,
                         peer_node,
+                        chat_kind,
+                        chat_id,
                         deleted_at
                     )
-                    VALUES(?,?,STRFTIME(
+                    VALUES(?,?,?,?,STRFTIME(
                         '%Y-%m-%d %H:%M:%f',
                         'now'
                     ))
                     """,
                     (
                         owner_node,
-                        peer_node
+                        peer_node,
+                        chat_kind,
+                        chat_id
                     )
                 )
 
@@ -2009,9 +2102,11 @@ class ServerStorageMixin:
                     caption,
                     data,
                     group_key_id,
+                    chat_kind,
+                    chat_id,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
                     '%Y-%m-%d %H:%M:%f',
                     'now'
                 ))
@@ -2027,7 +2122,9 @@ class ServerStorageMixin:
                     filename,
                     first_packet.get("caption") or "",
                     full_data,
-                    first_packet.get("group_key_id")
+                    first_packet.get("group_key_id"),
+                    first_packet.get("chat_kind") or "normal",
+                    first_packet.get("chat_id") or ""
                 )
             )
 
