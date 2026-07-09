@@ -3,13 +3,52 @@ import 'dart:js_interop';
 import 'package:dart_webrtc/dart_webrtc.dart';
 import 'package:web/web.dart' as web;
 
+class CallAudioDevice {
+  const CallAudioDevice({
+    required this.id,
+    required this.label,
+    required this.kind,
+  });
+
+  final String id;
+  final String label;
+  final String kind;
+}
+
 class CallService {
+  static String _selectedAudioInputId = '';
+  static String _selectedAudioOutputId = '';
+
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   web.HTMLAudioElement? _remoteAudioElement;
   bool _localMuted = false;
   bool _speakerEnabled = true;
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
+
+  Future<List<CallAudioDevice>> audioInputs() async {
+    return _devicesOfKind('audioinput');
+  }
+
+  Future<List<CallAudioDevice>> audioOutputs() async {
+    return _devicesOfKind('audiooutput');
+  }
+
+  Future<void> selectAudioInput(String deviceId) async {
+    _selectedAudioInputId = deviceId;
+  }
+
+  Future<void> selectAudioOutput(String deviceId) async {
+    _selectedAudioOutputId = deviceId;
+    if (deviceId.isEmpty) return;
+    await _remoteAudioElement
+        ?.setSinkId(deviceId)
+        .toDart
+        .catchError((_) => null);
+  }
+
+  String get selectedAudioInputId => _selectedAudioInputId;
+  String get selectedAudioOutputId => _selectedAudioOutputId;
 
   Future<String> startOutgoing({
     required void Function(Map<String, dynamic> candidate) onIceCandidate,
@@ -139,16 +178,20 @@ class CallService {
     };
     peerConnection.onAddStream = _attachRemoteAudio;
 
+    final audio = <String, dynamic>{
+      'echoCancellation': true,
+      'noiseSuppression': true,
+      'autoGainControl': true,
+      'googEchoCancellation': true,
+      'googAutoGainControl': true,
+      'googNoiseSuppression': true,
+      'googHighpassFilter': true,
+    };
+    if (_selectedAudioInputId.isNotEmpty) {
+      audio['deviceId'] = {'exact': _selectedAudioInputId};
+    }
     final stream = await navigator.mediaDevices.getUserMedia({
-      'audio': {
-        'echoCancellation': true,
-        'noiseSuppression': true,
-        'autoGainControl': true,
-        'googEchoCancellation': true,
-        'googAutoGainControl': true,
-        'googNoiseSuppression': true,
-        'googHighpassFilter': true,
-      },
+      'audio': audio,
       'video': false,
     });
     for (final track in stream.getAudioTracks()) {
@@ -194,6 +237,23 @@ class CallService {
       _remoteAudioElement = audio;
     }
     audio.srcObject = nativeStream.jsStream;
+    if (_selectedAudioOutputId.isNotEmpty) {
+      audio.setSinkId(_selectedAudioOutputId).toDart.catchError((_) => null);
+    }
     audio.play().toDart.catchError((_) => null);
+  }
+
+  Future<List<CallAudioDevice>> _devicesOfKind(String kind) async {
+    final devices = await navigator.mediaDevices.enumerateDevices().catchError(
+      (_) => <MediaDeviceInfo>[],
+    );
+    var index = 1;
+    return devices.where((device) => device.kind == kind).map((device) {
+      final label = device.label.trim().isEmpty
+          ? (kind == 'audioinput' ? 'Microphone $index' : 'Output $index')
+          : device.label.trim();
+      index++;
+      return CallAudioDevice(id: device.deviceId, label: label, kind: kind);
+    }).toList();
   }
 }

@@ -7,6 +7,7 @@ class ChatThread {
     List<ChatMessage>? messages,
     this.isGroup = false,
     this.isChannel = false,
+    this.commentsEnabled = true,
     this.threadId = '',
     this.chatKind = 'normal',
     this.accessCode = '',
@@ -31,6 +32,7 @@ class ChatThread {
   final List<ChatMessage> messages;
   final bool isGroup;
   bool isChannel;
+  bool commentsEnabled;
   final String threadId;
   final String chatKind;
   final String accessCode;
@@ -97,6 +99,7 @@ class ChatThread {
           : const [],
       isGroup: isGroup,
       isChannel: isChannel,
+      commentsEnabled: json['comments_enabled'] != false,
       threadId: json['thread_id']?.toString() ?? '',
       chatKind: json['chat_kind']?.toString() ?? 'normal',
       accessCode: json['access_code']?.toString() ?? '',
@@ -130,6 +133,7 @@ class ChatThread {
       'messages': messages.map((message) => message.toJson()).toList(),
       'is_group': isGroup,
       'is_channel': isChannel,
+      'comments_enabled': commentsEnabled,
       'thread_id': threadId,
       'chat_kind': chatKind,
       'access_code': accessCode,

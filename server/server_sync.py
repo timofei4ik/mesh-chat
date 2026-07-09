@@ -110,7 +110,8 @@ class ServerSyncMixin:
                             g.admins_json,
                             COALESCE(g.is_channel, 0),
                             COALESCE(g.group_about, ''),
-                            COALESCE(g.group_avatar_data, '')
+                            COALESCE(g.group_avatar_data, ''),
+                            COALESCE(g.comments_enabled, 1)
             FROM server_groups g
             JOIN server_group_members m
               ON m.group_id = g.group_id
@@ -136,7 +137,8 @@ class ServerSyncMixin:
                 ),
                 "is_channel": bool(row[5]),
                 "group_about": row[6] or "",
-                "group_avatar_data": row[7] or ""
+                "group_avatar_data": row[7] or "",
+                "comments_enabled": row[8] != 0
             }
             for row in cursor.fetchall()
         ]

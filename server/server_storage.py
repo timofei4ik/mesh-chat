@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 
 try:
@@ -8,6 +9,29 @@ except ModuleNotFoundError:
 
 
 class ServerStorageMixin:
+    def _looks_like_node_id(
+        self,
+        node_id
+    ):
+        value = (node_id or "").strip()
+        if not value:
+            return False
+        return re.match(
+            r"^[0-9a-fA-F]{8}-"
+            r"[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{12}$",
+            value
+        ) is not None
+
+    def _is_legacy_owner_placeholder(
+        self,
+        node_id
+    ):
+        value = (node_id or "").strip()
+        return bool(value) and len(value) <= 12 and not self._looks_like_node_id(value)
+
     def open_db(self):
 
         DB_PATH.parent.mkdir(
@@ -168,6 +192,7 @@ class ServerStorageMixin:
                 owner_node TEXT,
                 admins_json TEXT DEFAULT '[]',
                 is_channel INTEGER DEFAULT 0,
+                comments_enabled INTEGER DEFAULT 1,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -210,6 +235,12 @@ class ServerStorageMixin:
 
             conn.execute(
                 "ALTER TABLE server_groups ADD COLUMN is_channel INTEGER DEFAULT 0"
+            )
+
+        if "comments_enabled" not in group_columns:
+
+            conn.execute(
+                "ALTER TABLE server_groups ADD COLUMN comments_enabled INTEGER DEFAULT 1"
             )
 
         conn.execute(
@@ -962,6 +993,7 @@ class ServerStorageMixin:
         owner_node=None,
         admins=None,
         is_channel=False,
+        comments_enabled=True,
         group_about=None,
         group_avatar_data=None
     ):
@@ -982,7 +1014,8 @@ class ServerStorageMixin:
         existing_meta = self.db.execute(
             """
             SELECT group_about,
-                   group_avatar_data
+                   group_avatar_data,
+                   COALESCE(comments_enabled, 1)
             FROM server_groups
             WHERE group_id=?
             """,
@@ -992,6 +1025,13 @@ class ServerStorageMixin:
         ).fetchone()
         existing_about = existing_meta[0] if existing_meta else ""
         existing_avatar = existing_meta[1] if existing_meta else ""
+        existing_comments_enabled = (
+            existing_meta[2] == 1
+            if existing_meta
+            else True
+        )
+        if comments_enabled is None:
+            comments_enabled = existing_comments_enabled
         group_about = (
             group_about
             if group_about not in (None, "")
@@ -1004,14 +1044,13 @@ class ServerStorageMixin:
         )
 
         owner_node = (
-            owner_node
-            or existing_owner
-            or (
-                sorted(members)[0]
-                if members
-                else ""
-            )
+            existing_owner
+            or owner_node
+            or ""
         )
+
+        if owner_node and owner_node not in members:
+            members.append(owner_node)
 
         if admins is None:
             admins = existing_admins
@@ -1036,9 +1075,10 @@ class ServerStorageMixin:
                 owner_node,
                 admins_json,
                 is_channel,
+                comments_enabled,
                 updated_at
             )
-            VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
             """,
             (
                 group_id,
@@ -1054,7 +1094,8 @@ class ServerStorageMixin:
                     admins,
                     ensure_ascii=False
                 ),
-                1 if is_channel else 0
+                1 if is_channel else 0,
+                1 if comments_enabled else 0
             )
         )
 
@@ -1116,6 +1157,8 @@ class ServerStorageMixin:
             return "", []
 
         owner_node = row[0] or ""
+        if self._is_legacy_owner_placeholder(owner_node):
+            owner_node = ""
 
         try:
             admins = json.loads(
@@ -1123,35 +1166,6 @@ class ServerStorageMixin:
             )
         except (TypeError, ValueError):
             admins = []
-
-        if not owner_node:
-
-            try:
-                members = json.loads(
-                    row[2] or "[]"
-                )
-            except (TypeError, ValueError):
-                members = []
-
-            if members:
-
-                owner_node = sorted(
-                    members
-                )[0]
-
-                self.db.execute(
-                    """
-                    UPDATE server_groups
-                    SET owner_node=?
-                    WHERE group_id=?
-                    """,
-                    (
-                        owner_node,
-                        group_id
-                    )
-                )
-
-                self.db.commit()
 
         return owner_node, admins
 
@@ -1167,7 +1181,8 @@ class ServerStorageMixin:
         if packet_type not in (
             "group_update",
             "group_delete",
-            "group_pin"
+            "group_pin",
+            "group_member_leave"
         ):
             return True
 
@@ -1183,20 +1198,49 @@ class ServerStorageMixin:
             group_id
         )
 
+        if packet_type == "group_member_leave":
+            return (
+                bool(source_node)
+                and (
+                    packet.get("leaver_node") in (None, "", source_node)
+                )
+            )
+
         if not owner_node:
 
             claimed_owner = packet.get(
                 "owner_node"
             )
+            source_is_member = self.db.execute(
+                """
+                SELECT 1
+                FROM server_group_members
+                WHERE group_id=? AND node_id=?
+                LIMIT 1
+                """,
+                (
+                    group_id,
+                    source_node
+                )
+            ).fetchone() is not None
+
+            if packet_type == "group_delete":
+                return source_is_member
 
             return (
                 packet_type == "group_update"
                 and source_node
-                and source_node == claimed_owner
+                and (
+                    source_node == claimed_owner
+                    or source_is_member
+                )
             )
 
         if packet_type == "group_delete":
             return source_node == owner_node
+
+        if packet_type == "group_member_leave":
+            return True
 
         if packet_type == "group_pin":
             return (
@@ -1729,15 +1773,16 @@ class ServerStorageMixin:
             )
 
             if not existing_owner:
+                claimed_owner = packet.get("owner_node") or packet.get("source_node")
 
                 self.save_group_members(
                     group_id,
                     group_name,
                     members,
-                    packet.get("owner_node")
-                    or packet.get("source_node"),
+                    claimed_owner,
                     packet.get("admins"),
                     packet.get("is_channel") is True,
+                    packet.get("comments_enabled"),
                     packet.get("group_about"),
                     packet.get("group_avatar_data")
                 )
@@ -1799,8 +1844,74 @@ class ServerStorageMixin:
                 packet.get("owner_node"),
                 packet.get("admins"),
                 packet.get("is_channel") is True,
+                packet.get("comments_enabled"),
                 packet.get("group_about"),
                 packet.get("group_avatar_data")
+            )
+
+        elif packet_type == "group_member_leave":
+
+            group_id = packet.get("group_id")
+            leaver_node = (
+                packet.get("leaver_node")
+                or packet.get("source_node")
+            )
+
+            if not group_id or not leaver_node:
+                return
+
+            row = self.db.execute(
+                """
+                SELECT group_name,
+                       group_about,
+                       group_avatar_data,
+                       members_json,
+                       owner_node,
+                       admins_json,
+                       is_channel,
+                       COALESCE(comments_enabled, 1)
+                FROM server_groups
+                WHERE group_id=?
+                """,
+                (
+                    group_id,
+                )
+            ).fetchone()
+
+            if not row:
+                return
+
+            try:
+                members = json.loads(row[3] or "[]")
+            except (TypeError, ValueError):
+                members = []
+
+            try:
+                admins = json.loads(row[5] or "[]")
+            except (TypeError, ValueError):
+                admins = []
+
+            members = [
+                member
+                for member in members
+                if member != leaver_node
+            ]
+            admins = [
+                admin
+                for admin in admins
+                if admin != leaver_node
+            ]
+
+            self.save_group_members(
+                group_id,
+                row[0],
+                members,
+                row[4],
+                admins,
+                row[6] == 1,
+                row[7] == 1,
+                row[1],
+                row[2]
             )
 
         elif packet_type == "group_delete":
@@ -2013,7 +2124,7 @@ class ServerStorageMixin:
             if not message_id or not reactor_node or not reaction:
                 return
 
-            self.db.execute(
+            cursor = self.db.execute(
                 """
                 INSERT OR IGNORE INTO server_reactions(
                     scope,
@@ -2034,6 +2145,7 @@ class ServerStorageMixin:
             )
 
             self.db.commit()
+            return cursor.rowcount > 0
 
         elif packet_type == "file_chunk":
 

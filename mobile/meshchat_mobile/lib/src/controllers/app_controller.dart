@@ -14,6 +14,7 @@ import '../models/session.dart';
 import '../models/story_item.dart';
 import '../services/app_settings_store.dart';
 import '../services/ble_chat_service.dart';
+import '../services/call_alert_service.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
@@ -132,6 +133,8 @@ class AppController extends ChangeNotifier {
   List<Session> recentSessions = [];
   AppSettings appSettings = const AppSettings();
   ActiveCall? activeCall;
+  List<CallAudioDevice> callAudioInputs = const [];
+  List<CallAudioDevice> callAudioOutputs = const [];
   bool initialized = false;
   bool busy = false;
   String status = 'Offline';
@@ -144,6 +147,7 @@ class AppController extends ChangeNotifier {
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
   Timer? _callTicker;
+  Timer? _softResyncTimer;
   bool _webPushSubscribeInFlight = false;
   bool _retryingQueuedMessages = false;
   Timer? _incomingPreviewTimer;
@@ -151,6 +155,8 @@ class AppController extends ChangeNotifier {
   final List<GroupJoinRequest> groupJoinRequests = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
   final Map<String, _GroupKey> _groupKeys = {};
+  final Map<String, Map<String, _GroupKey>> _groupKeyHistory = {};
+  final Map<String, Map<String, Set<String>>> _reactionActors = {};
   ChatThread? incomingPreviewThread;
   ChatMessage? incomingPreviewMessage;
   int incomingPreviewVersion = 0;
@@ -562,6 +568,15 @@ class AppController extends ChangeNotifier {
     await _connect();
   }
 
+  void _scheduleSoftResync(String reason) {
+    if (session == null || !_socket.isConnected) return;
+    if (_softResyncTimer?.isActive == true) return;
+    _softResyncTimer = Timer(const Duration(milliseconds: 700), () {
+      addDiagnostic('sync', reason);
+      unawaited(forceResync());
+    });
+  }
+
   Future<void> requestNotificationPermissions() async {
     await _notifications.requestPermissions();
     await _syncWebPushSubscription();
@@ -781,6 +796,8 @@ class AppController extends ChangeNotifier {
       case 'chat_delete':
       case 'group_delete':
         await _applyThreadDeletePacket(packet);
+      case 'group_member_leave':
+        await _applyGroupMemberLeavePacket(packet);
       case 'message_pin':
       case 'group_pin':
         _applyPinPacket(packet);
@@ -1068,24 +1085,35 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _applyGroups(dynamic rawGroups) async {
+    final syncedGroupIds = <String>{};
     for (final raw in rawGroups is List ? rawGroups : const []) {
       if (raw is! Map) continue;
       final data = Map<String, dynamic>.from(raw);
       final groupId = data['group_id']?.toString() ?? '';
       if (groupId.isEmpty) continue;
-      if (appSettings.deletedGroupIds.contains(groupId)) continue;
+      syncedGroupIds.add(groupId);
+      final incomingMembers = _stringList(data['members']);
+      final includesMe = incomingMembers.contains(myNodeId);
+      if (appSettings.deletedGroupIds.contains(groupId)) {
+        if (!includesMe) continue;
+        await _forgetDeletedGroup(groupId);
+      }
       if (!appSettings.allowGroupInvites &&
           !groups.containsKey(groupId) &&
-          data['owner_node']?.toString() != myNodeId) {
+          data['owner_node']?.toString() != myNodeId &&
+          !includesMe) {
         continue;
       }
       _ensureGroupThread(
         groupId: groupId,
         groupName: data['group_name']?.toString() ?? 'Группа',
-        members: _stringList(data['members']),
+        members: incomingMembers,
         ownerNode: data['owner_node']?.toString() ?? '',
         admins: _stringList(data['admins']),
         isChannel: data['is_channel'] == true,
+        commentsEnabled: data.containsKey('comments_enabled')
+            ? data['comments_enabled'] != false
+            : null,
         about: data['group_about']?.toString() ?? '',
         avatarData: data['group_avatar_data']?.toString() ?? '',
       );
@@ -1101,6 +1129,18 @@ class AppController extends ChangeNotifier {
         );
       }
     }
+    if (rawGroups is List) {
+      final staleGroupIds = groups.keys
+          .where((groupId) => !syncedGroupIds.contains(groupId))
+          .toList();
+      for (final groupId in staleGroupIds) {
+        groups.remove(groupId);
+        _groupKeys.remove(groupId);
+        _groupKeyHistory.remove(groupId);
+        typingUntil.remove(groupId);
+        activityKinds.remove(groupId);
+      }
+    }
     unawaited(_saveCache());
   }
 
@@ -1112,6 +1152,7 @@ class AppController extends ChangeNotifier {
       final group = groups.remove(groupId);
       if (group == null) continue;
       _groupKeys.remove(groupId);
+      _groupKeyHistory.remove(groupId);
       typingUntil.remove(groupId);
       activityKinds.remove(groupId);
       await _cache.deleteThread(session, group);
@@ -1129,6 +1170,7 @@ class AppController extends ChangeNotifier {
     for (final groupId in brokenGroupIds) {
       groups.remove(groupId);
       _groupKeys.remove(groupId);
+      _groupKeyHistory.remove(groupId);
       typingUntil.remove(groupId);
       activityKinds.remove(groupId);
       changed = true;
@@ -1226,10 +1268,9 @@ class AppController extends ChangeNotifier {
 
   String _normalizedGroupOwner(String ownerNode, List<String> members) {
     final owner = ownerNode.trim();
-    if (owner.isEmpty || owner == myNodeId) return myNodeId;
-    if (_isLegacyGroupOwnerPlaceholder(owner) && members.contains(myNodeId)) {
-      return myNodeId;
-    }
+    if (owner.isEmpty) return '';
+    if (owner == myNodeId) return myNodeId;
+    if (_isLegacyGroupOwnerPlaceholder(owner)) return '';
     return owner;
   }
 
@@ -1244,7 +1285,6 @@ class AppController extends ChangeNotifier {
 
   List<String> _normalizedGroupMembers(Iterable<String> members) {
     final result = <String>{
-      if (myNodeId.isNotEmpty) myNodeId,
       ...members
           .where((id) => id.trim().isNotEmpty)
           .map((id) => id.trim())
@@ -1261,6 +1301,7 @@ class AppController extends ChangeNotifier {
     String ownerNode = '',
     List<String> admins = const [],
     bool isChannel = false,
+    bool? commentsEnabled,
     String about = '',
     String avatarData = '',
   }) {
@@ -1271,7 +1312,11 @@ class AppController extends ChangeNotifier {
     final ownerBaseMembers = hasIncomingMembers
         ? normalizedMembers
         : _normalizedGroupMembers(groups[groupId]?.members ?? const <String>[]);
-    final normalizedOwner = _normalizedGroupOwner(ownerNode, ownerBaseMembers);
+    final existingOwner = groups[groupId]?.ownerNode.trim() ?? '';
+    final normalizedOwner = _normalizedGroupOwner(
+      ownerNode.trim().isEmpty ? existingOwner : ownerNode,
+      ownerBaseMembers,
+    );
     if (normalizedOwner != ownerNode.trim() && ownerNode.trim().isNotEmpty) {
       normalizedMembers.remove(ownerNode.trim());
       ownerBaseMembers.remove(ownerNode.trim());
@@ -1293,6 +1338,9 @@ class AppController extends ChangeNotifier {
     final existing = groups[groupId];
     if (existing != null) {
       existing.isChannel = existing.isChannel || isChannel;
+      if (commentsEnabled != null) {
+        existing.commentsEnabled = commentsEnabled;
+      }
       final incomingName = groupName.trim();
       final isDefaultIncomingName =
           incomingName == 'Р“СЂСѓРїРїР°' || incomingName == 'Группа';
@@ -1336,11 +1384,10 @@ class AppController extends ChangeNotifier {
       profile: profile,
       isGroup: true,
       isChannel: isChannel,
+      commentsEnabled: commentsEnabled ?? true,
       groupId: groupId,
       groupName: groupName.isEmpty ? 'Группа' : groupName,
-      members: normalizedMembers.isEmpty
-          ? _normalizedGroupMembers(const [])
-          : normalizedMembers,
+      members: normalizedMembers,
       ownerNode: normalizedOwner,
       admins: normalizedAdmins,
     );
@@ -1355,7 +1402,13 @@ class AppController extends ChangeNotifier {
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null || !group.isGroup) return null;
-    if (group.isChannel && !_canPostToChannel(group)) return null;
+    final isChannelComment = group.isChannel && replyTo != null;
+    if (isChannelComment && !canCommentInChannel(group)) {
+      return null;
+    }
+    if (group.isChannel && !_canPostToChannel(group) && !isChannelComment) {
+      return null;
+    }
     final id = const Uuid().v4();
     group.messages.add(
       ChatMessage(
@@ -1395,6 +1448,7 @@ class AppController extends ChangeNotifier {
           ? group.profile.displayName
           : group.groupName,
       'is_channel': group.isChannel,
+      'comments_enabled': group.commentsEnabled,
       'group_message_id': id,
       'members': group.members,
       'owner_node': group.ownerNode,
@@ -1402,6 +1456,7 @@ class AppController extends ChangeNotifier {
       'message': encryptedText,
       'reply_to_message_id': replyTo?.id ?? '',
       'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+      'is_channel_comment': isChannelComment,
       'group_key_id': groupKey.id,
       'group_key_sender_envelope': senderEnvelope,
     };
@@ -1437,11 +1492,17 @@ class AppController extends ChangeNotifier {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
     if (appSettings.deletedGroupIds.contains(groupId)) return;
+    final existingGroup = groups[groupId];
     final group = _ensureGroupThread(
       groupId: groupId,
       groupName: packet['group_name']?.toString() ?? 'Группа',
-      members: _stringList(packet['members']),
+      members: existingGroup == null
+          ? _stringList(packet['members'])
+          : const <String>[],
       isChannel: packet['is_channel'] == true,
+      commentsEnabled: packet.containsKey('comments_enabled')
+          ? packet['comments_enabled'] != false
+          : null,
     );
     final id =
         packet['group_message_id']?.toString() ??
@@ -1477,19 +1538,24 @@ class AppController extends ChangeNotifier {
         packet['sender_name']?.toString() ??
         packet['sender']?.toString() ??
         sender;
-    final prefix = sentByMe || senderName.isEmpty ? '' : '$senderName: ';
     final rawText = _firstString(packet, const ['message', 'text', 'content']);
     if (rawText.isEmpty) return;
     final text = await _crypto.decryptGroupText(
-      _groupKeys[groupId]?.key,
+      _groupKeyForPacket(groupId, packet['group_key_id']?.toString() ?? ''),
       rawText,
     );
+    final isServicePayload =
+        text.startsWith('::meshchat_location_v1::') ||
+        text.startsWith('::meshchat_meeting_v1::');
+    final displayText = sentByMe || senderName.isEmpty || isServicePayload
+        ? text
+        : '$senderName: $text';
     group.messages.add(
       ChatMessage(
         id: id,
         senderNode: sender,
         receiverNode: groupId,
-        text: '$prefix$text',
+        text: displayText,
         createdAt: _parsePacketDate(packet),
         replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
         replyToText: packet['reply_to_text']?.toString() ?? '',
@@ -1524,35 +1590,74 @@ class AppController extends ChangeNotifier {
     Map<String, dynamic> packet,
   ) async {
     final current = group.messages[messageIndex];
-    if (!current.text.startsWith(MeshCrypto.groupPrefix)) return;
+    if (!current.text.startsWith(MeshCrypto.groupPrefix) &&
+        !_isGroupDecryptFailure(current.text)) {
+      return;
+    }
     final rawText = _firstString(packet, const ['message', 'text', 'content']);
     if (rawText.isEmpty) return;
     final text = await _crypto.decryptGroupText(
-      _groupKeys[group.groupId]?.key,
+      _groupKeyForPacket(
+        group.groupId,
+        packet['group_key_id']?.toString() ?? '',
+      ),
       rawText,
     );
-    if (text.isEmpty || text.startsWith(MeshCrypto.groupPrefix)) return;
+    if (text.isEmpty ||
+        text.startsWith(MeshCrypto.groupPrefix) ||
+        _isGroupDecryptFailure(text)) {
+      return;
+    }
     group.messages[messageIndex] = current.copyWith(text: text);
     await _saveCache();
     notifyListeners();
   }
 
+  bool _isGroupDecryptFailure(String text) {
+    return text.contains('ошибка расшифровки') ||
+        text.contains('РѕС€РёР±РєР° СЂР°СЃС€РёС„СЂРѕРІРєРё') ||
+        text.contains('ключ недоступен') ||
+        text.contains('РєР»СЋС‡ РЅРµРґРѕСЃС‚СѓРїРµРЅ');
+  }
+
   Future<void> _receiveGroupUpdate(Map<String, dynamic> packet) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
-    if (appSettings.deletedGroupIds.contains(groupId)) return;
+    final incomingMembers = _stringList(packet['members']);
+    final includesMe = incomingMembers.contains(myNodeId);
+    if (appSettings.deletedGroupIds.contains(groupId)) {
+      if (!includesMe) return;
+      await _forgetDeletedGroup(groupId);
+    }
     if (!appSettings.allowGroupInvites &&
         !groups.containsKey(groupId) &&
-        packet['owner_node']?.toString() != myNodeId) {
+        packet['owner_node']?.toString() != myNodeId &&
+        !includesMe) {
+      return;
+    }
+    if (groups.containsKey(groupId) &&
+        incomingMembers.isNotEmpty &&
+        !incomingMembers.contains(myNodeId)) {
+      await _rememberDeletedGroup(groupId);
+      groups.remove(groupId);
+      _groupKeys.remove(groupId);
+      _groupKeyHistory.remove(groupId);
+      typingUntil.remove(groupId);
+      activityKinds.remove(groupId);
+      await _rewriteCache();
+      notifyListeners();
       return;
     }
     final group = _ensureGroupThread(
       groupId: groupId,
       groupName: packet['group_name']?.toString() ?? 'Группа',
-      members: _stringList(packet['members']),
+      members: incomingMembers,
       ownerNode: packet['owner_node']?.toString() ?? '',
       admins: _stringList(packet['admins']),
       isChannel: packet['is_channel'] == true,
+      commentsEnabled: packet.containsKey('comments_enabled')
+          ? packet['comments_enabled'] != false
+          : null,
       about: packet['group_about']?.toString() ?? '',
       avatarData: packet['group_avatar_data']?.toString() ?? '',
     );
@@ -1565,6 +1670,8 @@ class AppController extends ChangeNotifier {
     );
     groups[group.groupId] = group;
     await _saveCache();
+    notifyListeners();
+    _scheduleSoftResync('Group updated: refreshing history');
   }
 
   void _handleLookup(Map<String, dynamic> packet) {
@@ -1631,6 +1738,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _applyReactions(dynamic rawReactions) {
+    _reactionActors.clear();
     for (final thread in [...threads.values, ...groups.values]) {
       for (var i = 0; i < thread.messages.length; i++) {
         if (thread.messages[i].reactions.isNotEmpty) {
@@ -1651,6 +1759,15 @@ class AppController extends ChangeNotifier {
         '';
     final reaction = packet['reaction']?.toString() ?? '';
     if (messageId.isEmpty || reaction.isEmpty) return;
+    final actor =
+        packet['reactor_node']?.toString() ??
+        packet['source_node']?.toString() ??
+        '';
+    if (actor.isNotEmpty) {
+      final byReaction = _reactionActors.putIfAbsent(messageId, () => {});
+      final actors = byReaction.putIfAbsent(reaction, () => <String>{});
+      if (!actors.add(actor)) return;
+    }
     for (final thread in [...threads.values, ...groups.values]) {
       final index = thread.messages.indexWhere(
         (message) => message.id == messageId,
@@ -1673,7 +1790,11 @@ class AppController extends ChangeNotifier {
     String reaction,
   ) async {
     if (session == null || reaction.trim().isEmpty) return;
-    _applyReactionPacket({'message_id': message.id, 'reaction': reaction});
+    _applyReactionPacket({
+      'message_id': message.id,
+      'reaction': reaction,
+      'source_node': myNodeId,
+    });
     final basePacket = {
       'type': thread.isGroup ? 'group_reaction' : 'message_reaction',
       'protocol_version': MeshSocket.protocolVersion,
@@ -1811,7 +1932,7 @@ class AppController extends ChangeNotifier {
       final recipients = thread.members
           .where((member) => member.isNotEmpty && member != myNodeId)
           .toSet();
-      if (recipients.isEmpty) recipients.add('SERVER');
+      recipients.add('SERVER');
       for (final recipient in recipients) {
         _socket.send({
           ...basePacket,
@@ -1821,6 +1942,11 @@ class AppController extends ChangeNotifier {
       }
     } else {
       _socket.send({...basePacket, 'destination_node': thread.profile.nodeId});
+      _socket.send({
+        ...basePacket,
+        'packet_id': const Uuid().v4(),
+        'destination_node': 'SERVER',
+      });
     }
   }
 
@@ -2248,6 +2374,7 @@ class AppController extends ChangeNotifier {
               _looksLikeSameBrokenGroup(group, thread),
         );
         _groupKeys.remove(thread.groupId);
+        _groupKeyHistory.remove(thread.groupId);
       } else {
         groups.removeWhere(
           (_, group) =>
@@ -2294,6 +2421,9 @@ class AppController extends ChangeNotifier {
               .where((member) => member.isNotEmpty && member != myNodeId)
               .toSet()
         : {thread.profile.nodeId};
+    if (thread.isGroup) {
+      recipients.add('SERVER');
+    }
     for (final recipient in recipients) {
       _socket.send({
         ...packetBase,
@@ -2322,14 +2452,37 @@ class AppController extends ChangeNotifier {
             .toSet()
             .toList()
           ..sort();
-    group.members
-      ..clear()
-      ..addAll(remaining);
-    group.admins.remove(myNodeId);
-    await _publishGroupUpdate(group, rotateKey: true);
+    final packetBase = {
+      'type': 'group_member_leave',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'ttl': 5,
+      'sender': session!.login,
+      'group_id': groupId,
+      'group_name': group.profile.displayName,
+      'is_channel': group.isChannel,
+      'leaver_node': myNodeId,
+      'members': remaining,
+      'owner_node': group.ownerNode,
+      'admins': group.admins.where((admin) => admin != myNodeId).toList(),
+    };
+    final recipients = {
+      ...remaining,
+      if (group.ownerNode.isNotEmpty) group.ownerNode,
+      'SERVER',
+    }..remove(myNodeId);
+    for (final recipient in recipients) {
+      _socket.send({
+        ...packetBase,
+        'packet_id': const Uuid().v4(),
+        'destination_node': recipient,
+      });
+    }
     await _rememberDeletedGroup(groupId);
     groups.remove(groupId);
     _groupKeys.remove(groupId);
+    _groupKeyHistory.remove(groupId);
     typingUntil.remove(groupId);
     activityKinds.remove(groupId);
     await _rewriteCache();
@@ -2337,10 +2490,26 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<void> _applyGroupMemberLeavePacket(Map<String, dynamic> packet) async {
+    final groupId = packet['group_id']?.toString() ?? '';
+    final leaver = packet['leaver_node']?.toString() ??
+        packet['source_node']?.toString() ??
+        '';
+    if (groupId.isEmpty || leaver.isEmpty || leaver == myNodeId) return;
+    final group = groups[groupId];
+    if (group == null || !group.members.contains(leaver)) return;
+    group.members.removeWhere((member) => member == leaver);
+    group.admins.removeWhere((admin) => admin == leaver);
+    typingUntil.remove(groupId);
+    activityKinds.remove(groupId);
+    await _saveCache();
+    notifyListeners();
+  }
+
   bool _ownsGroup(ChatThread thread) {
     if (!thread.isGroup) return false;
     final owner = thread.ownerNode.trim();
-    return owner.isEmpty || owner == myNodeId;
+    return owner == myNodeId;
   }
 
   Future<void> _applyThreadDeletePacket(Map<String, dynamic> packet) async {
@@ -2349,12 +2518,14 @@ class AppController extends ChangeNotifier {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isNotEmpty) {
       final group = groups[groupId];
-      if (group == null || !group.members.contains(source)) return;
+      if (group == null) return;
       final owner = group.ownerNode.trim();
+      if (source != owner && !group.members.contains(source)) return;
       if (owner.isNotEmpty && source != owner) return;
       await _rememberDeletedGroup(groupId);
       groups.remove(groupId);
       _groupKeys.remove(groupId);
+      _groupKeyHistory.remove(groupId);
       typingUntil.remove(groupId);
       activityKinds.remove(groupId);
     } else {
@@ -2405,6 +2576,17 @@ class AppController extends ChangeNotifier {
     await _settingsStore.save(appSettings);
   }
 
+  Future<void> _forgetDeletedGroup(String groupId) async {
+    if (groupId.isEmpty || !appSettings.deletedGroupIds.contains(groupId)) {
+      return;
+    }
+    final deleted = appSettings.deletedGroupIds
+        .where((deletedGroupId) => deletedGroupId != groupId)
+        .toList();
+    appSettings = appSettings.copyWith(deletedGroupIds: deleted);
+    await _settingsStore.save(appSettings);
+  }
+
   bool _isDeletedMessage(String messageId) {
     return messageId.isNotEmpty &&
         appSettings.deletedMessageIds.contains(messageId);
@@ -2442,6 +2624,7 @@ class AppController extends ChangeNotifier {
 
   void sendActivity(ChatThread thread, String kind) {
     if (session == null) return;
+    if (thread.isChannel) return;
     final basePacket = {
       'type': 'typing',
       'packet_id': const Uuid().v4(),
@@ -2469,6 +2652,7 @@ class AppController extends ChangeNotifier {
     final source = packet['source_node']?.toString() ?? '';
     if (source.isEmpty || source == myNodeId) return;
     final groupId = packet['group_id']?.toString() ?? '';
+    if (groupId.isNotEmpty && groups[groupId]?.isChannel == true) return;
     final chatId = packet['chat_id']?.toString() ?? '';
     final chatKind = packet['chat_kind']?.toString() ?? 'normal';
     final key = groupId.isNotEmpty
@@ -2519,7 +2703,10 @@ class AppController extends ChangeNotifier {
             packet['group_key_sender_envelope']?.toString() ??
             '',
       );
-      text = await _crypto.decryptGroupText(_groupKeys[groupId]?.key, text);
+      text = await _crypto.decryptGroupText(
+        _groupKeyForPacket(groupId, packet['group_key_id']?.toString() ?? ''),
+        text,
+      );
     } else {
       text = await _crypto.decryptText(text);
     }
@@ -2537,8 +2724,12 @@ class AppController extends ChangeNotifier {
     if (messageId.isEmpty) return;
     await _rememberDeletedMessage(messageId);
     for (final thread in [...threads.values, ...groups.values]) {
-      if (_deleteLocalMessage(thread, messageId)) return;
+      if (_deleteLocalMessage(thread, messageId)) {
+        notifyListeners();
+        return;
+      }
     }
+    notifyListeners();
   }
 
   void _applyPinPacket(Map<String, dynamic> packet, {bool fromSync = false}) {
@@ -2788,6 +2979,7 @@ class AppController extends ChangeNotifier {
   Future<void> acceptCall() async {
     final call = activeCall;
     if (session == null || call == null || !call.incoming) return;
+    unawaited(CallAlertService.stopAll());
     if (call.remoteOfferSdp.isEmpty) {
       _sendCallEnd(call, 'bad_offer');
       _setActiveCall(
@@ -2839,6 +3031,7 @@ class AppController extends ChangeNotifier {
   Future<void> declineCall() async {
     final call = activeCall;
     if (session == null || call == null) return;
+    unawaited(CallAlertService.stopAll());
     _sendCallEnd(call, 'declined');
     _appendCallHistory(call, 'declined_by_me');
     _setActiveCall(
@@ -2851,6 +3044,7 @@ class AppController extends ChangeNotifier {
   Future<void> endCall() async {
     final call = activeCall;
     if (session == null || call == null) return;
+    unawaited(CallAlertService.stopAll());
     _sendCallEnd(call, 'ended');
     _appendCallHistory(call, 'ended_by_me');
     _setActiveCall(call.copyWith(status: CallStatus.ended, endReason: 'ended'));
@@ -2882,6 +3076,32 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshCallAudioDevices() async {
+    final inputs = await _calls.audioInputs().catchError(
+      (_) => const <CallAudioDevice>[],
+    );
+    final outputs = await _calls.audioOutputs().catchError(
+      (_) => const <CallAudioDevice>[],
+    );
+    callAudioInputs = inputs;
+    callAudioOutputs = outputs;
+    notifyListeners();
+  }
+
+  Future<void> selectCallAudioInput(String deviceId) async {
+    await _calls.selectAudioInput(deviceId).catchError((_) {});
+    for (final service in _groupCalls.values) {
+      await service.selectAudioInput(deviceId).catchError((_) {});
+    }
+  }
+
+  Future<void> selectCallAudioOutput(String deviceId) async {
+    await _calls.selectAudioOutput(deviceId).catchError((_) {});
+    for (final service in _groupCalls.values) {
+      await service.selectAudioOutput(deviceId).catchError((_) {});
+    }
+  }
+
   void toggleCallCollapsed() {
     final call = activeCall;
     if (call == null || call.status == CallStatus.ended) return;
@@ -2891,6 +3111,7 @@ class AppController extends ChangeNotifier {
 
   void clearEndedCall() {
     if (activeCall?.status != CallStatus.ended) return;
+    unawaited(CallAlertService.stopAll());
     _setActiveCall(null);
     notifyListeners();
   }
@@ -3109,6 +3330,7 @@ class AppController extends ChangeNotifier {
         endReason: packet['reason']?.toString() ?? 'remote ended',
       ),
     );
+    unawaited(CallAlertService.stopAll());
     notifyListeners();
     await _endCallMedia();
   }
@@ -3679,18 +3901,46 @@ class AppController extends ChangeNotifier {
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (!group.isGroup) return 'Это не группа';
-    if (group.ownerNode.isNotEmpty && group.ownerNode != myNodeId) {
+    final ownerIsRepairable =
+        group.ownerNode.trim().isEmpty ||
+        _isLegacyGroupOwnerPlaceholder(group.ownerNode);
+    if (ownerIsRepairable) {
+      group.ownerNode = myNodeId;
+      if (!group.admins.contains(myNodeId)) {
+        group.admins.add(myNodeId);
+      }
+    }
+    if (group.ownerNode != myNodeId) {
       return 'Менять участников может только владелец группы';
     }
+    final previousMembers = group.members
+        .where((member) => member.isNotEmpty && member != myNodeId)
+        .toSet();
+    final previousMemberSet = group.members
+        .where((member) => member.isNotEmpty)
+        .toSet();
     final uniqueMembers = <String>{
       myNodeId,
       ...members.where((id) => id.isNotEmpty),
     }.toList();
+    final nextMemberSet = uniqueMembers.toSet();
+    final removedMembers = previousMemberSet.difference(nextMemberSet);
+    final addedMembers = nextMemberSet
+        .difference(previousMemberSet)
+        .where((member) => member != myNodeId)
+        .toSet();
     group.members
       ..clear()
       ..addAll(uniqueMembers);
     group.admins.removeWhere((admin) => !uniqueMembers.contains(admin));
-    await _publishGroupUpdate(group, rotateKey: rotateKey);
+    await _publishGroupUpdate(
+      group,
+      rotateKey: rotateKey && removedMembers.isNotEmpty,
+      extraRecipients: previousMembers,
+    );
+    if (addedMembers.isNotEmpty && removedMembers.isEmpty) {
+      await _publishGroupKeyHistory(group, addedMembers);
+    }
     await _saveCache();
     notifyListeners();
     return null;
@@ -3829,13 +4079,33 @@ class AppController extends ChangeNotifier {
       'groups',
       accepted ? 'Join accepted: $groupName' : 'Join declined: $groupName',
     );
+    if (accepted) {
+      _scheduleSoftResync('Group join accepted: syncing history');
+    }
   }
 
   bool _canPostToChannel(ChatThread group) {
     if (!group.isChannel) return true;
-    return group.ownerNode == myNodeId ||
-        group.admins.contains(myNodeId) ||
-        (group.ownerNode.isEmpty && group.admins.isEmpty);
+    return group.ownerNode == myNodeId || group.admins.contains(myNodeId);
+  }
+
+  bool canCommentInChannel(ChatThread group) {
+    if (!group.isChannel) return true;
+    return group.commentsEnabled || _canPostToChannel(group);
+  }
+
+  Future<String?> updateChannelCommentsEnabled(
+    ChatThread group,
+    bool enabled,
+  ) async {
+    if (session == null) return 'No active session';
+    if (!group.isChannel) return 'This is not a channel';
+    if (!_canPostToChannel(group)) return 'Only channel admins can change this';
+    group.commentsEnabled = enabled;
+    await _publishGroupUpdate(group, rotateKey: false);
+    await _saveCache();
+    notifyListeners();
+    return null;
   }
 
   Future<String?> toggleGroupAdmin(ChatThread group, String nodeId) async {
@@ -3888,6 +4158,7 @@ class AppController extends ChangeNotifier {
   Future<void> _publishGroupUpdate(
     ChatThread group, {
     required bool rotateKey,
+    Set<String> extraRecipients = const {},
   }) async {
     if (session == null || !group.isGroup) return;
     final key = rotateKey
@@ -3911,6 +4182,7 @@ class AppController extends ChangeNotifier {
       'group_about': group.profile.about,
       'group_avatar_data': group.profile.avatarData,
       'is_channel': group.isChannel,
+      'comments_enabled': group.commentsEnabled,
       'members': group.members,
       'owner_node': group.ownerNode.isEmpty ? myNodeId : group.ownerNode,
       'admins': group.admins,
@@ -3918,8 +4190,11 @@ class AppController extends ChangeNotifier {
       'group_key_sender_envelope': senderEnvelope,
     };
 
-    var sent = false;
-    for (final member in group.members.where((member) => member != myNodeId)) {
+    final recipients = {
+      ...group.members.where((member) => member != myNodeId),
+      ...extraRecipients.where((member) => member != myNodeId),
+    };
+    for (final member in recipients) {
       final publicKey = profiles[member]?.publicKey ?? '';
       if (publicKey.isEmpty) continue;
       _socket.send({
@@ -3928,15 +4203,63 @@ class AppController extends ChangeNotifier {
         'destination_node': member,
         'group_key_envelope': await _crypto.wrapGroupKey(publicKey, key.key),
       });
-      sent = true;
     }
 
     _socket.send({
       ...basePacket,
       'packet_id': const Uuid().v4(),
-      'destination_node': sent ? myNodeId : 'SERVER',
+      'destination_node': 'SERVER',
       'group_key_envelope': senderEnvelope,
     });
+  }
+
+  Future<void> _publishGroupKeyHistory(
+    ChatThread group,
+    Set<String> recipients,
+  ) async {
+    if (session == null || !group.isGroup || recipients.isEmpty) return;
+    final keys = _groupKeyHistory[group.groupId]?.values.toList() ?? const [];
+    if (keys.isEmpty) return;
+    final groupName = group.profile.displayName.trim().isEmpty
+        ? group.groupName
+        : group.profile.displayName;
+    for (final key in keys) {
+      final senderEnvelope = await _crypto.wrapGroupKey(
+        _crypto.publicKey,
+        key.key,
+      );
+      final basePacket = {
+        'type': 'group_update',
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'ttl': 5,
+        'sender': session!.login,
+        'group_id': group.groupId,
+        'group_name': groupName,
+        'group_about': group.profile.about,
+        'group_avatar_data': group.profile.avatarData,
+        'is_channel': group.isChannel,
+        'comments_enabled': group.commentsEnabled,
+        'members': group.members,
+        'owner_node': group.ownerNode.isEmpty ? myNodeId : group.ownerNode,
+        'admins': group.admins,
+        'group_key_id': key.id,
+        'group_key_sender_envelope': senderEnvelope,
+      };
+      for (final member in recipients) {
+        final publicKey = profiles[member]?.publicKey ?? '';
+        if (publicKey.isEmpty) continue;
+        _socket.send({
+          ...basePacket,
+          'packet_id': const Uuid().v4(),
+          'destination_node': member,
+          'group_key_envelope': await _crypto.wrapGroupKey(
+            publicKey,
+            key.key,
+          ),
+        });
+      }
+    }
   }
 
   Future<String?> sendGroupFile(
@@ -3948,7 +4271,11 @@ class AppController extends ChangeNotifier {
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (!group.isGroup) return 'Это не группа';
-    if (group.isChannel && !_canPostToChannel(group)) {
+    final isChannelComment = group.isChannel && replyTo != null;
+    if (isChannelComment && !canCommentInChannel(group)) {
+      return 'Channel comments are disabled';
+    }
+    if (group.isChannel && !_canPostToChannel(group) && !isChannelComment) {
       return 'Only channel admins can post';
     }
     if (bytes.isEmpty) return 'Файл пустой';
@@ -4016,11 +4343,13 @@ class AppController extends ChangeNotifier {
           'caption': wireCaption,
           'reply_to_message_id': replyTo?.id ?? '',
           'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+          'is_channel_comment': isChannelComment,
           'group_id': group.groupId,
           'group_name': group.groupName.isEmpty
               ? group.profile.displayName
               : group.groupName,
           'is_channel': group.isChannel,
+          'comments_enabled': group.commentsEnabled,
           'group_key_id': groupKey.id,
           'group_key_envelope': envelope,
           'group_key_sender_envelope': senderEnvelope,
@@ -4055,11 +4384,13 @@ class AppController extends ChangeNotifier {
           'caption': wireCaption,
           'reply_to_message_id': replyTo?.id ?? '',
           'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+          'is_channel_comment': isChannelComment,
           'group_id': group.groupId,
           'group_name': group.groupName.isEmpty
               ? group.profile.displayName
               : group.groupName,
           'is_channel': group.isChannel,
+          'comments_enabled': group.commentsEnabled,
           'group_key_id': groupKey.id,
           'group_key_envelope': senderEnvelope,
           'group_key_sender_envelope': senderEnvelope,
@@ -4172,6 +4503,9 @@ class AppController extends ChangeNotifier {
         groupId: groupId,
         groupName: first['group_name']?.toString() ?? 'Группа',
         isChannel: first['is_channel'] == true,
+        commentsEnabled: first.containsKey('comments_enabled')
+            ? first['comments_enabled'] != false
+            : null,
       );
       await _acceptGroupKeyEnvelope(
         groupId,
@@ -4192,11 +4526,11 @@ class AppController extends ChangeNotifier {
         (index) => incoming.chunks[index] ?? '',
       ).join();
       final decryptedName = await _crypto.decryptGroupText(
-        _groupKeys[groupId]?.key,
+        _groupKeyForPacket(groupId, first['group_key_id']?.toString() ?? ''),
         filename,
       );
       final decryptedCaption = await _crypto.decryptGroupText(
-        _groupKeys[groupId]?.key,
+        _groupKeyForPacket(groupId, first['group_key_id']?.toString() ?? ''),
         first['caption']?.toString() ?? '',
       );
       var decryptedData = fullData;
@@ -4204,7 +4538,10 @@ class AppController extends ChangeNotifier {
         decryptedData = _hexEncode(
           Uint8List.fromList(
             await _crypto.decryptGroupBytes(
-              _groupKeys[groupId]?.key,
+              _groupKeyForPacket(
+                groupId,
+                first['group_key_id']?.toString() ?? '',
+              ),
               _hexDecode(fullData),
             ),
           ),
@@ -4523,12 +4860,29 @@ class AppController extends ChangeNotifier {
     final current = _groupKeys[groupId];
     if (current == null || keyId.compareTo(current.id) >= 0) {
       _rememberGroupKey(groupId, _GroupKey(keyId, groupKey));
+    } else {
+      _rememberHistoricalGroupKey(groupId, _GroupKey(keyId, groupKey));
     }
     return true;
   }
 
+  List<int>? _groupKeyForPacket(String groupId, String keyId) {
+    if (groupId.isEmpty) return null;
+    if (keyId.isNotEmpty) {
+      final historical = _groupKeyHistory[groupId]?[keyId];
+      if (historical != null) return historical.key;
+    }
+    return _groupKeys[groupId]?.key;
+  }
+
+  void _rememberHistoricalGroupKey(String groupId, _GroupKey key) {
+    if (groupId.isEmpty || key.id.isEmpty) return;
+    _groupKeyHistory.putIfAbsent(groupId, () => {})[key.id] = key;
+  }
+
   void _rememberGroupKey(String groupId, _GroupKey key) {
     if (groupId.isEmpty) return;
+    _rememberHistoricalGroupKey(groupId, key);
     _groupKeys[groupId] = key;
     final group = groups[groupId];
     if (group == null) return;
@@ -4547,7 +4901,7 @@ class AppController extends ChangeNotifier {
         final padding = (4 - group.groupKeyData.length % 4) % 4;
         final key = base64Url.decode(group.groupKeyData + ('=' * padding));
         if (key.isNotEmpty) {
-          _groupKeys[group.groupId] = _GroupKey(group.groupKeyId, key);
+          _rememberGroupKey(group.groupId, _GroupKey(group.groupKeyId, key));
         }
       } catch (_) {
         group.groupKeyId = '';
@@ -4675,6 +5029,7 @@ class AppController extends ChangeNotifier {
       ),
     );
     if (call == null || call.status == CallStatus.ended) {
+      unawaited(CallAlertService.stopAll());
       _callTicker?.cancel();
       _callTicker = null;
     } else {
@@ -4778,10 +5133,13 @@ class AppController extends ChangeNotifier {
     activityKinds.clear();
     _incomingFiles.clear();
     _incomingPreviewTimer?.cancel();
+    _softResyncTimer?.cancel();
     _incomingPreviewTimer = null;
+    _softResyncTimer = null;
     incomingPreviewThread = null;
     incomingPreviewMessage = null;
     _groupKeys.clear();
+    _groupKeyHistory.clear();
   }
 
   Future<void> _saveCache() async {

@@ -482,6 +482,8 @@ class GroupInfoPage extends StatelessWidget {
         final isOwner =
             effectiveOwnerNode.isEmpty ||
             effectiveOwnerNode == controller.myNodeId;
+        final canManageChannel =
+            isOwner || thread.admins.contains(controller.myNodeId);
 
         return Scaffold(
           backgroundColor: const Color(0xFF07111E),
@@ -566,6 +568,39 @@ class GroupInfoPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
+              if (thread.isChannel) ...[
+                _GroupGlassSurface(
+                  radius: 22,
+                  child: SwitchListTile(
+                    secondary: const Icon(Icons.forum_outlined),
+                    title: const Text(
+                      'Comments',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    subtitle: Text(
+                      thread.commentsEnabled
+                          ? 'Subscribers can comment on posts'
+                          : 'Only admins can reply to posts',
+                    ),
+                    value: thread.commentsEnabled,
+                    onChanged: canManageChannel
+                        ? (value) async {
+                            final error = await controller
+                                .updateChannelCommentsEnabled(thread, value);
+                            if (!context.mounted) return;
+                            _showSnack(
+                              context,
+                              error ??
+                                  (value
+                                      ? 'Comments enabled'
+                                      : 'Comments disabled'),
+                            );
+                          }
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               _GroupGlassSurface(
                 radius: 22,
                 child: Padding(
@@ -590,7 +625,9 @@ class GroupInfoPage extends StatelessWidget {
                       ),
                       Text(
                         thread.isChannel
-                            ? 'Subscriber: can read posts.'
+                            ? thread.commentsEnabled
+                                  ? 'Subscriber: can read posts and comment.'
+                                  : 'Subscriber: can read posts.'
                             : 'Member: can read and send messages.',
                       ),
                     ],

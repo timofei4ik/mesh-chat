@@ -1101,7 +1101,7 @@ class ChatsPage extends StatelessWidget {
     }
     final meeting = _meetingPointPreview(message.text);
     if (meeting != null) return meeting;
-    if (message.text.startsWith('::meshchat_location_v1::')) {
+    if (message.text.contains('::meshchat_location_v1::')) {
       return 'Shared location';
     }
     return message.text;
@@ -1109,9 +1109,10 @@ class ChatsPage extends StatelessWidget {
 
   static String? _meetingPointPreview(String text) {
     const prefix = '::meshchat_meeting_v1::';
-    if (!text.startsWith(prefix)) return null;
+    final prefixIndex = text.indexOf(prefix);
+    if (prefixIndex < 0) return null;
     try {
-      final raw = jsonDecode(text.substring(prefix.length));
+      final raw = jsonDecode(text.substring(prefixIndex + prefix.length));
       if (raw is! Map) return 'Meeting point';
       final title = raw['title']?.toString().trim() ?? '';
       return title.isEmpty ? 'Meeting point' : 'Meeting point: $title';

@@ -8,9 +8,18 @@ import 'package:flutter/services.dart';
 import '../controllers/app_controller.dart';
 
 class CallAlertService {
-  AudioPlayer? _player;
-  Timer? _vibrationTimer;
-  String _activeCallId = '';
+  static AudioPlayer? _player;
+  static Timer? _vibrationTimer;
+  static String _activeCallId = '';
+  static int _generation = 0;
+
+  static Future<void> stopAll() async {
+    _generation++;
+    _activeCallId = '';
+    _vibrationTimer?.cancel();
+    _vibrationTimer = null;
+    await _player?.stop().catchError((_) {});
+  }
 
   Future<void> sync(AppController controller) async {
     final call = controller.activeCall;
@@ -32,10 +41,7 @@ class CallAlertService {
   }
 
   Future<void> stop() async {
-    _activeCallId = '';
-    _vibrationTimer?.cancel();
-    _vibrationTimer = null;
-    await _player?.stop().catchError((_) {});
+    await stopAll();
   }
 
   Future<void> dispose() async {
@@ -53,8 +59,18 @@ class CallAlertService {
   }
 
   void _startVibration() {
+    _generation++;
+    final generation = _generation;
+    final callId = _activeCallId;
     HapticFeedback.vibrate();
     _vibrationTimer = Timer.periodic(const Duration(milliseconds: 1200), (_) {
+      if (generation != _generation ||
+          callId.isEmpty ||
+          callId != _activeCallId) {
+        _vibrationTimer?.cancel();
+        _vibrationTimer = null;
+        return;
+      }
       HapticFeedback.vibrate();
     });
   }

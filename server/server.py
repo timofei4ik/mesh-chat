@@ -416,9 +416,12 @@ class MeshRelayServer(
 
                     continue
 
-                self.save_history_packet(
+                saved = self.save_history_packet(
                     packet
                 )
+
+                if saved is False:
+                    continue
 
                 await self.route_packet(
                     packet

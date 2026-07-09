@@ -70,9 +70,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool get canPostToThread {
     final thread = widget.thread;
     if (!thread.isChannel) return true;
+    if (replyTo != null) return widget.controller.canCommentInChannel(thread);
     return thread.ownerNode == widget.controller.myNodeId ||
         thread.admins.contains(widget.controller.myNodeId) ||
         (thread.ownerNode.isEmpty && thread.admins.isEmpty);
+  }
+
+  String get channelWriteBlockedMessage {
+    if (widget.thread.isChannel && replyTo != null) {
+      return 'Channel comments are disabled';
+    }
+    return 'Only channel admins can post';
   }
 
   @override
@@ -209,7 +217,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final text = input.text;
     if (text.trim().isEmpty) return;
     if (!canPostToThread) {
-      showSnack('Only channel admins can post');
+      showSnack(channelWriteBlockedMessage);
       return;
     }
     input.clear();
@@ -260,7 +268,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
     if (!canPostToThread) {
-      showSnack('Only channel admins can post');
+      showSnack(channelWriteBlockedMessage);
       return;
     }
     final point = await askMeetingPoint();
@@ -281,7 +289,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
     if (!canPostToThread) {
-      showSnack('Only channel admins can post');
+      showSnack(channelWriteBlockedMessage);
       return;
     }
     final duration = await chooseLocationShareDuration();
@@ -715,7 +723,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<void> sendAttachment(String filename, Uint8List bytes) async {
     if (!canPostToThread) {
-      showSnack('Only channel admins can post');
+      showSnack(channelWriteBlockedMessage);
       return;
     }
     final caption = await askFileCaption(filename);
@@ -1209,6 +1217,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final canBlock =
         !mine && !widget.thread.isGroup && message.senderNode.isNotEmpty;
     final blocked = widget.controller.isBlocked(message.senderNode);
+    final canReplyOrComment =
+        !widget.thread.isChannel ||
+        widget.controller.canCommentInChannel(widget.thread);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -1234,9 +1245,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   onTap: () => Navigator.pop(context, 'retry'),
                 ),
               ListTile(
-                leading: const Icon(Icons.reply_rounded),
-                title: const Text('Reply'),
-                onTap: () => Navigator.pop(context, 'reply'),
+                leading: Icon(
+                  widget.thread.isChannel
+                      ? Icons.forum_outlined
+                      : Icons.reply_rounded,
+                ),
+                title: Text(
+                  widget.thread.isChannel && !canReplyOrComment
+                      ? 'Comments disabled'
+                      : widget.thread.isChannel
+                      ? 'Comment'
+                      : 'Reply',
+                ),
+                enabled: canReplyOrComment,
+                onTap: canReplyOrComment
+                    ? () => Navigator.pop(context, 'reply')
+                    : null,
               ),
               ListTile(
                 leading: const Icon(Icons.forward_rounded),
@@ -2337,9 +2361,16 @@ class _CallBottomSheet extends StatelessWidget {
                         onPressed: controller.toggleCallMute,
                       ),
                       _CallGlassButton(
-                        tooltip: 'Bluetooth',
-                        icon: Icons.bluetooth_rounded,
-                        onPressed: () {},
+                        tooltip: 'Input',
+                        icon: Icons.input_rounded,
+                        onPressed: () =>
+                            _showAudioDevicePicker(context, input: true),
+                      ),
+                      _CallGlassButton(
+                        tooltip: 'Output',
+                        icon: Icons.headphones_rounded,
+                        onPressed: () =>
+                            _showAudioDevicePicker(context, input: false),
                       ),
                     ],
                   ),
@@ -2364,6 +2395,114 @@ class _CallBottomSheet extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  void _showAudioDevicePicker(BuildContext context, {required bool input}) {
+    unawaited(controller.refreshCallAudioDevices());
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) {
+            final devices = input
+                ? controller.callAudioInputs
+                : controller.callAudioOutputs;
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(28),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xE61A2530),
+                        borderRadius: BorderRadius.circular(28),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.14),
+                        ),
+                      ),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 420),
+                        child: ListView(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          children: [
+                            ListTile(
+                              leading: Icon(
+                                input
+                                    ? Icons.input_rounded
+                                    : Icons.headphones_rounded,
+                                color: Colors.lightBlueAccent,
+                              ),
+                              title: Text(
+                                input ? 'Audio input' : 'Audio output',
+                              ),
+                              subtitle: Text(
+                                devices.isEmpty
+                                    ? 'No devices reported by the system yet'
+                                    : 'Choose device for this call',
+                              ),
+                            ),
+                            ListTile(
+                              leading: const Icon(Icons.auto_awesome_rounded),
+                              title: const Text('System default'),
+                              onTap: () {
+                                Navigator.pop(context);
+                                if (input) {
+                                  unawaited(
+                                    controller.selectCallAudioInput(''),
+                                  );
+                                } else {
+                                  unawaited(
+                                    controller.selectCallAudioOutput(''),
+                                  );
+                                }
+                              },
+                            ),
+                            for (final device in devices)
+                              ListTile(
+                                leading: Icon(
+                                  input
+                                      ? Icons.settings_input_component_rounded
+                                      : Icons.speaker_rounded,
+                                ),
+                                title: Text(
+                                  device.label,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  if (input) {
+                                    unawaited(
+                                      controller.selectCallAudioInput(
+                                        device.id,
+                                      ),
+                                    );
+                                  } else {
+                                    unawaited(
+                                      controller.selectCallAudioOutput(
+                                        device.id,
+                                      ),
+                                    );
+                                  }
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -5356,9 +5495,10 @@ class _MeetingPoint {
   }
 
   static _MeetingPoint? fromMessageText(String text) {
-    if (!text.startsWith(prefix)) return null;
+    final prefixIndex = text.indexOf(prefix);
+    if (prefixIndex < 0) return null;
     try {
-      final raw = jsonDecode(text.substring(prefix.length));
+      final raw = jsonDecode(text.substring(prefixIndex + prefix.length));
       if (raw is! Map) return null;
       final lat = double.tryParse(raw['lat']?.toString() ?? '');
       final lng = double.tryParse(raw['lng']?.toString() ?? '');
@@ -5467,9 +5607,10 @@ class _SharedLocation {
   }
 
   static _SharedLocation? fromMessageText(String text) {
-    if (!text.startsWith(prefix)) return null;
+    final prefixIndex = text.indexOf(prefix);
+    if (prefixIndex < 0) return null;
     try {
-      final raw = jsonDecode(text.substring(prefix.length));
+      final raw = jsonDecode(text.substring(prefixIndex + prefix.length));
       if (raw is! Map) return null;
       final lat = double.tryParse(raw['lat']?.toString() ?? '');
       final lng = double.tryParse(raw['lng']?.toString() ?? '');

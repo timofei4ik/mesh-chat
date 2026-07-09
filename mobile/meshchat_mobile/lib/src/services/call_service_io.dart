@@ -3,8 +3,22 @@ import 'dart:io' show Platform;
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+class CallAudioDevice {
+  const CallAudioDevice({
+    required this.id,
+    required this.label,
+    required this.kind,
+  });
+
+  final String id;
+  final String label;
+  final String kind;
+}
+
 class CallService {
   static const _audioSession = MethodChannel('meshchat/audio_session');
+  static String _selectedAudioInputId = '';
+  static String _selectedAudioOutputId = '';
 
   static bool get _isMobile => Platform.isAndroid || Platform.isIOS;
   static bool get _isAndroid => Platform.isAndroid;
@@ -16,6 +30,33 @@ class CallService {
   bool _localMuted = false;
   bool _speakerEnabled = true;
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
+
+  Future<List<CallAudioDevice>> audioInputs() async {
+    return _devicesOfKind('audioinput');
+  }
+
+  Future<List<CallAudioDevice>> audioOutputs() async {
+    return _devicesOfKind('audiooutput');
+  }
+
+  Future<void> selectAudioInput(String deviceId) async {
+    _selectedAudioInputId = deviceId;
+    if (deviceId.isEmpty) return;
+    await Helper.selectAudioInput(deviceId).catchError((_) {});
+  }
+
+  Future<void> selectAudioOutput(String deviceId) async {
+    _selectedAudioOutputId = deviceId;
+    if (deviceId.isEmpty) {
+      await setSpeakerEnabled(_speakerEnabled).catchError((_) {});
+      return;
+    }
+    await Helper.selectAudioOutput(deviceId).catchError((_) {});
+    await _remoteAudioRenderer?.audioOutput(deviceId).catchError((_) => false);
+  }
+
+  String get selectedAudioInputId => _selectedAudioInputId;
+  String get selectedAudioOutputId => _selectedAudioOutputId;
 
   Future<String> startOutgoing({
     required void Function(Map<String, dynamic> candidate) onIceCandidate,
@@ -156,6 +197,12 @@ class CallService {
       await peerConnection.addTrack(track, stream);
     }
     await _setSpeakerphoneOnButPreferBluetooth();
+    if (_selectedAudioInputId.isNotEmpty) {
+      await Helper.selectAudioInput(_selectedAudioInputId).catchError((_) {});
+    }
+    if (_selectedAudioOutputId.isNotEmpty) {
+      await Helper.selectAudioOutput(_selectedAudioOutputId).catchError((_) {});
+    }
     await _activateCallAudio();
     _speakerEnabled = true;
     _localStream = stream;
@@ -167,9 +214,10 @@ class CallService {
     final tracks = _localStream?.getAudioTracks() ?? <MediaStreamTrack>[];
     for (final track in tracks) {
       track.enabled = !muted;
-      if (_isMobile) {
-        await Helper.setMicrophoneMute(muted, track).catchError((_) {});
-      }
+    }
+    await _activateCallAudio();
+    if (_selectedAudioOutputId.isNotEmpty) {
+      await Helper.selectAudioOutput(_selectedAudioOutputId).catchError((_) {});
     }
   }
 
@@ -201,6 +249,11 @@ class CallService {
     }
     renderer.srcObject = stream;
     await _activateCallAudio();
+    if (_selectedAudioOutputId.isNotEmpty) {
+      await renderer
+          .audioOutput(_selectedAudioOutputId)
+          .catchError((_) => false);
+    }
     await setSpeakerEnabled(_speakerEnabled).catchError((_) {});
   }
 
@@ -265,31 +318,32 @@ class CallService {
   }
 
   Map<String, dynamic> _mediaConstraints() {
-    if (!_isMobile) {
-      return {
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-          'googEchoCancellation': true,
-          'googAutoGainControl': true,
-          'googNoiseSuppression': true,
-          'googHighpassFilter': true,
-        },
-        'video': false,
-      };
-    }
-    return {
-      'audio': {
-        'echoCancellation': true,
-        'noiseSuppression': true,
-        'autoGainControl': true,
-        'googEchoCancellation': true,
-        'googAutoGainControl': true,
-        'googNoiseSuppression': true,
-        'googHighpassFilter': true,
-      },
-      'video': false,
+    final audio = <String, dynamic>{
+      'echoCancellation': true,
+      'noiseSuppression': true,
+      'autoGainControl': true,
+      'googEchoCancellation': true,
+      'googAutoGainControl': true,
+      'googNoiseSuppression': true,
+      'googHighpassFilter': true,
     };
+    if (_selectedAudioInputId.isNotEmpty) {
+      audio['deviceId'] = {'exact': _selectedAudioInputId};
+    }
+    return {'audio': audio, 'video': false};
+  }
+
+  Future<List<CallAudioDevice>> _devicesOfKind(String kind) async {
+    final devices = await navigator.mediaDevices.enumerateDevices().catchError(
+      (_) => <MediaDeviceInfo>[],
+    );
+    var index = 1;
+    return devices.where((device) => device.kind == kind).map((device) {
+      final label = device.label.trim().isEmpty
+          ? (kind == 'audioinput' ? 'Microphone $index' : 'Output $index')
+          : device.label.trim();
+      index++;
+      return CallAudioDevice(id: device.deviceId, label: label, kind: kind);
+    }).toList();
   }
 }
