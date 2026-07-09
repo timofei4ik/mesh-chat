@@ -237,6 +237,76 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<String?> saveStickerFromMessage(
+    ChatMessage message, {
+    required bool favorite,
+  }) async {
+    if (session == null) return 'No active session';
+    if (message.kind != ChatMessageKind.sticker || message.fileData.isEmpty) {
+      return 'Sticker is not cached';
+    }
+    late final Uint8List bytes;
+    try {
+      bytes = _hexDecode(message.fileData);
+    } catch (_) {
+      return 'Sticker is damaged';
+    }
+    if (bytes.isEmpty) return 'Sticker is empty';
+
+    final base64Data = base64Encode(bytes);
+    StickerItem? existing;
+    for (final item in stickerLibrary.allStickers) {
+      if (item.base64Data == base64Data) {
+        existing = item;
+        break;
+      }
+    }
+
+    var packs = [...stickerLibrary.packs];
+    var favoriteIds = {...stickerLibrary.favoriteIds};
+    var savedSticker = existing;
+
+    if (savedSticker == null) {
+      const savedPackName = 'Saved stickers';
+      var packIndex = packs.indexWhere((pack) => pack.name == savedPackName);
+      if (packIndex < 0) {
+        packs = [
+          ...packs,
+          StickerPack(id: const Uuid().v4(), name: savedPackName),
+        ];
+        packIndex = packs.length - 1;
+      }
+      final fileName = message.fileName.trim().isEmpty
+          ? 'sticker_${DateTime.now().millisecondsSinceEpoch}.webp'
+          : message.fileName.trim();
+      final extension = fileName.split('.').last.toLowerCase();
+      savedSticker = StickerItem(
+        id: const Uuid().v4(),
+        name: message.text.trim().isEmpty
+            ? _stickerDisplayName(fileName)
+            : message.text.trim(),
+        fileName: fileName,
+        mimeType: _stickerMimeType(extension),
+        base64Data: base64Data,
+        animated: extension == 'gif' || extension == 'webp',
+      );
+      packs[packIndex] = packs[packIndex].copyWith(
+        stickers: [...packs[packIndex].stickers, savedSticker],
+      );
+    }
+
+    if (favorite) {
+      favoriteIds.add(savedSticker.id);
+    }
+    stickerLibrary = stickerLibrary.copyWith(
+      packs: packs,
+      favoriteIds: favoriteIds,
+    );
+    await _saveStickers();
+    notifyListeners();
+    return null;
+  }
+
   Future<String?> sendSticker(
     ChatThread thread,
     StickerItem sticker, {

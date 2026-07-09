@@ -1358,6 +1358,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         (message.kind == ChatMessageKind.file ||
             message.kind == ChatMessageKind.sticker) &&
         message.fileData.isNotEmpty;
+    final canSaveSticker =
+        message.kind == ChatMessageKind.sticker && message.fileData.isNotEmpty;
     final canEdit =
         mine &&
         (message.kind == ChatMessageKind.text ||
@@ -1426,6 +1428,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   leading: const Icon(Icons.download_rounded),
                   title: const Text('Download'),
                   onTap: () => Navigator.pop(context, 'download'),
+                ),
+              if (canSaveSticker)
+                ListTile(
+                  leading: const Icon(Icons.star_border_rounded),
+                  title: const Text('Add sticker to favorites'),
+                  onTap: () => Navigator.pop(context, 'favorite_sticker'),
+                ),
+              if (canSaveSticker)
+                ListTile(
+                  leading: const Icon(Icons.folder_special_outlined),
+                  title: const Text('Add to sticker pack'),
+                  subtitle: const Text('Saved stickers'),
+                  onTap: () => Navigator.pop(context, 'save_sticker_pack'),
                 ),
               if (canEdit)
                 ListTile(
@@ -1505,6 +1520,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     if (action == 'download') {
       await downloadMessageFile(message);
+      return;
+    }
+    if (action == 'favorite_sticker' || action == 'save_sticker_pack') {
+      final error = await widget.controller.saveStickerFromMessage(
+        message,
+        favorite: action == 'favorite_sticker',
+      );
+      if (!mounted) return;
+      showSnack(
+        error ??
+            (action == 'favorite_sticker'
+                ? 'Sticker added to favorites'
+                : 'Sticker added to Saved stickers'),
+      );
       return;
     }
     if (action == 'edit') {
