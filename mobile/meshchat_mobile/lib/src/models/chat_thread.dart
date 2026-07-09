@@ -50,7 +50,14 @@ class ChatThread {
   bool muted;
   int unread = 0;
 
-  ChatMessage? get lastMessage => messages.isEmpty ? null : messages.last;
+  ChatMessage? get lastMessage {
+    if (messages.isEmpty) return null;
+    if (!isChannel) return messages.last;
+    for (final message in messages.reversed) {
+      if (message.replyToMessageId.trim().isEmpty) return message;
+    }
+    return null;
+  }
 
   bool get isSecret => chatKind == 'secret';
   bool get isBluetooth => chatKind == 'bluetooth';
