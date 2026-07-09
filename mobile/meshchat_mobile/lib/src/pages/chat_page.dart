@@ -32,10 +32,16 @@ import 'profile_page.dart';
 enum _AttachAction { photo, file, shareLocation }
 
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key, required this.controller, required this.thread});
+  const ChatPage({
+    super.key,
+    required this.controller,
+    required this.thread,
+    this.channelPost,
+  });
 
   final AppController controller;
   final ChatThread thread;
+  final ChatMessage? channelPost;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -67,9 +73,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String? liveLocationMessageId;
   final deletingMessageIds = <String>{};
 
+  bool get isChannelCommentThread =>
+      widget.thread.isChannel && widget.channelPost != null;
+
+  ChatMessage? get fixedCommentRoot =>
+      isChannelCommentThread ? widget.channelPost : null;
+
   bool get canPostToThread {
     final thread = widget.thread;
     if (!thread.isChannel) return true;
+    if (isChannelCommentThread) {
+      return widget.controller.canCommentInChannel(thread);
+    }
     if (replyTo != null) return widget.controller.canCommentInChannel(thread);
     return thread.ownerNode == widget.controller.myNodeId ||
         thread.admins.contains(widget.controller.myNodeId) ||
@@ -77,10 +92,38 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   String get channelWriteBlockedMessage {
+    if (isChannelCommentThread) {
+      return 'Channel comments are disabled';
+    }
     if (widget.thread.isChannel && replyTo != null) {
       return 'Channel comments are disabled';
     }
     return 'Only channel admins can post';
+  }
+
+  List<ChatMessage> visibleMessages() {
+    final messages = widget.thread.messages;
+    if (!widget.thread.isChannel) return messages;
+    final root = fixedCommentRoot;
+    if (root == null) {
+      return messages
+          .where((message) => message.replyToMessageId.trim().isEmpty)
+          .toList(growable: false);
+    }
+    return [
+      root,
+      ...messages.where(
+        (message) =>
+            message.id != root.id && message.replyToMessageId == root.id,
+      ),
+    ]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  }
+
+  int commentCountFor(ChatMessage post) {
+    if (!widget.thread.isChannel || post.replyToMessageId.isNotEmpty) return 0;
+    return widget.thread.messages
+        .where((message) => message.replyToMessageId == post.id)
+        .length;
   }
 
   @override
@@ -222,7 +265,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     input.clear();
     widget.controller.updateDraft(widget.thread, '');
-    final quote = replyTo;
+    final quote = fixedCommentRoot ?? replyTo;
     setState(() => replyTo = null);
     if (widget.thread.isGroup) {
       await widget.controller.sendGroupMessage(
@@ -273,7 +316,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     final point = await askMeetingPoint();
     if (point == null) return;
-    final quote = replyTo;
+    final quote = fixedCommentRoot ?? replyTo;
     setState(() => replyTo = null);
     await widget.controller.sendGroupMessage(
       widget.thread,
@@ -402,7 +445,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (!silent) showSnack('Could not read current location');
       return null;
     }
-    final quote = silent ? null : replyTo;
+    final quote = silent ? null : (fixedCommentRoot ?? replyTo);
     if (!silent) setState(() => replyTo = null);
     final previousLiveId = silent ? liveLocationMessageId : null;
     final sentId = await widget.controller.sendGroupMessage(
@@ -728,7 +771,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     final caption = await askFileCaption(filename);
     if (caption == null) return;
-    final quote = replyTo;
+    final quote = fixedCommentRoot ?? replyTo;
     setState(() => replyTo = null);
     final error = widget.thread.isGroup
         ? await widget.controller.sendGroupFile(
@@ -977,7 +1020,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final bytes = await XFile(path).readAsBytes();
     final filename =
         'voice_${DateTime.now().millisecondsSinceEpoch}_${duration.inSeconds}s.m4a';
-    final quote = replyTo;
+    final quote = fixedCommentRoot ?? replyTo;
     if (quote != null && mounted) {
       setState(() => replyTo = null);
     }
@@ -1336,7 +1379,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
     if (action == 'reply') {
-      setState(() => replyTo = message);
+      if (widget.thread.isChannel && !isChannelCommentThread) {
+        await openChannelComments(message);
+      } else {
+        setState(() => replyTo = message);
+      }
       return;
     }
     if (action == 'forward') {
@@ -1382,6 +1429,21 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
     await widget.controller.sendReaction(widget.thread, message, action);
+  }
+
+  Future<void> openChannelComments(ChatMessage post) async {
+    if (!widget.thread.isChannel || post.replyToMessageId.isNotEmpty) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatPage(
+          controller: widget.controller,
+          thread: widget.thread,
+          channelPost: post,
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
   }
 
   Future<void> showForwardDialog(ChatMessage message) async {
@@ -1703,12 +1765,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          profile.displayName,
+                          isChannelCommentThread
+                              ? 'Comments'
+                              : profile.displayName,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                         Text(
-                          widget.thread.isGroup
+                          isChannelCommentThread
+                              ? profile.displayName
+                              : widget.thread.isGroup
                               ? widget.thread.isChannel
                                     ? '${widget.thread.members.length} subscribers'
                                     : '${widget.thread.members.length} members'
@@ -1811,7 +1877,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 child: ListenableBuilder(
                   listenable: widget.controller,
                   builder: (context, _) {
-                    final messages = widget.thread.messages;
+                    final messages = visibleMessages();
                     scheduleInitialScrollToBottom(messages.length);
                     return ListView.builder(
                       controller: scroll,
@@ -1861,8 +1927,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                       widget.controller.appSettings.dataSaver,
                                   onLongPress: () =>
                                       showMessageActions(message),
-                                  onReply: () =>
-                                      setState(() => replyTo = message),
+                                  onReply: () => widget.thread.isChannel &&
+                                      !isChannelCommentThread
+                                      ? openChannelComments(message)
+                                      : setState(() => replyTo = message),
+                                  onOpenComments:
+                                      widget.thread.isChannel &&
+                                          !isChannelCommentThread &&
+                                          message.replyToMessageId.isEmpty
+                                      ? () => openChannelComments(message)
+                                      : null,
+                                  commentCount: commentCountFor(message),
                                 ),
                               ),
                           ],
@@ -4001,6 +4076,8 @@ class _MessageBubble extends StatefulWidget {
     required this.dataSaver,
     required this.onLongPress,
     required this.onReply,
+    this.onOpenComments,
+    this.commentCount = 0,
   });
 
   final AppController controller;
@@ -4010,6 +4087,8 @@ class _MessageBubble extends StatefulWidget {
   final bool dataSaver;
   final VoidCallback onLongPress;
   final VoidCallback onReply;
+  final VoidCallback? onOpenComments;
+  final int commentCount;
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -4145,6 +4224,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     message: message,
                     mine: mine,
                     imageBytes: imageBytes,
+                    onOpenComments: widget.onOpenComments,
+                    commentCount: widget.commentCount,
                   ),
                 ),
               ),
@@ -4176,6 +4257,8 @@ class _MessageBubbleBody extends StatelessWidget {
     required this.message,
     required this.mine,
     required this.imageBytes,
+    this.onOpenComments,
+    this.commentCount = 0,
   });
 
   final AppController controller;
@@ -4183,6 +4266,8 @@ class _MessageBubbleBody extends StatelessWidget {
   final ChatMessage message;
   final bool mine;
   final Uint8List? imageBytes;
+  final VoidCallback? onOpenComments;
+  final int commentCount;
 
   @override
   Widget build(BuildContext context) {
@@ -4303,7 +4388,75 @@ class _MessageBubbleBody extends StatelessWidget {
             ],
           ),
         ],
+        if (onOpenComments != null) ...[
+          const SizedBox(height: 4),
+          _ChannelCommentsButton(
+            count: commentCount,
+            onTap: onOpenComments!,
+            alignRight: mine,
+          ),
+        ],
       ],
+    );
+  }
+}
+
+class _ChannelCommentsButton extends StatelessWidget {
+  const _ChannelCommentsButton({
+    required this.count,
+    required this.onTap,
+    required this.alignRight,
+  });
+
+  final int count;
+  final VoidCallback onTap;
+  final bool alignRight;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = count == 0
+        ? 'Comment'
+        : count == 1
+        ? '1 comment'
+        : '$count comments';
+    return Align(
+      alignment: alignRight ? Alignment.centerRight : Alignment.centerLeft,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: onTap,
+          child: Ink(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1B2B3A).withValues(alpha: 0.82),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: Colors.lightBlueAccent.withValues(alpha: 0.28),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.forum_outlined,
+                  size: 15,
+                  color: Colors.lightBlueAccent,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white70,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
