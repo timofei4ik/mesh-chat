@@ -411,6 +411,7 @@ class ServerStorageMixin:
                 caption TEXT,
                 data TEXT,
                 group_key_id TEXT,
+                message_kind TEXT DEFAULT 'file',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -513,6 +514,20 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE server_files ADD COLUMN chat_id TEXT DEFAULT ''"
             )
+        if "message_kind" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN message_kind TEXT DEFAULT 'file'"
+            )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS server_sticker_libraries(
+                login TEXT PRIMARY KEY,
+                library_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
         conn.commit()
 
@@ -1350,6 +1365,38 @@ class ServerStorageMixin:
                 packet.get("avatar_data"),
                 packet.get("encryption_public_key")
             )
+
+        elif packet_type == "sticker_library_update":
+
+            login = (
+                (packet.get("login") or self.get_login_by_node(packet.get("source_node")) or "")
+                .strip()
+                .lower()
+            )
+            library = packet.get("sticker_library")
+
+            if not login or not isinstance(library, dict):
+                return
+
+            self.db.execute(
+                """
+                INSERT INTO server_sticker_libraries(
+                    login,
+                    library_json,
+                    updated_at
+                )
+                VALUES(?,?,STRFTIME('%Y-%m-%d %H:%M:%f','now'))
+                ON CONFLICT(login) DO UPDATE SET
+                    library_json=excluded.library_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    login,
+                    json.dumps(library, ensure_ascii=False)
+                )
+            )
+
+            self.db.commit()
 
         elif packet_type == "story_update":
 
@@ -2214,11 +2261,12 @@ class ServerStorageMixin:
                     caption,
                     data,
                     group_key_id,
+                    message_kind,
                     chat_kind,
                     chat_id,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
                     '%Y-%m-%d %H:%M:%f',
                     'now'
                 ))
@@ -2235,6 +2283,7 @@ class ServerStorageMixin:
                     first_packet.get("caption") or "",
                     full_data,
                     first_packet.get("group_key_id"),
+                    first_packet.get("message_kind") or first_packet.get("kind") or "file",
                     first_packet.get("chat_kind") or "normal",
                     first_packet.get("chat_id") or ""
                 )

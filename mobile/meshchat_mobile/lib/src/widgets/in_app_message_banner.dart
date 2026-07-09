@@ -76,6 +76,7 @@ class _BannerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final preview = switch (message.kind) {
+      ChatMessageKind.sticker => 'Sticker',
       ChatMessageKind.file =>
         message.fileName.toLowerCase().endsWith('.jpg') ||
                 message.fileName.toLowerCase().endsWith('.jpeg') ||

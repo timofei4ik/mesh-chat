@@ -140,7 +140,8 @@ class ChatMessage {
 
 enum ChatMessageKind {
   text,
-  file;
+  file,
+  sticker;
 
   static ChatMessageKind fromName(String value) {
     return ChatMessageKind.values.firstWhere(

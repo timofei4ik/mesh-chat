@@ -11,6 +11,7 @@ import '../models/chat_thread.dart';
 import '../models/app_settings.dart';
 import '../models/profile.dart';
 import '../models/session.dart';
+import '../models/sticker_pack.dart';
 import '../models/story_item.dart';
 import '../services/app_settings_store.dart';
 import '../services/ble_chat_service.dart';
@@ -22,6 +23,7 @@ import '../services/mesh_socket.dart';
 import '../services/notification_service.dart';
 import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
+import '../services/sticker_store.dart';
 import '../services/story_store.dart';
 
 enum CallStatus { ringing, outgoing, active, ended }
@@ -113,6 +115,7 @@ class AppController extends ChangeNotifier {
   final AppSettingsStore _settingsStore = AppSettingsStore();
   final ChatCacheStore _cache = ChatCacheStore();
   final StoryStore _storyStore = StoryStore();
+  final StickerStore _stickerStore = StickerStore();
   final MeshSocket _socket = MeshSocket();
   final MeshCrypto _crypto = MeshCrypto();
   final BleChatService ble = BleChatService();
@@ -128,6 +131,7 @@ class AppController extends ChangeNotifier {
   final Set<String> hiddenStoryOwners = {};
   final Map<String, DateTime> typingUntil = {};
   final Map<String, String> activityKinds = {};
+  StickerLibrary stickerLibrary = const StickerLibrary();
 
   Session? session;
   List<Session> recentSessions = [];
@@ -178,6 +182,124 @@ class AppController extends ChangeNotifier {
 
   bool get hasSession => session != null;
   String get myNodeId => session?.nodeId ?? '';
+  List<StickerPack> get stickerPacks => stickerLibrary.packs;
+  List<StickerItem> get favoriteStickers => stickerLibrary.favorites;
+  List<StickerItem> get allStickers => stickerLibrary.allStickers;
+
+  Future<void> createStickerPack(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || session == null) return;
+    final pack = StickerPack(id: const Uuid().v4(), name: trimmed);
+    stickerLibrary = stickerLibrary.copyWith(
+      packs: [...stickerLibrary.packs, pack],
+    );
+    await _saveStickers();
+    notifyListeners();
+  }
+
+  Future<void> addSticker({
+    required String packId,
+    required String fileName,
+    required Uint8List bytes,
+    String name = '',
+  }) async {
+    if (session == null || bytes.isEmpty) return;
+    final packIndex = stickerLibrary.packs.indexWhere(
+      (pack) => pack.id == packId,
+    );
+    if (packIndex < 0) return;
+    final extension = fileName.split('.').last.toLowerCase();
+    final item = StickerItem(
+      id: const Uuid().v4(),
+      name: name.trim().isEmpty ? _stickerDisplayName(fileName) : name.trim(),
+      fileName: fileName.trim().isEmpty
+          ? 'sticker_${DateTime.now().millisecondsSinceEpoch}.webp'
+          : fileName.trim(),
+      mimeType: _stickerMimeType(extension),
+      base64Data: base64Encode(bytes),
+      animated: extension == 'gif' || extension == 'webp',
+    );
+    final packs = [...stickerLibrary.packs];
+    packs[packIndex] = packs[packIndex].copyWith(
+      stickers: [...packs[packIndex].stickers, item],
+    );
+    stickerLibrary = stickerLibrary.copyWith(packs: packs);
+    await _saveStickers();
+    notifyListeners();
+  }
+
+  Future<void> toggleFavoriteSticker(String stickerId) async {
+    if (session == null || stickerId.isEmpty) return;
+    final favorites = {...stickerLibrary.favoriteIds};
+    if (!favorites.remove(stickerId)) favorites.add(stickerId);
+    stickerLibrary = stickerLibrary.copyWith(favoriteIds: favorites);
+    await _saveStickers();
+    notifyListeners();
+  }
+
+  Future<String?> sendSticker(
+    ChatThread thread,
+    StickerItem sticker, {
+    ChatMessage? replyTo,
+  }) {
+    final caption = sticker.name.trim();
+    if (thread.isGroup) {
+      return sendGroupFile(
+        thread,
+        sticker.fileName,
+        sticker.bytes,
+        caption: caption,
+        replyTo: replyTo,
+        kind: ChatMessageKind.sticker,
+      );
+    }
+    return sendFile(
+      thread.profile,
+      sticker.fileName,
+      sticker.bytes,
+      caption: caption,
+      replyTo: replyTo,
+      threadOverride: thread,
+      kind: ChatMessageKind.sticker,
+    );
+  }
+
+  Future<void> _saveStickers({bool publish = true}) async {
+    await _stickerStore.save(session, stickerLibrary);
+    if (publish) unawaited(_publishStickerLibrary());
+  }
+
+  Future<void> _publishStickerLibrary() async {
+    final current = session;
+    if (current == null || !_socket.isConnected) return;
+    _socket.send({
+      'type': 'sticker_library_update',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'login': current.login,
+      'sticker_library': stickerLibrary.toJson(),
+    });
+  }
+
+  String _stickerDisplayName(String fileName) {
+    final clean = fileName.trim();
+    if (clean.isEmpty) return 'Sticker';
+    final dot = clean.lastIndexOf('.');
+    return dot <= 0 ? clean : clean.substring(0, dot);
+  }
+
+  String _stickerMimeType(String extension) {
+    return switch (extension) {
+      'gif' => 'image/gif',
+      'webp' => 'image/webp',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      _ => 'image/png',
+    };
+  }
+
   Duration get callElapsed {
     final call = activeCall;
     if (call == null) return Duration.zero;
@@ -540,6 +662,7 @@ class AppController extends ChangeNotifier {
     session = await _store.load();
     if (session != null) {
       await _cache.load(session!, profiles, threads, groups);
+      stickerLibrary = await _stickerStore.load(session);
       await _loadStories();
       await _repairCachedGroups();
       await _repairCachedMessages();
@@ -658,6 +781,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      stickerLibrary = await _stickerStore.load(candidate);
       await _loadStories();
       await _repairCachedGroups();
       await _repairCachedMessages();
@@ -694,6 +818,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      stickerLibrary = await _stickerStore.load(candidate);
       await _loadStories();
       await _repairCachedGroups();
       await _repairCachedMessages();
@@ -887,6 +1012,15 @@ class AppController extends ChangeNotifier {
           await _store.updatePublicUsername(username);
         }
       }
+    }
+
+    if (packet['sticker_library'] is Map) {
+      stickerLibrary = StickerLibrary.fromJson(
+        Map<String, dynamic>.from(packet['sticker_library'] as Map),
+      );
+      await _saveStickers(publish: false);
+    } else if (stickerLibrary.packs.isNotEmpty) {
+      unawaited(_publishStickerLibrary());
     }
 
     for (final raw
@@ -1221,7 +1355,10 @@ class AppController extends ChangeNotifier {
 
   int _messageRichnessScore(ChatMessage message) {
     var score = 0;
-    if (message.kind == ChatMessageKind.file) score += 8;
+    if (message.kind == ChatMessageKind.file ||
+        message.kind == ChatMessageKind.sticker) {
+      score += 8;
+    }
     if (message.fileData.isNotEmpty) score += 16;
     if (message.fileName.isNotEmpty) score += 4;
     if (message.fileSize > 0) score += 2;
@@ -1834,7 +1971,9 @@ class AppController extends ChangeNotifier {
     String text,
   ) async {
     final trimmed = text.trim();
-    final isCaption = message.kind == ChatMessageKind.file;
+    final isCaption =
+        message.kind == ChatMessageKind.file ||
+        message.kind == ChatMessageKind.sticker;
     if (session == null || message.senderNode != myNodeId) {
       return;
     }
@@ -2338,6 +2477,7 @@ class AppController extends ChangeNotifier {
     final current = session;
     stories.clear();
     storyArchive.clear();
+    stickerLibrary = const StickerLibrary();
     hiddenStoryOwners.clear();
     if (current == null) return;
     stories.addAll(await _storyStore.load(current));
@@ -2492,7 +2632,8 @@ class AppController extends ChangeNotifier {
 
   Future<void> _applyGroupMemberLeavePacket(Map<String, dynamic> packet) async {
     final groupId = packet['group_id']?.toString() ?? '';
-    final leaver = packet['leaver_node']?.toString() ??
+    final leaver =
+        packet['leaver_node']?.toString() ??
         packet['source_node']?.toString() ??
         '';
     if (groupId.isEmpty || leaver.isEmpty || leaver == myNodeId) return;
@@ -3441,6 +3582,9 @@ class AppController extends ChangeNotifier {
   }
 
   String _replyPreview(ChatMessage message) {
+    if (message.kind == ChatMessageKind.sticker) {
+      return message.text.isEmpty ? 'Sticker' : message.text;
+    }
     if (message.kind == ChatMessageKind.file) {
       return message.fileName.isEmpty ? 'Файл' : message.fileName;
     }
@@ -3592,6 +3736,7 @@ class AppController extends ChangeNotifier {
     String filename,
     Uint8List bytes, {
     String caption = '',
+    ChatMessageKind kind = ChatMessageKind.file,
   }) async {
     final current = session;
     if (current == null) return 'No active session';
@@ -3632,7 +3777,7 @@ class AppController extends ChangeNotifier {
         receiverNode: recipient.nodeId,
         text: trimmedCaption,
         createdAt: DateTime.now(),
-        kind: ChatMessageKind.file,
+        kind: kind,
         fileName: filename,
         fileData: data,
         fileSize: bytes.length,
@@ -3658,6 +3803,7 @@ class AppController extends ChangeNotifier {
           'chat_kind': thread.chatKind,
           'chat_id': thread.threadId,
           'file_id': id,
+          'message_kind': kind.name,
           'filename': filename,
           'caption': trimmedCaption,
           'chunk_index': index,
@@ -3680,6 +3826,7 @@ class AppController extends ChangeNotifier {
     String caption = '',
     ChatMessage? replyTo,
     ChatThread? threadOverride,
+    ChatMessageKind kind = ChatMessageKind.file,
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (bytes.isEmpty) return 'Файл пустой';
@@ -3699,7 +3846,7 @@ class AppController extends ChangeNotifier {
           receiverNode: savedMessagesNodeId,
           text: trimmedCaption,
           createdAt: DateTime.now(),
-          kind: ChatMessageKind.file,
+          kind: kind,
           fileName: filename,
           fileData: data,
           fileSize: bytes.length,
@@ -3720,7 +3867,7 @@ class AppController extends ChangeNotifier {
         receiverNode: recipient.nodeId,
         text: trimmedCaption,
         createdAt: DateTime.now(),
-        kind: ChatMessageKind.file,
+        kind: kind,
         fileName: filename,
         fileData: _hexEncode(bytes),
         fileSize: bytes.length,
@@ -3754,6 +3901,7 @@ class AppController extends ChangeNotifier {
         'chat_kind': thread.chatKind,
         'chat_id': thread.threadId,
         'file_id': id,
+        'message_kind': kind.name,
         'filename': filename,
         'caption': trimmedCaption,
         'reply_to_message_id': replyTo?.id ?? '',
@@ -3778,15 +3926,28 @@ class AppController extends ChangeNotifier {
   Future<String?> forwardMessage(ChatMessage message, ChatThread target) async {
     if (session == null) return 'No active session';
     if (message.deleted) return 'Message was deleted';
-    if (message.kind == ChatMessageKind.file) {
+    if (message.kind == ChatMessageKind.file ||
+        message.kind == ChatMessageKind.sticker) {
       if (message.fileData.isEmpty) return 'File is not cached';
       final filename = message.fileName.isEmpty
           ? 'meshchat_file'
           : message.fileName;
       final bytes = _hexDecode(message.fileData);
       return target.isGroup
-          ? sendGroupFile(target, filename, bytes, caption: message.text)
-          : sendFile(target.profile, filename, bytes, caption: message.text);
+          ? sendGroupFile(
+              target,
+              filename,
+              bytes,
+              caption: message.text,
+              kind: message.kind,
+            )
+          : sendFile(
+              target.profile,
+              filename,
+              bytes,
+              caption: message.text,
+              kind: message.kind,
+            );
     }
     final text = message.text.trim();
     if (text.isEmpty) return 'Message is empty';
@@ -3802,13 +3963,20 @@ class AppController extends ChangeNotifier {
     if (session == null) return 'No active session';
     if (message.deleted) return 'Message was deleted';
     final target = ensureSavedMessagesThread();
-    if (message.kind == ChatMessageKind.file) {
+    if (message.kind == ChatMessageKind.file ||
+        message.kind == ChatMessageKind.sticker) {
       if (message.fileData.isEmpty) return 'File is not cached';
       final filename = message.fileName.isEmpty
           ? 'meshchat_file'
           : message.fileName;
       final bytes = _hexDecode(message.fileData);
-      return sendFile(target.profile, filename, bytes, caption: message.text);
+      return sendFile(
+        target.profile,
+        filename,
+        bytes,
+        caption: message.text,
+        kind: message.kind,
+      );
     }
     final text = message.text.trim();
     if (text.isEmpty) return 'Message is empty';
@@ -3819,15 +3987,28 @@ class AppController extends ChangeNotifier {
   Future<String?> retryMessage(ChatThread thread, ChatMessage message) async {
     if (!message.failed && !message.pending) return null;
     _deleteLocalMessage(thread, message.id);
-    if (message.kind == ChatMessageKind.file) {
+    if (message.kind == ChatMessageKind.file ||
+        message.kind == ChatMessageKind.sticker) {
       if (message.fileData.isEmpty) return 'File is not cached';
       final bytes = _hexDecode(message.fileData);
       final filename = message.fileName.isEmpty
           ? message.text
           : message.fileName;
       return thread.isGroup
-          ? sendGroupFile(thread, filename, bytes, caption: message.text)
-          : sendFile(thread.profile, filename, bytes, caption: message.text);
+          ? sendGroupFile(
+              thread,
+              filename,
+              bytes,
+              caption: message.text,
+              kind: message.kind,
+            )
+          : sendFile(
+              thread.profile,
+              filename,
+              bytes,
+              caption: message.text,
+              kind: message.kind,
+            );
     }
     if (thread.isGroup) {
       await sendGroupMessage(thread, message.text);
@@ -4253,10 +4434,7 @@ class AppController extends ChangeNotifier {
           ...basePacket,
           'packet_id': const Uuid().v4(),
           'destination_node': member,
-          'group_key_envelope': await _crypto.wrapGroupKey(
-            publicKey,
-            key.key,
-          ),
+          'group_key_envelope': await _crypto.wrapGroupKey(publicKey, key.key),
         });
       }
     }
@@ -4268,6 +4446,7 @@ class AppController extends ChangeNotifier {
     Uint8List bytes, {
     String caption = '',
     ChatMessage? replyTo,
+    ChatMessageKind kind = ChatMessageKind.file,
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (!group.isGroup) return 'Это не группа';
@@ -4301,7 +4480,7 @@ class AppController extends ChangeNotifier {
         receiverNode: group.groupId,
         text: trimmedCaption,
         createdAt: DateTime.now(),
-        kind: ChatMessageKind.file,
+        kind: kind,
         fileName: filename,
         fileData: _hexEncode(bytes),
         fileSize: bytes.length,
@@ -4339,6 +4518,7 @@ class AppController extends ChangeNotifier {
           'ttl': 5,
           'sender': session!.login,
           'file_id': id,
+          'message_kind': kind.name,
           'filename': wireFilename,
           'caption': wireCaption,
           'reply_to_message_id': replyTo?.id ?? '',
@@ -4380,6 +4560,7 @@ class AppController extends ChangeNotifier {
           'ttl': 5,
           'sender': session!.login,
           'file_id': id,
+          'message_kind': kind.name,
           'filename': wireFilename,
           'caption': wireCaption,
           'reply_to_message_id': replyTo?.id ?? '',
@@ -4555,7 +4736,7 @@ class AppController extends ChangeNotifier {
         receiverNode: groupId,
         text: decryptedCaption,
         createdAt: _parsePacketDate(first),
-        kind: ChatMessageKind.file,
+        kind: _fileMessageKind(first),
         fileName: decryptedName,
         fileData: decryptedData,
         fileSize: decryptedData.length ~/ 2,
@@ -4639,7 +4820,7 @@ class AppController extends ChangeNotifier {
       receiverNode: receiver,
       text: first['caption']?.toString() ?? '',
       createdAt: _parsePacketDate(first),
-      kind: ChatMessageKind.file,
+      kind: _fileMessageKind(first),
       fileName: filename,
       fileData: fullData,
       fileSize: fullData.length ~/ 2,
@@ -4681,7 +4862,7 @@ class AppController extends ChangeNotifier {
     }
     final current = thread.messages[index];
     final shouldUpgrade =
-        current.kind != ChatMessageKind.file ||
+        current.kind != incoming.kind ||
         current.fileData.isEmpty ||
         current.fileName.isEmpty ||
         current.fileSize <= 0;
@@ -4697,7 +4878,7 @@ class AppController extends ChangeNotifier {
             current.fileName.startsWith(MeshCrypto.groupPrefix) ||
             current.fileData.isEmpty);
     thread.messages[index] = current.copyWith(
-      kind: ChatMessageKind.file,
+      kind: incoming.kind,
       text: shouldReplaceText ? incoming.text : current.text,
       fileName: shouldReplaceName ? incoming.fileName : current.fileName,
       fileData: incoming.fileData.isNotEmpty
@@ -4711,6 +4892,18 @@ class AppController extends ChangeNotifier {
     );
     thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return false;
+  }
+
+  ChatMessageKind _fileMessageKind(Map<String, dynamic> packet) {
+    final raw =
+        packet['message_kind']?.toString() ??
+        packet['kind']?.toString() ??
+        packet['file_kind']?.toString() ??
+        '';
+    final kind = ChatMessageKind.fromName(raw);
+    return kind == ChatMessageKind.sticker
+        ? ChatMessageKind.sticker
+        : ChatMessageKind.file;
   }
 
   Future<String> _decryptHistoryText(String rawText) async {

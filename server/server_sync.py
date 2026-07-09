@@ -335,6 +335,7 @@ class ServerSyncMixin:
                    caption,
                    data,
                    group_key_id,
+                   COALESCE(message_kind, 'file'),
                    COALESCE(chat_kind, 'normal'),
                    COALESCE(chat_id, ''),
                    created_at
@@ -358,9 +359,10 @@ class ServerSyncMixin:
                 "caption": row[8] or "",
                 "data": row[9],
                 "group_key_id": row[10],
-                "chat_kind": row[11],
-                "chat_id": row[12],
-                "created_at": row[13]
+                "message_kind": row[11] or "file",
+                "chat_kind": row[12],
+                "chat_id": row[13],
+                "created_at": row[14]
             }
             for row in cursor.fetchall()
         ]
@@ -607,6 +609,27 @@ class ServerSyncMixin:
                 for row in cursor.fetchall()
             ]
 
+        cursor.execute(
+            """
+            SELECT library_json
+            FROM server_sticker_libraries
+            WHERE login=?
+            LIMIT 1
+            """,
+            (
+                login,
+            )
+        )
+        sticker_library = None
+        row = cursor.fetchone()
+        if row:
+            try:
+                decoded = json.loads(row[0] or "{}")
+                if isinstance(decoded, dict):
+                    sticker_library = decoded
+            except json.JSONDecodeError:
+                sticker_library = None
+
         return {
             "type": "server_sync",
             "profile": own_profile,
@@ -616,6 +639,7 @@ class ServerSyncMixin:
             "group_messages": group_messages,
             "files": files,
             "stories": stories,
+            "sticker_library": sticker_library,
             "reactions": reactions,
             "pins": pins
         }

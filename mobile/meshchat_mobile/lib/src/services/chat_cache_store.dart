@@ -378,10 +378,15 @@ class ChatCacheStore {
   }
 
   ChatMessage _trimFileMessage(ChatMessage message, int maxFileHex) {
-    if (message.kind != ChatMessageKind.file) return message;
+    if (message.kind != ChatMessageKind.file &&
+        message.kind != ChatMessageKind.sticker) {
+      return message;
+    }
     final keepFileData =
         message.fileData.length <= maxFileHex &&
-        (_isImageName(message.fileName) || _isAudioName(message.fileName));
+        (message.kind == ChatMessageKind.sticker ||
+            _isImageName(message.fileName) ||
+            _isAudioName(message.fileName));
     return ChatMessage(
       id: message.id,
       senderNode: message.senderNode,

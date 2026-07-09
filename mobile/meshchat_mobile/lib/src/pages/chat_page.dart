@@ -20,6 +20,7 @@ import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
+import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
@@ -29,7 +30,7 @@ import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, file, shareLocation }
+enum _AttachAction { photo, file, sticker, shareLocation }
 
 class ChatPage extends StatefulWidget {
   const ChatPage({
@@ -303,6 +304,100 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         ? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg'
         : image.name;
     await sendAttachment(filename, bytes);
+  }
+
+  Future<void> showStickerPanel() async {
+    if (!canPostToThread) {
+      showSnack(channelWriteBlockedMessage);
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (context) => AnimatedBuilder(
+        animation: widget.controller,
+        builder: (context, _) => _StickerSheet(
+          controller: widget.controller,
+          onAddSticker: addStickerFromFile,
+          onCreatePack: createStickerPack,
+          onToggleFavorite: widget.controller.toggleFavoriteSticker,
+          onSend: (sticker) async {
+            Navigator.pop(context);
+            await sendSticker(sticker);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> createStickerPack() async {
+    final nameInput = TextEditingController(text: 'My stickers');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('New sticker pack'),
+        content: TextField(
+          controller: nameInput,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Pack name'),
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, nameInput.text),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    nameInput.dispose();
+    if (name == null || name.trim().isEmpty) return;
+    await widget.controller.createStickerPack(name);
+  }
+
+  Future<void> addStickerFromFile([String? requestedPackId]) async {
+    var packId = requestedPackId;
+    if (widget.controller.stickerPacks.isEmpty) {
+      await widget.controller.createStickerPack('My stickers');
+      packId = widget.controller.stickerPacks.isEmpty
+          ? null
+          : widget.controller.stickerPacks.first.id;
+    }
+    packId ??= widget.controller.stickerPacks.isEmpty
+        ? null
+        : widget.controller.stickerPacks.first.id;
+    if (packId == null || packId.isEmpty) return;
+    final result = await FilePicker.platform.pickFiles(
+      withData: true,
+      type: FileType.custom,
+      allowedExtensions: const ['png', 'jpg', 'jpeg', 'gif', 'webp'],
+    );
+    final file = result?.files.single;
+    final bytes = file?.bytes;
+    if (file == null || bytes == null || bytes.isEmpty) return;
+    await widget.controller.addSticker(
+      packId: packId,
+      fileName: file.name,
+      bytes: bytes,
+    );
+  }
+
+  Future<void> sendSticker(StickerItem sticker) async {
+    final quote = fixedCommentRoot ?? replyTo;
+    setState(() => replyTo = null);
+    final error = await widget.controller.sendSticker(
+      widget.thread,
+      sticker,
+      replyTo: quote,
+    );
+    if (!mounted || error == null) return;
+    showSnack(error);
   }
 
   Future<void> sendMeetingPoint() async {
@@ -740,6 +835,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     subtitle: 'Choose any document',
                     onTap: () => Navigator.pop(context, _AttachAction.file),
                   ),
+                  _GlassSheetAction(
+                    icon: Icons.auto_awesome_motion_rounded,
+                    title: 'Sticker',
+                    subtitle: 'Open packs, favorites or add your own',
+                    onTap: () => Navigator.pop(context, _AttachAction.sticker),
+                  ),
                   if (widget.thread.isGroup)
                     _GlassSheetAction(
                       icon: Icons.my_location_rounded,
@@ -759,6 +860,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       await attachPhoto();
     } else if (action == _AttachAction.file) {
       await attachFile();
+    } else if (action == _AttachAction.sticker) {
+      await showStickerPanel();
     } else if (action == _AttachAction.shareLocation) {
       await shareMyLocation();
     }
@@ -1252,11 +1355,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final mine = message.senderNode == widget.controller.myNodeId;
     final pinned = widget.thread.pinnedMessageIds.contains(message.id);
     final canDownload =
-        message.kind == ChatMessageKind.file && message.fileData.isNotEmpty;
+        (message.kind == ChatMessageKind.file ||
+            message.kind == ChatMessageKind.sticker) &&
+        message.fileData.isNotEmpty;
     final canEdit =
         mine &&
         (message.kind == ChatMessageKind.text ||
-            message.kind == ChatMessageKind.file);
+            message.kind == ChatMessageKind.file ||
+            message.kind == ChatMessageKind.sticker);
     final canBlock =
         !mine && !widget.thread.isGroup && message.senderNode.isNotEmpty;
     final blocked = widget.controller.isBlocked(message.senderNode);
@@ -1325,7 +1431,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 ListTile(
                   leading: const Icon(Icons.edit_rounded),
                   title: Text(
-                    message.kind == ChatMessageKind.file
+                    message.kind == ChatMessageKind.file ||
+                            message.kind == ChatMessageKind.sticker
                         ? 'Edit caption'
                         : 'Edit',
                   ),
@@ -1492,7 +1599,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   Future<void> downloadMessageFile(ChatMessage message) async {
-    if (message.kind != ChatMessageKind.file || message.fileData.isEmpty) {
+    if ((message.kind != ChatMessageKind.file &&
+            message.kind != ChatMessageKind.sticker) ||
+        message.fileData.isEmpty) {
       showSnack('File is not cached');
       return;
     }
@@ -1528,7 +1637,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<void> showEditDialog(ChatMessage message) async {
     final editInput = TextEditingController(text: message.text);
-    final isCaption = message.kind == ChatMessageKind.file;
+    final isCaption =
+        message.kind == ChatMessageKind.file ||
+        message.kind == ChatMessageKind.sticker;
     final edited = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1927,8 +2038,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                       widget.controller.appSettings.dataSaver,
                                   onLongPress: () =>
                                       showMessageActions(message),
-                                  onReply: () => widget.thread.isChannel &&
-                                      !isChannelCommentThread
+                                  onReply: () =>
+                                      widget.thread.isChannel &&
+                                          !isChannelCommentThread
                                       ? openChannelComments(message)
                                       : setState(() => replyTo = message),
                                   onOpenComments:
@@ -1974,6 +2086,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                         tooltip: 'Attach',
                                         onPressed: showAttachMenu,
                                         icon: Icons.attach_file_rounded,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      _ComposerIconButton(
+                                        tooltip: 'Stickers',
+                                        onPressed: showStickerPanel,
+                                        icon: Icons.auto_awesome_motion_rounded,
                                       ),
                                       const SizedBox(width: 8),
                                     ],
@@ -3227,6 +3345,362 @@ class _GlassSheetAction extends StatelessWidget {
   }
 }
 
+class _StickerSheet extends StatefulWidget {
+  const _StickerSheet({
+    required this.controller,
+    required this.onSend,
+    required this.onAddSticker,
+    required this.onCreatePack,
+    required this.onToggleFavorite,
+  });
+
+  final AppController controller;
+  final ValueChanged<StickerItem> onSend;
+  final Future<void> Function([String? packId]) onAddSticker;
+  final Future<void> Function() onCreatePack;
+  final Future<void> Function(String stickerId) onToggleFavorite;
+
+  @override
+  State<_StickerSheet> createState() => _StickerSheetState();
+}
+
+class _StickerSheetState extends State<_StickerSheet> {
+  String selectedPackId = 'favorites';
+
+  @override
+  Widget build(BuildContext context) {
+    final packs = widget.controller.stickerPacks;
+    final matchingPack = packs.where((pack) => pack.id == selectedPackId);
+    final stickers = selectedPackId == 'favorites'
+        ? widget.controller.favoriteStickers
+        : matchingPack.isEmpty
+        ? const <StickerItem>[]
+        : matchingPack.first.stickers;
+    final addPackId = selectedPackId == 'favorites'
+        ? (packs.isEmpty ? null : packs.first.id)
+        : selectedPackId;
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          12,
+          0,
+          12,
+          MediaQuery.viewInsetsOf(context).bottom + 14,
+        ),
+        child: _ChatGlassSurface(
+          radius: 30,
+          child: SizedBox(
+            height: math.min(MediaQuery.sizeOf(context).height * 0.7, 520),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.auto_awesome_motion_rounded,
+                        color: Colors.lightBlueAccent,
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Stickers',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            Text(
+                              'Add PNG, GIF or WebP and send them like packs.',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      _StickerRoundButton(
+                        tooltip: 'New pack',
+                        icon: Icons.create_new_folder_rounded,
+                        onTap: widget.onCreatePack,
+                      ),
+                      const SizedBox(width: 8),
+                      _StickerRoundButton(
+                        tooltip: 'Add sticker',
+                        icon: Icons.add_photo_alternate_rounded,
+                        onTap: () => widget.onAddSticker(addPackId),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 38,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        _StickerPackChip(
+                          label: 'Favorites',
+                          icon: Icons.star_rounded,
+                          selected: selectedPackId == 'favorites',
+                          onTap: () =>
+                              setState(() => selectedPackId = 'favorites'),
+                        ),
+                        for (final pack in packs) ...[
+                          const SizedBox(width: 8),
+                          _StickerPackChip(
+                            label: pack.name,
+                            icon: Icons.folder_special_rounded,
+                            selected: selectedPackId == pack.id,
+                            onTap: () =>
+                                setState(() => selectedPackId = pack.id),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: stickers.isEmpty
+                        ? _StickerEmptyState(
+                            onAdd: () => widget.onAddSticker(addPackId),
+                          )
+                        : GridView.builder(
+                            itemCount: stickers.length,
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                                  maxCrossAxisExtent: 116,
+                                  mainAxisSpacing: 10,
+                                  crossAxisSpacing: 10,
+                                ),
+                            itemBuilder: (context, index) {
+                              final sticker = stickers[index];
+                              return _StickerTile(
+                                sticker: sticker,
+                                favorite: widget
+                                    .controller
+                                    .stickerLibrary
+                                    .favoriteIds
+                                    .contains(sticker.id),
+                                onTap: () => widget.onSend(sticker),
+                                onFavorite: () =>
+                                    widget.onToggleFavorite(sticker.id),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StickerRoundButton extends StatelessWidget {
+  const _StickerRoundButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Ink(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.08),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          child: Icon(icon, size: 20, color: Colors.white70),
+        ),
+      ),
+    );
+  }
+}
+
+class _StickerPackChip extends StatelessWidget {
+  const _StickerPackChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(999),
+          color: selected
+              ? Colors.lightBlueAccent.withValues(alpha: 0.22)
+              : Colors.white.withValues(alpha: 0.07),
+          border: Border.all(
+            color: selected
+                ? Colors.lightBlueAccent.withValues(alpha: 0.55)
+                : Colors.white.withValues(alpha: 0.1),
+          ),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: Colors.lightBlueAccent.withValues(alpha: 0.16),
+                    blurRadius: 18,
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: Colors.lightBlueAccent),
+            const SizedBox(width: 7),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StickerEmptyState extends StatelessWidget {
+  const _StickerEmptyState({required this.onAdd});
+
+  final VoidCallback onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.auto_awesome_motion_rounded,
+            size: 44,
+            color: Colors.white.withValues(alpha: 0.32),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'No stickers here yet',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Add your own animated GIF/WebP or a PNG.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white54),
+          ),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add_photo_alternate_rounded),
+            label: const Text('Add sticker'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StickerTile extends StatelessWidget {
+  const _StickerTile({
+    required this.sticker,
+    required this.favorite,
+    required this.onTap,
+    required this.onFavorite,
+  });
+
+  final StickerItem sticker;
+  final bool favorite;
+  final VoidCallback onTap;
+  final VoidCallback onFavorite;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Ink(
+          padding: const EdgeInsets.all(7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            color: Colors.white.withValues(alpha: 0.07),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+          ),
+          child: Stack(
+            children: [
+              Center(
+                child: Image.memory(
+                  sticker.bytes,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => const Icon(
+                    Icons.broken_image_rounded,
+                    color: Colors.white38,
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 0,
+                top: 0,
+                child: GestureDetector(
+                  onTap: onFavorite,
+                  child: CircleAvatar(
+                    radius: 14,
+                    backgroundColor: Colors.black.withValues(alpha: 0.32),
+                    child: Icon(
+                      favorite ? Icons.star_rounded : Icons.star_border_rounded,
+                      size: 17,
+                      color: favorite
+                          ? const Color(0xFFFFD166)
+                          : Colors.white70,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MessageDisintegrator extends StatelessWidget {
   const _MessageDisintegrator({required this.deleting, required this.child});
 
@@ -3355,7 +3829,7 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
       vsync: this,
       duration: const Duration(milliseconds: 2200),
     );
-    timer = Timer.periodic(const Duration(milliseconds: 6500), (_) {
+    timer = Timer.periodic(const Duration(milliseconds: 8200), (_) {
       if (!widget.enabled) return;
       if (!mounted) return;
       setState(() {
@@ -3434,13 +3908,13 @@ class _LiquidMeshPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final cyan = Paint()
       ..color = const Color(0xFF45D6FF).withValues(alpha: 0.025)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 72);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 58);
     final violet = Paint()
       ..color = const Color(0xFF9B5CFF).withValues(alpha: 0.022)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 78);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 62);
     final green = Paint()
       ..color = const Color(0xFF57FFC1).withValues(alpha: 0.018)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 76);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 60);
 
     canvas.drawCircle(Offset(size.width * 0.18, size.height * 0.18), 130, cyan);
     canvas.drawCircle(
@@ -3480,7 +3954,7 @@ class _LiquidMeshPainter extends CustomPainter {
         );
         final glowPaint = Paint()
           ..color = activeColor.withValues(alpha: 0.34 * localPulse)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 19);
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 15);
         final hotPaint = Paint()
           ..color = activeColor.withValues(alpha: 0.88 * localPulse)
           ..style = PaintingStyle.fill;
@@ -4099,7 +4573,8 @@ class _MessageBubble extends StatefulWidget {
     ChatMessage message, {
     bool dataSaver = false,
   }) {
-    if (message.kind != ChatMessageKind.file ||
+    if ((message.kind != ChatMessageKind.file &&
+            message.kind != ChatMessageKind.sticker) ||
         !isImageName(message.fileName)) {
       return null;
     }
@@ -4274,6 +4749,99 @@ class _MessageBubbleBody extends StatelessWidget {
     final time = message.createdAt.toLocal();
     final meetingPoint = _MeetingPoint.fromMessageText(message.text);
     final sharedLocation = _SharedLocation.fromMessageText(message.text);
+    if (message.kind == ChatMessageKind.sticker) {
+      return Column(
+        crossAxisAlignment: mine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
+        children: [
+          if (message.replyToText.isNotEmpty) ...[
+            Container(
+              constraints: const BoxConstraints(maxWidth: 220),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2E35).withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: _ReplyQuote(text: message.replyToText),
+            ),
+            const SizedBox(height: 6),
+          ],
+          _StickerMessagePreview(message: message, imageBytes: imageBytes),
+          if (message.pending && message.progress > 0) ...[
+            const SizedBox(height: 5),
+            SizedBox(
+              width: 136,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  value: message.progress.clamp(0.02, 1),
+                  minHeight: 4,
+                  backgroundColor: Colors.white12,
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                    Colors.white70,
+                  ),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 2),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${time.hour.toString().padLeft(2, '0')}:'
+                '${time.minute.toString().padLeft(2, '0')}',
+                style: const TextStyle(fontSize: 10, color: Colors.white54),
+              ),
+              if (message.edited) ...[
+                const SizedBox(width: 5),
+                const Text(
+                  'edited',
+                  style: TextStyle(fontSize: 10, color: Colors.white38),
+                ),
+              ],
+              if (mine) ...[
+                const SizedBox(width: 5),
+                _MessageStatusLabel(message: message),
+              ],
+            ],
+          ),
+          if (message.reactions.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              children: [
+                for (final entry in message.reactions.entries)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF465163),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: _ReactionBadge(
+                      reaction: entry.key,
+                      count: entry.value,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+          if (onOpenComments != null) ...[
+            const SizedBox(height: 4),
+            _ChannelCommentsButton(
+              count: commentCount,
+              onTap: onOpenComments!,
+              alignRight: mine,
+            ),
+          ],
+        ],
+      );
+    }
     return Column(
       crossAxisAlignment: mine
           ? CrossAxisAlignment.end
@@ -4283,7 +4851,11 @@ class _MessageBubbleBody extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 340),
           padding: EdgeInsets.fromLTRB(
             11,
-            message.kind == ChatMessageKind.file && imageBytes != null ? 6 : 8,
+            (message.kind == ChatMessageKind.file ||
+                        message.kind == ChatMessageKind.sticker) &&
+                    imageBytes != null
+                ? 6
+                : 8,
             9,
             6,
           ),
@@ -4304,7 +4876,12 @@ class _MessageBubbleBody extends StatelessWidget {
                 _ReplyQuote(text: message.replyToText),
                 const SizedBox(height: 6),
               ],
-              message.kind == ChatMessageKind.file
+              message.kind == ChatMessageKind.sticker
+                  ? _StickerMessagePreview(
+                      message: message,
+                      imageBytes: imageBytes,
+                    )
+                  : message.kind == ChatMessageKind.file
                   ? _FilePreview(message: message, imageBytes: imageBytes)
                   : meetingPoint == null
                   ? sharedLocation == null
@@ -4316,7 +4893,8 @@ class _MessageBubbleBody extends StatelessWidget {
                       message: message,
                       point: meetingPoint,
                     ),
-              if (message.kind == ChatMessageKind.file &&
+              if ((message.kind == ChatMessageKind.file ||
+                      message.kind == ChatMessageKind.sticker) &&
                   message.pending &&
                   message.progress > 0) ...[
                 const SizedBox(height: 7),
@@ -4953,6 +5531,45 @@ class _MeetingStatusChip extends StatelessWidget {
           fontSize: 12,
           fontWeight: FontWeight.w800,
         ),
+      ),
+    );
+  }
+}
+
+class _StickerMessagePreview extends StatelessWidget {
+  const _StickerMessagePreview({
+    required this.message,
+    required this.imageBytes,
+  });
+
+  final ChatMessage message;
+  final Uint8List? imageBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = imageBytes;
+    if (bytes == null) {
+      return const SizedBox(
+        width: 148,
+        height: 128,
+        child: Center(
+          child: Icon(Icons.auto_awesome_motion_rounded, color: Colors.white38),
+        ),
+      );
+    }
+    return ConstrainedBox(
+      constraints: const BoxConstraints(
+        minWidth: 96,
+        maxWidth: 180,
+        minHeight: 92,
+        maxHeight: 190,
+      ),
+      child: Image.memory(
+        bytes,
+        fit: BoxFit.contain,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) =>
+            const Icon(Icons.broken_image_rounded, color: Colors.white38),
       ),
     );
   }
@@ -5819,6 +6436,9 @@ String formatDuration(Duration value) {
 }
 
 String replyPreview(ChatMessage message) {
+  if (message.kind == ChatMessageKind.sticker) {
+    return 'Sticker';
+  }
   if (message.kind == ChatMessageKind.file) {
     return message.fileName.isEmpty ? 'File' : message.fileName;
   }

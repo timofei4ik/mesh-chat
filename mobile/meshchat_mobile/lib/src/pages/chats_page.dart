@@ -1094,6 +1094,9 @@ class ChatsPage extends StatelessWidget {
 
   static String _previewText(ChatMessage? message, String username) {
     if (message == null) return username.isEmpty ? '' : '@$username';
+    if (message.kind == ChatMessageKind.sticker) {
+      return 'Sticker';
+    }
     if (message.kind == ChatMessageKind.file) {
       return _isImageName(message.fileName)
           ? 'Photo'
@@ -3842,7 +3845,7 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
       vsync: this,
       duration: const Duration(milliseconds: 3200),
     );
-    timer = Timer.periodic(const Duration(milliseconds: 7200), (_) {
+    timer = Timer.periodic(const Duration(milliseconds: 9400), (_) {
       if (!widget.enabled) return;
       if (mounted) controller.forward(from: 0);
     });
@@ -3896,19 +3899,19 @@ class _HomeMeshPainter extends CustomPainter {
     final violetPulse = 0.78 + 0.22 * math.sin(phase + math.pi * 0.75);
     final cyan = Paint()
       ..color = const Color(0xFF40CFFF).withValues(alpha: 0.044 * cyanPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 130);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 104);
     final violet = Paint()
       ..color = const Color(0xFF9A6BFF).withValues(alpha: 0.043 * violetPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 138);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 110);
     final blue = Paint()
       ..color = const Color(0xFF348DFF).withValues(alpha: 0.018)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 150);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 120);
     final cyanCore = Paint()
       ..color = const Color(0xFF40CFFF).withValues(alpha: 0.085 * cyanPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 34);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 28);
     final violetCore = Paint()
       ..color = const Color(0xFF9A6BFF).withValues(alpha: 0.085 * violetPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 36);
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30);
 
     final cyanCenter = Offset(
       size.width * (0.18 + 0.035 * math.sin(phase * 0.7)),

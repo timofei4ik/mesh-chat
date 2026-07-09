@@ -272,7 +272,9 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
       _SearchFilter.messages =>
         message != null && message.kind == ChatMessageKind.text,
       _SearchFilter.files =>
-        message != null && message.kind == ChatMessageKind.file,
+        message != null &&
+            (message.kind == ChatMessageKind.file ||
+                message.kind == ChatMessageKind.sticker),
       _SearchFilter.links => message != null && _hasLink(message.text),
     };
   }
@@ -285,11 +287,17 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
           : Icons.person_outline;
     }
     if (_hasLink(message.text)) return Icons.link_rounded;
+    if (message.kind == ChatMessageKind.sticker) {
+      return Icons.auto_awesome_motion_rounded;
+    }
     if (message.kind == ChatMessageKind.file) return Icons.attach_file_rounded;
     return Icons.notes_rounded;
   }
 
   String _messagePreview(ChatMessage message) {
+    if (message.kind == ChatMessageKind.sticker) {
+      return 'Sticker';
+    }
     if (message.kind == ChatMessageKind.file) {
       return message.fileName.isEmpty ? 'File' : 'File: ${message.fileName}';
     }

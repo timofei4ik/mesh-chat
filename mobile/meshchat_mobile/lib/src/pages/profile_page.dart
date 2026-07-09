@@ -394,7 +394,7 @@ class _ProfileMeshBackgroundState extends State<_ProfileMeshBackground>
       vsync: this,
       duration: const Duration(milliseconds: 3800),
     );
-    timer = Timer.periodic(const Duration(milliseconds: 3600), (_) {
+    timer = Timer.periodic(const Duration(milliseconds: 5200), (_) {
       if (!mounted) return;
       setState(() => seed++);
       controller.forward(from: 0);
@@ -492,7 +492,7 @@ class _ProfileMeshPainter extends CustomPainter {
           : const Color(0xFFA56BFF);
       final glow = Paint()
         ..color = color.withValues(alpha: 0.36 * eased)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 26);
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20);
       final core = Paint()..color = color.withValues(alpha: 0.82 * eased);
       canvas.drawCircle(points[index], 18, glow);
       canvas.drawCircle(points[index], 4.1, core);
