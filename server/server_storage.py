@@ -292,6 +292,8 @@ class ServerStorageMixin:
             CREATE TABLE IF NOT EXISTS server_chat_deletes(
                 owner_node TEXT NOT NULL,
                 peer_node TEXT NOT NULL,
+                owner_login TEXT DEFAULT '',
+                peer_login TEXT DEFAULT '',
                 chat_kind TEXT DEFAULT 'normal',
                 chat_id TEXT DEFAULT '',
                 deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -313,6 +315,14 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE server_chat_deletes ADD COLUMN chat_id TEXT DEFAULT ''"
             )
+        if "owner_login" not in chat_delete_columns:
+            conn.execute(
+                "ALTER TABLE server_chat_deletes ADD COLUMN owner_login TEXT DEFAULT ''"
+            )
+        if "peer_login" not in chat_delete_columns:
+            conn.execute(
+                "ALTER TABLE server_chat_deletes ADD COLUMN peer_login TEXT DEFAULT ''"
+            )
         cursor = conn.execute(
             "PRAGMA table_info(server_chat_deletes)"
         )
@@ -330,6 +340,8 @@ class ServerStorageMixin:
                 CREATE TABLE IF NOT EXISTS server_chat_deletes_new(
                     owner_node TEXT NOT NULL,
                     peer_node TEXT NOT NULL,
+                    owner_login TEXT DEFAULT '',
+                    peer_login TEXT DEFAULT '',
                     chat_kind TEXT DEFAULT 'normal',
                     chat_id TEXT DEFAULT '',
                     deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -342,12 +354,16 @@ class ServerStorageMixin:
                 INSERT OR IGNORE INTO server_chat_deletes_new(
                     owner_node,
                     peer_node,
+                    owner_login,
+                    peer_login,
                     chat_kind,
                     chat_id,
                     deleted_at
                 )
                 SELECT owner_node,
                        peer_node,
+                       COALESCE(owner_login, ''),
+                       COALESCE(peer_login, ''),
                        COALESCE(chat_kind, 'normal'),
                        COALESCE(chat_id, ''),
                        deleted_at
@@ -358,6 +374,36 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE server_chat_deletes_new RENAME TO server_chat_deletes"
             )
+
+        conn.execute(
+            """
+            UPDATE server_chat_deletes
+            SET owner_login=COALESCE(
+                    NULLIF(owner_login, ''),
+                    (SELECT login
+                     FROM account_devices
+                     WHERE node_id=server_chat_deletes.owner_node
+                     LIMIT 1),
+                    (SELECT login
+                     FROM accounts
+                     WHERE node_id=server_chat_deletes.owner_node
+                     LIMIT 1),
+                    ''
+                ),
+                peer_login=COALESCE(
+                    NULLIF(peer_login, ''),
+                    (SELECT login
+                     FROM account_devices
+                     WHERE node_id=server_chat_deletes.peer_node
+                     LIMIT 1),
+                    (SELECT login
+                     FROM accounts
+                     WHERE node_id=server_chat_deletes.peer_node
+                     LIMIT 1),
+                    ''
+                )
+            """
+        )
 
         cursor = conn.execute(
             "PRAGMA table_info(server_group_messages)"
@@ -407,8 +453,14 @@ class ServerStorageMixin:
                 receiver_node TEXT,
                 receiver_login TEXT,
                 group_id TEXT,
+                group_name TEXT DEFAULT '',
+                is_channel INTEGER DEFAULT 0,
+                comments_enabled INTEGER DEFAULT 1,
                 filename TEXT,
                 caption TEXT,
+                reply_to_message_id TEXT DEFAULT '',
+                reply_to_text TEXT DEFAULT '',
+                is_channel_comment INTEGER DEFAULT 0,
                 data TEXT,
                 group_key_id TEXT,
                 message_kind TEXT DEFAULT 'file',
@@ -517,6 +569,30 @@ class ServerStorageMixin:
         if "message_kind" not in file_columns:
             conn.execute(
                 "ALTER TABLE server_files ADD COLUMN message_kind TEXT DEFAULT 'file'"
+            )
+        if "group_name" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN group_name TEXT DEFAULT ''"
+            )
+        if "is_channel" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN is_channel INTEGER DEFAULT 0"
+            )
+        if "comments_enabled" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN comments_enabled INTEGER DEFAULT 1"
+            )
+        if "reply_to_message_id" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN reply_to_message_id TEXT DEFAULT ''"
+            )
+        if "reply_to_text" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN reply_to_text TEXT DEFAULT ''"
+            )
+        if "is_channel_comment" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN is_channel_comment INTEGER DEFAULT 0"
             )
 
         conn.execute(
@@ -794,14 +870,26 @@ class ServerStorageMixin:
         encryption_public_key=None
     ):
 
-        login = (
+        authenticated_login = (
+            self.get_login_by_node(node_id)
+            or ""
+        ).strip().lower()
+        requested_login = (
             login
-            or self.get_login_by_node(node_id)
             or ""
         ).strip().lower()
 
+        if (
+            authenticated_login
+            and requested_login
+            and authenticated_login != requested_login
+        ):
+            return False, "profile login does not match authenticated account"
+
+        login = authenticated_login or requested_login
+
         if not login:
-            return
+            return False, "missing authenticated account"
 
         if public_username is not None:
 
@@ -956,6 +1044,53 @@ class ServerStorageMixin:
 
         return None
 
+    def _node_identity(
+        self,
+        node_id
+    ):
+
+        value = (node_id or "").strip()
+        login = self.get_login_by_node(value)
+
+        if login:
+            return f"login:{login.strip().lower()}"
+
+        return f"node:{value}"
+
+    def _same_account_nodes(
+        self,
+        first_node,
+        second_node
+    ):
+
+        first = (first_node or "").strip()
+        second = (second_node or "").strip()
+
+        if not first or not second:
+            return False
+
+        return self._node_identity(first) == self._node_identity(second)
+
+    def _dedupe_account_nodes(
+        self,
+        nodes
+    ):
+
+        result = []
+        identities = set()
+
+        for node_id in nodes or []:
+            value = (node_id or "").strip()
+            if not value:
+                continue
+            identity = self._node_identity(value)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            result.append(value)
+
+        return result
+
     def get_profile_by_node(
         self,
         node_id
@@ -1016,10 +1151,8 @@ class ServerStorageMixin:
         if not group_id:
             return
 
-        members = list(
-            dict.fromkeys(
-                members or []
-            )
+        members = self._dedupe_account_nodes(
+            members
         )
 
         existing_owner, existing_admins = self.get_group_roles(
@@ -1064,19 +1197,29 @@ class ServerStorageMixin:
             or ""
         )
 
-        if owner_node and owner_node not in members:
+        if (
+            owner_node
+            and not any(
+                self._same_account_nodes(owner_node, member)
+                for member in members
+            )
+        ):
             members.append(owner_node)
 
         if admins is None:
             admins = existing_admins
 
+        admins = self._dedupe_account_nodes(
+            admins
+        )
         admins = [
             node_id
-            for node_id in dict.fromkeys(
-                admins or []
+            for node_id in admins
+            if any(
+                self._same_account_nodes(node_id, member)
+                for member in members
             )
-            if node_id in members
-            and node_id != owner_node
+            and not self._same_account_nodes(node_id, owner_node)
         ]
 
         self.db.execute(
@@ -1226,16 +1369,19 @@ class ServerStorageMixin:
             claimed_owner = packet.get(
                 "owner_node"
             )
+            source_login = self.get_login_by_node(source_node) or ""
             source_is_member = self.db.execute(
                 """
                 SELECT 1
                 FROM server_group_members
-                WHERE group_id=? AND node_id=?
+                WHERE group_id=?
+                  AND (node_id=? OR (login!='' AND login=?))
                 LIMIT 1
                 """,
                 (
                     group_id,
-                    source_node
+                    source_node,
+                    source_login
                 )
             ).fetchone() is not None
 
@@ -1246,21 +1392,24 @@ class ServerStorageMixin:
                 packet_type == "group_update"
                 and source_node
                 and (
-                    source_node == claimed_owner
+                    self._same_account_nodes(source_node, claimed_owner)
                     or source_is_member
                 )
             )
 
         if packet_type == "group_delete":
-            return source_node == owner_node
+            return self._same_account_nodes(source_node, owner_node)
 
         if packet_type == "group_member_leave":
             return True
 
         if packet_type == "group_pin":
             return (
-                source_node == owner_node
-                or source_node in admins
+                self._same_account_nodes(source_node, owner_node)
+                or any(
+                    self._same_account_nodes(source_node, admin_node)
+                    for admin_node in admins
+                )
             )
 
         members = packet.get(
@@ -1276,21 +1425,36 @@ class ServerStorageMixin:
         ) or []
 
         if (
-            claimed_owner != owner_node
-            or owner_node not in members
+            not self._same_account_nodes(claimed_owner, owner_node)
+            or not any(
+                self._same_account_nodes(owner_node, member_node)
+                for member_node in members
+            )
         ):
             return False
 
-        if source_node == owner_node:
+        if self._same_account_nodes(source_node, owner_node):
             return True
 
-        if source_node not in admins:
+        if not any(
+            self._same_account_nodes(source_node, admin_node)
+            for admin_node in admins
+        ):
             return False
 
         return (
-            set(claimed_admins) == set(admins)
+            {
+                self._node_identity(node_id)
+                for node_id in claimed_admins
+            } == {
+                self._node_identity(node_id)
+                for node_id in admins
+            }
             and all(
-                admin_node in members
+                any(
+                    self._same_account_nodes(admin_node, member_node)
+                    for member_node in members
+                )
                 for admin_node in admins
             )
         )
@@ -1368,11 +1532,21 @@ class ServerStorageMixin:
 
         elif packet_type == "sticker_library_update":
 
-            login = (
-                (packet.get("login") or self.get_login_by_node(packet.get("source_node")) or "")
-                .strip()
-                .lower()
-            )
+            source_login = (
+                self.get_login_by_node(packet.get("source_node"))
+                or ""
+            ).strip().lower()
+            requested_login = (
+                packet.get("login")
+                or ""
+            ).strip().lower()
+            if (
+                source_login
+                and requested_login
+                and source_login != requested_login
+            ):
+                return False
+            login = source_login or requested_login
             library = packet.get("sticker_library")
 
             if not login or not isinstance(library, dict):
@@ -1559,7 +1733,7 @@ class ServerStorageMixin:
                 )
             )
             row = cursor.fetchone()
-            if row and row[0] != owner_node:
+            if row and not self._same_account_nodes(row[0], owner_node):
                 return
 
             self.db.execute(
@@ -1604,17 +1778,23 @@ class ServerStorageMixin:
             if not message_id or message is None:
                 return
 
+            sender_login = self.get_login_by_node(sender_node) or ""
+
             self.db.execute(
                 """
                 UPDATE direct_messages
                 SET message=?
                 WHERE message_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     file_caption if file_caption is not None else message,
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -1623,12 +1803,16 @@ class ServerStorageMixin:
                 UPDATE server_files
                 SET caption=?
                 WHERE file_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message,
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -1647,15 +1831,21 @@ class ServerStorageMixin:
             if not message_id:
                 return
 
+            sender_login = self.get_login_by_node(sender_node) or ""
+
             self.db.execute(
                 """
                 DELETE FROM direct_messages
                 WHERE message_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -1674,11 +1864,15 @@ class ServerStorageMixin:
                 """
                 DELETE FROM server_files
                 WHERE file_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -1710,16 +1904,21 @@ class ServerStorageMixin:
                 (destination_node, source_node)
             ):
 
+                owner_login = self.get_login_by_node(owner_node) or ""
+                peer_login = self.get_login_by_node(peer_node) or ""
+
                 self.db.execute(
                     """
                     INSERT OR REPLACE INTO server_chat_deletes(
                         owner_node,
                         peer_node,
+                        owner_login,
+                        peer_login,
                         chat_kind,
                         chat_id,
                         deleted_at
                     )
-                    VALUES(?,?,?,?,STRFTIME(
+                    VALUES(?,?,?,?,?,?,STRFTIME(
                         '%Y-%m-%d %H:%M:%f',
                         'now'
                     ))
@@ -1727,6 +1926,8 @@ class ServerStorageMixin:
                     (
                         owner_node,
                         peer_node,
+                        owner_login,
+                        peer_login,
                         chat_kind,
                         chat_id
                     )
@@ -1941,12 +2142,12 @@ class ServerStorageMixin:
             members = [
                 member
                 for member in members
-                if member != leaver_node
+                if not self._same_account_nodes(member, leaver_node)
             ]
             admins = [
                 admin
                 for admin in admins
-                if admin != leaver_node
+                if not self._same_account_nodes(admin, leaver_node)
             ]
 
             self.save_group_members(
@@ -2059,19 +2260,25 @@ class ServerStorageMixin:
             if not message_id or message is None:
                 return
 
+            sender_login = self.get_login_by_node(sender_node) or ""
+
             self.db.execute(
                 """
                 UPDATE server_group_messages
                 SET message=?,
                     group_key_id=COALESCE(?, group_key_id)
                 WHERE message_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message,
                     packet.get("group_key_id"),
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -2081,13 +2288,17 @@ class ServerStorageMixin:
                 SET caption=?,
                     group_key_id=COALESCE(?, group_key_id)
                 WHERE file_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message,
                     packet.get("group_key_id"),
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -2106,15 +2317,21 @@ class ServerStorageMixin:
             if not message_id:
                 return
 
+            sender_login = self.get_login_by_node(sender_node) or ""
+
             self.db.execute(
                 """
                 DELETE FROM server_group_messages
                 WHERE message_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -2132,11 +2349,15 @@ class ServerStorageMixin:
                 """
                 DELETE FROM server_files
                 WHERE file_id=?
-                AND sender_node=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
                 """,
                 (
                     message_id,
-                    sender_node
+                    sender_node,
+                    sender_login
                 )
             )
 
@@ -2257,8 +2478,14 @@ class ServerStorageMixin:
                     receiver_node,
                     receiver_login,
                     group_id,
+                    group_name,
+                    is_channel,
+                    comments_enabled,
                     filename,
                     caption,
+                    reply_to_message_id,
+                    reply_to_text,
+                    is_channel_comment,
                     data,
                     group_key_id,
                     message_kind,
@@ -2266,7 +2493,7 @@ class ServerStorageMixin:
                     chat_id,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
                     '%Y-%m-%d %H:%M:%f',
                     'now'
                 ))
@@ -2279,8 +2506,14 @@ class ServerStorageMixin:
                     receiver_node,
                     self.get_login_by_node(receiver_node),
                     first_packet.get("group_id"),
+                    first_packet.get("group_name") or "",
+                    1 if first_packet.get("is_channel") is True else 0,
+                    0 if first_packet.get("comments_enabled") is False else 1,
                     filename,
                     first_packet.get("caption") or "",
+                    first_packet.get("reply_to_message_id") or "",
+                    first_packet.get("reply_to_text") or "",
+                    1 if first_packet.get("is_channel_comment") is True else 0,
                     full_data,
                     first_packet.get("group_key_id"),
                     first_packet.get("message_kind") or first_packet.get("kind") or "file",

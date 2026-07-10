@@ -15,3 +15,22 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+
+## Regression tests
+
+Run the real WebSocket server sync scenarios from the repository root:
+
+```powershell
+python -m unittest discover -s server/tests -v
+```
+
+The suite uses a temporary SQLite database and random local port. It covers
+multi-device login, direct-message deletion, group and channel membership,
+owner permissions, file metadata, reaction deduplication, and sticker sync.
+
+Run the Flutter checks from `mobile/meshchat_mobile`:
+
+```powershell
+flutter analyze
+flutter test
+```

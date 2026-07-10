@@ -143,16 +143,47 @@ class ServerSyncMixin:
             for row in cursor.fetchall()
         ]
 
+        def sync_node_alias(value):
+            value = (value or "").strip()
+            if not value:
+                return ""
+            value_login = self.get_login_by_node(value)
+            if value_login and value_login.strip().lower() == login:
+                return node_id
+            return value
+
+        def sync_node_aliases(values):
+            aliases = []
+            for value in values:
+                alias = sync_node_alias(value)
+                if alias and alias not in aliases:
+                    aliases.append(alias)
+            return aliases
+
+        for group in groups:
+            group["owner_node"] = sync_node_alias(group["owner_node"])
+            group["members"] = sync_node_aliases(group["members"])
+            group["admins"] = sync_node_aliases(group["admins"])
+
         cursor.execute(
             """
             SELECT peer_node,
                    COALESCE(chat_kind, 'normal'),
-                   COALESCE(chat_id, '')
+                   COALESCE(chat_id, ''),
+                   COALESCE(peer_login, '')
             FROM server_chat_deletes
             WHERE owner_node=?
+               OR owner_login=?
+               OR owner_node IN (
+                    SELECT node_id
+                    FROM account_devices
+                    WHERE login=?
+               )
             """,
             (
                 node_id,
+                login,
+                login,
             )
         )
 
@@ -160,7 +191,8 @@ class ServerSyncMixin:
             {
                 "peer_node": row[0],
                 "chat_kind": row[1] or "normal",
-                "chat_id": row[2] or ""
+                "chat_id": row[2] or "",
+                "peer_login": row[3] or ""
             }
             for row in cursor.fetchall()
             if row[0]
@@ -170,13 +202,18 @@ class ServerSyncMixin:
             for item in deleted_threads
             if not item["chat_id"]
         }
+        deleted_peer_logins = {
+            item["peer_login"]
+            for item in deleted_threads
+            if not item["chat_id"] and item["peer_login"]
+        }
         deleted_chat_ids = {
             item["chat_id"]
             for item in deleted_threads
             if item["chat_id"]
         }
 
-        if deleted_peers:
+        if deleted_peers or deleted_peer_logins:
 
             direct_messages = [
                 message
@@ -185,6 +222,8 @@ class ServerSyncMixin:
                     (
                         message.get("sender_node") not in deleted_peers
                         and message.get("receiver_node") not in deleted_peers
+                        and message.get("sender_login") not in deleted_peer_logins
+                        and message.get("receiver_login") not in deleted_peer_logins
                     )
                     or message.get("chat_id")
                 )
@@ -331,8 +370,14 @@ class ServerSyncMixin:
                    receiver_node,
                    receiver_login,
                    group_id,
+                   COALESCE(group_name, ''),
+                   COALESCE(is_channel, 0),
+                   COALESCE(comments_enabled, 1),
                    filename,
                    caption,
+                   COALESCE(reply_to_message_id, ''),
+                   COALESCE(reply_to_text, ''),
+                   COALESCE(is_channel_comment, 0),
                    data,
                    group_key_id,
                    COALESCE(message_kind, 'file'),
@@ -355,19 +400,25 @@ class ServerSyncMixin:
                 "receiver_node": row[4],
                 "receiver_login": row[5],
                 "group_id": row[6],
-                "filename": row[7],
-                "caption": row[8] or "",
-                "data": row[9],
-                "group_key_id": row[10],
-                "message_kind": row[11] or "file",
-                "chat_kind": row[12],
-                "chat_id": row[13],
-                "created_at": row[14]
+                "group_name": row[7] or "",
+                "is_channel": bool(row[8]),
+                "comments_enabled": row[9] != 0,
+                "filename": row[10],
+                "caption": row[11] or "",
+                "reply_to_message_id": row[12] or "",
+                "reply_to_text": row[13] or "",
+                "is_channel_comment": bool(row[14]),
+                "data": row[15],
+                "group_key_id": row[16],
+                "message_kind": row[17] or "file",
+                "chat_kind": row[18],
+                "chat_id": row[19],
+                "created_at": row[20]
             }
             for row in cursor.fetchall()
         ]
 
-        if deleted_peers:
+        if deleted_peers or deleted_peer_logins:
 
             files = [
                 file_info
@@ -376,6 +427,8 @@ class ServerSyncMixin:
                     (
                         file_info.get("sender_node") not in deleted_peers
                         and file_info.get("receiver_node") not in deleted_peers
+                        and file_info.get("sender_login") not in deleted_peer_logins
+                        and file_info.get("receiver_login") not in deleted_peer_logins
                     )
                     or file_info.get("chat_id")
                 )
