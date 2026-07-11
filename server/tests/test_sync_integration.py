@@ -88,6 +88,114 @@ class ServerSchemaMigrationTests(unittest.TestCase):
                     relay.db.close()
                 server_storage.DB_PATH = previous_path
 
+    def test_startup_housekeeping_keeps_only_supported_current_packets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "housekeeping.db"
+            previous_path = server_storage.DB_PATH
+            server_storage.DB_PATH = db_path
+            relay = None
+            reopened = None
+            try:
+                relay = server_module.MeshRelayServer()
+                packets = [
+                    (
+                        "device-current",
+                        {"type": "chat_request", "packet_id": "keep-me"},
+                        "CURRENT_TIMESTAMP",
+                    ),
+                    (
+                        "device-stale",
+                        {"type": "chat_request", "packet_id": "expire-me"},
+                        "'2000-01-01 00:00:00'",
+                    ),
+                    (
+                        "SERVER",
+                        {"type": "group_update", "packet_id": "server-only"},
+                        "CURRENT_TIMESTAMP",
+                    ),
+                    (
+                        "device-typing",
+                        {"type": "typing", "packet_id": "transient"},
+                        "CURRENT_TIMESTAMP",
+                    ),
+                ]
+                for destination, packet, created_at in packets:
+                    relay.db.execute(
+                        f"""
+                        INSERT INTO offline_packets(
+                            destination_node,
+                            packet_json,
+                            created_at
+                        )
+                        VALUES(?,?,{created_at})
+                        """,
+                        (destination, json.dumps(packet)),
+                    )
+                relay.db.execute(
+                    """
+                    INSERT INTO offline_packets(destination_node, packet_json)
+                    VALUES('device-invalid', 'not-json')
+                    """
+                )
+                relay.db.execute(
+                    """
+                    INSERT INTO direct_messages(message_id, message)
+                    VALUES('live-message', 'payload')
+                    """
+                )
+                relay.db.execute(
+                    """
+                    INSERT INTO server_reactions(
+                        scope,
+                        message_id,
+                        reactor_node,
+                        reaction
+                    )
+                    VALUES('direct', 'live-message', 'reactor-1', 'heart')
+                    """
+                )
+                relay.db.execute(
+                    """
+                    INSERT INTO server_reactions(
+                        scope,
+                        message_id,
+                        reactor_node,
+                        reaction
+                    )
+                    VALUES('direct', 'missing-message', 'reactor-2', 'heart')
+                    """
+                )
+                relay.db.commit()
+                relay.db.close()
+                relay = None
+
+                reopened = server_module.MeshRelayServer()
+                queued = reopened.db.execute(
+                    """
+                    SELECT destination_node, packet_json
+                    FROM offline_packets
+                    ORDER BY id
+                    """
+                ).fetchall()
+                self.assertEqual(1, len(queued))
+                self.assertEqual("device-current", queued[0][0])
+                self.assertEqual("keep-me", json.loads(queued[0][1])["packet_id"])
+
+                reactions = reopened.db.execute(
+                    """
+                    SELECT message_id
+                    FROM server_reactions
+                    ORDER BY message_id
+                    """
+                ).fetchall()
+                self.assertEqual([("live-message",)], reactions)
+            finally:
+                if relay is not None:
+                    relay.db.close()
+                if reopened is not None:
+                    reopened.db.close()
+                server_storage.DB_PATH = previous_path
+
 
 class TestClient:
     def __init__(self, uri, login, password, node_id, display_name=None):
@@ -214,6 +322,105 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         }
         await source.send(packet)
         return await destination.receive_type(packet_type)
+
+    async def test_offline_queue_only_keeps_non_syncable_events(self):
+        alice = await self.connect("queue_alice")
+        bob = await self.connect("queue_bob")
+        bob_node = bob.node_id
+        await bob.close()
+        await asyncio.sleep(0.05)
+
+        base_packet = {
+            "protocol_version": 5,
+            "source_node": alice.node_id,
+            "destination_node": bob_node,
+            "sender": alice.login,
+            "ttl": 5,
+        }
+        await alice.send(
+            {
+                **base_packet,
+                "type": "chat_message",
+                "packet_id": "offline-history-message",
+                "message": "encrypted payload",
+            }
+        )
+        await alice.send(
+            {
+                **base_packet,
+                "type": "typing",
+                "packet_id": "offline-typing",
+            }
+        )
+        await alice.send(
+            {
+                **base_packet,
+                "type": "chat_request",
+                "packet_id": "offline-chat-request",
+            }
+        )
+        await alice.send(
+            {
+                **base_packet,
+                "type": "message_delete",
+                "packet_id": "offline-delete-event",
+                "message_id": "offline-history-message",
+            }
+        )
+        await alice.send(
+            {
+                "type": "group_update",
+                "packet_id": "server-group-update",
+                "protocol_version": 5,
+                "source_node": alice.node_id,
+                "destination_node": "SERVER",
+                "group_id": "queue-group",
+                "group_name": "Queue group",
+                "members": [alice.node_id],
+                "owner_node": alice.node_id,
+                "admins": [alice.node_id],
+                "is_channel": False,
+                "ttl": 5,
+            }
+        )
+        await asyncio.sleep(0.1)
+
+        queued = self.relay.db.execute(
+            "SELECT destination_node, packet_json FROM offline_packets ORDER BY id"
+        ).fetchall()
+        self.assertEqual([bob_node, bob_node], [row[0] for row in queued])
+        self.assertEqual(
+            ["chat_request", "message_delete"],
+            [json.loads(row[1])["type"] for row in queued],
+        )
+        self.assertIsNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM direct_messages WHERE message_id=?",
+                ("offline-history-message",),
+            ).fetchone()
+        )
+        self.assertIsNotNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_groups WHERE group_id=?",
+                ("queue-group",),
+            ).fetchone()
+        )
+
+        bob_reconnected = await self.connect("queue_bob", node_id=bob_node)
+        self.assertEqual(
+            "offline-chat-request",
+            (await bob_reconnected.receive_type("chat_request"))["packet_id"],
+        )
+        self.assertEqual(
+            "offline-history-message",
+            (await bob_reconnected.receive_type("message_delete"))["message_id"],
+        )
+        self.assertEqual(
+            0,
+            self.relay.db.execute(
+                "SELECT COUNT(*) FROM offline_packets"
+            ).fetchone()[0],
+        )
 
     async def test_direct_history_and_deletion_survive_device_change(self):
         alice_phone = await self.connect("alice")

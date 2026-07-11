@@ -477,6 +477,9 @@ class MeshRelayServer(
         if not destination_node:
             return
 
+        if str(destination_node).strip().upper() == "SERVER":
+            return
+
         websocket = self.clients.get(
             destination_node
         )

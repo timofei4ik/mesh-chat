@@ -8,6 +8,24 @@ except ModuleNotFoundError:
     from config import DB_PATH
 
 
+OFFLINE_QUEUE_PACKET_TYPES = frozenset(
+    {
+        "chat_request",
+        "chat_response",
+        "group_join_request",
+        "group_join_response",
+        "message_received",
+        "message_edit",
+        "group_message_edit",
+        "message_delete",
+        "group_message_delete",
+        "chat_delete",
+        "group_delete",
+    }
+)
+OFFLINE_PACKET_MAX_AGE_DAYS = 30
+
+
 class ServerStorageMixin:
     def _looks_like_node_id(
         self,
@@ -70,6 +88,20 @@ class ServerStorageMixin:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_login DATETIME
             )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_offline_packets_destination_id
+            ON offline_packets(destination_node, id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_offline_packets_created_at
+            ON offline_packets(created_at)
             """
         )
 
@@ -605,9 +637,108 @@ class ServerStorageMixin:
             """
         )
 
+        housekeeping = self.run_storage_housekeeping(conn)
+
         conn.commit()
 
+        removed_total = sum(housekeeping.values())
+
+        if removed_total:
+            print(
+                "Storage housekeeping:",
+                ", ".join(
+                    f"{name}={count}"
+                    for name, count in housekeeping.items()
+                    if count
+                )
+            )
+
         return conn
+
+    def run_storage_housekeeping(self, connection=None):
+
+        conn = connection or self.db
+        stats = {
+            "server_packets": 0,
+            "unsupported_packets": 0,
+            "expired_packets": 0,
+            "orphan_reactions": 0,
+        }
+
+        rows = conn.execute(
+            """
+            SELECT id,
+                   destination_node,
+                   packet_json,
+                   created_at < DATETIME('now', ?) AS expired
+            FROM offline_packets
+            """,
+            (
+                f"-{OFFLINE_PACKET_MAX_AGE_DAYS} days",
+            )
+        ).fetchall()
+
+        packet_ids_to_delete = []
+
+        for packet_id, destination_node, packet_json, expired in rows:
+
+            if str(destination_node or "").strip().upper() == "SERVER":
+                stats["server_packets"] += 1
+                packet_ids_to_delete.append((packet_id,))
+                continue
+
+            try:
+                packet = json.loads(packet_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                packet = None
+
+            packet_type = (
+                str(packet.get("type") or "")
+                if isinstance(packet, dict)
+                else ""
+            )
+
+            if packet_type not in OFFLINE_QUEUE_PACKET_TYPES:
+                stats["unsupported_packets"] += 1
+                packet_ids_to_delete.append((packet_id,))
+                continue
+
+            if expired:
+                stats["expired_packets"] += 1
+                packet_ids_to_delete.append((packet_id,))
+
+        if packet_ids_to_delete:
+            conn.executemany(
+                "DELETE FROM offline_packets WHERE id=?",
+                packet_ids_to_delete
+            )
+
+        cursor = conn.execute(
+            """
+            DELETE FROM server_reactions
+            WHERE NOT EXISTS(
+                SELECT 1
+                FROM direct_messages
+                WHERE direct_messages.message_id=server_reactions.message_id
+            )
+            AND NOT EXISTS(
+                SELECT 1
+                FROM server_group_messages
+                WHERE server_group_messages.message_id=server_reactions.message_id
+            )
+            AND NOT EXISTS(
+                SELECT 1
+                FROM server_files
+                WHERE server_files.file_id=server_reactions.message_id
+            )
+            """
+        )
+        stats["orphan_reactions"] = max(cursor.rowcount, 0)
+
+        if connection is None:
+            conn.commit()
+
+        return stats
 
     def save_web_push_subscription(
         self,
@@ -2591,6 +2722,30 @@ class ServerStorageMixin:
         packet
     ):
 
+        destination = str(destination_node or "").strip()
+        packet_type = (
+            str(packet.get("type") or "")
+            if isinstance(packet, dict)
+            else ""
+        )
+
+        if (
+            not destination
+            or destination.upper() == "SERVER"
+            or packet_type not in OFFLINE_QUEUE_PACKET_TYPES
+        ):
+            return False
+
+        self.db.execute(
+            """
+            DELETE FROM offline_packets
+            WHERE created_at < DATETIME('now', ?)
+            """,
+            (
+                f"-{OFFLINE_PACKET_MAX_AGE_DAYS} days",
+            )
+        )
+
         self.db.execute(
             """
             INSERT INTO offline_packets(
@@ -2600,7 +2755,7 @@ class ServerStorageMixin:
             VALUES(?,?)
             """,
             (
-                destination_node,
+                destination,
                 json.dumps(
                     packet,
                     ensure_ascii=False
@@ -2609,6 +2764,8 @@ class ServerStorageMixin:
         )
 
         self.db.commit()
+
+        return True
 
     async def flush_offline_packets(
         self,
