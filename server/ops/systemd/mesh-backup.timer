@@ -1,0 +1,11 @@
+[Unit]
+Description=Run a verified MeshChat database backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=mesh-backup.service
+
+[Install]
+WantedBy=timers.target

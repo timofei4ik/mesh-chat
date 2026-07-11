@@ -1,0 +1,15 @@
+[Unit]
+Description=MeshChat verified database backup
+After=mesh-server.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/mesh_messenger
+Environment=PYTHONUNBUFFERED=1
+Environment=MESH_BACKUP_KEEP=7
+ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/backup_server.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+UMask=0077

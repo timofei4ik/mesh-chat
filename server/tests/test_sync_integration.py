@@ -477,6 +477,81 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], alice_laptop.sync["direct_messages"])
         self.assertEqual([], bob_laptop.sync["direct_messages"])
 
+    async def test_offline_direct_message_and_file_sync_to_new_device(self):
+        alice = await self.connect("offline_file_alice")
+        bob_phone = await self.connect("offline_file_bob")
+        bob_node = bob_phone.node_id
+        await bob_phone.close()
+        await asyncio.sleep(0.05)
+
+        await alice.send(
+            {
+                "type": "chat_message",
+                "packet_id": "offline-direct-message",
+                "protocol_version": 5,
+                "source_node": alice.node_id,
+                "destination_node": bob_node,
+                "sender": alice.login,
+                "message": "encrypted offline text",
+                "ttl": 5,
+            }
+        )
+        await alice.send(
+            {
+                "type": "file_chunk",
+                "packet_id": "offline-image-packet",
+                "protocol_version": 5,
+                "source_node": alice.node_id,
+                "destination_node": bob_node,
+                "sender": alice.login,
+                "file_id": "offline-image-file",
+                "filename": "encrypted-image-name",
+                "caption": "encrypted-image-caption",
+                "message_kind": "image",
+                "chunk_index": 0,
+                "total_chunks": 1,
+                "data": "0102030405",
+                "ttl": 5,
+            }
+        )
+        await asyncio.sleep(0.1)
+
+        self.assertEqual(
+            0,
+            self.relay.db.execute(
+                "SELECT COUNT(*) FROM offline_packets"
+            ).fetchone()[0],
+        )
+
+        bob_tablet = await self.connect("offline_file_bob")
+        self.assertIn(
+            "offline-direct-message",
+            {
+                item["message_id"]
+                for item in bob_tablet.sync["direct_messages"]
+            },
+        )
+        image_chunk = next(
+            item
+            for item in bob_tablet.sync["file_chunks"]
+            if item["file_id"] == "offline-image-file"
+        )
+        self.assertEqual("image", image_chunk["message_kind"])
+        self.assertEqual("0102030405", image_chunk["data"])
+
+        await self.send_and_receive(
+            alice,
+            bob_tablet,
+            "message_delete",
+            message_id="offline-image-file",
+        )
+        await bob_tablet.close()
+        bob_desktop = await self.connect("offline_file_bob")
+        self.assertNotIn(
+            "offline-image-file",
+            {item["file_id"] for item in bob_desktop.sync["files"]},
+        )
+
     async def test_wrong_password_never_receives_account_sync(self):
         registered = await self.connect("password_owner")
         await registered.close()
