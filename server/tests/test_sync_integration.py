@@ -552,6 +552,254 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             {item["file_id"] for item in bob_desktop.sync["files"]},
         )
 
+    async def test_secret_text_photo_and_file_restore_then_stay_deleted(self):
+        alice_phone = await self.connect("secret_alice")
+        bob_phone = await self.connect("secret_bob")
+        secret_id = "secret:stable-integration-thread"
+
+        await self.send_and_receive(
+            alice_phone,
+            bob_phone,
+            "chat_message",
+            packet_id="normal-message-kept",
+            message="encrypted normal message",
+            chat_kind="normal",
+            chat_id="",
+        )
+        await self.send_and_receive(
+            alice_phone,
+            bob_phone,
+            "chat_message",
+            packet_id="secret-text",
+            message="encrypted secret text",
+            reply_to_message_id="",
+            reply_to_text="",
+            chat_kind="secret",
+            chat_id=secret_id,
+        )
+
+        for index, data in enumerate(("001122", "334455")):
+            await self.send_and_receive(
+                alice_phone,
+                bob_phone,
+                "file_chunk",
+                packet_id=f"secret-photo-packet-{index}",
+                file_id="secret-photo",
+                filename="encrypted-photo-name",
+                caption="encrypted-photo-caption",
+                message_kind="image",
+                chunk_index=index,
+                total_chunks=2,
+                data=data,
+                chat_kind="secret",
+                chat_id=secret_id,
+            )
+
+        await self.send_and_receive(
+            bob_phone,
+            alice_phone,
+            "file_chunk",
+            packet_id="secret-file-packet",
+            file_id="secret-file",
+            filename="encrypted-document-name",
+            caption="encrypted-document-caption",
+            message_kind="file",
+            chunk_index=0,
+            total_chunks=1,
+            data="aabbccdd",
+            chat_kind="secret",
+            chat_id=secret_id,
+        )
+        await asyncio.sleep(0.05)
+
+        alice_old_node = alice_phone.node_id
+        bob_old_node = bob_phone.node_id
+        await alice_phone.close()
+        await bob_phone.close()
+
+        bob_tablet = await self.connect("secret_bob")
+        alice_desktop = await self.connect("secret_alice")
+
+        for client, own_old_node in (
+            (alice_desktop, alice_old_node),
+            (bob_tablet, bob_old_node),
+        ):
+            self.assertEqual(client.node_id, client.sync["profile"]["node_id"])
+            self.assertIn(
+                own_old_node,
+                client.sync["profile"]["node_aliases"],
+            )
+            secret_message = next(
+                item
+                for item in client.sync["direct_messages"]
+                if item["message_id"] == "secret-text"
+            )
+            self.assertEqual("secret", secret_message["chat_kind"])
+            self.assertEqual(secret_id, secret_message["chat_id"])
+            self.assertIn(
+                "normal-message-kept",
+                {
+                    item["message_id"]
+                    for item in client.sync["direct_messages"]
+                },
+            )
+
+            secret_files = {
+                item["file_id"]: item
+                for item in client.sync["files"]
+                if item["chat_id"] == secret_id
+            }
+            self.assertEqual(
+                {"secret-photo", "secret-file"},
+                set(secret_files),
+            )
+            self.assertEqual("secret", secret_files["secret-photo"]["chat_kind"])
+            self.assertEqual("image", secret_files["secret-photo"]["message_kind"])
+            self.assertEqual(
+                "encrypted-photo-caption",
+                secret_files["secret-photo"]["caption"],
+            )
+            payloads = {
+                item["file_id"]: item["data"]
+                for item in client.sync["file_chunks"]
+                if item["file_id"] in secret_files
+            }
+            self.assertEqual("001122334455", payloads["secret-photo"])
+            self.assertEqual("aabbccdd", payloads["secret-file"])
+
+        await self.send_and_receive(
+            alice_desktop,
+            bob_tablet,
+            "chat_delete",
+            chat_node_id=bob_tablet.node_id,
+            chat_kind="secret",
+            chat_id=secret_id,
+        )
+        await alice_desktop.close()
+        await bob_tablet.close()
+
+        alice_after_delete = await self.connect("secret_alice")
+        bob_after_delete = await self.connect("secret_bob")
+        for client in (alice_after_delete, bob_after_delete):
+            self.assertNotIn(
+                "secret-text",
+                {
+                    item["message_id"]
+                    for item in client.sync["direct_messages"]
+                },
+            )
+            self.assertNotIn(
+                secret_id,
+                {item["chat_id"] for item in client.sync["files"]},
+            )
+            self.assertIn(
+                "normal-message-kept",
+                {
+                    item["message_id"]
+                    for item in client.sync["direct_messages"]
+                },
+            )
+
+    async def test_story_media_reactions_and_views_follow_account_devices(self):
+        alice_phone = await self.connect("story_alice")
+        bob_phone = await self.connect("story_bob")
+        await alice_phone.send(
+            {
+                "type": "profile_update",
+                "packet_id": "story-owner-profile-update",
+                "protocol_version": 5,
+                "source_node": alice_phone.node_id,
+                "destination_node": "SERVER",
+                "login": "story_alice",
+                "display_name": "Persistent Alice",
+                "public_username": "persistent_alice",
+                "about": "Persistent profile description",
+                "avatar_data": "persistent-avatar-payload",
+                "encryption_public_key": f"public-key:{alice_phone.node_id}",
+                "ttl": 5,
+            }
+        )
+        profile_result = await alice_phone.receive_type("profile_update_result")
+        self.assertTrue(profile_result["ok"])
+        story_id = "story-media-1"
+        story = {
+            "id": story_id,
+            "owner_node": alice_phone.node_id,
+            "owner_name": "Story Alice",
+            "created_at": "2099-01-01T00:00:00Z",
+            "text": "persistent story",
+            "image_data": "base64-image-payload",
+            "video_data": "base64-video-payload",
+            "video_mime": "video/mp4",
+            "media_type": "video",
+            "liked_by_node_ids": [],
+            "viewed_by_node_ids": [],
+            "visibility": "selected",
+            "allowed_node_ids": [bob_phone.node_id],
+            "excluded_node_ids": [],
+        }
+        await self.send_and_receive(
+            alice_phone,
+            bob_phone,
+            "story_update",
+            story=story,
+        )
+        await self.send_and_receive(
+            bob_phone,
+            alice_phone,
+            "story_reaction",
+            story_id=story_id,
+            reaction="heart",
+            liked=True,
+        )
+        await self.send_and_receive(
+            bob_phone,
+            alice_phone,
+            "story_view",
+            story_id=story_id,
+        )
+
+        alice_old_node = alice_phone.node_id
+        bob_old_node = bob_phone.node_id
+        await alice_phone.close()
+        await bob_phone.close()
+
+        bob_tablet = await self.connect("story_bob")
+        restored_for_bob = next(
+            item for item in bob_tablet.sync["stories"] if item["id"] == story_id
+        )
+        self.assertEqual(alice_old_node, restored_for_bob["owner_node"])
+        self.assertEqual("base64-image-payload", restored_for_bob["image_data"])
+        self.assertEqual("base64-video-payload", restored_for_bob["video_data"])
+        self.assertIn(bob_tablet.node_id, restored_for_bob["liked_by_node_ids"])
+        self.assertIn(bob_tablet.node_id, restored_for_bob["viewed_by_node_ids"])
+        self.assertNotIn(bob_old_node, restored_for_bob["liked_by_node_ids"])
+
+        alice_desktop = await self.connect("story_alice")
+        restored_for_alice = next(
+            item
+            for item in alice_desktop.sync["stories"]
+            if item["id"] == story_id
+        )
+        self.assertEqual(alice_desktop.node_id, restored_for_alice["owner_node"])
+        self.assertEqual(
+            alice_desktop.node_id,
+            alice_desktop.sync["profile"]["node_id"],
+        )
+        self.assertEqual(
+            "Persistent Alice",
+            alice_desktop.sync["profile"]["display_name"],
+        )
+        self.assertEqual(
+            "Persistent profile description",
+            alice_desktop.sync["profile"]["about"],
+        )
+        self.assertEqual(
+            "persistent-avatar-payload",
+            alice_desktop.sync["profile"]["avatar_data"],
+        )
+        self.assertIn(alice_old_node, alice_desktop.sync["profile"]["node_aliases"])
+
     async def test_wrong_password_never_receives_account_sync(self):
         registered = await self.connect("password_owner")
         await registered.close()
@@ -668,6 +916,23 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             group_key_id="key-1",
         )
         await self.send_and_receive(
+            member,
+            owner,
+            "group_message",
+            packet_id="channel-comment-1",
+            group_message_id="channel-comment-1",
+            group_id=group_id,
+            group_name="News channel",
+            members=[owner.node_id, member.node_id],
+            owner_node=owner.node_id,
+            admins=[owner.node_id],
+            is_channel=True,
+            message="encrypted channel comment",
+            reply_to_message_id="channel-post-1",
+            reply_to_text="Original post",
+            group_key_id="key-1",
+        )
+        await self.send_and_receive(
             owner,
             member,
             "file_chunk",
@@ -723,6 +988,13 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "channel-post-1",
             {item["message_id"] for item in newcomer_relogin.sync["group_messages"]},
         )
+        comment = next(
+            item
+            for item in newcomer_relogin.sync["group_messages"]
+            if item["message_id"] == "channel-comment-1"
+        )
+        self.assertEqual("channel-post-1", comment["reply_to_message_id"])
+        self.assertEqual("Original post", comment["reply_to_text"])
         self.assertIn(
             "channel-image-1",
             {item["file_id"] for item in newcomer_relogin.sync["files"]},

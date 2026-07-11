@@ -43,12 +43,14 @@ class ServerSyncMixin:
 
             own_profile = {
                 "login": row[0],
-                "node_id": row[1],
+                "node_id": node_id,
+                "canonical_node_id": row[1],
                 "display_name": row[2],
                 "public_username": row[3],
                 "about": row[4],
-                "avatar_data": row[5]
-                ,"encryption_public_key": row[6]
+                "avatar_data": row[5],
+                "encryption_public_key": row[6],
+                "node_aliases": self.get_account_node_ids(row[0])
             }
 
         cursor.execute(
@@ -452,6 +454,7 @@ class ServerSyncMixin:
             """
             SELECT story_id,
                    owner_node,
+                   owner_login,
                    story_json,
                    recipients_json
             FROM server_stories
@@ -463,21 +466,46 @@ class ServerSyncMixin:
         stories = []
         story_ids = []
 
-        for story_id, owner_node, story_json, recipients_json in cursor.fetchall():
+        for (
+            story_id,
+            owner_node,
+            owner_login,
+            story_json,
+            recipients_json
+        ) in cursor.fetchall():
             try:
                 recipients = set(json.loads(recipients_json or "[]"))
                 story = json.loads(story_json or "{}")
             except json.JSONDecodeError:
                 continue
 
-            if node_id != owner_node and node_id not in recipients:
+            owner_login = (
+                owner_login
+                or self.get_login_by_node(owner_node)
+                or ""
+            ).strip().lower()
+            recipient_logins = {
+                (self.get_login_by_node(recipient) or "").strip().lower()
+                for recipient in recipients
+            }
+
+            if (
+                node_id != owner_node
+                and node_id not in recipients
+                and login != owner_login
+                and login not in recipient_logins
+            ):
                 continue
 
             if not isinstance(story, dict):
                 continue
 
             story["id"] = story.get("id") or story_id
-            story["owner_node"] = story.get("owner_node") or owner_node
+            story["owner_node"] = (
+                node_id
+                if owner_login and owner_login == login
+                else story.get("owner_node") or owner_node
+            )
             stories.append(story)
             story_ids.append(story_id)
 
@@ -499,6 +527,8 @@ class ServerSyncMixin:
             )
             story_likes = {}
             for story_id, reactor_node in cursor.fetchall():
+                if self._same_account_nodes(reactor_node, node_id):
+                    reactor_node = node_id
                 story_likes.setdefault(story_id, []).append(reactor_node)
             for story in stories:
                 story["liked_by_node_ids"] = sorted(
@@ -516,6 +546,8 @@ class ServerSyncMixin:
             )
             story_views = {}
             for story_id, viewer_node in cursor.fetchall():
+                if self._same_account_nodes(viewer_node, node_id):
+                    viewer_node = node_id
                 story_views.setdefault(story_id, []).append(viewer_node)
             for story in stories:
                 story["viewed_by_node_ids"] = sorted(
@@ -656,8 +688,9 @@ class ServerSyncMixin:
                     "display_name": row[2],
                     "public_username": row[3],
                     "about": row[4],
-                    "avatar_data": row[5]
-                    ,"encryption_public_key": row[6]
+                    "avatar_data": row[5],
+                    "encryption_public_key": row[6],
+                    "node_aliases": self.get_account_node_ids(row[0])
                 }
                 for row in cursor.fetchall()
             ]
@@ -811,6 +844,7 @@ class ServerSyncMixin:
             users.append(
                 {
                     "node_id": node_id,
+                    "login": profile.get("login"),
                     "username": username,
                     "display_name": profile.get("display_name") or username,
                     "public_username": profile.get("public_username"),

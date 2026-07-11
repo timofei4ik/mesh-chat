@@ -426,6 +426,8 @@ class AppController extends ChangeNotifier {
         Profile(
           nodeId: current.nodeId,
           displayName: current.login,
+          accountLogin: current.login,
+          nodeAliases: [current.nodeId],
           publicUsername: current.publicUsername,
           publicKey: _crypto.publicKey,
           online: status == 'Online' || status.startsWith('Online:'),
@@ -491,6 +493,12 @@ class AppController extends ChangeNotifier {
       publicUsername: incoming.publicUsername.trim().isEmpty
           ? existing.publicUsername
           : null,
+      accountLogin: incoming.accountLogin.trim().isEmpty
+          ? existing.accountLogin
+          : null,
+      nodeAliases: incoming.nodeAliases.isEmpty
+          ? existing.nodeAliases
+          : <String>{...existing.nodeAliases, ...incoming.nodeAliases}.toList(),
       about: incoming.about.trim().isEmpty ? existing.about : null,
       avatarData: incoming.avatarData.isEmpty ? existing.avatarData : null,
       publicKey: incoming.publicKey.isEmpty ? existing.publicKey : null,
@@ -1136,6 +1144,7 @@ class AppController extends ChangeNotifier {
                       ? receiverLogin
                       : peerId.substring(0, 8))
                 : (data['sender_name']?.toString() ?? peerId.substring(0, 8)),
+            accountLogin: sentByMe ? receiverLogin : senderLogin,
           );
       profiles[peerId] = _mergeProfile(profile);
       _applyProfileToThreads(profiles[peerId]!);
@@ -1276,6 +1285,8 @@ class AppController extends ChangeNotifier {
     final profile = Profile(
       nodeId: current.nodeId,
       displayName: name,
+      accountLogin: current.login,
+      nodeAliases: profiles[current.nodeId]?.nodeAliases ?? [current.nodeId],
       publicUsername: normalizedUsername,
       about: about.trim(),
       avatarData: avatarData,
@@ -1895,7 +1906,7 @@ class AppController extends ChangeNotifier {
     final profile = Profile.fromJson(
       Map<String, dynamic>.from(packet['profile'] as Map),
     );
-    profiles[profile.nodeId] = profile;
+    profiles[profile.nodeId] = _mergeProfile(profile);
     unawaited(_saveCache());
     if (sendRequest) {
       _socket.send({
@@ -2992,13 +3003,16 @@ class AppController extends ChangeNotifier {
     if (normalizedCode.isEmpty) {
       return _ensureThread(profile);
     }
-    final threadId = await _secretThreadId(profile.nodeId, normalizedCode);
-    final existing = threads[threadId];
+    final threadIds = await _secretThreadIds(profile, normalizedCode);
     final mergedProfile = _mergeProfile(profile);
-    if (existing != null) {
-      existing.profile = mergedProfile;
-      return existing;
+    for (final threadId in threadIds) {
+      final existing = threads[threadId];
+      if (existing != null) {
+        existing.profile = mergedProfile;
+        return existing;
+      }
     }
+    final threadId = threadIds.first;
     final thread = ChatThread(
       profile: mergedProfile,
       threadId: threadId,
@@ -3058,10 +3072,53 @@ class AppController extends ChangeNotifier {
     return value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '-');
   }
 
-  Future<String> _secretThreadId(String peerNodeId, String code) async {
-    final nodes = [myNodeId, peerNodeId]..sort();
+  Future<List<String>> _secretThreadIds(Profile profile, String code) async {
+    final result = <String>[];
+    final ownLogin = session?.login.trim().toLowerCase() ?? '';
+    final peerLogin = profile.accountLogin.trim().toLowerCase();
+    if (ownLogin.isNotEmpty && peerLogin.isNotEmpty) {
+      result.add(
+        await _secretThreadId('meshchat-secret-v2', ownLogin, peerLogin, code),
+      );
+    }
+
+    final ownNodes = <String>{myNodeId, ...ownProfile.nodeAliases}
+      ..removeWhere((value) => value.isEmpty);
+    final peerNodes = <String>{profile.nodeId, ...profile.nodeAliases}
+      ..removeWhere((value) => value.isEmpty);
+    for (final ownNode in ownNodes) {
+      for (final peerNode in peerNodes) {
+        final legacyId = await _secretThreadId(
+          'meshchat-secret-v1',
+          ownNode,
+          peerNode,
+          code,
+        );
+        if (!result.contains(legacyId)) result.add(legacyId);
+      }
+    }
+    if (result.isEmpty) {
+      result.add(
+        await _secretThreadId(
+          'meshchat-secret-v1',
+          myNodeId,
+          profile.nodeId,
+          code,
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<String> _secretThreadId(
+    String version,
+    String firstIdentity,
+    String secondIdentity,
+    String code,
+  ) async {
+    final identities = [firstIdentity, secondIdentity]..sort();
     final digest = await Sha256().hash(
-      utf8.encode('meshchat-secret-v1:${nodes.join(':')}:$code'),
+      utf8.encode('$version:${identities.join(':')}:$code'),
     );
     return 'secret:${base64Url.encode(digest.bytes).replaceAll('=', '')}';
   }
@@ -3414,6 +3471,10 @@ class AppController extends ChangeNotifier {
         Profile(
           nodeId: sender,
           displayName: packet['sender']?.toString() ?? sender.substring(0, 8),
+          accountLogin:
+              packet['sender_login']?.toString() ??
+              packet['sender']?.toString() ??
+              '',
         );
     profiles[sender] = _mergeProfile(senderProfile);
     _ensureThread(senderProfile);
@@ -4876,6 +4937,11 @@ class AppController extends ChangeNotifier {
               first['sender_name']?.toString() ??
               first['sender']?.toString() ??
               peerId.substring(0, 8),
+          accountLogin: sentByMe
+              ? receiverLogin
+              : senderLogin.isNotEmpty
+              ? senderLogin
+              : first['sender']?.toString() ?? '',
         );
     profiles[peerId] = _mergeProfile(profile);
     _applyProfileToThreads(profiles[peerId]!);
@@ -5210,6 +5276,7 @@ class AppController extends ChangeNotifier {
           nodeId: nodeId,
           displayName:
               packet['from_name']?.toString() ?? nodeId.substring(0, 8),
+          accountLogin: packet['from_name']?.toString() ?? '',
         );
     profiles[nodeId] = profile;
     _ensureThread(profile);
