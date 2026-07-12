@@ -21,6 +21,7 @@ import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
 import '../services/mesh_socket.dart';
 import '../services/notification_service.dart';
+import '../services/own_profile_store.dart';
 import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
 import '../services/sticker_store.dart';
@@ -122,6 +123,7 @@ class AppController extends ChangeNotifier {
   final CallService _calls = CallService();
   final Map<String, CallService> _groupCalls = {};
   final NotificationService _notifications = NotificationService();
+  final OwnProfileStore _ownProfileStore = OwnProfileStore();
   final ProximityScreenService _proximityScreen = ProximityScreenService();
   final Map<String, Profile> profiles = {};
   final Map<String, ChatThread> threads = {};
@@ -154,6 +156,7 @@ class AppController extends ChangeNotifier {
   Timer? _softResyncTimer;
   bool _webPushSubscribeInFlight = false;
   bool _retryingQueuedMessages = false;
+  bool _ownProfileHydrated = false;
   Timer? _incomingPreviewTimer;
   final List<DiagnosticEvent> diagnostics = [];
   final List<GroupJoinRequest> groupJoinRequests = [];
@@ -432,6 +435,19 @@ class AppController extends ChangeNotifier {
           publicKey: _crypto.publicKey,
           online: status == 'Online' || status.startsWith('Online:'),
         );
+    return profile.copyWith(
+      accountLogin: current.login,
+      nodeAliases: <String>{...profile.nodeAliases, current.nodeId}.toList(),
+      publicUsername: profile.publicUsername.trim().isEmpty
+          ? current.publicUsername
+          : null,
+      publicKey: profile.publicKey.isEmpty ? _crypto.publicKey : null,
+      online: status == 'Online' || status.startsWith('Online:'),
+    );
+  }
+
+  Profile get _publicOwnProfile {
+    final profile = ownProfile;
     return profile.copyWith(
       about: appSettings.showAbout ? profile.about : '',
       avatarData: appSettings.showAvatar ? profile.avatarData : '',
@@ -740,6 +756,7 @@ class AppController extends ChangeNotifier {
     session = await _store.load();
     if (session != null) {
       await _cache.load(session!, profiles, threads, groups);
+      await _loadOwnProfile(session!);
       stickerLibrary = await _stickerStore.load(session);
       await _loadStories();
       await _repairCachedGroups();
@@ -859,6 +876,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      await _loadOwnProfile(candidate);
       stickerLibrary = await _stickerStore.load(candidate);
       await _loadStories();
       await _repairCachedGroups();
@@ -896,6 +914,7 @@ class AppController extends ChangeNotifier {
       session = candidate;
       recentSessions = await _store.loadRecent();
       await _cache.load(candidate, profiles, threads, groups);
+      await _loadOwnProfile(candidate);
       stickerLibrary = await _stickerStore.load(candidate);
       await _loadStories();
       await _repairCachedGroups();
@@ -915,6 +934,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> forgetRecent(Session recent) async {
     await _store.removeRecent(recent);
+    await _ownProfileStore.remove(recent);
     recentSessions = await _store.loadRecent();
     notifyListeners();
   }
@@ -926,7 +946,7 @@ class AppController extends ChangeNotifier {
     await _socket.connect(
       session: current,
       publicKey: _crypto.publicKey,
-      profile: ownProfile,
+      profile: _publicOwnProfile,
       onPacket: _handlePacket,
       onStatus: (value) {
         status = value;
@@ -969,6 +989,7 @@ class AppController extends ChangeNotifier {
         lastSyncAt = DateTime.now();
         addDiagnostic('sync', 'Sync received');
         await _saveCache();
+        notifyListeners();
       case 'username_lookup_result':
         _handleLookup(packet);
       case 'profile_update_result':
@@ -1081,13 +1102,18 @@ class AppController extends ChangeNotifier {
       );
       if (profile.nodeId.isNotEmpty &&
           (!_isOwnProfileAlias(profile) || profile.nodeId == myNodeId)) {
-        profiles[profile.nodeId] = _mergeProfile(profile, online: true);
+        final merged = _mergeProfile(profile, online: true);
+        profiles[profile.nodeId] = merged;
         final username = profile.publicUsername.trim().toLowerCase();
-        if (profile.nodeId == myNodeId &&
-            username.isNotEmpty &&
-            session != null) {
-          session = session!.copyWith(publicUsername: username);
-          await _store.updatePublicUsername(username);
+        if (profile.nodeId == myNodeId && session != null) {
+          final own = _normalizeOwnProfile(merged, session!);
+          profiles[myNodeId] = own;
+          _ownProfileHydrated = true;
+          await _saveOwnProfile(own);
+          if (username.isNotEmpty) {
+            session = session!.copyWith(publicUsername: username);
+            await _store.updatePublicUsername(username);
+          }
         }
       }
     }
@@ -1201,6 +1227,7 @@ class AppController extends ChangeNotifier {
     await _repairCachedGroups();
     await _repairCachedMessages();
     await _saveCache();
+    notifyListeners();
   }
 
   Future<Profile?> lookupUsername(
@@ -1236,6 +1263,9 @@ class AppController extends ChangeNotifier {
     final current = session;
     if (current == null) return 'Нет активной сессии';
     if (_profileUpdateCompleter != null) return 'Обновление уже выполняется';
+    if (!_ownProfileHydrated) {
+      return 'Профиль ещё синхронизируется. Попробуй через пару секунд.';
+    }
 
     final normalizedUsername = publicUsername.trim().toLowerCase().replaceFirst(
       '@',
@@ -1294,6 +1324,8 @@ class AppController extends ChangeNotifier {
       online: true,
     );
     profiles[current.nodeId] = profile;
+    _ownProfileHydrated = true;
+    await _saveOwnProfile(profile);
     await _saveCache();
     notifyListeners();
     return null;
@@ -2261,8 +2293,8 @@ class AppController extends ChangeNotifier {
     final story = StoryItem(
       id: const Uuid().v4(),
       ownerNode: myNodeId,
-      ownerName: ownProfile.displayName,
-      ownerAvatarData: ownProfile.avatarData,
+      ownerName: _publicOwnProfile.displayName,
+      ownerAvatarData: _publicOwnProfile.avatarData,
       createdAt: DateTime.now(),
       text: trimmed,
       imageData: imageData,
@@ -3793,7 +3825,7 @@ class AppController extends ChangeNotifier {
     if (current == null) return 'No active session';
     await _crypto.initialize(current.login, current.password);
     try {
-      await ble.start(profile: ownProfile, publicKey: _crypto.publicKey);
+      await ble.start(profile: _publicOwnProfile, publicKey: _crypto.publicKey);
       return null;
     } catch (error) {
       return 'Bluetooth start failed: $error';
@@ -4279,7 +4311,7 @@ class AppController extends ChangeNotifier {
       'group_id': groupId,
       'group_name': invite['name']?.toString() ?? 'Group',
       'is_channel': invite['is_channel'] == true,
-      'requester_profile': ownProfile.toJson(),
+      'requester_profile': _publicOwnProfile.toJson(),
     });
     return null;
   }
@@ -5434,9 +5466,11 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> clearLocalCache() async {
+    final current = session;
     await _cache.clear(session);
     await _socket.close();
     _clearLocalState();
+    if (current != null) await _loadOwnProfile(current);
     await _connect();
     notifyListeners();
   }
@@ -5452,6 +5486,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _clearLocalState() {
+    _ownProfileHydrated = false;
     profiles.clear();
     threads.clear();
     groups.clear();
@@ -5479,6 +5514,45 @@ class AppController extends ChangeNotifier {
       // Web storage can reject writes when Safari quota is exhausted.
       // The app should keep working; sync can restore data later.
     }
+  }
+
+  Future<void> _loadOwnProfile(Session current) async {
+    Profile? stored;
+    try {
+      stored = await _ownProfileStore.load(current);
+    } catch (error) {
+      addDiagnostic('profile', 'Local profile load failed: $error');
+      return;
+    }
+    if (stored == null) return;
+    profiles[current.nodeId] = _normalizeOwnProfile(stored, current);
+    _ownProfileHydrated = true;
+  }
+
+  Future<void> _saveOwnProfile(Profile profile) async {
+    final current = session;
+    if (current == null) return;
+    try {
+      await _ownProfileStore.save(current, profile);
+    } catch (error) {
+      addDiagnostic('profile', 'Local profile save failed: $error');
+    }
+  }
+
+  Profile _normalizeOwnProfile(Profile profile, Session current) {
+    return profile.copyWith(
+      nodeId: current.nodeId,
+      accountLogin: current.login,
+      nodeAliases: <String>{
+        ...profile.nodeAliases,
+        profile.nodeId,
+        current.nodeId,
+      }.where((value) => value.isNotEmpty).toList(),
+      publicUsername: profile.publicUsername.trim().isEmpty
+          ? current.publicUsername
+          : null,
+      publicKey: profile.publicKey.isEmpty ? _crypto.publicKey : null,
+    );
   }
 
   Future<void> _rewriteCache() async {

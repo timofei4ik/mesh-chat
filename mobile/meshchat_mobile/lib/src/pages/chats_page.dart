@@ -16,6 +16,7 @@ import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/profile_avatar.dart';
+import '../widgets/mesh_painting.dart';
 import 'bluetooth_nearby_page.dart';
 import 'chat_page.dart';
 import 'diagnostics_page.dart';
@@ -3834,36 +3835,64 @@ class _HomeLiquidBackground extends StatefulWidget {
 }
 
 class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController controller;
   late final Timer timer;
+  bool appActive = true;
+  bool tickerModeActive = true;
+
+  bool get canAnimate => widget.enabled && appActive && tickerModeActive;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 3200),
     );
     timer = Timer.periodic(const Duration(milliseconds: 9400), (_) {
-      if (!widget.enabled) return;
-      if (mounted) controller.forward(from: 0);
+      if (canAnimate) controller.forward(from: 0);
     });
     Future<void>.delayed(const Duration(milliseconds: 900), () {
-      if (mounted && widget.enabled) controller.forward(from: 0);
+      if (mounted && canAnimate) controller.forward(from: 0);
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = TickerMode.valuesOf(context).enabled;
+    if (tickerModeActive == next) return;
+    tickerModeActive = next;
+    _syncAnimationActivity();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    appActive = state == AppLifecycleState.resumed;
+    _syncAnimationActivity();
+  }
+
+  void _syncAnimationActivity() {
+    if (!canAnimate) {
+      controller.stop(canceled: false);
+    } else if (controller.value > 0 && controller.value < 1) {
+      controller.forward();
+    }
   }
 
   @override
   void didUpdateWidget(covariant _HomeLiquidBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.enabled) controller.stop();
-    if (widget.enabled && !oldWidget.enabled) controller.forward(from: 0);
+    if (!canAnimate) controller.stop(canceled: false);
+    if (canAnimate && !oldWidget.enabled) controller.forward(from: 0);
   }
 
   @override
   void dispose() {
     timer.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
   }
@@ -3878,7 +3907,7 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
           builder: (context, _) => CustomPaint(
             isComplex: true,
             willChange: controller.isAnimating,
-            painter: _HomeMeshPainter(t: widget.enabled ? controller.value : 0),
+            painter: _HomeMeshPainter(t: canAnimate ? controller.value : 0),
           ),
         ),
       ),
@@ -3897,22 +3926,6 @@ class _HomeMeshPainter extends CustomPainter {
     final phase = eased * math.pi * 2;
     final cyanPulse = 0.78 + 0.22 * math.sin(phase);
     final violetPulse = 0.78 + 0.22 * math.sin(phase + math.pi * 0.75);
-    final cyan = Paint()
-      ..color = const Color(0xFF40CFFF).withValues(alpha: 0.044 * cyanPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 104);
-    final violet = Paint()
-      ..color = const Color(0xFF9A6BFF).withValues(alpha: 0.043 * violetPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 110);
-    final blue = Paint()
-      ..color = const Color(0xFF348DFF).withValues(alpha: 0.018)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 120);
-    final cyanCore = Paint()
-      ..color = const Color(0xFF40CFFF).withValues(alpha: 0.085 * cyanPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 28);
-    final violetCore = Paint()
-      ..color = const Color(0xFF9A6BFF).withValues(alpha: 0.085 * violetPulse)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30);
-
     final cyanCenter = Offset(
       size.width * (0.18 + 0.035 * math.sin(phase * 0.7)),
       size.height * (0.14 + 0.025 * math.cos(phase * 0.9)),
@@ -3921,17 +3934,43 @@ class _HomeMeshPainter extends CustomPainter {
       size.width * (0.88 + 0.03 * math.cos(phase * 0.6)),
       size.height * (0.30 + 0.035 * math.sin(phase * 0.8)),
     );
-    canvas.drawCircle(cyanCenter, 220 + 10 * cyanPulse, cyan);
-    canvas.drawCircle(violetCenter, 260 + 12 * violetPulse, violet);
-    canvas.drawCircle(cyanCenter, 38 + 4 * cyanPulse, cyanCore);
-    canvas.drawCircle(violetCenter, 42 + 5 * violetPulse, violetCore);
-    canvas.drawCircle(
-      Offset(
+    drawRadialGlow(
+      canvas,
+      center: cyanCenter,
+      radius: 330 + 10 * cyanPulse,
+      color: const Color(0xFF40CFFF),
+      opacity: 0.052 * cyanPulse,
+    );
+    drawRadialGlow(
+      canvas,
+      center: violetCenter,
+      radius: 390 + 12 * violetPulse,
+      color: const Color(0xFF9A6BFF),
+      opacity: 0.050 * violetPulse,
+    );
+    drawRadialGlow(
+      canvas,
+      center: cyanCenter,
+      radius: 74 + 4 * cyanPulse,
+      color: const Color(0xFF40CFFF),
+      opacity: 0.10 * cyanPulse,
+    );
+    drawRadialGlow(
+      canvas,
+      center: violetCenter,
+      radius: 82 + 5 * violetPulse,
+      color: const Color(0xFF9A6BFF),
+      opacity: 0.10 * violetPulse,
+    );
+    drawRadialGlow(
+      canvas,
+      center: Offset(
         size.width * (0.55 + 0.025 * math.sin(phase * 0.45)),
         size.height * 0.92,
       ),
-      280,
-      blue,
+      radius: 410,
+      color: const Color(0xFF348DFF),
+      opacity: 0.022,
     );
   }
 

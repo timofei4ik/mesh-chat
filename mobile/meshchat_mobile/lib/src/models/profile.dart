@@ -22,6 +22,7 @@ class Profile {
   final bool online;
 
   Profile copyWith({
+    String? nodeId,
     String? displayName,
     String? accountLogin,
     List<String>? nodeAliases,
@@ -32,7 +33,7 @@ class Profile {
     bool? online,
   }) {
     return Profile(
-      nodeId: nodeId,
+      nodeId: nodeId ?? this.nodeId,
       displayName: displayName ?? this.displayName,
       accountLogin: accountLogin ?? this.accountLogin,
       nodeAliases: nodeAliases ?? this.nodeAliases,

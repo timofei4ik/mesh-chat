@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../widgets/mesh_painting.dart';
+
 import '../controllers/app_controller.dart';
 import '../models/session.dart';
 
@@ -267,12 +269,17 @@ class _LoginGlowBackground extends StatefulWidget {
 }
 
 class _LoginGlowBackgroundState extends State<_LoginGlowBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController controller;
+  bool appActive = true;
+  bool tickerModeActive = true;
+
+  bool get canAnimate => appActive && tickerModeActive;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     controller = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 18),
@@ -280,18 +287,46 @@ class _LoginGlowBackgroundState extends State<_LoginGlowBackground>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = TickerMode.valuesOf(context).enabled;
+    if (tickerModeActive == next) return;
+    tickerModeActive = next;
+    _syncAnimationActivity();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    appActive = state == AppLifecycleState.resumed;
+    _syncAnimationActivity();
+  }
+
+  void _syncAnimationActivity() {
+    if (canAnimate) {
+      if (!controller.isAnimating) controller.repeat();
+    } else {
+      controller.stop(canceled: false);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) => CustomPaint(
-        painter: _LoginGlowPainter(controller.value),
-        size: Size.infinite,
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) => CustomPaint(
+          isComplex: true,
+          willChange: controller.isAnimating,
+          painter: _LoginGlowPainter(controller.value),
+          size: Size.infinite,
+        ),
       ),
     );
   }
@@ -325,16 +360,19 @@ class _LoginGlowPainter extends CustomPainter {
         base.dy + math.sin(p * 0.82) * radius * 0.10,
       );
       final pulse = 0.72 + math.sin(p * 1.3) * 0.18;
-      final paint = Paint()
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.55)
-        ..color = color.withValues(alpha: alpha * pulse);
-      canvas.drawCircle(center, radius, paint);
-      canvas.drawCircle(
-        center,
-        radius * 0.28,
-        Paint()
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.22)
-          ..color = color.withValues(alpha: alpha * 0.55 * pulse),
+      drawRadialGlow(
+        canvas,
+        center: center,
+        radius: radius * 1.55,
+        color: color,
+        opacity: alpha * pulse,
+      );
+      drawRadialGlow(
+        canvas,
+        center: center,
+        radius: radius * 0.55,
+        color: color,
+        opacity: alpha * 0.62 * pulse,
       );
     }
 

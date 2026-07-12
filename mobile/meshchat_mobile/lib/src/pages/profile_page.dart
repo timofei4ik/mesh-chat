@@ -382,31 +382,60 @@ class _ProfileMeshBackground extends StatefulWidget {
 }
 
 class _ProfileMeshBackgroundState extends State<_ProfileMeshBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController controller;
   late final Timer timer;
   int seed = 4;
+  bool appActive = true;
+  bool tickerModeActive = true;
+
+  bool get canAnimate => appActive && tickerModeActive;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 3800),
     );
     timer = Timer.periodic(const Duration(milliseconds: 5200), (_) {
-      if (!mounted) return;
+      if (!mounted || !canAnimate) return;
       setState(() => seed++);
       controller.forward(from: 0);
     });
     Future<void>.delayed(const Duration(milliseconds: 400), () {
-      if (mounted) controller.forward(from: 0);
+      if (mounted && canAnimate) controller.forward(from: 0);
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = TickerMode.valuesOf(context).enabled;
+    if (tickerModeActive == next) return;
+    tickerModeActive = next;
+    _syncAnimationActivity();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    appActive = state == AppLifecycleState.resumed;
+    _syncAnimationActivity();
+  }
+
+  void _syncAnimationActivity() {
+    if (!canAnimate) {
+      controller.stop(canceled: false);
+    } else if (controller.value > 0 && controller.value < 1) {
+      controller.forward();
+    }
   }
 
   @override
   void dispose() {
     timer.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
   }

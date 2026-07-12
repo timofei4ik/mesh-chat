@@ -23,6 +23,7 @@ import '../models/profile.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/mesh_painting.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
 import 'group_info_page.dart';
@@ -3844,23 +3845,27 @@ class _LiquidMeshBackground extends StatefulWidget {
 }
 
 class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController controller;
   late final Timer timer;
   final random = math.Random();
   List<int> activePoints = const [0, 6];
   List<Color> activeColors = const [Color(0xFF45D6FF), Color(0xFFB463FF)];
+  bool appActive = true;
+  bool tickerModeActive = true;
+
+  bool get canAnimate => widget.enabled && appActive && tickerModeActive;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2200),
     );
     timer = Timer.periodic(const Duration(milliseconds: 8200), (_) {
-      if (!widget.enabled) return;
-      if (!mounted) return;
+      if (!canAnimate) return;
       setState(() {
         final first = random.nextInt(_LiquidMeshPainter.pointCount);
         if (random.nextBool()) {
@@ -3879,20 +3884,44 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
       controller.forward(from: 0);
     });
     Future<void>.delayed(const Duration(milliseconds: 700), () {
-      if (mounted && widget.enabled) controller.forward(from: 0);
+      if (mounted && canAnimate) controller.forward(from: 0);
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = TickerMode.valuesOf(context).enabled;
+    if (tickerModeActive == next) return;
+    tickerModeActive = next;
+    _syncAnimationActivity();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    appActive = state == AppLifecycleState.resumed;
+    _syncAnimationActivity();
+  }
+
+  void _syncAnimationActivity() {
+    if (!canAnimate) {
+      controller.stop(canceled: false);
+    } else if (controller.value > 0 && controller.value < 1) {
+      controller.forward();
+    }
   }
 
   @override
   void didUpdateWidget(covariant _LiquidMeshBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.enabled) controller.stop();
-    if (widget.enabled && !oldWidget.enabled) controller.forward(from: 0);
+    if (!canAnimate) controller.stop(canceled: false);
+    if (canAnimate && !oldWidget.enabled) controller.forward(from: 0);
   }
 
   @override
   void dispose() {
     timer.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
   }
@@ -3910,7 +3939,7 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
             painter: _LiquidMeshPainter(
               activePoints: activePoints,
               activeColors: activeColors,
-              pulse: widget.enabled
+              pulse: canAnimate
                   ? math.sin(controller.value * math.pi).clamp(0, 1).toDouble()
                   : 0,
             ),
@@ -3935,26 +3964,26 @@ class _LiquidMeshPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cyan = Paint()
-      ..color = const Color(0xFF45D6FF).withValues(alpha: 0.025)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 58);
-    final violet = Paint()
-      ..color = const Color(0xFF9B5CFF).withValues(alpha: 0.022)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 62);
-    final green = Paint()
-      ..color = const Color(0xFF57FFC1).withValues(alpha: 0.018)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 60);
-
-    canvas.drawCircle(Offset(size.width * 0.18, size.height * 0.18), 130, cyan);
-    canvas.drawCircle(
-      Offset(size.width * 0.88, size.height * 0.30),
-      150,
-      violet,
+    drawRadialGlow(
+      canvas,
+      center: Offset(size.width * 0.18, size.height * 0.18),
+      radius: 205,
+      color: const Color(0xFF45D6FF),
+      opacity: 0.030,
     );
-    canvas.drawCircle(
-      Offset(size.width * 0.54, size.height * 0.86),
-      170,
-      green,
+    drawRadialGlow(
+      canvas,
+      center: Offset(size.width * 0.88, size.height * 0.30),
+      radius: 235,
+      color: const Color(0xFF9B5CFF),
+      opacity: 0.027,
+    );
+    drawRadialGlow(
+      canvas,
+      center: Offset(size.width * 0.54, size.height * 0.86),
+      radius: 255,
+      color: const Color(0xFF57FFC1),
+      opacity: 0.022,
     );
 
     final linePaint = Paint()
