@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
+import '../widgets/meshpro_badge.dart';
 import 'chat_page.dart';
 
 enum _SearchFilter { all, chats, messages, files, links }
@@ -228,10 +229,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
                                 color: Colors.lightBlueAccent,
                               ),
                             ),
-                            title: Text(
-                              result.thread.profile.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            title: MeshProProfileName(
+                              profile: result.thread.profile,
                               style: const TextStyle(
                                 fontWeight: FontWeight.w800,
                               ),

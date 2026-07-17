@@ -387,24 +387,7 @@ class ChatCacheStore {
         (message.kind == ChatMessageKind.sticker ||
             _isImageName(message.fileName) ||
             _isAudioName(message.fileName));
-    return ChatMessage(
-      id: message.id,
-      senderNode: message.senderNode,
-      receiverNode: message.receiverNode,
-      text: message.text,
-      createdAt: message.createdAt,
-      kind: message.kind,
-      fileName: message.fileName,
-      fileData: keepFileData ? message.fileData : '',
-      fileSize: message.fileSize,
-      replyToMessageId: message.replyToMessageId,
-      replyToText: message.replyToText,
-      reactions: message.reactions,
-      edited: message.edited,
-      deleted: message.deleted,
-      pending: message.pending,
-      delivered: message.delivered,
-    );
+    return message.copyWith(fileData: keepFileData ? message.fileData : '');
   }
 
   bool _isImageName(String filename) {

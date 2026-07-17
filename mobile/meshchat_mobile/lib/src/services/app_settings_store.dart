@@ -17,11 +17,18 @@ class AppSettingsStore {
       sendFilesOriginal: prefs.getBool('send_files_original') ?? true,
       dataSaver: prefs.getBool('data_saver') ?? false,
       reducedAnimations: prefs.getBool('reduced_animations') ?? false,
+      messageEffectsEnabled: prefs.getBool('message_effects_enabled') ?? true,
       showOnline: prefs.getBool('privacy_show_online') ?? true,
       showAvatar: prefs.getBool('privacy_show_avatar') ?? true,
       showAbout: prefs.getBool('privacy_show_about') ?? true,
       allowCalls: prefs.getBool('privacy_allow_calls') ?? true,
       allowGroupInvites: prefs.getBool('privacy_allow_group_invites') ?? true,
+      quickReactions:
+          prefs.getStringList('meshpro_quick_reactions') ??
+          const ['\u2764\uFE0F', '\u{1F44C}', '\u{1FACE}', '\u{1F44D}'],
+      meshProHdAudio: prefs.getBool('meshpro_hd_audio') ?? true,
+      meshProEnhancedNoiseSuppression:
+          prefs.getBool('meshpro_enhanced_noise_suppression') ?? true,
       blockedNodeIds: prefs.getStringList('blocked_node_ids') ?? const [],
       deletedGroupIds: prefs.getStringList('deleted_group_ids') ?? const [],
       deletedMessageIds: prefs.getStringList('deleted_message_ids') ?? const [],
@@ -43,6 +50,10 @@ class AppSettingsStore {
     await prefs.setBool('send_files_original', settings.sendFilesOriginal);
     await prefs.setBool('data_saver', settings.dataSaver);
     await prefs.setBool('reduced_animations', settings.reducedAnimations);
+    await prefs.setBool(
+      'message_effects_enabled',
+      settings.messageEffectsEnabled,
+    );
     await prefs.setBool('privacy_show_online', settings.showOnline);
     await prefs.setBool('privacy_show_avatar', settings.showAvatar);
     await prefs.setBool('privacy_show_about', settings.showAbout);
@@ -50,6 +61,15 @@ class AppSettingsStore {
     await prefs.setBool(
       'privacy_allow_group_invites',
       settings.allowGroupInvites,
+    );
+    await prefs.setStringList(
+      'meshpro_quick_reactions',
+      settings.quickReactions,
+    );
+    await prefs.setBool('meshpro_hd_audio', settings.meshProHdAudio);
+    await prefs.setBool(
+      'meshpro_enhanced_noise_suppression',
+      settings.meshProEnhancedNoiseSuppression,
     );
     await prefs.setStringList('blocked_node_ids', settings.blockedNodeIds);
     await prefs.setStringList('deleted_group_ids', settings.deletedGroupIds);

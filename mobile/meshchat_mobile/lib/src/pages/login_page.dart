@@ -321,12 +321,15 @@ class _LoginGlowBackgroundState extends State<_LoginGlowBackground>
     return RepaintBoundary(
       child: AnimatedBuilder(
         animation: controller,
-        builder: (context, _) => CustomPaint(
-          isComplex: true,
-          willChange: controller.isAnimating,
-          painter: _LoginGlowPainter(controller.value),
-          size: Size.infinite,
-        ),
+        builder: (context, _) {
+          final frame = (controller.value * 432).floor();
+          return CustomPaint(
+            isComplex: true,
+            willChange: controller.isAnimating,
+            painter: _LoginGlowPainter(frame / 432),
+            size: Size.infinite,
+          );
+        },
       ),
     );
   }

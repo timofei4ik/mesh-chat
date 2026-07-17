@@ -10,7 +10,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from server import server as server_module
-from server import server_auth, server_storage
+from server import server_auth, server_storage, server_sync
 
 
 class ServerSchemaMigrationTests(unittest.TestCase):
@@ -76,12 +76,32 @@ class ServerSchemaMigrationTests(unittest.TestCase):
                         "reply_to_message_id",
                         "reply_to_text",
                         "is_channel_comment",
+                        "message_effect",
                     }
                     <= file_columns
                 )
                 self.assertEqual(
                     "ok",
                     relay.db.execute("PRAGMA integrity_check").fetchone()[0],
+                )
+                relay.save_android_push_token(
+                    "tester",
+                    "android-node",
+                    "first-token",
+                )
+                relay.save_android_push_token(
+                    "tester",
+                    "android-node",
+                    "refreshed-token",
+                )
+                self.assertEqual(
+                    ["refreshed-token"],
+                    relay.android_push_tokens_for_node("android-node"),
+                )
+                relay.delete_android_push_token(token="refreshed-token")
+                self.assertEqual(
+                    [],
+                    relay.android_push_tokens_for_node("android-node"),
                 )
             finally:
                 if relay is not None:
@@ -205,6 +225,7 @@ class TestClient:
         self.node_id = node_id
         self.display_name = display_name or login.title()
         self.websocket = None
+        self.welcome = None
         self.sync = None
         self.pending = []
 
@@ -227,17 +248,37 @@ class TestClient:
                 "protocol_version": 5,
                 "min_protocol_version": 5,
                 "app_version": "integration-test",
+                "supports_sticker_library_chunks": True,
             }
         )
-        await self.receive_type("server_welcome")
+        self.welcome = await self.receive_type("server_welcome")
         self.sync = await self.receive_type("server_sync")
         self.sync["file_chunks"] = []
+        sticker_chunks = {}
+        sticker_chunk_total = 0
         while True:
             packet = await self.receive()
             if packet.get("type") == "server_file_sync_chunk":
                 self.sync["file_chunks"].append(packet)
+            if packet.get("type") == "server_sticker_library_sync_chunk":
+                sticker_chunk_total = packet["total_chunks"]
+                sticker_chunks[packet["chunk_index"]] = packet["data"]
             if packet.get("type") == "server_sync_done":
                 break
+        if sticker_chunks:
+            if (
+                sticker_chunk_total <= 0
+                or set(sticker_chunks) != set(range(sticker_chunk_total))
+            ):
+                raise AssertionError(
+                    "Sticker library sync chunks are incomplete"
+                )
+            self.sync["sticker_library"] = json.loads(
+                "".join(
+                    sticker_chunks[index]
+                    for index in range(sticker_chunk_total)
+                )
+            )
         return self.sync
 
     async def send(self, packet):
@@ -271,6 +312,14 @@ class TestClient:
             self.websocket = None
 
 
+class CapturingWebSocket:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+
 class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -278,8 +327,12 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         server_auth.PASSWORD_ITERATIONS = 1_000
         server_module.SERVER_TOKEN = "integration-test-token"
         server_module.REQUIRE_LOGIN = True
-
         self.relay = server_module.MeshRelayServer()
+        self.relay.wireguard_config_for = lambda login, device_id: (
+            "[Interface]\n"
+            "PrivateKey = integration-test\n"
+            f"# {login}/{device_id}\n"
+        )
         self.server = await websockets.serve(
             self.relay.handler,
             "127.0.0.1",
@@ -493,6 +546,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "destination_node": bob_node,
                 "sender": alice.login,
                 "message": "encrypted offline text",
+                "message_effect": "orbit",
                 "ttl": 5,
             }
         )
@@ -508,6 +562,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "filename": "encrypted-image-name",
                 "caption": "encrypted-image-caption",
                 "message_kind": "image",
+                "message_effect": "frost",
                 "chunk_index": 0,
                 "total_chunks": 1,
                 "data": "0102030405",
@@ -531,6 +586,12 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 for item in bob_tablet.sync["direct_messages"]
             },
         )
+        direct_message = next(
+            item
+            for item in bob_tablet.sync["direct_messages"]
+            if item["message_id"] == "offline-direct-message"
+        )
+        self.assertEqual("orbit", direct_message["message_effect"])
         image_chunk = next(
             item
             for item in bob_tablet.sync["file_chunks"]
@@ -538,6 +599,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("image", image_chunk["message_kind"])
         self.assertEqual("0102030405", image_chunk["data"])
+        self.assertEqual("frost", image_chunk["message_effect"])
 
         await self.send_and_receive(
             alice,
@@ -703,6 +765,8 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_story_media_reactions_and_views_follow_account_devices(self):
         alice_phone = await self.connect("story_alice")
         bob_phone = await self.connect("story_bob")
+        self.relay.grant_subscription("story_alice", days=7)
+        self.relay.grant_subscription("story_bob", days=7)
         await alice_phone.send(
             {
                 "type": "profile_update",
@@ -732,6 +796,8 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "video_data": "base64-video-payload",
             "video_mime": "video/mp4",
             "media_type": "video",
+            "hd": True,
+            "video_duration_seconds": 90,
             "liked_by_node_ids": [],
             "viewed_by_node_ids": [],
             "visibility": "selected",
@@ -749,8 +815,9 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             alice_phone,
             "story_reaction",
             story_id=story_id,
-            reaction="heart",
+            reaction="fire",
             liked=True,
+            replace_existing=True,
         )
         await self.send_and_receive(
             bob_phone,
@@ -771,7 +838,13 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(alice_old_node, restored_for_bob["owner_node"])
         self.assertEqual("base64-image-payload", restored_for_bob["image_data"])
         self.assertEqual("base64-video-payload", restored_for_bob["video_data"])
-        self.assertIn(bob_tablet.node_id, restored_for_bob["liked_by_node_ids"])
+        self.assertTrue(restored_for_bob["hd"])
+        self.assertEqual(90, restored_for_bob["video_duration_seconds"])
+        self.assertIn(
+            bob_tablet.node_id,
+            restored_for_bob["reactions"]["fire"],
+        )
+        self.assertEqual([], restored_for_bob["liked_by_node_ids"])
         self.assertIn(bob_tablet.node_id, restored_for_bob["viewed_by_node_ids"])
         self.assertNotIn(bob_old_node, restored_for_bob["liked_by_node_ids"])
 
@@ -799,6 +872,16 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             alice_desktop.sync["profile"]["avatar_data"],
         )
         self.assertIn(alice_old_node, alice_desktop.sync["profile"]["node_aliases"])
+        archived = next(
+            item
+            for item in alice_desktop.sync["story_archive"]
+            if item["id"] == story_id
+        )
+        self.assertTrue(archived["hd"])
+        self.assertIn(
+            bob_old_node,
+            archived["reactions"]["fire"],
+        )
 
     async def test_wrong_password_never_receives_account_sync(self):
         registered = await self.connect("password_owner")
@@ -816,6 +899,184 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         accepted = await self.connect("password_owner")
         self.assertEqual("password_owner", accepted.sync["profile"]["login"])
+
+    async def test_meshchat_welcome_and_refresh_expose_meshpro_status(self):
+        client = await self.connect("meshpro_chat_user")
+        self.assertIn("subscription", client.welcome)
+        self.assertFalse(client.welcome["subscription"]["active"])
+        self.assertFalse(
+            client.welcome["subscription"]["entitlements"]["features"]
+            ["meshprivacy_vpn"]
+        )
+        self.assertFalse(client.sync["profile"]["meshpro_badge"])
+
+        await client.send(
+            {
+                "type": "meshpro_catalog_request",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": client.node_id,
+                "destination_node": "SERVER",
+                "product": "meshpro",
+                "ttl": 5,
+            }
+        )
+        catalog_result = await client.receive_type("meshpro_catalog_result")
+        self.assertTrue(catalog_result["ok"])
+        self.assertEqual(1, catalog_result["catalog"]["schema_version"])
+        self.assertIn(
+            "ai_text_rewrite",
+            catalog_result["catalog"]["features"],
+        )
+
+        self.relay.grant_subscription("meshpro_chat_user", days=14)
+        await client.send(
+            {
+                "type": "subscription_status_request",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": client.node_id,
+                "destination_node": "SERVER",
+                "product": "meshpro",
+                "ttl": 5,
+            }
+        )
+        refreshed = await client.receive_type("subscription_status_result")
+        self.assertTrue(refreshed["ok"])
+        self.assertTrue(refreshed["subscription"]["active"])
+        self.assertEqual("meshpro", refreshed["subscription"]["product"])
+        self.assertTrue(
+            refreshed["subscription"]["entitlements"]["features"]
+            ["meshprivacy_vpn"]
+        )
+        self.assertTrue(
+            refreshed["subscription"]["entitlements"]["features"]
+            ["premium_badge"]
+        )
+        self.assertTrue(
+            refreshed["subscription"]["entitlements"]["features"]
+            ["ai_text_rewrite"]
+        )
+        self.assertEqual(
+            50,
+            refreshed["subscription"]["entitlements"]["limits"]
+            ["ai_text_rewrites_month"],
+        )
+
+        await client.close()
+        relogin = await self.connect("meshpro_chat_user")
+        self.assertTrue(relogin.sync["profile"]["meshpro_badge"])
+
+    async def test_meshpro_profile_style_survives_relogin_and_is_gated(self):
+        client = await self.connect("meshpro_style_user")
+        await client.send(
+            {
+                "type": "profile_update",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": client.node_id,
+                "destination_node": "SERVER",
+                "login": "meshpro_style_user",
+                "display_name": "Styled user",
+                "profile_background": "aurora",
+                "ttl": 5,
+            }
+        )
+        rejected = await client.receive_type("profile_update_result")
+        self.assertFalse(rejected["ok"])
+        self.assertEqual("meshpro_required", rejected["reason"])
+
+        self.relay.grant_subscription("meshpro_style_user", days=14)
+        await client.send(
+            {
+                "type": "profile_update",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": client.node_id,
+                "destination_node": "SERVER",
+                "login": "meshpro_style_user",
+                "display_name": "Styled user",
+                "profile_background": "aurora",
+                "profile_effect": "stars",
+                "profile_blink_shape": "moose",
+                "avatar_decoration": "stardust",
+                "profile_glow": True,
+                "profile_accent": 0xFF67F3C4,
+                "ttl": 5,
+            }
+        )
+        accepted = await client.receive_type("profile_update_result")
+        self.assertTrue(accepted["ok"])
+
+        await client.close()
+        relogin = await self.connect("meshpro_style_user")
+        self.assertEqual("aurora", relogin.sync["profile"]["profile_background"])
+        self.assertEqual("stars", relogin.sync["profile"]["profile_effect"])
+        self.assertEqual(
+            "moose",
+            relogin.sync["profile"]["profile_blink_shape"]
+        )
+        self.assertEqual(
+            "stardust",
+            relogin.sync["profile"]["avatar_decoration"]
+        )
+        self.assertTrue(relogin.sync["profile"]["profile_glow"])
+        self.assertEqual(0xFF67F3C4, relogin.sync["profile"]["profile_accent"])
+
+        self.relay.revoke_subscription("meshpro_style_user")
+        await relogin.close()
+        expired = await self.connect("meshpro_style_user")
+        self.assertEqual("mesh", expired.sync["profile"]["profile_background"])
+        self.assertEqual("nodes", expired.sync["profile"]["profile_effect"])
+        self.assertEqual(
+            "auto",
+            expired.sync["profile"]["profile_blink_shape"]
+        )
+        self.assertEqual(
+            "none",
+            expired.sync["profile"]["avatar_decoration"]
+        )
+        self.assertFalse(expired.sync["profile"]["profile_glow"])
+        self.assertEqual(0xFF42A5F5, expired.sync["profile"]["profile_accent"])
+
+    async def test_direct_edit_and_delete_are_live_and_persistent(self):
+        alice = await self.connect("mutation_alice")
+        bob = await self.connect("mutation_bob")
+        message_id = "direct-live-edit-delete"
+
+        await self.send_and_receive(
+            alice,
+            bob,
+            "chat_message",
+            packet_id=message_id,
+            message="encrypted original",
+        )
+        edited = await self.send_and_receive(
+            alice,
+            bob,
+            "message_edit",
+            message_id=message_id,
+            message="encrypted edited",
+        )
+        self.assertEqual("encrypted edited", edited["message"])
+
+        deleted = await self.send_and_receive(
+            alice,
+            bob,
+            "message_delete",
+            message_id=message_id,
+        )
+        self.assertEqual(message_id, deleted["message_id"])
+
+        await alice.close()
+        await bob.close()
+        alice_relogin = await self.connect("mutation_alice")
+        bob_relogin = await self.connect("mutation_bob")
+        for client in (alice_relogin, bob_relogin):
+            self.assertNotIn(
+                message_id,
+                {item["message_id"] for item in client.sync["direct_messages"]},
+            )
 
     async def test_group_owner_permissions_and_membership_survive_relogin(self):
         owner_phone = await self.connect("owner")
@@ -882,6 +1143,188 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ).fetchone()
         )
 
+    async def test_channel_delete_is_broadcast_and_absent_after_relogin(self):
+        owner = await self.connect("delete_owner")
+        member_a = await self.connect("delete_member_a")
+        member_b = await self.connect("delete_member_b")
+        group_id = "authoritative-group-delete"
+        members = [owner.node_id, member_a.node_id, member_b.node_id]
+
+        await self.send_and_receive(
+            owner,
+            member_a,
+            "group_update",
+            group_id=group_id,
+            group_name="Delete everywhere",
+            members=members,
+            owner_node=owner.node_id,
+            admins=[],
+            is_channel=True,
+            comments_enabled=True,
+        )
+
+        await member_a.send(
+            {
+                "type": "group_delete",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": member_a.node_id,
+                "destination_node": "SERVER",
+                "group_id": group_id,
+                "ttl": 5,
+            }
+        )
+        await asyncio.sleep(0.05)
+        self.assertIsNotNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_groups WHERE group_id=?", (group_id,)
+            ).fetchone()
+        )
+
+        await owner.send(
+            {
+                "type": "group_delete",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": owner.node_id,
+                "destination_node": "SERVER",
+                "group_id": group_id,
+                "ttl": 5,
+            }
+        )
+        for member in (member_a, member_b):
+            event = await member.receive_type("group_delete")
+            self.assertEqual(group_id, event["group_id"])
+
+        self.assertIsNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_groups WHERE group_id=?", (group_id,)
+            ).fetchone()
+        )
+
+        await owner.close()
+        await member_a.close()
+        await member_b.close()
+        for login in ("delete_owner", "delete_member_a", "delete_member_b"):
+            relogin = await self.connect(login)
+            self.assertNotIn(
+                group_id,
+                {item["group_id"] for item in relogin.sync["groups"]},
+            )
+
+    async def test_group_delete_is_broadcast_and_absent_after_relogin(self):
+        owner = await self.connect("group_delete_owner")
+        member_a = await self.connect("group_delete_member_a")
+        member_b = await self.connect("group_delete_member_b")
+        group_id = "authoritative-group-delete"
+        members = [owner.node_id, member_a.node_id, member_b.node_id]
+
+        await self.send_and_receive(
+            owner,
+            member_a,
+            "group_update",
+            group_id=group_id,
+            group_name="Delete group everywhere",
+            members=members,
+            owner_node=owner.node_id,
+            admins=[],
+            is_channel=False,
+        )
+
+        await owner.send(
+            {
+                "type": "group_delete",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": owner.node_id,
+                "destination_node": "SERVER",
+                "group_id": group_id,
+                "ttl": 5,
+            }
+        )
+        for member in (member_a, member_b):
+            event = await member.receive_type("group_delete")
+            self.assertEqual(group_id, event["group_id"])
+
+        self.assertIsNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_groups WHERE group_id=?", (group_id,)
+            ).fetchone()
+        )
+
+        await owner.close()
+        await member_a.close()
+        await member_b.close()
+        for login in (
+            "group_delete_owner",
+            "group_delete_member_a",
+            "group_delete_member_b",
+        ):
+            relogin = await self.connect(login)
+            self.assertNotIn(
+                group_id,
+                {item["group_id"] for item in relogin.sync["groups"]},
+            )
+
+    async def test_group_message_edit_and_delete_are_live_and_persistent(self):
+        owner = await self.connect("group_mutation_owner")
+        member = await self.connect("group_mutation_member")
+        group_id = "group-message-mutation"
+        message_id = "group-message-edit-delete"
+        members = [owner.node_id, member.node_id]
+
+        await self.send_and_receive(
+            owner,
+            member,
+            "group_update",
+            group_id=group_id,
+            group_name="Mutation group",
+            members=members,
+            owner_node=owner.node_id,
+            admins=[],
+            is_channel=False,
+        )
+        await self.send_and_receive(
+            owner,
+            member,
+            "group_message",
+            packet_id=message_id,
+            group_message_id=message_id,
+            group_id=group_id,
+            group_name="Mutation group",
+            members=members,
+            owner_node=owner.node_id,
+            admins=[],
+            message="encrypted original",
+            group_key_id="key-1",
+        )
+        edited = await self.send_and_receive(
+            owner,
+            member,
+            "group_message_edit",
+            group_id=group_id,
+            group_message_id=message_id,
+            message="encrypted edited",
+            group_key_id="key-1",
+        )
+        self.assertEqual("encrypted edited", edited["message"])
+        deleted = await self.send_and_receive(
+            owner,
+            member,
+            "group_message_delete",
+            group_id=group_id,
+            group_message_id=message_id,
+        )
+        self.assertEqual(message_id, deleted["group_message_id"])
+
+        await owner.close()
+        await member.close()
+        member_relogin = await self.connect("group_mutation_member")
+        self.assertNotIn(
+            message_id,
+            {item["message_id"] for item in member_relogin.sync["group_messages"]},
+        )
+
     async def test_channel_history_files_reactions_and_member_leave(self):
         owner = await self.connect("channel_owner")
         member = await self.connect("channel_member")
@@ -914,6 +1357,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             is_channel=True,
             message="encrypted channel post",
             group_key_id="key-1",
+            message_effect="stardust",
         )
         await self.send_and_receive(
             member,
@@ -933,6 +1377,24 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             group_key_id="key-1",
         )
         await self.send_and_receive(
+            member,
+            owner,
+            "group_message",
+            packet_id="channel-comment-1",
+            group_message_id="channel-comment-1",
+            group_id=group_id,
+            group_name="News channel",
+            members=[owner.node_id, member.node_id],
+            owner_node=owner.node_id,
+            admins=[owner.node_id],
+            is_channel=True,
+            message="encrypted channel comment",
+            reply_to_message_id="channel-post-1",
+            reply_to_text="Original post",
+            is_channel_comment=True,
+            group_key_id="key-1",
+        )
+        await self.send_and_receive(
             owner,
             member,
             "file_chunk",
@@ -943,6 +1405,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             chunk_index=0,
             total_chunks=1,
             message_kind="image",
+            message_effect="frost",
             group_id=group_id,
             group_name="News channel",
             is_channel=True,
@@ -995,6 +1458,15 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("channel-post-1", comment["reply_to_message_id"])
         self.assertEqual("Original post", comment["reply_to_text"])
+        self.assertTrue(comment["is_channel_comment"])
+        self.assertEqual(
+            1,
+            sum(
+                1
+                for item in newcomer_relogin.sync["group_messages"]
+                if item["message_id"] == "channel-comment-1"
+            ),
+        )
         self.assertIn(
             "channel-image-1",
             {item["file_id"] for item in newcomer_relogin.sync["files"]},
@@ -1005,6 +1477,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             if item["file_id"] == "channel-image-1"
         )
         self.assertEqual("image", image_chunk["message_kind"])
+        self.assertEqual("frost", image_chunk["message_effect"])
         self.assertEqual("News channel", image_chunk["group_name"])
         self.assertTrue(image_chunk["is_channel"])
         self.assertTrue(image_chunk["is_channel_comment"])
@@ -1107,6 +1580,223 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         alice_desktop = await self.connect("sticker_alice")
         self.assertEqual(library, alice_desktop.sync["sticker_library"])
         self.assertNotEqual("Spoofed name", alice_desktop.sync["profile"]["display_name"])
+
+    async def test_large_sticker_library_is_restored_from_chunks(self):
+        alice_phone = await self.connect("sticker_chunked")
+        observer = await self.connect("sticker_chunked_observer")
+        library = {
+            "packs": [
+                {
+                    "id": "large-pack",
+                    "name": "Large pack",
+                    "stickers": [
+                        {
+                            "id": "large-sticker",
+                            "name": "Large sticker",
+                            "file_name": "large.webp",
+                            "mime_type": "image/webp",
+                            "base64_data": "A" * (
+                                server_sync.SERVER_STICKER_LIBRARY_INLINE_LIMIT
+                                + 1024
+                            ),
+                        }
+                    ],
+                }
+            ],
+            "favorite_ids": ["large-sticker"],
+        }
+        await self.send_and_receive(
+            alice_phone,
+            observer,
+            "sticker_library_update",
+            login="sticker_chunked",
+            sticker_library=library,
+        )
+
+        legacy_socket = CapturingWebSocket()
+        await self.relay.send_account_sync(
+            legacy_socket,
+            "sticker_chunked",
+            alice_phone.node_id,
+            False,
+        )
+        legacy_sync = legacy_socket.sent[0]
+        self.assertTrue(legacy_sync["sticker_library_omitted"])
+        self.assertIsNone(legacy_sync["sticker_library"])
+        self.assertNotIn(
+            "server_sticker_library_sync_chunk",
+            {packet["type"] for packet in legacy_socket.sent},
+        )
+        await alice_phone.close()
+
+        alice_desktop = await self.connect("sticker_chunked")
+        self.assertTrue(alice_desktop.sync["sticker_library_chunked"])
+        self.assertEqual(library, alice_desktop.sync["sticker_library"])
+
+    async def test_received_sticker_can_be_saved_to_another_account(self):
+        sender = await self.connect("sticker_sender")
+        receiver = await self.connect("sticker_receiver")
+        sticker_id = "shared-sticker-file"
+
+        delivered = await self.send_and_receive(
+            sender,
+            receiver,
+            "file_chunk",
+            file_id=sticker_id,
+            filename="shared.webp",
+            caption="",
+            data="01020304",
+            chunk_index=0,
+            total_chunks=1,
+            message_kind="sticker",
+            sticker_id="shared-sticker",
+            sticker_pack_id="shared-pack",
+            sticker_pack_name="Shared pack",
+        )
+        self.assertEqual("sticker", delivered["message_kind"])
+
+        receiver_library = {
+            "packs": [
+                {
+                    "id": "saved-shared-pack",
+                    "name": "Shared pack",
+                    "stickers": [
+                        {
+                            "id": "shared-sticker",
+                            "name": "Shared sticker",
+                            "file_name": "shared.webp",
+                            "mime_type": "image/webp",
+                            "data": "01020304",
+                        }
+                    ],
+                }
+            ],
+            "favorite_ids": ["shared-sticker"],
+        }
+        await receiver.send(
+            {
+                "type": "sticker_library_update",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": receiver.node_id,
+                "destination_node": "SERVER",
+                "login": "sticker_receiver",
+                "sticker_library": receiver_library,
+                "ttl": 5,
+            }
+        )
+        await asyncio.sleep(0.05)
+
+        await receiver.close()
+        receiver_tablet = await self.connect("sticker_receiver")
+        self.assertEqual(receiver_library, receiver_tablet.sync["sticker_library"])
+        self.assertIn(
+            sticker_id,
+            {item["file_id"] for item in receiver_tablet.sync["files"]},
+        )
+
+        await sender.close()
+        sender_desktop = await self.connect("sticker_sender")
+        self.assertNotEqual(receiver_library, sender_desktop.sync["sticker_library"])
+
+    async def test_meshprivacy_service_requires_subscription_for_config(self):
+        account = await self.connect("vpn_subscriber")
+        await account.close()
+
+        async def service_connect(node_id, session_token=None):
+            websocket = await websockets.connect(
+                self.uri,
+                max_size=server_module.WEBSOCKET_MAX_SIZE,
+            )
+            hello = {
+                "type": "server_hello",
+                "node_id": node_id,
+                "username": "vpn_subscriber",
+                "display_name": "VPN Subscriber",
+                "login": "vpn_subscriber",
+                "server_token": "integration-test-token",
+                "service": "meshprivacy",
+                "register_if_missing": False,
+                "protocol_version": 5,
+                "min_protocol_version": 5,
+                "app_version": "1.3.0",
+            }
+            if session_token:
+                hello["service_session_token"] = session_token
+            else:
+                hello["password"] = "test-password"
+            await websocket.send(json.dumps(hello))
+            welcome = json.loads(await websocket.recv())
+            return websocket, welcome
+
+        inactive_socket, inactive_welcome = await service_connect(
+            "meshprivacy-device-a"
+        )
+        self.assertFalse(inactive_welcome["subscription"]["active"])
+        self.assertFalse(
+            inactive_welcome["subscription"]["entitlements"]["features"]
+            ["meshprivacy_vpn"]
+        )
+        session_token = inactive_welcome["service_session_token"]
+        await inactive_socket.send(
+            json.dumps({"type": "meshpro_catalog_request"})
+        )
+        catalog = json.loads(await inactive_socket.recv())
+        self.assertTrue(catalog["ok"])
+        self.assertEqual("meshpro", catalog["catalog"]["product"])
+        await inactive_socket.send(json.dumps({"type": "vpn_config_request"}))
+        denied = json.loads(await inactive_socket.recv())
+        self.assertFalse(denied["ok"])
+        self.assertEqual("subscription_required", denied["reason"])
+        await inactive_socket.close()
+
+        self.relay.grant_subscription("vpn_subscriber", days=30)
+        active_socket, active_welcome = await service_connect(
+            "meshprivacy-device-a",
+            session_token,
+        )
+        self.assertTrue(active_welcome["subscription"]["active"])
+        self.assertTrue(
+            active_welcome["subscription"]["entitlements"]["features"]
+            ["meshprivacy_vpn"]
+        )
+        await active_socket.send(json.dumps({"type": "vpn_config_request"}))
+        granted = json.loads(await active_socket.recv())
+        self.assertTrue(granted["ok"])
+        self.assertIn("[Interface]", granted["config"])
+        await active_socket.close()
+
+    async def test_meshprivacy_rejects_retired_app_version(self):
+        account = await self.connect("vpn_retired_client")
+        await account.close()
+
+        websocket = await websockets.connect(
+            self.uri,
+            max_size=server_module.WEBSOCKET_MAX_SIZE,
+        )
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "server_hello",
+                    "node_id": "meshprivacy-retired-device",
+                    "username": "vpn_retired_client",
+                    "display_name": "VPN Retired Client",
+                    "login": "vpn_retired_client",
+                    "password": "test-password",
+                    "server_token": "integration-test-token",
+                    "service": "meshprivacy",
+                    "register_if_missing": False,
+                    "protocol_version": 5,
+                    "min_protocol_version": 5,
+                    "app_version": "1.2.0",
+                }
+            )
+        )
+        rejected = json.loads(await websocket.recv())
+        self.assertEqual("server_error", rejected["type"])
+        self.assertEqual("meshprivacy_update_required", rejected["code"])
+        self.assertEqual("1.3.0", rejected["minimum_app_version"])
+        await websocket.close()
 
 
 if __name__ == "__main__":

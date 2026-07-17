@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111e">
+  <meta name="color-scheme" content="dark">
+  <title>Активация MeshPro</title>
+  <link rel="icon" href="/meshpro/logo.png" type="image/png">
+  <link rel="stylesheet" href="/meshpro/styles.css?v=20260717-activation-1">
+</head>
+<body class="activation-page">
+  <canvas id="activation-orbs" class="activation-orbs" aria-hidden="true"></canvas>
+
+  <div class="activation-page-frame">
+    <header class="activation-header">
+      <a class="activation-brand" href="/meshpro/" aria-label="MeshPro">
+        <img src="/meshpro/logo.png" alt="" width="56" height="56">
+        <span class="activation-brand-copy">
+          <strong>MeshPro</strong>
+          <small>MeshChat + MeshPrivacy</small>
+        </span>
+      </a>
+      <span class="activation-secure-label">
+        <span class="activation-secure-dot" aria-hidden="true"></span>
+        Безопасная активация
+      </span>
+    </header>
+
+    <main class="activation-stage">
+      <section class="activation-copy" aria-labelledby="page-title">
+        <p class="activation-eyebrow">Единая подписка</p>
+        <h1 id="page-title">Активировать MeshPro</h1>
+        <p class="activation-lead">
+          Один ключ открывает премиум-возможности MeshChat и персональное VPN-подключение MeshPrivacy.
+        </p>
+
+        <div class="activation-products" aria-label="Сервисы MeshPro">
+          <span>MeshChat</span>
+          <span class="activation-plus" aria-hidden="true">+</span>
+          <span>MeshPrivacy</span>
+        </div>
+
+        <ol class="activation-steps" aria-label="Как активировать MeshPro">
+          <li>
+            <span class="activation-step-number">1</span>
+            <span><strong>Получите ключ</strong><small>Откройте Telegram-бота и отправьте команду <code>/code</code>.</small></span>
+          </li>
+          <li>
+            <span class="activation-step-number">2</span>
+            <span><strong>Подтвердите аккаунт</strong><small>Введите данные MeshChat и одноразовый ключ MeshPro.</small></span>
+          </li>
+          <li>
+            <span class="activation-step-number">3</span>
+            <span><strong>Обновите статус</strong><small>Вернитесь в MeshChat или MeshPrivacy после активации.</small></span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="activation-panel" aria-labelledby="activation-form-title">
+        <div class="activation-panel-heading">
+          <img src="/meshpro/logo.png" alt="" width="64" height="64">
+          <div>
+            <p class="activation-panel-kicker">MeshPro access</p>
+            <h2 id="activation-form-title">Введите ключ</h2>
+          </div>
+        </div>
+
+        <a
+          id="boosty-bot-link"
+          class="activation-bot-action"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          hidden
+        >
+          Получить ключ в Telegram
+          <span aria-hidden="true">↗</span>
+        </a>
+
+        <form id="activation-form" class="activation-form" novalidate>
+          <label for="activation-login">
+            Логин MeshChat
+            <span class="activation-input-shell">
+              <input
+                id="activation-login"
+                name="login"
+                type="text"
+                autocomplete="username"
+                autocapitalize="none"
+                spellcheck="false"
+                maxlength="64"
+                placeholder="Ваш логин в MeshChat"
+                required
+              >
+            </span>
+          </label>
+
+          <label for="activation-password">
+            Пароль MeshChat
+            <span class="activation-input-shell activation-password-shell">
+              <input
+                id="activation-password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                maxlength="256"
+                placeholder="Ваш пароль"
+                required
+              >
+              <button
+                id="activation-password-toggle"
+                class="activation-password-toggle"
+                type="button"
+                aria-controls="activation-password"
+                aria-pressed="false"
+              >Показать</button>
+            </span>
+          </label>
+
+          <label for="activation-code">
+            Ключ MeshPro
+            <span class="activation-input-shell">
+              <input
+                id="activation-code"
+                class="activation-code"
+                name="code"
+                type="text"
+                inputmode="text"
+                autocomplete="one-time-code"
+                autocapitalize="characters"
+                spellcheck="false"
+                maxlength="28"
+                placeholder="MPR-XXXX-XXXX-XXXX-XXXX-XXXX"
+                required
+              >
+            </span>
+          </label>
+
+          <button id="activation-button" class="activation-submit" type="submit">
+            <span class="activation-button-label">Активировать MeshPro</span>
+            <span class="activation-button-spinner" aria-hidden="true"></span>
+          </button>
+          <p id="activation-error" class="activation-error" role="alert" hidden></p>
+        </form>
+
+        <section id="activation-success" class="activation-success" role="status" tabindex="-1" hidden>
+          <span class="activation-success-mark" aria-hidden="true">✓</span>
+          <div>
+            <strong>MeshPro активирован</strong>
+            <p>Вернитесь в MeshChat или MeshPrivacy и обновите статус подписки.</p>
+          </div>
+        </section>
+
+        <p class="activation-privacy-note">
+          Пароль используется только для подтверждения аккаунта и не сохраняется. Каждый ключ можно активировать один раз.
+        </p>
+      </section>
+    </main>
+
+    <footer class="activation-footer">
+      <span>© 2026 MeshPro</span>
+      <span>Новый срок прибавляется к уже активной подписке.</span>
+    </footer>
+  </div>
+
+  <script src="/meshpro/activate.js?v=20260717-activation-1" defer></script>
+</body>
+</html>

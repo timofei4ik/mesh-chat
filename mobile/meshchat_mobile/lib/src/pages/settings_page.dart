@@ -5,8 +5,10 @@ import '../controllers/app_controller.dart';
 import '../models/app_settings.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_socket.dart';
+import '../widgets/meshpro_gate.dart';
 import '../widgets/profile_avatar.dart';
 import 'bluetooth_nearby_page.dart';
+import 'mesh_studio_page.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
@@ -74,6 +76,40 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
+  Future<void> openMeshStudio(BuildContext context) async {
+    final allowed = await requireMeshPro(
+      context,
+      controller,
+      featureId: 'profile_background',
+      title: 'MeshStudio',
+      description:
+          'Create linked profile presets with live profile and message previews.',
+    );
+    if (!allowed || !context.mounted) return;
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => MeshStudioPage(controller: controller)),
+    );
+  }
+
+  Future<void> openMeshProPreferences(BuildContext context) async {
+    final allowed = await requireMeshPro(
+      context,
+      controller,
+      featureId: 'custom_quick_reactions',
+      title: 'MeshPro calls & reactions',
+      description:
+          'Choose quick reactions and tune HD voice processing on every device.',
+    );
+    if (!allowed || !context.mounted) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeshProPreferencesPage(controller: controller),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = controller.session;
@@ -105,6 +141,34 @@ class SettingsPage extends StatelessWidget {
                 leading: const CircleAvatar(child: Icon(Icons.person_outline)),
                 title: Text(session?.login ?? 'No account'),
                 subtitle: Text(session?.serverUrl ?? ''),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(
+                  Icons.tune_rounded,
+                  color: Color(0xFFA98BFF),
+                ),
+                title: const Text('MeshPro calls & reactions'),
+                subtitle: const Text(
+                  'Quick reactions, HD audio and noise suppression',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openMeshProPreferences(context),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: Color(0xFF8EDFFF),
+                ),
+                title: const Text('MeshStudio'),
+                subtitle: Text(meshProRemainingLabel(controller)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openMeshStudio(context),
               ),
             ),
             const SizedBox(height: 12),
@@ -195,6 +259,196 @@ class SettingsPage extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class MeshProPreferencesPage extends StatefulWidget {
+  const MeshProPreferencesPage({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<MeshProPreferencesPage> createState() => _MeshProPreferencesPageState();
+}
+
+class _MeshProPreferencesPageState extends State<MeshProPreferencesPage> {
+  late List<String> reactions;
+  late bool hdAudio;
+  late bool enhancedNoiseSuppression;
+  bool saving = false;
+
+  int get reactionLimit =>
+      widget.controller.meshProSubscription.entitlements.limitFor(
+        'quick_reactions',
+      ) ??
+      4;
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = widget.controller.appSettings;
+    reactions = [...settings.quickReactions];
+    hdAudio = settings.meshProHdAudio;
+    enhancedNoiseSuppression = settings.meshProEnhancedNoiseSuppression;
+  }
+
+  Future<void> editReaction(int? index) async {
+    final input = TextEditingController(
+      text: index == null ? '' : reactions[index],
+    );
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(index == null ? 'Add reaction' : 'Change reaction'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          maxLength: 16,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 34),
+          decoration: const InputDecoration(
+            hintText: 'Paste an emoji',
+            helperText: 'One emoji or a short reaction',
+          ),
+        ),
+        actions: [
+          if (index != null)
+            TextButton(
+              onPressed: () => Navigator.pop(context, ''),
+              child: const Text('Remove'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text.trim()),
+            child: const Text('Use'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (!mounted || value == null) return;
+    setState(() {
+      if (index != null) reactions.removeAt(index);
+      if (value.isNotEmpty && !reactions.contains(value)) {
+        final insertAt = index == null
+            ? reactions.length
+            : index.clamp(0, reactions.length);
+        reactions.insert(insertAt, value);
+      }
+    });
+  }
+
+  Future<void> save() async {
+    if (saving) return;
+    setState(() => saving = true);
+    final error = await widget.controller.updateMeshProPreferences(
+      quickReactions: reactions,
+      hdAudio: hdAudio,
+      enhancedNoiseSuppression: enhancedNoiseSuppression,
+    );
+    if (!mounted) return;
+    setState(() => saving = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(error ?? 'MeshPro preferences saved')),
+    );
+    if (error == null) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Calls & reactions'),
+        actions: [
+          IconButton(
+            tooltip: 'Save',
+            onPressed: saving ? null : save,
+            icon: saving
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_rounded),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Quick reactions',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Tap a reaction to replace it. Long-press messages to use the set.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (var index = 0; index < reactions.length; index++)
+                        ActionChip(
+                          avatar: Text(
+                            reactions[index],
+                            style: const TextStyle(fontSize: 20),
+                          ),
+                          label: Text('${index + 1}'),
+                          onPressed: () => editReaction(index),
+                        ),
+                      if (reactions.length < reactionLimit)
+                        ActionChip(
+                          avatar: const Icon(Icons.add_rounded, size: 18),
+                          label: const Text('Add'),
+                          onPressed: () => editReaction(null),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.graphic_eq_rounded),
+                  title: const Text('HD call audio'),
+                  subtitle: const Text(
+                    '48 kHz Opus voice with a higher bitrate',
+                  ),
+                  value: hdAudio,
+                  onChanged: (value) => setState(() => hdAudio = value),
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  secondary: const Icon(Icons.noise_control_off_rounded),
+                  title: const Text('Enhanced noise suppression'),
+                  subtitle: const Text(
+                    'Typing-noise filtering and stronger echo processing',
+                  ),
+                  value: enhancedNoiseSuppression,
+                  onChanged: (value) =>
+                      setState(() => enhancedNoiseSuppression = value),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -534,6 +788,81 @@ class _ActiveDevicesPageState extends State<ActiveDevicesPage> {
     });
   }
 
+  Future<void> renameDevice(ActiveDevice device) async {
+    final allowed = await requireMeshPro(
+      context,
+      widget.controller,
+      featureId: 'multi_device_plus',
+      title: 'Device names',
+      description: 'Give every signed-in device a recognizable name.',
+    );
+    if (!allowed || !mounted) return;
+    final input = TextEditingController(
+      text: device.deviceName.isNotEmpty
+          ? device.deviceName
+          : device.displayName,
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename device'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          maxLength: 48,
+          decoration: const InputDecoration(labelText: 'Device name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (!mounted || name == null || name.isEmpty) return;
+    final error = await widget.controller.renameActiveDevice(device, name);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(error ?? 'Device renamed')));
+    if (error == null) refresh();
+  }
+
+  Future<void> revokeDevice(ActiveDevice device) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign out this device?'),
+        content: Text(
+          '${device.deviceName.isNotEmpty ? device.deviceName : device.nodeId}\n\nIt will need the account password to sign in again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final error = await widget.controller.revokeActiveDevice(device);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(error ?? 'Device signed out')));
+    if (error == null) refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -563,6 +892,7 @@ class _ActiveDevicesPageState extends State<ActiveDevicesPage> {
             separatorBuilder: (_, _) => const SizedBox(height: 8),
             itemBuilder: (context, index) {
               final device = devices[index];
+              final isCurrent = device.nodeId == widget.controller.myNodeId;
               return Card(
                 child: ListTile(
                   leading: Icon(
@@ -572,14 +902,55 @@ class _ActiveDevicesPageState extends State<ActiveDevicesPage> {
                     color: device.online ? Colors.greenAccent : Colors.white38,
                   ),
                   title: Text(
-                    device.displayName.isEmpty
+                    device.deviceName.isNotEmpty
+                        ? device.deviceName
+                        : device.displayName.isEmpty
                         ? device.nodeId
                         : device.displayName,
                   ),
                   subtitle: Text(
-                    '${device.appVersion.isEmpty ? 'unknown app' : device.appVersion}\n${device.nodeId}\nLast seen: ${device.lastSeen}',
+                    '${isCurrent ? 'Current device · ' : ''}${device.revoked
+                        ? 'Signed out'
+                        : device.online
+                        ? 'Online'
+                        : 'Offline'}\n${device.appVersion.isEmpty ? 'unknown app' : device.appVersion}\n${device.nodeId}\nLast seen: ${device.lastSeen}',
                   ),
                   isThreeLine: true,
+                  trailing: PopupMenuButton<String>(
+                    tooltip: 'Device actions',
+                    onSelected: (action) {
+                      if (action == 'rename') {
+                        renameDevice(device);
+                      } else if (action == 'revoke') {
+                        revokeDevice(device);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'rename',
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.edit_outlined),
+                          title: Text('Rename'),
+                        ),
+                      ),
+                      if (!isCurrent && !device.revoked)
+                        const PopupMenuItem(
+                          value: 'revoke',
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              Icons.logout_rounded,
+                              color: Colors.redAccent,
+                            ),
+                            title: Text(
+                              'Sign out',
+                              style: TextStyle(color: Colors.redAccent),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               );
             },
@@ -905,6 +1276,16 @@ class _MediaSettings extends StatelessWidget {
             value: settings.reducedAnimations,
             onChanged: (value) => controller.updateAppSettings(
               settings.copyWith(reducedAnimations: value),
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('Message send effects'),
+            subtitle: const Text(
+              'Play brief MeshPro effects on newly received messages',
+            ),
+            value: settings.messageEffectsEnabled,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(messageEffectsEnabled: value),
             ),
           ),
           SwitchListTile(

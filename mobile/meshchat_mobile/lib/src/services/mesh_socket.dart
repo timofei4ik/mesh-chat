@@ -12,7 +12,7 @@ typedef StatusHandler = void Function(String status);
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '0.1.0-mobile';
+  static const appVersion = '1.0.23';
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
@@ -28,6 +28,8 @@ class MeshSocket {
     required Profile profile,
     required PacketHandler onPacket,
     required StatusHandler onStatus,
+    String deviceName = '',
+    bool reactivateDevice = false,
   }) async {
     _closed = false;
     await _subscription?.cancel();
@@ -39,7 +41,17 @@ class MeshSocket {
     await channel.ready.timeout(const Duration(seconds: 10));
     _connected = true;
 
-    channel.sink.add(jsonEncode(_helloPacket(session, publicKey, profile)));
+    channel.sink.add(
+      jsonEncode(
+        _helloPacket(
+          session,
+          publicKey,
+          profile,
+          deviceName: deviceName,
+          reactivateDevice: reactivateDevice,
+        ),
+      ),
+    );
 
     _subscription = channel.stream.listen(
       (raw) async {
@@ -51,12 +63,26 @@ class MeshSocket {
       onError: (Object error) {
         _connected = false;
         onStatus('Connection error');
-        _scheduleReconnect(session, publicKey, profile, onPacket, onStatus);
+        _scheduleReconnect(
+          session,
+          publicKey,
+          profile,
+          onPacket,
+          onStatus,
+          deviceName,
+        );
       },
       onDone: () {
         _connected = false;
         onStatus('Offline');
-        _scheduleReconnect(session, publicKey, profile, onPacket, onStatus);
+        _scheduleReconnect(
+          session,
+          publicKey,
+          profile,
+          onPacket,
+          onStatus,
+          deviceName,
+        );
       },
       cancelOnError: false,
     );
@@ -142,8 +168,10 @@ class MeshSocket {
   Map<String, dynamic> _helloPacket(
     Session session,
     String publicKey,
-    Profile? profile,
-  ) {
+    Profile? profile, {
+    String deviceName = '',
+    bool reactivateDevice = false,
+  }) {
     final displayName = profile?.displayName.trim().isNotEmpty == true
         ? profile!.displayName
         : session.login;
@@ -160,6 +188,9 @@ class MeshSocket {
       'avatar_data': profile?.avatarData,
       'encryption_public_key': publicKey,
       'app_version': appVersion,
+      'device_name': deviceName,
+      'reactivate_device': reactivateDevice,
+      'supports_sticker_library_chunks': true,
       'protocol_version': protocolVersion,
       'min_protocol_version': minProtocolVersion,
     };
@@ -205,6 +236,7 @@ class MeshSocket {
     Profile profile,
     PacketHandler onPacket,
     StatusHandler onStatus,
+    String deviceName,
   ) {
     if (_closed || _reconnectTimer?.isActive == true) return;
     _reconnectTimer = Timer(const Duration(seconds: 4), () {
@@ -214,8 +246,17 @@ class MeshSocket {
         profile: profile,
         onPacket: onPacket,
         onStatus: onStatus,
+        deviceName: deviceName,
+        reactivateDevice: false,
       ).catchError((_) {
-        _scheduleReconnect(session, publicKey, profile, onPacket, onStatus);
+        _scheduleReconnect(
+          session,
+          publicKey,
+          profile,
+          onPacket,
+          onStatus,
+          deviceName,
+        );
       });
     });
   }

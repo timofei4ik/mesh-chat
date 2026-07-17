@@ -1,8 +1,29 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+val meshDartDefines: Map<String, String> = mutableMapOf<String, String>().apply {
+    val encodedDefines = project.findProperty("dart-defines") as? String ?: return@apply
+    encodedDefines.split(',').forEach { encoded ->
+        val decoded = runCatching {
+            String(Base64.getDecoder().decode(encoded), Charsets.UTF_8)
+        }.getOrNull() ?: return@forEach
+        val separator = decoded.indexOf('=')
+        if (separator > 0) {
+            put(decoded.substring(0, separator), decoded.substring(separator + 1))
+        }
+    }
+}
+
+fun firebaseDefine(name: String): String =
+    meshDartDefines[name]
+        .orEmpty()
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
 
 android {
     namespace = "com.meshchat.meshchat_mobile"
@@ -24,6 +45,23 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        buildConfigField("String", "MESH_FIREBASE_API_KEY", "\"${firebaseDefine("MESH_FIREBASE_API_KEY")}\"")
+        buildConfigField("String", "MESH_FIREBASE_APP_ID", "\"${firebaseDefine("MESH_FIREBASE_APP_ID")}\"")
+        buildConfigField(
+            "String",
+            "MESH_FIREBASE_MESSAGING_SENDER_ID",
+            "\"${firebaseDefine("MESH_FIREBASE_MESSAGING_SENDER_ID")}\"",
+        )
+        buildConfigField("String", "MESH_FIREBASE_PROJECT_ID", "\"${firebaseDefine("MESH_FIREBASE_PROJECT_ID")}\"")
+        buildConfigField(
+            "String",
+            "MESH_FIREBASE_STORAGE_BUCKET",
+            "\"${firebaseDefine("MESH_FIREBASE_STORAGE_BUCKET")}\"",
+        )
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
@@ -47,4 +85,6 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }

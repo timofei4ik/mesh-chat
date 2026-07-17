@@ -15,8 +15,10 @@ import '../models/profile.dart';
 import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
-import '../widgets/profile_avatar.dart';
+import '../widgets/meshpro_badge.dart';
+import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
+import '../widgets/profile_avatar.dart';
 import 'bluetooth_nearby_page.dart';
 import 'chat_page.dart';
 import 'diagnostics_page.dart';
@@ -622,7 +624,9 @@ class ChatsPage extends StatelessWidget {
     var imageData = '';
     var videoData = '';
     var videoMime = 'video/mp4';
+    var videoDurationSeconds = 0;
     var mediaType = StoryMediaType.none;
+    var hd = false;
     final selected = <String>{};
     final excluded = <String>{};
     final result = await showModalBottomSheet<String>(
@@ -631,6 +635,22 @@ class ChatsPage extends StatelessWidget {
       backgroundColor: Colors.transparent,
       builder: (context) => StatefulBuilder(
         builder: (context, setSheetState) {
+          final hdAvailable = meshProFeatureEnabled(controller, 'story_hd');
+          final extendedVideoAvailable = meshProFeatureEnabled(
+            controller,
+            'story_extended_video',
+          );
+          final imageLimit = hd && hdAvailable
+              ? 5 * 1024 * 1024
+              : 2 * 1024 * 1024;
+          final videoLimit = extendedVideoAvailable
+              ? 10 * 1024 * 1024
+              : 8 * 1024 * 1024;
+          final durationLimit =
+              controller.meshProSubscription.entitlements.limitFor(
+                'story_video_seconds',
+              ) ??
+              30;
           final chooser =
               visibility == StoryVisibility.selected ||
               visibility == StoryVisibility.excluded;
@@ -679,12 +699,12 @@ class ChatsPage extends StatelessWidget {
                             );
                             final bytes = picked?.files.single.bytes;
                             if (bytes == null) return;
-                            if (bytes.length > 2 * 1024 * 1024) {
+                            if (bytes.length > imageLimit) {
                               if (!context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
+                                SnackBar(
                                   content: Text(
-                                    'Story photo is too large, choose up to 2 MB',
+                                    'Story photo is too large, choose up to ${imageLimit ~/ (1024 * 1024)} MB',
                                   ),
                                 ),
                               );
@@ -693,6 +713,7 @@ class ChatsPage extends StatelessWidget {
                             setSheetState(() {
                               imageData = base64Encode(bytes);
                               videoData = '';
+                              videoDurationSeconds = 0;
                               mediaType = StoryMediaType.image;
                             });
                           },
@@ -713,12 +734,28 @@ class ChatsPage extends StatelessWidget {
                             final file = picked?.files.single;
                             final bytes = file?.bytes;
                             if (bytes == null) return;
-                            if (bytes.length > 8 * 1024 * 1024) {
+                            if (bytes.length > videoLimit) {
                               if (!context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
+                                SnackBar(
                                   content: Text(
-                                    'Story video is too large, choose up to 8 MB',
+                                    'Story video is too large, choose up to ${videoLimit ~/ (1024 * 1024)} MB',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+                            final mime = _videoMime(file?.extension ?? '');
+                            final duration = await _storyVideoDurationSeconds(
+                              bytes,
+                              mime,
+                            );
+                            if (duration > durationLimit) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Story video can be up to $durationLimit seconds',
                                   ),
                                 ),
                               );
@@ -726,7 +763,8 @@ class ChatsPage extends StatelessWidget {
                             }
                             setSheetState(() {
                               videoData = base64Encode(bytes);
-                              videoMime = _videoMime(file?.extension ?? '');
+                              videoMime = mime;
+                              videoDurationSeconds = duration;
                               imageData = '';
                               mediaType = StoryMediaType.video;
                             });
@@ -743,12 +781,48 @@ class ChatsPage extends StatelessWidget {
                           onPressed: () => setSheetState(() {
                             imageData = '';
                             videoData = '';
+                            videoDurationSeconds = 0;
                             mediaType = StoryMediaType.none;
                           }),
                           icon: const Icon(Icons.close_rounded),
                         ),
                       ],
                     ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 10, 18, 0),
+                  child: SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    value: hd && hdAvailable,
+                    onChanged: (value) async {
+                      if (!hdAvailable) {
+                        await showMeshProPaywall(
+                          context,
+                          controller,
+                          featureId: 'story_hd',
+                          featureTitle: 'HD stories',
+                          featureDescription:
+                              'Publish larger photos with an HD marker.',
+                        );
+                        return;
+                      }
+                      setSheetState(() => hd = value);
+                    },
+                    secondary: Icon(
+                      hdAvailable
+                          ? Icons.hd_rounded
+                          : Icons.lock_outline_rounded,
+                      color: hdAvailable
+                          ? Colors.lightBlueAccent
+                          : Colors.white38,
+                    ),
+                    title: const Text('HD story'),
+                    subtitle: Text(
+                      extendedVideoAvailable
+                          ? 'Up to $durationLimit seconds of video'
+                          : 'MeshPro unlocks longer videos and server archive',
+                    ),
                   ),
                 ),
                 Padding(
@@ -837,6 +911,8 @@ class ChatsPage extends StatelessWidget {
       visibility: visibility,
       selectedNodeIds: selected.toList(),
       excludedNodeIds: excluded.toList(),
+      hd: hd,
+      videoDurationSeconds: videoDurationSeconds,
     );
     if (!context.mounted) return;
     if (error != null) {
@@ -1003,10 +1079,8 @@ class ChatsPage extends StatelessWidget {
                                   const SizedBox(width: 4),
                                 ],
                                 Expanded(
-                                  child: Text(
-                                    thread.profile.displayName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                  child: MeshProProfileName(
+                                    profile: thread.profile,
                                   ),
                                 ),
                                 if (last != null)
@@ -2009,12 +2083,14 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                            trailing: story.likedByNodeIds.contains(nodeId)
-                                ? const Icon(
-                                    Icons.favorite_rounded,
-                                    color: Colors.pinkAccent,
-                                  )
-                                : null,
+                            trailing: story.reactionFor(nodeId).isEmpty
+                                ? null
+                                : Text(
+                                    _storyReactionEmoji(
+                                      story.reactionFor(nodeId),
+                                    ),
+                                    style: const TextStyle(fontSize: 22),
+                                  ),
                           );
                         },
                       ),
@@ -2046,6 +2122,82 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Stories from ${story.ownerName} hidden')),
     );
+  }
+
+  Future<void> _showReactionPicker(StoryItem story) async {
+    const reactions = <String>['heart', 'fire', 'laugh', 'wow', 'sad', 'clap'];
+    final extraAvailable = meshProFeatureEnabled(
+      widget.controller,
+      'story_extra_reactions',
+    );
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _ActionSheetGlass(
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(18, 10, 18, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'React to story',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                for (final reaction in reactions)
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      IconButton.filledTonal(
+                        tooltip: _storyReactionLabel(reaction),
+                        onPressed: () => Navigator.pop(context, reaction),
+                        icon: Text(
+                          _storyReactionEmoji(reaction),
+                          style: const TextStyle(fontSize: 23),
+                        ),
+                      ),
+                      if (reaction != 'heart' && !extraAvailable)
+                        const Positioned(
+                          right: -2,
+                          bottom: -2,
+                          child: Icon(
+                            Icons.lock_rounded,
+                            size: 14,
+                            color: Colors.amberAccent,
+                          ),
+                        ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected != 'heart' && !extraAvailable) {
+      await showMeshProPaywall(
+        context,
+        widget.controller,
+        featureId: 'story_extra_reactions',
+        featureTitle: 'More story reactions',
+        featureDescription:
+            'React with fire, laughter, surprise, sadness or applause.',
+      );
+      return;
+    }
+    await widget.controller.reactToStory(story, selected);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -2098,8 +2250,8 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                             ),
                             Text(
                               hoursLeft <= 0
-                                  ? 'Expires soon'
-                                  : 'Disappears in $hoursLeft h',
+                                  ? 'Expires soon${story.hd ? '  ·  HD' : ''}'
+                                  : 'Disappears in $hoursLeft h${story.hd ? '  ·  HD' : ''}',
                               style: const TextStyle(color: Colors.white54),
                             ),
                           ],
@@ -2107,19 +2259,24 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                       ),
                       if (story.ownerNode != widget.controller.myNodeId)
                         IconButton.filledTonal(
-                          tooltip: 'Like',
-                          onPressed: () async {
-                            await widget.controller.likeStory(story);
-                            if (mounted) setState(() {});
-                          },
-                          icon: Icon(
-                            story.likedByNodeIds.contains(
-                                  widget.controller.myNodeId,
+                          tooltip: 'React',
+                          onPressed: () => _showReactionPicker(story),
+                          icon:
+                              story
+                                  .reactionFor(widget.controller.myNodeId)
+                                  .isEmpty
+                              ? const Icon(
+                                  Icons.favorite_border_rounded,
+                                  color: Colors.pinkAccent,
                                 )
-                                ? Icons.favorite_rounded
-                                : Icons.favorite_border_rounded,
-                            color: Colors.pinkAccent,
-                          ),
+                              : Text(
+                                  _storyReactionEmoji(
+                                    story.reactionFor(
+                                      widget.controller.myNodeId,
+                                    ),
+                                  ),
+                                  style: const TextStyle(fontSize: 22),
+                                ),
                         ),
                       if (!ownStory)
                         PopupMenuButton<String>(
@@ -2223,24 +2380,33 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                                 ),
                               ),
                             ],
-                            if (story.likedByNodeIds.isNotEmpty) ...[
+                            if (story.reactionCount > 0) ...[
                               const SizedBox(height: 14),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
+                              Wrap(
+                                alignment: WrapAlignment.center,
+                                spacing: 8,
+                                runSpacing: 6,
                                 children: [
-                                  const Icon(
-                                    Icons.favorite_rounded,
-                                    color: Colors.pinkAccent,
-                                    size: 18,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    '${story.likedByNodeIds.length}',
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontWeight: FontWeight.w800,
+                                  for (final entry in story.reactions.entries)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 9,
+                                        vertical: 5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.08,
+                                        ),
+                                        borderRadius: BorderRadius.circular(99),
+                                      ),
+                                      child: Text(
+                                        '${_storyReactionEmoji(entry.key)} ${entry.value.length}',
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
                                     ),
-                                  ),
                                 ],
                               ),
                             ],
@@ -2296,6 +2462,43 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
       ),
     );
   }
+}
+
+Future<int> _storyVideoDurationSeconds(Uint8List bytes, String mime) async {
+  if (bytes.isEmpty) return 0;
+  final controller = VideoPlayerController.networkUrl(
+    Uri.parse('data:$mime;base64,${base64Encode(bytes)}'),
+  );
+  try {
+    await controller.initialize().timeout(const Duration(seconds: 8));
+    return (controller.value.duration.inMilliseconds / 1000).ceil();
+  } catch (_) {
+    return 0;
+  } finally {
+    await controller.dispose();
+  }
+}
+
+String _storyReactionEmoji(String reaction) {
+  return switch (reaction) {
+    'fire' => '🔥',
+    'laugh' => '😂',
+    'wow' => '😮',
+    'sad' => '😢',
+    'clap' => '👏',
+    _ => '❤️',
+  };
+}
+
+String _storyReactionLabel(String reaction) {
+  return switch (reaction) {
+    'fire' => 'Fire',
+    'laugh' => 'Laugh',
+    'wow' => 'Wow',
+    'sad' => 'Sad',
+    'clap' => 'Applause',
+    _ => 'Heart',
+  };
 }
 
 String _videoMime(String extension) {
@@ -3111,10 +3314,8 @@ class _ChatGlassTile extends StatelessWidget {
                             const SizedBox(width: 4),
                           ],
                           Expanded(
-                            child: Text(
-                              thread.profile.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            child: MeshProProfileName(
+                              profile: thread.profile,
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w800,
@@ -3376,6 +3577,8 @@ class _InlineSettingsPanel extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
+        _MeshProSettingsCard(controller: controller),
+        const SizedBox(height: 10),
         _InlineActionTile(
           icon: Icons.person_outline_rounded,
           title: 'Profile',
@@ -3415,6 +3618,94 @@ class _InlineSettingsPanel extends StatelessWidget {
           accent: Colors.redAccent,
         ),
       ],
+    );
+  }
+}
+
+class _MeshProSettingsCard extends StatefulWidget {
+  const _MeshProSettingsCard({required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<_MeshProSettingsCard> createState() => _MeshProSettingsCardState();
+}
+
+class _MeshProSettingsCardState extends State<_MeshProSettingsCard> {
+  Timer? clock;
+
+  @override
+  void initState() {
+    super.initState();
+    clock = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    clock?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subscription = widget.controller.meshProSubscription;
+    final active = subscription.isActiveNow;
+    final accent = active ? const Color(0xFF67F3C4) : const Color(0xFFB28AFF);
+    return _HomeGlassSurface(
+      accent: accent,
+      radius: 24,
+      selected: active,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.workspace_premium_rounded, color: accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    active ? 'MeshPro active' : 'MeshPro',
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh subscription',
+                  onPressed: () =>
+                      widget.controller.refreshMeshProSubscription(),
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
+            Text(
+              meshProRemainingLabel(widget.controller),
+              style: TextStyle(color: active ? accent : Colors.white60),
+            ),
+            if (meshProExpiryLabel(widget.controller).isNotEmpty) ...[
+              const SizedBox(height: 3),
+              Text(
+                meshProExpiryLabel(widget.controller),
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => showMeshProPaywall(context, widget.controller),
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: Text(active ? 'Extend on Boosty' : 'Buy on Boosty'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -3699,93 +3990,115 @@ class _BottomNavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(end: selected ? 1 : 0),
-        duration: const Duration(milliseconds: 360),
-        curve: Curves.easeOutBack,
-        builder: (context, value, _) {
-          final isSettings = icon == Icons.settings_outlined;
-          final isBluetooth = icon == Icons.bluetooth_rounded;
-          final isChats = icon == Icons.forum_rounded;
-          final rotation = isSettings ? value * math.pi * 0.75 : 0.0;
-          final scale =
-              1.0 +
-              value *
-                  (isBluetooth
-                      ? 0.13
-                      : isChats
-                      ? 0.1
-                      : 0.08);
-          final lift = isChats ? -3.0 * math.sin(value * math.pi) : 0.0;
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            width: 96,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(borderRadius: BorderRadius.circular(20)),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Transform.rotate(
-                  angle: rotation,
-                  child: Transform.translate(
-                    offset: Offset(0, lift),
-                    child: Transform.scale(
-                      scale: scale,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          if (isBluetooth && value > 0)
-                            Container(
-                              width: 26 + value * 12,
-                              height: 26 + value * 12,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: Colors.lightBlueAccent.withValues(
-                                    alpha: 0.18 * value,
+    return SizedBox(
+      width: 96,
+      height: 56,
+      child: ClipRect(
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(end: selected ? 1 : 0),
+            duration: const Duration(milliseconds: 360),
+            curve: Curves.easeOutBack,
+            builder: (context, value, _) {
+              final isSettings = icon == Icons.settings_outlined;
+              final isBluetooth = icon == Icons.bluetooth_rounded;
+              final isChats = icon == Icons.forum_rounded;
+              final rotation = isSettings ? value * math.pi * 0.75 : 0.0;
+              final scale =
+                  1.0 +
+                  value *
+                      (isBluetooth
+                          ? 0.13
+                          : isChats
+                          ? 0.1
+                          : 0.08);
+              final lift = isChats ? -3.0 * math.sin(value * math.pi) : 0.0;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                width: 96,
+                height: 56,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Transform.rotate(
+                      angle: rotation,
+                      child: Transform.translate(
+                        offset: Offset(0, lift),
+                        child: Transform.scale(
+                          scale: scale,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              if (isBluetooth && value > 0)
+                                Container(
+                                  width: 24 + value * 8,
+                                  height: 24 + value * 8,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Colors.lightBlueAccent.withValues(
+                                        alpha: 0.18 * value,
+                                      ),
+                                    ),
                                   ),
                                 ),
+                              Icon(
+                                icon,
+                                size: 21 + value * 2,
+                                color: Color.lerp(
+                                  Colors.white60,
+                                  Colors.lightBlueAccent,
+                                  value,
+                                ),
+                                shadows: [
+                                  if (value > 0)
+                                    Shadow(
+                                      color: Colors.lightBlueAccent.withValues(
+                                        alpha: 0.45 * value,
+                                      ),
+                                      blurRadius: 12 * value,
+                                    ),
+                                ],
                               ),
-                            ),
-                          Icon(
-                            icon,
-                            size: 21 + value * 2,
-                            color: Color.lerp(
-                              Colors.white60,
-                              Colors.lightBlueAccent,
-                              value,
-                            ),
-                            shadows: [
-                              if (value > 0)
-                                Shadow(
-                                  color: Colors.lightBlueAccent.withValues(
-                                    alpha: 0.45 * value,
-                                  ),
-                                  blurRadius: 12 * value,
-                                ),
                             ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
+                    SizedBox(height: 3 - value),
+                    SizedBox(
+                      width: 80,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: selected
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                            color: Color.lerp(
+                              Colors.white60,
+                              Colors.white,
+                              value,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 4 - value),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                    color: Color.lerp(Colors.white60, Colors.white, value),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
+              );
+            },
+          ),
+        ),
       ),
     );
   }
@@ -3904,11 +4217,14 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
       child: RepaintBoundary(
         child: AnimatedBuilder(
           animation: controller,
-          builder: (context, _) => CustomPaint(
-            isComplex: true,
-            willChange: controller.isAnimating,
-            painter: _HomeMeshPainter(t: canAnimate ? controller.value : 0),
-          ),
+          builder: (context, _) {
+            final frame = (controller.value * 96).floor();
+            return CustomPaint(
+              isComplex: true,
+              willChange: controller.isAnimating,
+              painter: _HomeMeshPainter(t: canAnimate ? frame / 96 : 0),
+            );
+          },
         ),
       ),
     );
@@ -4369,11 +4685,7 @@ class _ArchivedChatsPage extends StatelessWidget {
               return ListTile(
                 minTileHeight: 72,
                 leading: ProfileAvatar(profile: thread.profile),
-                title: Text(
-                  thread.profile.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                title: MeshProProfileName(profile: thread.profile),
                 subtitle: Text(
                   ChatsPage._previewText(last, thread.profile.publicUsername),
                   maxLines: 1,

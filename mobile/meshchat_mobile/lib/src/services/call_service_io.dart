@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
@@ -27,9 +28,16 @@ class CallService {
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   RTCVideoRenderer? _remoteAudioRenderer;
+  RTCVideoRenderer? _remoteScreenRenderer;
+  MediaStream? _screenStream;
+  RTCRtpSender? _screenSender;
   bool _localMuted = false;
   bool _speakerEnabled = true;
+  bool _hdAudio = false;
+  bool _enhancedNoiseSuppression = false;
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
+  void Function()? onRemoteScreenChanged;
+  void Function()? onLocalScreenEnded;
 
   Future<List<CallAudioDevice>> audioInputs() async {
     return _devicesOfKind('audioinput');
@@ -60,21 +68,36 @@ class CallService {
 
   Future<String> startOutgoing({
     required void Function(Map<String, dynamic> candidate) onIceCandidate,
+    bool hdAudio = false,
+    bool enhancedNoiseSuppression = false,
   }) async {
-    await _preparePeerConnection(onIceCandidate: onIceCandidate);
+    await _preparePeerConnection(
+      onIceCandidate: onIceCandidate,
+      hdAudio: hdAudio,
+      enhancedNoiseSuppression: enhancedNoiseSuppression,
+    );
     final offer = await _peerConnection!.createOffer({
       'offerToReceiveAudio': 1,
       'offerToReceiveVideo': 0,
     });
-    await _peerConnection!.setLocalDescription(offer);
-    return offer.sdp ?? '';
+    final sdp = _enhanceOpusSdp(offer.sdp ?? '');
+    await _peerConnection!.setLocalDescription(
+      RTCSessionDescription(sdp, 'offer'),
+    );
+    return sdp;
   }
 
   Future<String> acceptIncoming({
     required String remoteOfferSdp,
     required void Function(Map<String, dynamic> candidate) onIceCandidate,
+    bool hdAudio = false,
+    bool enhancedNoiseSuppression = false,
   }) async {
-    await _preparePeerConnection(onIceCandidate: onIceCandidate);
+    await _preparePeerConnection(
+      onIceCandidate: onIceCandidate,
+      hdAudio: hdAudio,
+      enhancedNoiseSuppression: enhancedNoiseSuppression,
+    );
     await _peerConnection!.setRemoteDescription(
       RTCSessionDescription(remoteOfferSdp, 'offer'),
     );
@@ -83,8 +106,11 @@ class CallService {
       'offerToReceiveAudio': 1,
       'offerToReceiveVideo': 0,
     });
-    await _peerConnection!.setLocalDescription(answer);
-    return answer.sdp ?? '';
+    final sdp = _enhanceOpusSdp(answer.sdp ?? '');
+    await _peerConnection!.setLocalDescription(
+      RTCSessionDescription(sdp, 'answer'),
+    );
+    return sdp;
   }
 
   Future<void> applyAnswer(String remoteAnswerSdp) async {
@@ -121,33 +147,43 @@ class CallService {
   }
 
   Future<void> end() async {
+    await _stopScreenMedia();
     await _stopMediaTracks();
     _remoteAudioRenderer?.srcObject = null;
     await _remoteAudioRenderer?.dispose();
+    _remoteScreenRenderer?.srcObject = null;
+    await _remoteScreenRenderer?.dispose();
     await _localStream?.dispose();
     await _peerConnection?.close();
     await _peerConnection?.dispose();
     _remoteAudioRenderer = null;
+    _remoteScreenRenderer = null;
     _localStream = null;
     _peerConnection = null;
     _localMuted = false;
     _speakerEnabled = true;
     _pendingRemoteCandidates.clear();
+    onRemoteScreenChanged?.call();
     await _deactivateCallAudio();
     await _clearAndroidCommunicationDevice();
   }
 
   Future<void> _resetCurrentConnectionOnly() async {
+    await _stopScreenMedia();
     await _stopMediaTracks();
     _remoteAudioRenderer?.srcObject = null;
     await _remoteAudioRenderer?.dispose();
+    _remoteScreenRenderer?.srcObject = null;
+    await _remoteScreenRenderer?.dispose();
     await _localStream?.dispose();
     await _peerConnection?.close();
     await _peerConnection?.dispose();
     _remoteAudioRenderer = null;
+    _remoteScreenRenderer = null;
     _localStream = null;
     _peerConnection = null;
     _localMuted = false;
+    onRemoteScreenChanged?.call();
     await _deactivateCallAudio();
   }
 
@@ -163,6 +199,8 @@ class CallService {
 
   Future<void> _preparePeerConnection({
     required void Function(Map<String, dynamic> candidate) onIceCandidate,
+    required bool hdAudio,
+    required bool enhancedNoiseSuppression,
   }) async {
     await _resetCurrentConnectionOnly();
     await _activateCallAudio();
@@ -184,14 +222,28 @@ class CallService {
       });
     };
     peerConnection.onTrack = (event) {
-      if (event.track.kind != 'audio' || event.streams.isEmpty) return;
-      _attachRemoteAudio(event.streams.first);
+      if (event.streams.isEmpty) return;
+      if (event.track.kind == 'audio') {
+        _attachRemoteAudio(event.streams.first);
+      } else if (event.track.kind == 'video') {
+        _attachRemoteScreen(event.streams.first);
+      }
     };
-    peerConnection.onAddStream = _attachRemoteAudio;
+    peerConnection.onAddStream = (stream) {
+      _attachRemoteAudio(stream);
+      _attachRemoteScreen(stream);
+    };
 
-    final stream = await navigator.mediaDevices.getUserMedia(
-      _mediaConstraints(),
-    );
+    _hdAudio = hdAudio;
+    _enhancedNoiseSuppression = enhancedNoiseSuppression;
+    MediaStream stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(_mediaConstraints());
+    } catch (_) {
+      _hdAudio = false;
+      _enhancedNoiseSuppression = false;
+      stream = await navigator.mediaDevices.getUserMedia(_mediaConstraints());
+    }
     for (final track in stream.getAudioTracks()) {
       track.enabled = true;
       await peerConnection.addTrack(track, stream);
@@ -237,6 +289,84 @@ class CallService {
 
   bool get speakerEnabled => _speakerEnabled;
 
+  bool get isScreenSharing => _screenStream != null;
+
+  bool get hasRemoteScreen =>
+      _remoteScreenRenderer?.srcObject?.getVideoTracks().isNotEmpty == true;
+
+  Future<String> startScreenShare() async {
+    final peerConnection = _peerConnection;
+    if (peerConnection == null) throw StateError('Call is not active');
+    await _stopScreenMedia();
+    final stream = await navigator.mediaDevices.getDisplayMedia({
+      'audio': false,
+      'video': {
+        'frameRate': {'ideal': 15, 'max': 24},
+        'width': {'ideal': 1280},
+        'height': {'ideal': 720},
+      },
+    });
+    final tracks = stream.getVideoTracks();
+    if (tracks.isEmpty) {
+      await stream.dispose();
+      throw StateError('Screen capture returned no video track');
+    }
+    _screenStream = stream;
+    tracks.first.onEnded = () => onLocalScreenEnded?.call();
+    _screenSender = await peerConnection.addTrack(tracks.first, stream);
+    final offer = await peerConnection.createOffer({
+      'offerToReceiveAudio': 1,
+      'offerToReceiveVideo': 1,
+    });
+    final sdp = _enhanceOpusSdp(offer.sdp ?? '');
+    await peerConnection.setLocalDescription(
+      RTCSessionDescription(sdp, 'offer'),
+    );
+    return sdp;
+  }
+
+  Future<String> acceptScreenShareOffer(String remoteOfferSdp) async {
+    final peerConnection = _peerConnection;
+    if (peerConnection == null) throw StateError('Call is not active');
+    await peerConnection.setRemoteDescription(
+      RTCSessionDescription(remoteOfferSdp, 'offer'),
+    );
+    await _flushPendingRemoteCandidates();
+    final answer = await peerConnection.createAnswer({
+      'offerToReceiveAudio': 1,
+      'offerToReceiveVideo': 1,
+    });
+    final sdp = _enhanceOpusSdp(answer.sdp ?? '');
+    await peerConnection.setLocalDescription(
+      RTCSessionDescription(sdp, 'answer'),
+    );
+    return sdp;
+  }
+
+  Future<void> applyScreenShareAnswer(String remoteAnswerSdp) async {
+    await applyAnswer(remoteAnswerSdp);
+  }
+
+  Future<void> stopScreenShare() async {
+    await _stopScreenMedia();
+  }
+
+  Future<void> clearRemoteScreen() async {
+    _remoteScreenRenderer?.srcObject = null;
+    onRemoteScreenChanged?.call();
+  }
+
+  Widget remoteScreenView() {
+    final renderer = _remoteScreenRenderer;
+    if (renderer == null || renderer.srcObject == null) {
+      return const SizedBox.shrink();
+    }
+    return RTCVideoView(
+      renderer,
+      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+    );
+  }
+
   Future<void> _attachRemoteAudio(MediaStream stream) async {
     if (stream.getAudioTracks().isEmpty) return;
     for (final track in stream.getAudioTracks()) {
@@ -255,6 +385,36 @@ class CallService {
           .catchError((_) => false);
     }
     await setSpeakerEnabled(_speakerEnabled).catchError((_) {});
+  }
+
+  Future<void> _attachRemoteScreen(MediaStream stream) async {
+    if (stream.getVideoTracks().isEmpty) return;
+    final renderer = _remoteScreenRenderer ?? RTCVideoRenderer();
+    if (_remoteScreenRenderer == null) {
+      await renderer.initialize();
+      _remoteScreenRenderer = renderer;
+    }
+    renderer.srcObject = stream;
+    onRemoteScreenChanged?.call();
+  }
+
+  Future<void> _stopScreenMedia() async {
+    final peerConnection = _peerConnection;
+    final sender = _screenSender;
+    if (peerConnection != null && sender != null) {
+      await peerConnection.removeTrack(sender).catchError((_) => false);
+    }
+    final stream = _screenStream;
+    if (stream != null) {
+      for (final track in stream.getTracks()) {
+        track.onEnded = null;
+        track.enabled = false;
+        await track.stop().catchError((_) {});
+      }
+      await stream.dispose();
+    }
+    _screenSender = null;
+    _screenStream = null;
   }
 
   Future<void> _stopMediaTracks() async {
@@ -327,10 +487,55 @@ class CallService {
       'googNoiseSuppression': true,
       'googHighpassFilter': true,
     };
+    if (_enhancedNoiseSuppression) {
+      audio.addAll({
+        'googTypingNoiseDetection': true,
+        'googExperimentalNoiseSuppression': true,
+        'googNoiseSuppression2': true,
+        'googAutoGainControl2': true,
+      });
+    }
+    if (_hdAudio) {
+      audio.addAll({
+        'sampleRate': {'ideal': 48000},
+        'sampleSize': {'ideal': 16},
+        'channelCount': {'ideal': 1},
+        'latency': {'ideal': 0.01},
+      });
+    }
     if (_selectedAudioInputId.isNotEmpty) {
       audio['deviceId'] = {'exact': _selectedAudioInputId};
     }
     return {'audio': audio, 'video': false};
+  }
+
+  String _enhanceOpusSdp(String sdp) {
+    if (!_hdAudio || sdp.isEmpty) return sdp;
+    final lines = sdp.split('\r\n');
+    final opusPayloads = <String>{};
+    for (final line in lines) {
+      final match = RegExp(
+        r'^a=rtpmap:(\d+) opus/48000',
+        caseSensitive: false,
+      ).firstMatch(line);
+      if (match != null) opusPayloads.add(match.group(1)!);
+    }
+    if (opusPayloads.isEmpty) return sdp;
+    for (var index = 0; index < lines.length; index++) {
+      for (final payload in opusPayloads) {
+        if (!lines[index].startsWith('a=fmtp:$payload ')) continue;
+        final additions = <String>[
+          if (!lines[index].contains('maxaveragebitrate='))
+            'maxaveragebitrate=96000',
+          if (!lines[index].contains('useinbandfec=')) 'useinbandfec=1',
+          if (!lines[index].contains('usedtx=')) 'usedtx=1',
+        ];
+        if (additions.isNotEmpty) {
+          lines[index] = '${lines[index]};${additions.join(';')}';
+        }
+      }
+    }
+    return lines.join('\r\n');
   }
 
   Future<List<CallAudioDevice>> _devicesOfKind(String kind) async {

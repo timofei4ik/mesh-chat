@@ -59,6 +59,46 @@ server {
         proxy_read_timeout 3600;
     }
 
+    location = /meshpro {
+        auth_basic off;
+        return 308 /meshpro/;
+    }
+
+    location ^~ /meshpro/ {
+        auth_basic off;
+        proxy_pass http://127.0.0.1:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        client_max_body_size 64k;
+    }
+
+    location ^~ /billing/manual/ {
+        auth_basic off;
+        access_log off;
+        proxy_pass http://127.0.0.1:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        client_max_body_size 64k;
+    }
+
+    location ^~ /billing/yookassa/ {
+        auth_basic off;
+        access_log off;
+        proxy_pass http://127.0.0.1:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        client_max_body_size 64k;
+    }
+
+    location = /billing/payment-complete {
+        auth_basic off;
+        proxy_pass http://127.0.0.1:8766;
+        proxy_set_header Host \$host;
+    }
+
     location / {
         if (\$cookie_meshchat_access != "$SECRET") {
             return 403;

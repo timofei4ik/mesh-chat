@@ -5,11 +5,14 @@ import 'dart:math';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/profile.dart';
 
 typedef BlePacketHandler = Future<void> Function(Map<String, dynamic> packet);
+
+enum BleSendResult { sent, queued }
 
 class BlePeer {
   const BlePeer({
@@ -85,6 +88,7 @@ class BleChatService extends ChangeNotifier {
   final List<_QueuedBlePacket> _queue = [];
   final List<StreamSubscription> _subscriptions = [];
   Timer? _pruneTimer;
+  String _queueOwnerNodeId = '';
 
   BlePacketHandler? onPacket;
   bool running = false;
@@ -128,6 +132,7 @@ class BleChatService extends ChangeNotifier {
       throw UnsupportedError('Bluetooth is not supported on this platform');
     }
     if (running) return;
+    await _restoreQueue(profile.nodeId);
     _listen();
     _startPruneTimer();
     await _authorizeIfNeeded();
@@ -313,14 +318,31 @@ class BleChatService extends ChangeNotifier {
     }
   }
 
-  Future<void> sendPacket(BlePeer peer, Map<String, dynamic> packet) async {
-    final connected =
-        _connected[peer.id] ?? _connected[(await connect(peer)).id];
+  Future<BleSendResult> sendPacket(
+    BlePeer peer,
+    Map<String, dynamic> packet,
+  ) async {
+    var connected = _connected[peer.id];
+    if (connected == null) {
+      try {
+        final resolved = await connect(peer);
+        connected = _connected[resolved.id];
+      } catch (error) {
+        if (peer.nodeId.isEmpty) rethrow;
+        _queuePacket(peer, packet);
+        _pairingTargetNodeIds.add(peer.nodeId);
+        status =
+            'Bluetooth send queued until ${peer.displayNameOrName} returns';
+        notifyListeners();
+        return BleSendResult.queued;
+      }
+    }
     if (connected == null) {
       throw StateError('Bluetooth peer is not connected');
     }
     try {
       await _sendPacketToConnected(connected, packet);
+      return BleSendResult.sent;
     } catch (error) {
       _queuePacket(connected.peer, packet);
       _connected.remove(peer.id);
@@ -330,7 +352,27 @@ class BleChatService extends ChangeNotifier {
       );
       status = 'Bluetooth send queued: $error';
       notifyListeners();
+      return BleSendResult.queued;
     }
+  }
+
+  Future<BleSendResult> sendPacketToNode(
+    String nodeId,
+    Map<String, dynamic> packet,
+  ) async {
+    final normalized = nodeId.trim();
+    if (normalized.isEmpty) {
+      throw ArgumentError.value(nodeId, 'nodeId', 'Bluetooth node is empty');
+    }
+    for (final connected in _connected.values) {
+      if (connected.peer.nodeId == normalized) {
+        return sendPacket(connected.peer, packet);
+      }
+    }
+    _queuePacket(BlePeer(id: '', name: 'MeshChat', nodeId: normalized), packet);
+    _pairingTargetNodeIds.add(normalized);
+    _tryPairingTargets();
+    return BleSendResult.queued;
   }
 
   Future<void> _sendPacketToConnected(
@@ -380,10 +422,34 @@ class BleChatService extends ChangeNotifier {
   }
 
   void _queuePacket(BlePeer peer, Map<String, dynamic> packet) {
-    _queue.add(_QueuedBlePacket(peer.id, peer.nodeId, packet));
-    if (_queue.length > 30) {
-      _queue.removeRange(0, _queue.length - 30);
+    final dedupeKey = _queuedPacketKey(packet);
+    if (dedupeKey.isNotEmpty) {
+      _queue.removeWhere(
+        (item) =>
+            item.nodeId == peer.nodeId &&
+            _queuedPacketKey(item.packet) == dedupeKey,
+      );
     }
+    _queue.add(_QueuedBlePacket(peer.id, peer.nodeId, packet));
+    if (_queue.length > 256) {
+      _queue.removeRange(0, _queue.length - 256);
+    }
+    unawaited(_persistQueue());
+  }
+
+  String _queuedPacketKey(Map<String, dynamic> packet) {
+    final type = packet['type']?.toString() ?? '';
+    final fileId = packet['file_id']?.toString() ?? '';
+    if (fileId.isNotEmpty) {
+      final chunkIndex = packet['chunk_index']?.toString() ?? '';
+      return '$type:file:$fileId:$chunkIndex';
+    }
+    final messageId =
+        packet['message_id']?.toString() ??
+        packet['group_message_id']?.toString() ??
+        packet['packet_id']?.toString() ??
+        '';
+    return messageId.isEmpty ? '' : '$type:message:$messageId';
   }
 
   Future<void> _flushQueueFor(String peerId) async {
@@ -401,12 +467,82 @@ class BleChatService extends ChangeNotifier {
       try {
         await _sendPacketToConnected(connected, item.packet);
         _queue.remove(item);
+        await _persistQueue();
       } catch (_) {
         break;
       }
     }
     notifyListeners();
   }
+
+  Future<void> _restoreQueue(String ownerNodeId) async {
+    final normalized = ownerNodeId.trim();
+    if (_queueOwnerNodeId == normalized) return;
+    _queueOwnerNodeId = normalized;
+    _queue.clear();
+    _pairingTargetNodeIds.clear();
+    if (normalized.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_queueKey(normalized));
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return;
+      for (final item in decoded.whereType<Map>()) {
+        final queued = _QueuedBlePacket.fromJson(
+          Map<String, dynamic>.from(item),
+        );
+        if (queued.nodeId.isEmpty || queued.packet.isEmpty) continue;
+        _queue.add(queued);
+        _pairingTargetNodeIds.add(queued.nodeId);
+      }
+    } catch (_) {
+      await prefs.remove(_queueKey(normalized));
+    }
+  }
+
+  Future<void> _persistQueue() async {
+    final owner = _queueOwnerNodeId;
+    if (owner.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = _queueKey(owner);
+      if (_queue.isEmpty) {
+        await prefs.remove(key);
+        return;
+      }
+      await prefs.setString(
+        key,
+        jsonEncode(_queue.map((item) => item.toJson()).toList()),
+      );
+    } catch (error) {
+      status = 'Bluetooth queue remains in memory: $error';
+      notifyListeners();
+    }
+  }
+
+  Future<void> cancelQueuedMessage(String messageId) async {
+    final normalized = messageId.trim();
+    if (normalized.isEmpty) return;
+    _queue.removeWhere(
+      (item) =>
+          item.packet['packet_id']?.toString() == normalized ||
+          item.packet['message_id']?.toString() == normalized ||
+          item.packet['file_id']?.toString() == normalized,
+    );
+    await _persistQueue();
+    notifyListeners();
+  }
+
+  Future<void> clearQueuedPackets() async {
+    if (_queue.isEmpty) return;
+    _queue.clear();
+    _pairingTargetNodeIds.clear();
+    await _persistQueue();
+    notifyListeners();
+  }
+
+  String _queueKey(String ownerNodeId) => 'meshchat_ble_queue:$ownerNodeId';
 
   void _listen() {
     if (_subscriptions.isNotEmpty) return;
@@ -522,27 +658,48 @@ class BleChatService extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingFrame(String peerId, Uint8List value) async {
-    final raw = jsonDecode(utf8.decode(value));
-    if (raw is! Map) return;
-    final id = raw['id']?.toString() ?? '';
-    final index = int.tryParse(raw['i']?.toString() ?? '');
-    final total = int.tryParse(raw['n']?.toString() ?? '');
-    final data = raw['d']?.toString() ?? '';
-    if (id.isEmpty || index == null || total == null || data.isEmpty) return;
-    final incoming = _incoming.putIfAbsent(
-      '$peerId:$id',
-      () => _IncomingBlePacket(total),
-    );
-    incoming.chunks[index] = data;
-    if (incoming.chunks.length < incoming.total) return;
-    _incoming.remove('$peerId:$id');
-    final encoded = List<String>.generate(
-      incoming.total,
-      (chunkIndex) => incoming.chunks[chunkIndex] ?? '',
-    ).join();
-    final packet = jsonDecode(utf8.decode(base64Decode(encoded)));
-    if (packet is Map) {
-      await onPacket?.call(Map<String, dynamic>.from(packet));
+    try {
+      final raw = jsonDecode(utf8.decode(value));
+      if (raw is! Map) return;
+      final id = raw['id']?.toString() ?? '';
+      final index = int.tryParse(raw['i']?.toString() ?? '');
+      final total = int.tryParse(raw['n']?.toString() ?? '');
+      final data = raw['d']?.toString() ?? '';
+      if (id.isEmpty ||
+          index == null ||
+          total == null ||
+          total <= 0 ||
+          total > 512 ||
+          index < 0 ||
+          index >= total ||
+          data.isEmpty) {
+        return;
+      }
+      if (_incoming.length >= 24 && !_incoming.containsKey('$peerId:$id')) {
+        _incoming.remove(_incoming.keys.first);
+      }
+      final incoming = _incoming.putIfAbsent(
+        '$peerId:$id',
+        () => _IncomingBlePacket(total),
+      );
+      if (incoming.total != total) {
+        _incoming.remove('$peerId:$id');
+        return;
+      }
+      incoming.chunks[index] = data;
+      if (incoming.chunks.length < incoming.total) return;
+      _incoming.remove('$peerId:$id');
+      final encoded = List<String>.generate(
+        incoming.total,
+        (chunkIndex) => incoming.chunks[chunkIndex] ?? '',
+      ).join();
+      final packet = jsonDecode(utf8.decode(base64Decode(encoded)));
+      if (packet is Map) {
+        await onPacket?.call(Map<String, dynamic>.from(packet));
+      }
+    } catch (error) {
+      status = 'Ignored invalid Bluetooth frame: $error';
+      notifyListeners();
     }
   }
 
@@ -709,4 +866,19 @@ class _QueuedBlePacket {
   final String peerId;
   final String nodeId;
   final Map<String, dynamic> packet;
+
+  factory _QueuedBlePacket.fromJson(Map<String, dynamic> json) {
+    final rawPacket = json['packet'];
+    return _QueuedBlePacket(
+      json['peer_id']?.toString() ?? '',
+      json['node_id']?.toString() ?? '',
+      rawPacket is Map ? Map<String, dynamic>.from(rawPacket) : const {},
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'peer_id': peerId,
+    'node_id': nodeId,
+    'packet': packet,
+  };
 }

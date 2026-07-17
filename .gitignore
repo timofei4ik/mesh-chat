@@ -10,9 +10,13 @@ __pycache__/
 *.db
 accounts/
 data/
+firebase_push.json
+firebase-service-account.json
+*firebase-adminsdk*.json
 
 # Build outputs
 build/
+outputs/
 dist/
 release/
 *.spec

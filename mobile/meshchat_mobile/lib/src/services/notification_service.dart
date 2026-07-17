@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'android_push_service.dart';
 import 'notification_web_stub.dart'
     if (dart.library.html) 'notification_web.dart'
     as web_notifications;
@@ -10,6 +11,14 @@ class NotificationService {
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
   int _nextId = 1;
+  final AndroidPushService _androidPush = AndroidPushService();
+  ValueChanged<String>? onAndroidPushToken;
+
+  Future<void> refreshAndroidPushToken() async {
+    await _androidPush.initialize(
+      onTokenChanged: (token) => onAndroidPushToken?.call(token),
+    );
+  }
 
   Future<void> initialize() async {
     if (_initialized) return;
@@ -37,6 +46,7 @@ class NotificationService {
     await _plugin.initialize(settings: settings);
     _initialized = true;
     await requestPermissions();
+    await refreshAndroidPushToken();
   }
 
   Future<void> requestPermissions() async {

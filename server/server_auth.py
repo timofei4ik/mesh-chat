@@ -36,7 +36,9 @@ class ServerAuthMixin:
         public_username=None,
         about=None,
         avatar_data=None,
-        encryption_public_key=None
+        encryption_public_key=None,
+        allow_registration=True,
+        reactivate_device=False
     ):
 
         login = (
@@ -88,6 +90,9 @@ class ServerAuthMixin:
         row = cursor.fetchone()
 
         if not row:
+
+            if not allow_registration:
+                return False, "account does not exist"
 
             salt_hex = secrets.token_bytes(
                 16
@@ -151,6 +156,13 @@ class ServerAuthMixin:
         if verify_only:
 
             return True, "ok"
+
+        if self.is_account_device_revoked(login, node_id):
+
+            if not reactivate_device:
+                return False, "device session was revoked"
+
+            self.reactivate_account_device(login, node_id)
 
         self.db.execute(
             """

@@ -23,10 +23,13 @@ class ChatThread {
     this.archived = false,
     this.pinned = false,
     this.muted = false,
-  }) : messages = messages ?? [],
-       members = members ?? [],
-       admins = admins ?? [],
-       pinnedMessageIds = pinnedMessageIds ?? [];
+    this.themeId = 'midnight',
+    this.bubbleStyle = 'classic',
+    this.animatedBackground = false,
+  }) : messages = List<ChatMessage>.of(messages ?? const <ChatMessage>[]),
+       members = List<String>.of(members ?? const <String>[]),
+       admins = List<String>.of(admins ?? const <String>[]),
+       pinnedMessageIds = List<String>.of(pinnedMessageIds ?? const <String>[]);
 
   Profile profile;
   final List<ChatMessage> messages;
@@ -48,6 +51,9 @@ class ChatThread {
   bool archived;
   bool pinned;
   bool muted;
+  String themeId;
+  String bubbleStyle;
+  bool animatedBackground;
   int unread = 0;
 
   ChatMessage? get lastMessage {
@@ -128,6 +134,9 @@ class ChatThread {
       archived: json['archived'] == true,
       pinned: json['pinned'] == true,
       muted: json['muted'] == true,
+      themeId: _allowedTheme(json['theme_id']?.toString()),
+      bubbleStyle: _allowedBubbleStyle(json['bubble_style']?.toString()),
+      animatedBackground: json['animated_background'] == true,
     );
     thread.unread = int.tryParse(json['unread']?.toString() ?? '') ?? 0;
     thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
@@ -156,7 +165,22 @@ class ChatThread {
       'archived': archived,
       'pinned': pinned,
       'muted': muted,
+      'theme_id': themeId,
+      'bubble_style': bubbleStyle,
+      'animated_background': animatedBackground,
       'unread': unread,
     };
+  }
+
+  static String _allowedTheme(String? value) {
+    const allowed = {'midnight', 'cyan', 'violet', 'emerald'};
+    final normalized = value?.trim().toLowerCase() ?? '';
+    return allowed.contains(normalized) ? normalized : 'midnight';
+  }
+
+  static String _allowedBubbleStyle(String? value) {
+    const allowed = {'classic', 'soft', 'compact'};
+    final normalized = value?.trim().toLowerCase() ?? '';
+    return allowed.contains(normalized) ? normalized : 'classic';
   }
 }

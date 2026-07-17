@@ -3,9 +3,67 @@ import json
 import websockets
 
 SERVER_FILE_SYNC_CHUNK_SIZE = 256 * 1024
+SERVER_STICKER_LIBRARY_INLINE_LIMIT = 512 * 1024
+SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE = 128 * 1024
 
 
 class ServerSyncMixin:
+    def _attach_story_engagement(self, cursor, stories, node_id):
+        story_ids = [
+            story.get("id")
+            for story in stories
+            if story.get("id")
+        ]
+        if not story_ids:
+            return
+        placeholders = ",".join("?" for _ in story_ids)
+        cursor.execute(
+            f"""
+            SELECT story_id,
+                   reactor_node,
+                   reaction
+            FROM server_story_reactions
+            WHERE story_id IN ({placeholders})
+              AND liked=1
+            """,
+            story_ids
+        )
+        reactions = {}
+        for story_id, reactor_node, reaction in cursor.fetchall():
+            if self._same_account_nodes(reactor_node, node_id):
+                reactor_node = node_id
+            bucket = reactions.setdefault(story_id, {})
+            bucket.setdefault(reaction or "heart", []).append(reactor_node)
+        for story in stories:
+            story_reactions = {
+                reaction: sorted(set(nodes))
+                for reaction, nodes in reactions.get(
+                    story.get("id"),
+                    {}
+                ).items()
+            }
+            story["reactions"] = story_reactions
+            story["liked_by_node_ids"] = story_reactions.get("heart", [])
+
+        cursor.execute(
+            f"""
+            SELECT story_id,
+                   viewer_node
+            FROM server_story_views
+            WHERE story_id IN ({placeholders})
+            """,
+            story_ids
+        )
+        views = {}
+        for story_id, viewer_node in cursor.fetchall():
+            if self._same_account_nodes(viewer_node, node_id):
+                viewer_node = node_id
+            views.setdefault(story_id, []).append(viewer_node)
+        for story in stories:
+            story["viewed_by_node_ids"] = sorted(
+                set(views.get(story.get("id"), []))
+            )
+
     def build_sync_packet(
         self,
         login,
@@ -22,7 +80,13 @@ class ServerSyncMixin:
                    public_username,
                    about,
                    avatar_data,
-                   encryption_public_key
+                   encryption_public_key,
+                   COALESCE(profile_background, 'mesh'),
+                   COALESCE(profile_effect, 'stars'),
+                   COALESCE(profile_blink_shape, 'auto'),
+                   COALESCE(avatar_decoration, 'none'),
+                   COALESCE(profile_glow, 0),
+                   COALESCE(profile_accent, 4282557941)
             FROM accounts
             WHERE login=?
                OR node_id=?
@@ -50,7 +114,16 @@ class ServerSyncMixin:
                 "about": row[4],
                 "avatar_data": row[5],
                 "encryption_public_key": row[6],
-                "node_aliases": self.get_account_node_ids(row[0])
+                "node_aliases": self.get_account_node_ids(row[0]),
+                **self._meshpro_public_profile_fields(
+                    row[0],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    row[11],
+                    row[12]
+                )
             }
 
         cursor.execute(
@@ -66,6 +139,7 @@ class ServerSyncMixin:
                    reply_to_text,
                    COALESCE(chat_kind, 'normal'),
                    COALESCE(chat_id, ''),
+                   COALESCE(message_effect, 'none'),
                    created_at
             FROM direct_messages
             WHERE sender_login=?
@@ -98,7 +172,8 @@ class ServerSyncMixin:
                 "reply_to_text": row[8],
                 "chat_kind": row[9],
                 "chat_id": row[10],
-                "created_at": row[11]
+                "message_effect": row[11],
+                "created_at": row[12]
             }
             for row in cursor.fetchall()
         ]
@@ -296,6 +371,8 @@ class ServerSyncMixin:
                        reply_to_text,
                        members_json,
                        group_key_id,
+                       COALESCE(message_effect, 'none'),
+                       COALESCE(is_channel_comment, 0),
                        created_at
                 FROM server_group_messages
                 WHERE group_id IN ({placeholders})
@@ -319,7 +396,9 @@ class ServerSyncMixin:
                         row[9] or "[]"
                     ),
                     "group_key_id": row[10],
-                    "created_at": row[11]
+                    "message_effect": row[11],
+                    "is_channel_comment": bool(row[12]) or bool(row[7]),
+                    "created_at": row[13]
                 }
                 for row in cursor.fetchall()
             ]
@@ -385,6 +464,7 @@ class ServerSyncMixin:
                    COALESCE(message_kind, 'file'),
                    COALESCE(chat_kind, 'normal'),
                    COALESCE(chat_id, ''),
+                   COALESCE(message_effect, 'none'),
                    created_at
             FROM server_files
             WHERE {file_where}
@@ -415,10 +495,56 @@ class ServerSyncMixin:
                 "message_kind": row[17] or "file",
                 "chat_kind": row[18],
                 "chat_id": row[19],
-                "created_at": row[20]
+                "message_effect": row[20],
+                "created_at": row[21]
             }
             for row in cursor.fetchall()
         ]
+
+        cursor.execute(
+            """
+            SELECT message_id, text, language, duration_seconds
+            FROM ai_voice_transcriptions
+            WHERE login=?
+            """,
+            (str(login or "").strip().lower(),),
+        )
+        voice_transcriptions = {
+            row[0]: {
+                "transcription": row[1] or "",
+                "transcription_language": row[2] or "",
+                "transcription_duration_seconds": max(
+                    0.0,
+                    float(row[3] or 0),
+                ),
+            }
+            for row in cursor.fetchall()
+        }
+        for file_info in files:
+            transcription = voice_transcriptions.get(file_info["file_id"])
+            if transcription:
+                file_info.update(transcription)
+
+        cursor.execute(
+            """
+            SELECT message_id, text, language
+            FROM ai_image_ocr
+            WHERE login=?
+            """,
+            (str(login or "").strip().lower(),),
+        )
+        image_ocr = {
+            row[0]: {
+                "ocr_text": row[1] or "",
+                "ocr_language": row[2] or "",
+                "ocr_processed": True,
+            }
+            for row in cursor.fetchall()
+        }
+        for file_info in files:
+            ocr = image_ocr.get(file_info["file_id"])
+            if ocr:
+                file_info.update(ocr)
 
         if deleted_peers or deleted_peer_logins:
 
@@ -509,50 +635,46 @@ class ServerSyncMixin:
             stories.append(story)
             story_ids.append(story_id)
 
-        if story_ids:
-            placeholders = ",".join(
-                "?"
-                for _ in story_ids
-            )
-            cursor.execute(
-                f"""
-                SELECT story_id,
-                       reactor_node
-                FROM server_story_reactions
-                WHERE story_id IN ({placeholders})
-                  AND liked=1
-                  AND reaction='heart'
-                """,
-                story_ids
-            )
-            story_likes = {}
-            for story_id, reactor_node in cursor.fetchall():
-                if self._same_account_nodes(reactor_node, node_id):
-                    reactor_node = node_id
-                story_likes.setdefault(story_id, []).append(reactor_node)
-            for story in stories:
-                story["liked_by_node_ids"] = sorted(
-                    set(story_likes.get(story.get("id"), []))
-                )
+        self._attach_story_engagement(cursor, stories, node_id)
 
-            cursor.execute(
-                f"""
-                SELECT story_id,
-                       viewer_node
-                FROM server_story_views
-                WHERE story_id IN ({placeholders})
-                """,
-                story_ids
+        story_archive = []
+        subscription = self.subscription_status(login)
+        entitlements = subscription.get("entitlements", {})
+        archive_enabled = bool(
+            subscription.get("active")
+            and entitlements.get("features", {}).get("story_server_archive")
+        )
+        archive_days = int(
+            entitlements.get("limits", {}).get(
+                "server_story_archive_days",
+                0
             )
-            story_views = {}
-            for story_id, viewer_node in cursor.fetchall():
-                if self._same_account_nodes(viewer_node, node_id):
-                    viewer_node = node_id
-                story_views.setdefault(story_id, []).append(viewer_node)
-            for story in stories:
-                story["viewed_by_node_ids"] = sorted(
-                    set(story_views.get(story.get("id"), []))
-                )
+            or 0
+        )
+        if archive_enabled and archive_days > 0:
+            cursor.execute(
+                """
+                SELECT story_id,
+                       owner_node,
+                       story_json
+                FROM server_stories
+                WHERE owner_login=?
+                  AND DATETIME(created_at) >= DATETIME('now', ?)
+                ORDER BY created_at DESC
+                """,
+                (login, f"-{archive_days} days")
+            )
+            for story_id, owner_node, story_json in cursor.fetchall():
+                try:
+                    story = json.loads(story_json or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(story, dict):
+                    continue
+                story["id"] = story.get("id") or story_id
+                story["owner_node"] = node_id
+                story_archive.append(story)
+            self._attach_story_engagement(cursor, story_archive, node_id)
 
         reactions = []
         pins = []
@@ -658,7 +780,13 @@ class ServerSyncMixin:
                        a.public_username,
                        a.about,
                        a.avatar_data,
-                       a.encryption_public_key
+                       a.encryption_public_key,
+                       COALESCE(a.profile_background, 'mesh'),
+                       COALESCE(a.profile_effect, 'stars'),
+                       COALESCE(a.profile_blink_shape, 'auto'),
+                       COALESCE(a.avatar_decoration, 'none'),
+                       COALESCE(a.profile_glow, 0),
+                       COALESCE(a.profile_accent, 4282557941)
                 FROM (
                     SELECT ? AS node_id
                     {''.join([' UNION SELECT ?' for _ in profile_nodes[1:]])}
@@ -674,7 +802,13 @@ class ServerSyncMixin:
                        a.public_username,
                        a.about,
                        a.avatar_data,
-                       a.encryption_public_key
+                       a.encryption_public_key,
+                       COALESCE(a.profile_background, 'mesh'),
+                       COALESCE(a.profile_effect, 'stars'),
+                       COALESCE(a.profile_blink_shape, 'auto'),
+                       COALESCE(a.avatar_decoration, 'none'),
+                       COALESCE(a.profile_glow, 0),
+                       COALESCE(a.profile_accent, 4282557941)
                 FROM accounts a
                 WHERE a.node_id IN ({placeholders})
                 """,
@@ -690,7 +824,16 @@ class ServerSyncMixin:
                     "about": row[4],
                     "avatar_data": row[5],
                     "encryption_public_key": row[6],
-                    "node_aliases": self.get_account_node_ids(row[0])
+                    "node_aliases": self.get_account_node_ids(row[0]),
+                    **self._meshpro_public_profile_fields(
+                        row[0],
+                        row[7],
+                        row[8],
+                        row[9],
+                        row[10],
+                        row[11],
+                        row[12]
+                    )
                 }
                 for row in cursor.fetchall()
             ]
@@ -716,6 +859,13 @@ class ServerSyncMixin:
             except json.JSONDecodeError:
                 sticker_library = None
 
+        schedule_lister = getattr(self, "list_scheduled_messages", None)
+        scheduled_messages = (
+            schedule_lister(login)
+            if callable(schedule_lister)
+            else []
+        )
+
         return {
             "type": "server_sync",
             "profile": own_profile,
@@ -725,6 +875,10 @@ class ServerSyncMixin:
             "group_messages": group_messages,
             "files": files,
             "stories": stories,
+            "story_archive": story_archive,
+            "chat_preferences": self.get_chat_preferences(login),
+            "meshpro_preferences": self.get_meshpro_preferences(login),
+            "scheduled_messages": scheduled_messages,
             "sticker_library": sticker_library,
             "reactions": reactions,
             "pins": pins
@@ -734,7 +888,8 @@ class ServerSyncMixin:
         self,
         websocket,
         login,
-        node_id
+        node_id,
+        supports_sticker_library_chunks=False
     ):
 
         packet = self.build_sync_packet(
@@ -743,6 +898,7 @@ class ServerSyncMixin:
         )
 
         file_payloads = []
+        sticker_library_payload = ""
 
         for file_info in packet.get(
             "files",
@@ -762,12 +918,60 @@ class ServerSyncMixin:
                     )
                 )
 
+        sticker_library = packet.get("sticker_library")
+        if isinstance(sticker_library, dict):
+            encoded_library = json.dumps(
+                sticker_library,
+                ensure_ascii=False,
+                separators=(",", ":")
+            )
+            if (
+                len(encoded_library.encode("utf-8"))
+                > SERVER_STICKER_LIBRARY_INLINE_LIMIT
+            ):
+                packet["sticker_library"] = None
+                if supports_sticker_library_chunks:
+                    sticker_library_payload = encoded_library
+                    packet["sticker_library_chunked"] = True
+                else:
+                    packet["sticker_library_omitted"] = True
+
         await websocket.send(
             json.dumps(
                 packet,
                 ensure_ascii=False
             )
         )
+
+        if sticker_library_payload:
+            total_sticker_chunks = max(
+                1,
+                (
+                    len(sticker_library_payload)
+                    + SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE
+                    - 1
+                )
+                // SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE
+            )
+            for chunk_index in range(total_sticker_chunks):
+                start = (
+                    chunk_index
+                    * SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE
+                )
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "server_sticker_library_sync_chunk",
+                            "chunk_index": chunk_index,
+                            "total_chunks": total_sticker_chunks,
+                            "data": sticker_library_payload[
+                                start:
+                                start + SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE
+                            ]
+                        },
+                        ensure_ascii=False
+                    )
+                )
 
         total_files = len(
             file_payloads
@@ -850,7 +1054,29 @@ class ServerSyncMixin:
                     "public_username": profile.get("public_username"),
                     "about": profile.get("about"),
                     "avatar_data": profile.get("avatar_data"),
-                    "encryption_public_key": profile.get("encryption_public_key")
+                    "encryption_public_key": profile.get("encryption_public_key"),
+                    "meshpro_badge": profile.get("meshpro_badge", False),
+                    "profile_background": profile.get(
+                        "profile_background",
+                        "mesh"
+                    ),
+                    "profile_effect": profile.get(
+                        "profile_effect",
+                        "nodes"
+                    ),
+                    "profile_blink_shape": profile.get(
+                        "profile_blink_shape",
+                        "auto"
+                    ),
+                    "avatar_decoration": profile.get(
+                        "avatar_decoration",
+                        "none"
+                    ),
+                    "profile_glow": profile.get("profile_glow", False),
+                    "profile_accent": profile.get(
+                        "profile_accent",
+                        4282557941
+                    )
                 }
             )
 

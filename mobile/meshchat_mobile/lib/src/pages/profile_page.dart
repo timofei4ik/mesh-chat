@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -9,7 +7,9 @@ import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
+import '../widgets/meshpro_badge.dart';
 import '../widgets/profile_avatar.dart';
+import '../widgets/profile_effect_background.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({
@@ -178,32 +178,47 @@ class _ProfileHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasAvatarDecoration =
+        profile.effectiveAvatarDecoration != Profile.defaultAvatarDecoration;
     return SizedBox(
       height: 276,
       child: Stack(
         alignment: Alignment.center,
         children: [
-          const Positioned.fill(child: _ProfileMeshBackground()),
+          Positioned.fill(
+            child: ProfileEffectBackground(
+              profile: profile,
+              enabled: profile.meshProBadge == true,
+            ),
+          ),
           Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                padding: const EdgeInsets.all(6),
+                padding: EdgeInsets.all(hasAvatarDecoration ? 0 : 6),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  border: Border.all(
-                    color: Colors.lightBlueAccent.withValues(alpha: 0.45),
-                  ),
+                  border: hasAvatarDecoration
+                      ? null
+                      : Border.all(
+                          color: Color(
+                            profile.effectiveProfileAccent,
+                          ).withValues(alpha: 0.58),
+                        ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.lightBlueAccent.withValues(alpha: 0.24),
-                      blurRadius: 32,
-                      spreadRadius: 2,
+                      color: Color(profile.effectiveProfileAccent).withValues(
+                        alpha: profile.effectiveProfileGlow ? 0.42 : 0.18,
+                      ),
+                      blurRadius: profile.effectiveProfileGlow ? 46 : 28,
+                      spreadRadius: profile.effectiveProfileGlow ? 4 : 1,
                     ),
                     BoxShadow(
-                      color: const Color(0xFFA56BFF).withValues(alpha: 0.18),
-                      blurRadius: 34,
-                      spreadRadius: 2,
+                      color: const Color(0xFFA56BFF).withValues(
+                        alpha: profile.effectiveProfileGlow ? 0.28 : 0.12,
+                      ),
+                      blurRadius: profile.effectiveProfileGlow ? 44 : 30,
+                      spreadRadius: profile.effectiveProfileGlow ? 3 : 1,
                     ),
                   ],
                 ),
@@ -220,10 +235,10 @@ class _ProfileHero extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              Text(
-                profile.displayName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              MeshProProfileName(
+                profile: profile,
+                animate: true,
+                badgeSize: 22,
                 style: const TextStyle(
                   fontSize: 25,
                   fontWeight: FontWeight.w900,
@@ -371,166 +386,6 @@ class _ProfileRoundButton extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class _ProfileMeshBackground extends StatefulWidget {
-  const _ProfileMeshBackground();
-
-  @override
-  State<_ProfileMeshBackground> createState() => _ProfileMeshBackgroundState();
-}
-
-class _ProfileMeshBackgroundState extends State<_ProfileMeshBackground>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController controller;
-  late final Timer timer;
-  int seed = 4;
-  bool appActive = true;
-  bool tickerModeActive = true;
-
-  bool get canAnimate => appActive && tickerModeActive;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 3800),
-    );
-    timer = Timer.periodic(const Duration(milliseconds: 5200), (_) {
-      if (!mounted || !canAnimate) return;
-      setState(() => seed++);
-      controller.forward(from: 0);
-    });
-    Future<void>.delayed(const Duration(milliseconds: 400), () {
-      if (mounted && canAnimate) controller.forward(from: 0);
-    });
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final next = TickerMode.valuesOf(context).enabled;
-    if (tickerModeActive == next) return;
-    tickerModeActive = next;
-    _syncAnimationActivity();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    appActive = state == AppLifecycleState.resumed;
-    _syncAnimationActivity();
-  }
-
-  void _syncAnimationActivity() {
-    if (!canAnimate) {
-      controller.stop(canceled: false);
-    } else if (controller.value > 0 && controller.value < 1) {
-      controller.forward();
-    }
-  }
-
-  @override
-  void dispose() {
-    timer.cancel();
-    WidgetsBinding.instance.removeObserver(this);
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return RepaintBoundary(
-      child: AnimatedBuilder(
-        animation: controller,
-        builder: (context, _) => CustomPaint(
-          isComplex: true,
-          willChange: controller.isAnimating,
-          painter: _ProfileMeshPainter(t: controller.value, seed: seed),
-        ),
-      ),
-    );
-  }
-}
-
-class _ProfileMeshPainter extends CustomPainter {
-  const _ProfileMeshPainter({required this.t, required this.seed});
-
-  final double t;
-  final int seed;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final points = [
-      Offset(size.width * -0.02, size.height * 0.70),
-      Offset(size.width * 0.07, size.height * 0.22),
-      Offset(size.width * 0.20, size.height * 0.04),
-      Offset(size.width * 0.28, size.height * 0.42),
-      Offset(size.width * 0.39, size.height * 0.14),
-      Offset(size.width * 0.52, size.height * 0.58),
-      Offset(size.width * 0.62, size.height * 0.28),
-      Offset(size.width * 0.78, size.height * 0.07),
-      Offset(size.width * 0.86, size.height * 0.45),
-      Offset(size.width * 1.03, size.height * 0.20),
-      Offset(size.width * 0.94, size.height * 0.78),
-      Offset(size.width * 0.72, size.height * 0.94),
-      Offset(size.width * 0.48, size.height * 0.92),
-      Offset(size.width * 0.24, size.height * 0.86),
-      Offset(size.width * 0.04, size.height * 0.92),
-    ];
-    final line = Paint()
-      ..color = Colors.white.withValues(alpha: 0.055)
-      ..strokeWidth = 1.05;
-    final links = [
-      [0, 1],
-      [1, 2],
-      [2, 4],
-      [3, 5],
-      [4, 6],
-      [5, 8],
-      [6, 7],
-      [7, 9],
-      [8, 10],
-      [10, 11],
-      [11, 12],
-      [12, 13],
-      [13, 14],
-      [14, 0],
-      [1, 5],
-      [3, 8],
-      [5, 12],
-      [6, 10],
-      [4, 12],
-    ];
-    for (final link in links) {
-      canvas.drawLine(points[link[0]], points[link[1]], line);
-    }
-
-    final dot = Paint()..color = Colors.white.withValues(alpha: 0.14);
-    for (final point in points) {
-      canvas.drawCircle(point, 2.2, dot);
-    }
-
-    final eased = Curves.easeInOutCubic.transform(math.sin(t * math.pi));
-    for (var i = 0; i < 2; i++) {
-      final index = (seed + i * 5) % points.length;
-      final color = (seed + i).isEven
-          ? const Color(0xFF3BD6FF)
-          : const Color(0xFFA56BFF);
-      final glow = Paint()
-        ..color = color.withValues(alpha: 0.36 * eased)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20);
-      final core = Paint()..color = color.withValues(alpha: 0.82 * eased);
-      canvas.drawCircle(points[index], 18, glow);
-      canvas.drawCircle(points[index], 4.1, core);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _ProfileMeshPainter oldDelegate) {
-    return oldDelegate.t != t || oldDelegate.seed != seed;
   }
 }
 

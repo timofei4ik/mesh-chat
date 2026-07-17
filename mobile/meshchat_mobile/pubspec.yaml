@@ -1,7 +1,7 @@
 name: meshchat_mobile
 description: "MeshChat mobile client."
 publish_to: "none"
-version: 1.0.9+109
+version: 1.0.23+123
 
 environment:
   sdk: ^3.12.2
@@ -43,6 +43,11 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    - family: NotoSansLinearB
+      fonts:
+        - asset: assets/fonts/NotoSansLinearB-Regular.ttf
   assets:
     - assets/app_icon.png
+    - assets/meshpro_badge.png
     - assets/moose_reaction.png

@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/app_settings.dart';
+import '../models/meshpro_subscription.dart';
 import '../models/profile.dart';
+import '../models/scheduled_message.dart';
 import '../models/session.dart';
 import '../models/sticker_pack.dart';
 import '../models/story_item.dart';
@@ -41,6 +44,129 @@ class DiagnosticEvent {
   final String message;
 }
 
+class AiRewriteResult {
+  const AiRewriteResult({required this.text, required this.remaining});
+
+  final String text;
+  final int remaining;
+}
+
+class AiTranslationResult {
+  const AiTranslationResult({
+    required this.text,
+    required this.sourceLanguage,
+    required this.targetLanguage,
+    required this.remaining,
+  });
+
+  final String text;
+  final String sourceLanguage;
+  final String targetLanguage;
+  final int remaining;
+}
+
+class AiSummaryResult {
+  const AiSummaryResult({required this.text, required this.remaining});
+
+  final String text;
+  final int remaining;
+}
+
+class AiTranscriptionResult {
+  const AiTranscriptionResult({
+    required this.text,
+    required this.language,
+    required this.durationSeconds,
+    required this.remainingMinutes,
+  });
+
+  final String text;
+  final String language;
+  final double durationSeconds;
+  final int remainingMinutes;
+}
+
+class AiOcrResult {
+  const AiOcrResult({
+    required this.text,
+    required this.language,
+    required this.processed,
+    required this.remaining,
+  });
+
+  final String text;
+  final String language;
+  final bool processed;
+  final int remaining;
+}
+
+class AiSmartRepliesResult {
+  const AiSmartRepliesResult({required this.replies, required this.remaining});
+
+  final List<String> replies;
+  final int remaining;
+}
+
+class AiRewriteException implements Exception {
+  const AiRewriteException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AiTranslationException implements Exception {
+  const AiTranslationException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AiSummaryException implements Exception {
+  const AiSummaryException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AiTranscriptionException implements Exception {
+  const AiTranscriptionException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AiOcrException implements Exception {
+  const AiOcrException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AiSmartRepliesException implements Exception {
+  const AiSmartRepliesException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class ActiveCall {
   const ActiveCall({
     required this.callId,
@@ -58,6 +184,10 @@ class ActiveCall {
     this.speakerOn = true,
     this.collapsed = false,
     this.quality = 0,
+    this.hdAudio = false,
+    this.enhancedNoiseSuppression = false,
+    this.screenSharing = false,
+    this.remoteScreenSharing = false,
   });
 
   final String callId;
@@ -75,6 +205,10 @@ class ActiveCall {
   final bool speakerOn;
   final bool collapsed;
   final int quality;
+  final bool hdAudio;
+  final bool enhancedNoiseSuppression;
+  final bool screenSharing;
+  final bool remoteScreenSharing;
 
   ActiveCall copyWith({
     CallStatus? status,
@@ -84,6 +218,8 @@ class ActiveCall {
     bool? speakerOn,
     bool? collapsed,
     int? quality,
+    bool? screenSharing,
+    bool? remoteScreenSharing,
   }) {
     return ActiveCall(
       callId: callId,
@@ -101,6 +237,10 @@ class ActiveCall {
       speakerOn: speakerOn ?? this.speakerOn,
       collapsed: collapsed ?? this.collapsed,
       quality: quality ?? this.quality,
+      hdAudio: hdAudio,
+      enhancedNoiseSuppression: enhancedNoiseSuppression,
+      screenSharing: screenSharing ?? this.screenSharing,
+      remoteScreenSharing: remoteScreenSharing ?? this.remoteScreenSharing,
     );
   }
 }
@@ -130,10 +270,13 @@ class AppController extends ChangeNotifier {
   final Map<String, ChatThread> groups = {};
   final Map<String, StoryItem> stories = {};
   final List<StoryItem> storyArchive = [];
+  final List<ScheduledMessageItem> scheduledMessages = [];
   final Set<String> hiddenStoryOwners = {};
   final Map<String, DateTime> typingUntil = {};
   final Map<String, String> activityKinds = {};
   StickerLibrary stickerLibrary = const StickerLibrary();
+  MeshProSubscription meshProSubscription =
+      const MeshProSubscription.inactive();
 
   Session? session;
   List<Session> recentSessions = [];
@@ -147,15 +290,34 @@ class AppController extends ChangeNotifier {
   DateTime? lastSyncAt;
   String? error;
   Completer<Profile?>? _lookupCompleter;
+  Completer<MeshProSubscription>? _meshProCompleter;
+  final Map<String, Completer<AiRewriteResult>> _aiRewriteCompleters = {};
+  final Map<String, Completer<AiTranslationResult>> _aiTranslationCompleters =
+      {};
+  final Map<String, Completer<AiSummaryResult>> _aiSummaryCompleters = {};
+  final Map<String, Completer<AiTranscriptionResult>>
+  _aiTranscriptionCompleters = {};
+  final Map<String, Completer<AiOcrResult>> _aiOcrCompleters = {};
+  final Map<String, Completer<AiSmartRepliesResult>> _aiSmartRepliesCompleters =
+      {};
+  final Map<String, Completer<String?>> _scheduledMessageCompleters = {};
+  final Map<String, Completer<String?>> _chatPreferenceCompleters = {};
   bool _lookupSendRequest = true;
   Completer<String?>? _profileUpdateCompleter;
   Completer<List<ActiveDevice>>? _activeDevicesCompleter;
+  final Map<String, Completer<String?>> _activeDeviceActionCompleters = {};
+  final Map<String, Completer<String?>> _meshProPreferenceCompleters = {};
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
   Timer? _callTicker;
   Timer? _softResyncTimer;
+  final Map<int, String> _stickerLibrarySyncChunks = {};
+  int _stickerLibrarySyncTotal = 0;
   bool _webPushSubscribeInFlight = false;
+  String _androidPushToken = '';
+  String _androidPushSubscribedToken = '';
   bool _retryingQueuedMessages = false;
+  final Set<String> _resendingMessageIds = {};
   bool _ownProfileHydrated = false;
   Timer? _incomingPreviewTimer;
   final List<DiagnosticEvent> diagnostics = [];
@@ -169,8 +331,11 @@ class AppController extends ChangeNotifier {
   int incomingPreviewVersion = 0;
 
   AppController() {
+    _notifications.onAndroidPushToken = _handleAndroidPushToken;
     ble.onPacket = _handleBluetoothPacket;
     ble.addListener(_handleBluetoothStateChanged);
+    _calls.onRemoteScreenChanged = _handleRemoteScreenChanged;
+    _calls.onLocalScreenEnded = _handleLocalScreenEnded;
   }
 
   void addDiagnostic(String area, String message) {
@@ -314,8 +479,18 @@ class AppController extends ChangeNotifier {
     ChatThread thread,
     StickerItem sticker, {
     ChatMessage? replyTo,
-  }) {
+  }) async {
     final caption = sticker.name.trim();
+    if (thread.isBluetooth) {
+      return sendBluetoothFileToThread(
+        thread,
+        sticker.fileName,
+        sticker.bytes,
+        caption: caption,
+        replyTo: replyTo,
+        kind: ChatMessageKind.sticker,
+      );
+    }
     if (thread.isGroup) {
       return sendGroupFile(
         thread,
@@ -443,6 +618,44 @@ class AppController extends ChangeNotifier {
           : null,
       publicKey: profile.publicKey.isEmpty ? _crypto.publicKey : null,
       online: status == 'Online' || status.startsWith('Online:'),
+      meshProBadge:
+          meshProSubscription.isActiveNow &&
+          meshProSubscription.entitlements.hasFeature('premium_badge'),
+      profileBackground:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('profile_background')
+          ? profile.profileBackground ?? Profile.defaultBackground
+          : Profile.defaultBackground,
+      profileEffect:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('profile_effect')
+          ? profile.profileEffect ?? Profile.defaultEffect
+          : Profile.defaultEffect,
+      profileBlinkShape:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('profile_effect')
+          ? profile.profileBlinkShape ?? Profile.defaultBlinkShape
+          : Profile.defaultBlinkShape,
+      avatarDecoration:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('animated_avatar')
+          ? profile.avatarDecoration ?? Profile.defaultAvatarDecoration
+          : Profile.defaultAvatarDecoration,
+      profileGlow:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('profile_glow')
+          ? profile.profileGlow ?? false
+          : false,
+      profileAccent:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('custom_accent')
+          ? profile.profileAccent ?? Profile.defaultAccent
+          : Profile.defaultAccent,
+      emojiStatus:
+          meshProSubscription.isActiveNow &&
+              meshProSubscription.entitlements.hasFeature('emoji_status')
+          ? profile.emojiStatus
+          : '',
     );
   }
 
@@ -454,6 +667,8 @@ class AppController extends ChangeNotifier {
       online: appSettings.showOnline && profile.online,
     );
   }
+
+  String get _outgoingMessageEffect => _publicOwnProfile.effectiveMessageEffect;
 
   String get savedMessagesNodeId =>
       myNodeId.isEmpty ? 'saved:local' : 'saved:$myNodeId';
@@ -519,6 +734,18 @@ class AppController extends ChangeNotifier {
       avatarData: incoming.avatarData.isEmpty ? existing.avatarData : null,
       publicKey: incoming.publicKey.isEmpty ? existing.publicKey : null,
       online: online ?? incoming.online || existing.online,
+      meshProBadge: incoming.meshProBadge ?? existing.meshProBadge,
+      profileBackground:
+          incoming.profileBackground ?? existing.profileBackground,
+      profileEffect: incoming.profileEffect ?? existing.profileEffect,
+      profileBlinkShape:
+          incoming.profileBlinkShape ?? existing.profileBlinkShape,
+      avatarDecoration: incoming.avatarDecoration ?? existing.avatarDecoration,
+      profileGlow: incoming.profileGlow ?? existing.profileGlow,
+      profileAccent: incoming.profileAccent ?? existing.profileAccent,
+      emojiStatus: incoming.emojiStatus.trim().isEmpty
+          ? existing.emojiStatus
+          : incoming.emojiStatus,
     );
   }
 
@@ -690,6 +917,7 @@ class AppController extends ChangeNotifier {
       );
       changed = changed || before != thread.messages.length;
     }
+    await ble.clearQueuedPackets();
     if (!changed) return;
     await _saveCache();
     notifyListeners();
@@ -771,10 +999,750 @@ class AppController extends ChangeNotifier {
 
   Future<void> handleAppResumed() async {
     unawaited(_notifications.initialize());
+    unawaited(_notifications.refreshAndroidPushToken());
     if (session == null) return;
     if (!_socket.isConnected) {
       await _connect();
+    } else {
+      unawaited(refreshMeshProSubscription());
     }
+  }
+
+  Future<MeshProSubscription> refreshMeshProSubscription() async {
+    if (session == null || !_socket.isConnected) {
+      return meshProSubscription;
+    }
+    final pending = _meshProCompleter;
+    if (pending != null) return pending.future;
+    final completer = Completer<MeshProSubscription>();
+    _meshProCompleter = completer;
+    _socket.send({
+      'type': 'subscription_status_request',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'product': 'meshpro',
+      'ttl': 5,
+    });
+    return completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        if (identical(_meshProCompleter, completer)) {
+          _meshProCompleter = null;
+        }
+        return meshProSubscription;
+      },
+    );
+  }
+
+  void _applyMeshProSubscription(Object? raw) {
+    meshProSubscription = MeshProSubscription.fromJson(raw);
+    final completer = _meshProCompleter;
+    _meshProCompleter = null;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(meshProSubscription);
+    }
+    notifyListeners();
+  }
+
+  bool _hasMeshProFeature(String featureId) {
+    return meshProSubscription.isActiveNow &&
+        meshProSubscription.entitlements.hasFeature(featureId);
+  }
+
+  Future<bool> _refreshMeshProFeature(String featureId) async {
+    if (_hasMeshProFeature(featureId)) return true;
+    if (session == null || !_socket.isConnected) return false;
+    try {
+      await refreshMeshProSubscription();
+    } catch (_) {
+      // The feature request will surface the appropriate subscription error.
+    }
+    return _hasMeshProFeature(featureId);
+  }
+
+  Future<AiRewriteResult> rewriteTextWithAi({
+    required String text,
+    required String style,
+  }) async {
+    final current = session;
+    final normalizedText = text.trim();
+    if (current == null) {
+      throw const AiRewriteException('unauthorized', 'Sign in first');
+    }
+    if (normalizedText.isEmpty) {
+      throw const AiRewriteException('empty_text', 'Write a message first');
+    }
+    if (!_socket.isConnected) {
+      throw const AiRewriteException(
+        'offline',
+        'Connect to the server to use AI tools',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_text_rewrite')) {
+      throw const AiRewriteException(
+        'meshpro_required',
+        'AI writing tools require MeshPro',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiRewriteResult>();
+    _aiRewriteCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_text_rewrite_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'style': style,
+        'text': normalizedText,
+      });
+    } catch (_) {
+      _aiRewriteCompleters.remove(requestId);
+      throw const AiRewriteException(
+        'send_failed',
+        'Could not send the AI request',
+      );
+    }
+
+    return completer.future.timeout(
+      const Duration(seconds: 55),
+      onTimeout: () {
+        _aiRewriteCompleters.remove(requestId);
+        throw const AiRewriteException(
+          'timeout',
+          'The AI service took too long to respond',
+        );
+      },
+    );
+  }
+
+  void _handleAiRewriteResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiRewriteCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      completer.complete(
+        AiRewriteResult(
+          text: packet['text']?.toString() ?? '',
+          remaining: int.tryParse(packet['remaining']?.toString() ?? '') ?? 0,
+        ),
+      );
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'AI writing tools require MeshPro',
+      'quota_exceeded': 'The monthly AI rewrite limit has been reached',
+      'ai_unavailable': 'AI is not configured on the server yet',
+      'provider_error': 'The AI provider is temporarily unavailable',
+      'text_too_long': 'This message is too long for the AI assistant',
+      'unsupported_style': 'This writing style is not supported',
+      'empty_text': 'Write a message first',
+      'unauthorized': 'Sign in again to use AI tools',
+    };
+    completer.completeError(
+      AiRewriteException(code, messages[code] ?? 'AI rewrite failed'),
+    );
+  }
+
+  Future<AiTranslationResult> translateMessageWithAi({
+    required String text,
+    required String targetLanguage,
+  }) async {
+    final current = session;
+    final normalizedText = text.trim();
+    final normalizedTarget = targetLanguage.trim().toLowerCase();
+    if (current == null) {
+      throw const AiTranslationException('unauthorized', 'Sign in first');
+    }
+    if (normalizedText.isEmpty) {
+      throw const AiTranslationException(
+        'empty_text',
+        'This message has no text to translate',
+      );
+    }
+    if (!_socket.isConnected) {
+      throw const AiTranslationException(
+        'offline',
+        'Connect to the server to translate messages',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_message_translation')) {
+      throw const AiTranslationException(
+        'meshpro_required',
+        'Message translation requires MeshPro',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiTranslationResult>();
+    _aiTranslationCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'ai_message_translation_request',
+      'packet_id': requestId,
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': current.nodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'text': normalizedText,
+      'target_language': normalizedTarget,
+    });
+    return completer.future.timeout(
+      const Duration(seconds: 55),
+      onTimeout: () {
+        _aiTranslationCompleters.remove(requestId);
+        throw const AiTranslationException(
+          'timeout',
+          'The translation service took too long to respond',
+        );
+      },
+    );
+  }
+
+  void _handleAiTranslationResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiTranslationCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      completer.complete(
+        AiTranslationResult(
+          text: packet['text']?.toString() ?? '',
+          sourceLanguage: packet['source_language']?.toString() ?? 'auto',
+          targetLanguage: packet['target_language']?.toString() ?? '',
+          remaining: int.tryParse(packet['remaining']?.toString() ?? '') ?? 0,
+        ),
+      );
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'Message translation requires MeshPro',
+      'quota_exceeded': 'The monthly translation limit has been reached',
+      'ai_unavailable': 'AI is not configured on the server yet',
+      'provider_error': 'The translation provider is temporarily unavailable',
+      'text_too_long': 'This message is too long to translate',
+      'unsupported_language': 'This language is not supported',
+      'empty_text': 'This message has no text to translate',
+      'unauthorized': 'Sign in again to use translation',
+    };
+    completer.completeError(
+      AiTranslationException(code, messages[code] ?? 'Translation failed'),
+    );
+  }
+
+  Future<AiSummaryResult> summarizeMessagesWithAi(
+    List<ChatMessage> messages,
+  ) async {
+    final current = session;
+    if (current == null) {
+      throw const AiSummaryException('unauthorized', 'Sign in first');
+    }
+    if (!_socket.isConnected) {
+      throw const AiSummaryException(
+        'offline',
+        'Connect to the server to create a summary',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_chat_summary')) {
+      throw const AiSummaryException(
+        'meshpro_required',
+        'Unread summaries require MeshPro',
+      );
+    }
+
+    final payload = <Map<String, String>>[];
+    for (final message in messages.where((item) => !item.deleted).take(80)) {
+      var text = message.text.trim();
+      if (text.isEmpty && message.kind == ChatMessageKind.sticker) {
+        text = '[Sticker]';
+      } else if (text.isEmpty && message.kind == ChatMessageKind.file) {
+        final lowerName = message.fileName.toLowerCase();
+        if (RegExp(r'\.(m4a|mp3|wav|ogg|webm|aac)$').hasMatch(lowerName)) {
+          text = message.transcription.trim().isNotEmpty
+              ? '[Voice message] ${message.transcription.trim()}'
+              : '[Voice message]';
+        } else if (RegExp(
+          r'\.(png|jpe?g|gif|webp|heic)$',
+        ).hasMatch(lowerName)) {
+          text = '[Photo]';
+        } else {
+          text = message.fileName.trim().isEmpty
+              ? '[File]'
+              : '[File: ${message.fileName.trim()}]';
+        }
+      }
+      if (text.isEmpty) continue;
+      final sender = message.senderNode == myNodeId
+          ? 'You'
+          : (profiles[message.senderNode]?.displayName.trim().isNotEmpty == true
+                ? profiles[message.senderNode]!.displayName.trim()
+                : message.senderNode);
+      payload.add({'sender': sender, 'text': text});
+    }
+    if (payload.isEmpty) {
+      throw const AiSummaryException(
+        'no_messages',
+        'There are no unread messages to summarize',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiSummaryResult>();
+    _aiSummaryCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_chat_summary_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'messages': payload,
+      });
+    } catch (_) {
+      _aiSummaryCompleters.remove(requestId);
+      throw const AiSummaryException(
+        'send_failed',
+        'Could not send the summary request',
+      );
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 55),
+      onTimeout: () {
+        _aiSummaryCompleters.remove(requestId);
+        throw const AiSummaryException(
+          'timeout',
+          'The AI service took too long to respond',
+        );
+      },
+    );
+  }
+
+  Future<AiTranscriptionResult> transcribeVoiceWithAi(
+    ChatMessage message,
+  ) async {
+    final current = session;
+    if (current == null) {
+      throw const AiTranscriptionException('unauthorized', 'Sign in first');
+    }
+    if (!_socket.isConnected) {
+      throw const AiTranscriptionException(
+        'offline',
+        'Connect to the server to transcribe audio',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_voice_transcription')) {
+      throw const AiTranscriptionException(
+        'meshpro_required',
+        'Voice transcription requires MeshPro',
+      );
+    }
+    if (message.fileData.isEmpty) {
+      throw const AiTranscriptionException(
+        'empty_audio',
+        'The audio file is not cached on this device',
+      );
+    }
+    final bytes = _hexDecode(message.fileData);
+    if (bytes.isEmpty) {
+      throw const AiTranscriptionException('empty_audio', 'Audio is empty');
+    }
+    if (bytes.length > 8 * 1024 * 1024) {
+      throw const AiTranscriptionException(
+        'audio_too_large',
+        'Voice transcription supports files up to 8 MB',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiTranscriptionResult>();
+    _aiTranscriptionCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_voice_transcription_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'message_id': message.id,
+        'filename': message.fileName.trim().isEmpty
+            ? 'voice.m4a'
+            : message.fileName,
+        'audio_base64': base64Encode(bytes),
+        'duration_seconds': _voiceDurationHint(message.fileName),
+      });
+    } catch (_) {
+      _aiTranscriptionCompleters.remove(requestId);
+      throw const AiTranscriptionException(
+        'send_failed',
+        'Could not send the transcription request',
+      );
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 70),
+      onTimeout: () {
+        _aiTranscriptionCompleters.remove(requestId);
+        throw const AiTranscriptionException(
+          'timeout',
+          'Voice transcription took too long',
+        );
+      },
+    );
+  }
+
+  Future<AiOcrResult> extractImageTextWithAi(ChatMessage message) async {
+    final current = session;
+    if (current == null) {
+      throw const AiOcrException('unauthorized', 'Sign in first');
+    }
+    if (!_socket.isConnected) {
+      throw const AiOcrException(
+        'offline',
+        'Connect to the server to extract text',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_image_ocr')) {
+      throw const AiOcrException(
+        'meshpro_required',
+        'Photo and document OCR requires MeshPro',
+      );
+    }
+    if (message.fileData.isEmpty) {
+      throw const AiOcrException(
+        'empty_image',
+        'The image is not cached on this device',
+      );
+    }
+    final bytes = _hexDecode(message.fileData);
+    if (bytes.isEmpty) {
+      throw const AiOcrException('empty_image', 'The image is empty');
+    }
+    if (bytes.length > 2 * 1024 * 1024) {
+      throw const AiOcrException(
+        'image_too_large',
+        'OCR currently supports images up to 2 MB',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiOcrResult>();
+    _aiOcrCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_image_ocr_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'message_id': message.id,
+        'filename': message.fileName.trim().isEmpty
+            ? 'image.jpg'
+            : message.fileName,
+        'image_base64': base64Encode(bytes),
+      });
+    } catch (_) {
+      _aiOcrCompleters.remove(requestId);
+      throw const AiOcrException(
+        'send_failed',
+        'Could not send the OCR request',
+      );
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 70),
+      onTimeout: () {
+        _aiOcrCompleters.remove(requestId);
+        throw const AiOcrException('timeout', 'Text extraction took too long');
+      },
+    );
+  }
+
+  Future<AiSmartRepliesResult> suggestRepliesWithAi(
+    List<ChatMessage> messages,
+  ) async {
+    final current = session;
+    if (current == null) {
+      throw const AiSmartRepliesException('unauthorized', 'Sign in first');
+    }
+    if (!_socket.isConnected) {
+      throw const AiSmartRepliesException(
+        'offline',
+        'Connect to the server to generate replies',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_smart_replies')) {
+      throw const AiSmartRepliesException(
+        'meshpro_required',
+        'Smart replies require MeshPro',
+      );
+    }
+
+    final payload = <Map<String, dynamic>>[];
+    for (final message in messages.where((item) => !item.deleted).take(20)) {
+      var text = message.text.trim();
+      if (text.isEmpty && message.transcription.trim().isNotEmpty) {
+        text = '[Voice] ${message.transcription.trim()}';
+      } else if (text.isEmpty && message.ocrText.trim().isNotEmpty) {
+        text = '[Image text] ${message.ocrText.trim()}';
+      } else if (text.isEmpty && message.kind == ChatMessageKind.file) {
+        text = message.fileName.trim().isEmpty
+            ? '[Attachment]'
+            : '[Attachment: ${message.fileName.trim()}]';
+      } else if (text.isEmpty && message.kind == ChatMessageKind.sticker) {
+        text = '[Sticker]';
+      }
+      if (text.isEmpty) continue;
+      final isMine = message.senderNode == myNodeId;
+      final sender = isMine
+          ? 'You'
+          : (profiles[message.senderNode]?.displayName.trim().isNotEmpty == true
+                ? profiles[message.senderNode]!.displayName.trim()
+                : 'Other person');
+      payload.add({'sender': sender, 'text': text, 'is_mine': isMine});
+    }
+    if (payload.isEmpty || payload.every((item) => item['is_mine'] == true)) {
+      throw const AiSmartRepliesException(
+        'no_messages',
+        'There is no incoming message to answer yet',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiSmartRepliesResult>();
+    _aiSmartRepliesCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_smart_replies_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'messages': payload,
+      });
+    } catch (_) {
+      _aiSmartRepliesCompleters.remove(requestId);
+      throw const AiSmartRepliesException(
+        'send_failed',
+        'Could not request smart replies',
+      );
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 55),
+      onTimeout: () {
+        _aiSmartRepliesCompleters.remove(requestId);
+        throw const AiSmartRepliesException(
+          'timeout',
+          'Smart replies took too long',
+        );
+      },
+    );
+  }
+
+  double _voiceDurationHint(String filename) {
+    final match = RegExp(r'_(\d+)s(?:\.|$)').firstMatch(filename);
+    return double.tryParse(match?.group(1) ?? '') ?? 0;
+  }
+
+  void _handleAiSummaryResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiSummaryCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      completer.complete(
+        AiSummaryResult(
+          text: packet['text']?.toString() ?? '',
+          remaining: int.tryParse(packet['remaining']?.toString() ?? '') ?? 0,
+        ),
+      );
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'Unread summaries require MeshPro',
+      'quota_exceeded': 'The monthly summary limit has been reached',
+      'ai_unavailable': 'AI is not configured on the server yet',
+      'provider_error': 'The AI provider is temporarily unavailable',
+      'no_messages': 'There are no unread messages to summarize',
+      'unauthorized': 'Sign in again to use AI tools',
+    };
+    completer.completeError(
+      AiSummaryException(code, messages[code] ?? 'Could not create summary'),
+    );
+  }
+
+  void _handleAiTranscriptionResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiTranscriptionCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      final result = AiTranscriptionResult(
+        text: packet['text']?.toString() ?? '',
+        language: packet['language']?.toString() ?? '',
+        durationSeconds:
+            double.tryParse(packet['duration_seconds']?.toString() ?? '') ?? 0,
+        remainingMinutes:
+            int.tryParse(packet['remaining_minutes']?.toString() ?? '') ?? 0,
+      );
+      final messageId = packet['message_id']?.toString() ?? '';
+      _applyVoiceTranscription(messageId, result);
+      completer.complete(result);
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'Voice transcription requires MeshPro',
+      'quota_exceeded': 'The monthly transcription limit has been reached',
+      'ai_unavailable': 'AI transcription is not configured on the server',
+      'provider_error': 'Could not transcribe this voice message',
+      'unsupported_audio_format': 'This audio format is not supported',
+      'audio_too_large': 'Voice transcription supports files up to 8 MB',
+      'empty_audio': 'The audio file is not available on this device',
+      'invalid_audio': 'The cached audio file is invalid',
+      'unauthorized': 'Sign in again to use AI tools',
+    };
+    completer.completeError(
+      AiTranscriptionException(
+        code,
+        messages[code] ?? 'Voice transcription failed',
+      ),
+    );
+  }
+
+  void _handleAiOcrResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiOcrCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      final result = AiOcrResult(
+        text: packet['text']?.toString() ?? '',
+        language: packet['language']?.toString() ?? '',
+        processed: packet['processed'] == true,
+        remaining: int.tryParse(packet['remaining']?.toString() ?? '') ?? 0,
+      );
+      _applyImageOcr(packet['message_id']?.toString() ?? '', result);
+      completer.complete(result);
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'Photo and document OCR requires MeshPro',
+      'quota_exceeded': 'The monthly OCR limit has been reached',
+      'ai_unavailable': 'Image OCR is not configured on the server',
+      'provider_error': 'Could not extract text from this image',
+      'unsupported_image_format': 'OCR supports JPEG, PNG, and WebP images',
+      'image_too_large': 'OCR currently supports images up to 2 MB',
+      'empty_image': 'The image is not available on this device',
+      'invalid_image': 'The cached image is invalid',
+      'unauthorized': 'Sign in again to use AI tools',
+    };
+    completer.completeError(
+      AiOcrException(code, messages[code] ?? 'Text extraction failed'),
+    );
+  }
+
+  void _handleAiSmartRepliesResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiSmartRepliesCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      final rawReplies = packet['replies'];
+      final replies = rawReplies is List
+          ? rawReplies
+                .map((item) => item.toString().trim())
+                .where((item) => item.isNotEmpty)
+                .take(3)
+                .toList(growable: false)
+          : const <String>[];
+      if (replies.length == 3) {
+        completer.complete(
+          AiSmartRepliesResult(
+            replies: replies,
+            remaining: int.tryParse(packet['remaining']?.toString() ?? '') ?? 0,
+          ),
+        );
+      } else {
+        completer.completeError(
+          const AiSmartRepliesException(
+            'invalid_response',
+            'The AI service returned incomplete replies',
+          ),
+        );
+      }
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'Smart replies require MeshPro',
+      'quota_exceeded': 'The monthly smart reply limit has been reached',
+      'ai_unavailable': 'AI is not configured on the server yet',
+      'provider_error': 'Could not generate smart replies',
+      'no_messages': 'There is no incoming message to answer yet',
+      'unauthorized': 'Sign in again to use AI tools',
+    };
+    completer.completeError(
+      AiSmartRepliesException(
+        code,
+        messages[code] ?? 'Could not generate smart replies',
+      ),
+    );
+  }
+
+  void _applyVoiceTranscription(
+    String messageId,
+    AiTranscriptionResult result,
+  ) {
+    if (messageId.isEmpty) return;
+    var changed = false;
+    for (final thread in [...threads.values, ...groups.values]) {
+      final index = thread.messages.indexWhere(
+        (message) => message.id == messageId,
+      );
+      if (index < 0) continue;
+      final current = thread.messages[index];
+      thread.messages[index] = current.copyWith(
+        transcription: result.text,
+        transcriptionLanguage: result.language,
+        transcriptionDurationSeconds: result.durationSeconds,
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    unawaited(_saveCache());
+    notifyListeners();
+  }
+
+  void _applyImageOcr(String messageId, AiOcrResult result) {
+    if (messageId.isEmpty) return;
+    var changed = false;
+    for (final thread in [...threads.values, ...groups.values]) {
+      final index = thread.messages.indexWhere(
+        (message) => message.id == messageId,
+      );
+      if (index < 0) continue;
+      final current = thread.messages[index];
+      thread.messages[index] = current.copyWith(
+        ocrText: result.text,
+        ocrLanguage: result.language,
+        ocrProcessed: result.processed,
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    unawaited(_saveCache());
+    notifyListeners();
   }
 
   Future<void> forceResync() async {
@@ -798,6 +1766,56 @@ class AppController extends ChangeNotifier {
   Future<void> requestNotificationPermissions() async {
     await _notifications.requestPermissions();
     await _syncWebPushSubscription();
+    await _syncAndroidPushToken();
+  }
+
+  void _handleAndroidPushToken(String token) {
+    final normalized = token.trim();
+    if (normalized.isEmpty || _androidPushToken == normalized) return;
+    _androidPushToken = normalized;
+    _androidPushSubscribedToken = '';
+    unawaited(_syncAndroidPushToken());
+  }
+
+  Future<void> _syncAndroidPushToken() async {
+    if (kIsWeb ||
+        session == null ||
+        !_socket.isConnected ||
+        !appSettings.notificationsEnabled ||
+        _androidPushToken.isEmpty ||
+        _androidPushSubscribedToken == _androidPushToken) {
+      return;
+    }
+    _socket.send({
+      'type': 'fcm_subscribe',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'token': _androidPushToken,
+      'ttl': 5,
+    });
+    _androidPushSubscribedToken = _androidPushToken;
+  }
+
+  Future<void> _unsubscribeAndroidPush() async {
+    if (kIsWeb ||
+        session == null ||
+        !_socket.isConnected ||
+        _androidPushToken.isEmpty) {
+      return;
+    }
+    _socket.send({
+      'type': 'fcm_unsubscribe',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'token': _androidPushToken,
+      'ttl': 5,
+    });
+    _androidPushSubscribedToken = '';
+    await Future<void>.delayed(const Duration(milliseconds: 80));
   }
 
   Future<void> _syncWebPushSubscription() async {
@@ -883,7 +1901,7 @@ class AppController extends ChangeNotifier {
       await _repairCachedMessages();
       _restoreGroupKeysFromThreads();
       await _repairCachedGroupMessages();
-      await _connect();
+      await _connect(reactivateDevice: true);
       return true;
     } catch (exception) {
       error = exception.toString();
@@ -939,7 +1957,7 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _connect() async {
+  Future<void> _connect({bool reactivateDevice = false}) async {
     final current = session;
     if (current == null) return;
     await _crypto.initialize(current.login, current.password);
@@ -947,6 +1965,8 @@ class AppController extends ChangeNotifier {
       session: current,
       publicKey: _crypto.publicKey,
       profile: _publicOwnProfile,
+      deviceName: _defaultDeviceName,
+      reactivateDevice: reactivateDevice,
       onPacket: _handlePacket,
       onStatus: (value) {
         status = value;
@@ -959,6 +1979,7 @@ class AppController extends ChangeNotifier {
   Future<void> _handlePacket(Map<String, dynamic> packet) async {
     switch (packet['type']) {
       case 'server_welcome':
+        _applyMeshProSubscription(packet['subscription']);
         if (!MeshSocket.isProtocolCompatible(packet)) {
           status = MeshSocket.protocolError(packet);
         } else {
@@ -967,11 +1988,15 @@ class AppController extends ChangeNotifier {
           _webPushVapidPublicKey =
               packet['web_push_vapid_public_key']?.toString() ?? '';
           unawaited(_syncWebPushSubscription());
+          unawaited(_syncAndroidPushToken());
           unawaited(_retryQueuedMessages());
         }
       case 'server_error':
         if (packet['code'] == 'incompatible_protocol') {
           status = MeshSocket.protocolError(packet);
+        } else if (packet['code'] == 'device_revoked') {
+          status = 'This device was signed out remotely';
+          unawaited(_handleDeviceRevoked());
         } else {
           status =
               packet['message']?.toString() ??
@@ -994,8 +2019,28 @@ class AppController extends ChangeNotifier {
         _handleLookup(packet);
       case 'profile_update_result':
         _handleProfileUpdateResult(packet);
+      case 'subscription_status_result':
+        _applyMeshProSubscription(packet['subscription']);
+      case 'ai_text_rewrite_result':
+        _handleAiRewriteResult(packet);
+      case 'ai_message_translation_result':
+        _handleAiTranslationResult(packet);
+      case 'ai_chat_summary_result':
+        _handleAiSummaryResult(packet);
+      case 'ai_voice_transcription_result':
+        _handleAiTranscriptionResult(packet);
+      case 'ai_image_ocr_result':
+        _handleAiOcrResult(packet);
+      case 'ai_smart_replies_result':
+        _handleAiSmartRepliesResult(packet);
       case 'active_devices':
         _handleActiveDevices(packet);
+      case 'active_device_action_result':
+        _handleActiveDeviceActionResult(packet);
+      case 'meshpro_preferences_result':
+        await _handleMeshProPreferencesResult(packet);
+      case 'meshpro_preferences_changed':
+        await _applyMeshProPreferences(packet['preferences']);
       case 'chat_message':
         await _receiveMessage(packet);
       case 'group_message':
@@ -1006,6 +2051,8 @@ class AppController extends ChangeNotifier {
         await _receiveFileChunk(packet, fromSync: false);
       case 'server_file_sync_chunk':
         await _receiveFileChunk(packet, fromSync: true);
+      case 'server_sticker_library_sync_chunk':
+        await _applyStickerLibrarySyncChunk(packet);
       case 'message_received':
         _markDelivered(packet['message_id']?.toString() ?? '');
       case 'message_reaction':
@@ -1035,6 +2082,14 @@ class AppController extends ChangeNotifier {
         await _applyStoryViewPacket(packet);
       case 'story_delete':
         await _applyStoryDeletePacket(packet);
+      case 'chat_preferences_result':
+        _handleChatPreferencesResult(packet);
+      case 'scheduled_message_result':
+        _handleScheduledMessageResult(packet);
+      case 'scheduled_messages':
+        _applyScheduledMessages(packet['items']);
+      case 'scheduled_message_sent':
+        _handleScheduledMessageSent(packet);
       case 'chat_request':
         _acceptChatRequest(packet);
       case 'group_join_request':
@@ -1049,17 +2104,70 @@ class AppController extends ChangeNotifier {
         await _handleCallEnd(packet);
       case 'call_ice':
         await _handleCallIce(packet);
+      case 'call_screen_offer':
+        await _handleCallScreenOffer(packet);
+      case 'call_screen_answer':
+        await _handleCallScreenAnswer(packet);
+      case 'call_screen_stop':
+        await _handleCallScreenStop(packet);
     }
     notifyListeners();
   }
 
   Future<void> _handleBluetoothPacket(Map<String, dynamic> packet) async {
-    await _handlePacket({
-      ...packet,
-      'sender_transport': 'bluetooth',
-      'protocol_version':
-          packet['protocol_version'] ?? MeshSocket.protocolVersion,
-    });
+    const allowedTypes = {
+      'chat_message',
+      'file_chunk',
+      'message_received',
+      'message_reaction',
+      'message_edit',
+      'message_delete',
+      'message_pin',
+      'chat_delete',
+      'typing',
+    };
+    final type = packet['type']?.toString() ?? '';
+    final source = packet['source_node']?.toString() ?? '';
+    final destination = packet['destination_node']?.toString() ?? '';
+    final protocol = int.tryParse(packet['protocol_version']?.toString() ?? '');
+    if (!allowedTypes.contains(type) ||
+        source.isEmpty ||
+        source == myNodeId ||
+        destination != myNodeId ||
+        protocol != MeshSocket.protocolVersion) {
+      addDiagnostic('bluetooth', 'Rejected invalid Bluetooth packet: $type');
+      return;
+    }
+    await _handlePacket({...packet, 'sender_transport': 'bluetooth'});
+  }
+
+  bool _isBluetoothPacket(Map<String, dynamic> packet) =>
+      packet['sender_transport'] == 'bluetooth';
+
+  Future<void> _sendDeliveryReceipt(
+    Map<String, dynamic> packet,
+    String sender,
+    String messageId,
+  ) async {
+    if (sender.isEmpty || messageId.isEmpty) return;
+    final receipt = {
+      'type': 'message_received',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': sender,
+      'message_id': messageId,
+      'ttl': _isBluetoothPacket(packet) ? 1 : 5,
+    };
+    if (_isBluetoothPacket(packet)) {
+      try {
+        await ble.sendPacketToNode(sender, receipt);
+      } catch (error) {
+        addDiagnostic('bluetooth', 'Delivery receipt queue failed: $error');
+      }
+    } else {
+      _socket.send(receipt);
+    }
   }
 
   void _applyOnlineUsers(dynamic rawUsers) {
@@ -1123,7 +2231,8 @@ class AppController extends ChangeNotifier {
         Map<String, dynamic>.from(packet['sticker_library'] as Map),
       );
       await _saveStickers(publish: false);
-    } else if (stickerLibrary.packs.isNotEmpty) {
+    } else if (packet['sticker_library_chunked'] != true &&
+        stickerLibrary.packs.isNotEmpty) {
       unawaited(_publishStickerLibrary());
     }
 
@@ -1177,7 +2286,22 @@ class AppController extends ChangeNotifier {
       final thread = _ensurePacketThread(profiles[peerId]!, data);
       final id = data['message_id']?.toString() ?? const Uuid().v4();
       if (_isDeletedMessage(id)) continue;
-      if (thread.messages.any((message) => message.id == id)) continue;
+      final existingIndex = thread.messages.indexWhere(
+        (message) => message.id == id,
+      );
+      if (existingIndex >= 0) {
+        final current = thread.messages[existingIndex];
+        thread.messages[existingIndex] = current.copyWith(
+          replyToMessageId:
+              data['reply_to_message_id']?.toString() ??
+              current.replyToMessageId,
+          replyToText: data['reply_to_text']?.toString() ?? current.replyToText,
+          pending: false,
+          delivered: true,
+          failed: false,
+        );
+        continue;
+      }
       final rawText = _firstString(data, const [
         'message',
         'text',
@@ -1198,6 +2322,7 @@ class AppController extends ChangeNotifier {
           createdAt: _parsePacketDate(data),
           replyToMessageId: data['reply_to_message_id']?.toString() ?? '',
           replyToText: data['reply_to_text']?.toString() ?? '',
+          messageEffect: data['message_effect']?.toString() ?? 'none',
           delivered: true,
         ),
       );
@@ -1224,10 +2349,62 @@ class AppController extends ChangeNotifier {
     _applyReactions(packet['reactions']);
     _applyPins(packet['pins']);
     await _applyStories(packet['stories']);
+    await _applyStoryArchive(packet['story_archive']);
+    _applyChatPreferences(packet['chat_preferences']);
+    await _applyMeshProPreferences(packet['meshpro_preferences']);
+    _applyScheduledMessages(packet['scheduled_messages']);
     await _repairCachedGroups();
     await _repairCachedMessages();
     await _saveCache();
     notifyListeners();
+  }
+
+  Future<void> _applyStickerLibrarySyncChunk(
+    Map<String, dynamic> packet,
+  ) async {
+    final chunkIndex = int.tryParse(packet['chunk_index']?.toString() ?? '');
+    final totalChunks = int.tryParse(packet['total_chunks']?.toString() ?? '');
+    final data = packet['data']?.toString() ?? '';
+    if (chunkIndex == null ||
+        totalChunks == null ||
+        chunkIndex < 0 ||
+        totalChunks <= 0 ||
+        chunkIndex >= totalChunks) {
+      addDiagnostic('sync', 'Ignored invalid sticker library chunk');
+      return;
+    }
+
+    if (chunkIndex == 0 || _stickerLibrarySyncTotal != totalChunks) {
+      _stickerLibrarySyncChunks.clear();
+      _stickerLibrarySyncTotal = totalChunks;
+    }
+    _stickerLibrarySyncChunks[chunkIndex] = data;
+    if (_stickerLibrarySyncChunks.length != totalChunks) return;
+
+    final payload = StringBuffer();
+    for (var index = 0; index < totalChunks; index++) {
+      final chunk = _stickerLibrarySyncChunks[index];
+      if (chunk == null) return;
+      payload.write(chunk);
+    }
+
+    try {
+      final decoded = jsonDecode(payload.toString());
+      if (decoded is! Map) {
+        throw const FormatException('Sticker library payload is not a map');
+      }
+      stickerLibrary = StickerLibrary.fromJson(
+        Map<String, dynamic>.from(decoded),
+      );
+      await _saveStickers(publish: false);
+      addDiagnostic('sync', 'Sticker library sync received');
+      notifyListeners();
+    } catch (error) {
+      addDiagnostic('sync', 'Sticker library sync failed: $error');
+    } finally {
+      _stickerLibrarySyncChunks.clear();
+      _stickerLibrarySyncTotal = 0;
+    }
   }
 
   Future<Profile?> lookupUsername(
@@ -1259,6 +2436,13 @@ class AppController extends ChangeNotifier {
     required String publicUsername,
     required String about,
     required String avatarData,
+    String? profileBackground,
+    String? profileEffect,
+    String? profileBlinkShape,
+    String? avatarDecoration,
+    bool? profileGlow,
+    int? profileAccent,
+    String? emojiStatus,
   }) async {
     final current = session;
     if (current == null) return 'Нет активной сессии';
@@ -1274,6 +2458,18 @@ class AppController extends ChangeNotifier {
     final name = displayName.trim().isEmpty
         ? current.login
         : displayName.trim();
+    final normalizedBlinkShape = profileBlinkShape == null
+        ? null
+        : Profile.normalizeBlinkShape(profileBlinkShape);
+    final normalizedBackground = profileBackground == null
+        ? null
+        : Profile.normalizeBackground(profileBackground);
+    final normalizedEffect = profileEffect == null
+        ? null
+        : Profile.normalizeEffect(profileEffect);
+    final normalizedDecoration = avatarDecoration == null
+        ? null
+        : Profile.normalizeAvatarDecoration(avatarDecoration);
     if (!_socket.isConnected) {
       return 'Нет подключения к серверу';
     }
@@ -1290,6 +2486,13 @@ class AppController extends ChangeNotifier {
       'about': about.trim(),
       'avatar_data': avatarData,
       'encryption_public_key': _crypto.publicKey,
+      'profile_background': ?normalizedBackground,
+      'profile_effect': ?normalizedEffect,
+      'profile_blink_shape': ?normalizedBlinkShape,
+      'avatar_decoration': ?normalizedDecoration,
+      'profile_glow': ?profileGlow,
+      'profile_accent': ?profileAccent,
+      'emoji_status': ?emojiStatus,
     };
     final packetBytes = utf8.encode(jsonEncode(packet)).length;
     if (packetBytes > _maxProfilePacketBytes) {
@@ -1303,15 +2506,40 @@ class AppController extends ChangeNotifier {
       _profileUpdateCompleter = null;
       return 'Не удалось отправить профиль: $error';
     }
-    final result = await _profileUpdateCompleter!.future.timeout(
+    var result = await _profileUpdateCompleter!.future.timeout(
       const Duration(seconds: 10),
       onTimeout: () => 'Сервер не ответил',
     );
     _profileUpdateCompleter = null;
+
+    final requestedBackground = normalizedBackground;
+    final fallbackBackground = Profile.legacyCompatibleBackground(
+      requestedBackground,
+    );
+    if (result?.trim().toLowerCase() == 'invalid profile background' &&
+        requestedBackground != null &&
+        requestedBackground != fallbackBackground) {
+      final fallbackPacket = Map<String, dynamic>.from(packet)
+        ..['packet_id'] = const Uuid().v4()
+        ..['profile_background'] = fallbackBackground;
+      _profileUpdateCompleter = Completer<String?>();
+      try {
+        _socket.send(fallbackPacket);
+      } catch (error) {
+        _profileUpdateCompleter = null;
+        return 'Could not send the compatible profile update: $error';
+      }
+      result = await _profileUpdateCompleter!.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => 'Server did not answer the compatible profile update',
+      );
+      _profileUpdateCompleter = null;
+    }
     if (result != null) return result;
 
     session = current.copyWith(publicUsername: normalizedUsername);
     await _store.updatePublicUsername(normalizedUsername);
+    final existing = profiles[current.nodeId];
     final profile = Profile(
       nodeId: current.nodeId,
       displayName: name,
@@ -1322,6 +2550,14 @@ class AppController extends ChangeNotifier {
       avatarData: avatarData,
       publicKey: _crypto.publicKey,
       online: true,
+      meshProBadge: existing?.meshProBadge,
+      profileBackground: normalizedBackground ?? existing?.profileBackground,
+      profileEffect: normalizedEffect ?? existing?.profileEffect,
+      profileBlinkShape: normalizedBlinkShape ?? existing?.profileBlinkShape,
+      avatarDecoration: normalizedDecoration ?? existing?.avatarDecoration,
+      profileGlow: profileGlow ?? existing?.profileGlow,
+      profileAccent: profileAccent ?? existing?.profileAccent,
+      emojiStatus: emojiStatus ?? existing?.emojiStatus ?? '',
     );
     profiles[current.nodeId] = profile;
     _ownProfileHydrated = true;
@@ -1649,29 +2885,47 @@ class AppController extends ChangeNotifier {
     ChatThread group,
     String text, {
     ChatMessage? replyTo,
+    ChatMessage? retryingMessage,
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null || !group.isGroup) return null;
-    final isChannelComment = group.isChannel && replyTo != null;
+    final replyToMessageId =
+        retryingMessage?.replyToMessageId ?? replyTo?.id ?? '';
+    final replyToText =
+        retryingMessage?.replyToText ??
+        (replyTo == null ? '' : _replyPreview(replyTo));
+    final isChannelComment =
+        retryingMessage?.isChannelComment == true ||
+        (group.isChannel && replyToMessageId.isNotEmpty);
     if (isChannelComment && !canCommentInChannel(group)) {
       return null;
     }
     if (group.isChannel && !_canPostToChannel(group) && !isChannelComment) {
       return null;
     }
-    final id = const Uuid().v4();
-    group.messages.add(
-      ChatMessage(
-        id: id,
-        senderNode: myNodeId,
-        receiverNode: group.groupId,
-        text: trimmed,
-        createdAt: DateTime.now(),
-        replyToMessageId: replyTo?.id ?? '',
-        replyToText: replyTo == null ? '' : _replyPreview(replyTo),
-        pending: true,
-      ),
-    );
+    final id = retryingMessage?.id ?? const Uuid().v4();
+    final messageEffect =
+        retryingMessage?.messageEffect ?? _outgoingMessageEffect;
+    final outgoing =
+        retryingMessage?.copyWith(
+          isChannelComment: isChannelComment,
+          pending: true,
+          delivered: false,
+          failed: false,
+        ) ??
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: group.groupId,
+          text: trimmed,
+          createdAt: DateTime.now(),
+          replyToMessageId: replyToMessageId,
+          replyToText: replyToText,
+          isChannelComment: isChannelComment,
+          messageEffect: messageEffect,
+          pending: true,
+        );
+    _upsertOutgoingMessage(group, outgoing);
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
@@ -1704,8 +2958,9 @@ class AppController extends ChangeNotifier {
       'owner_node': group.ownerNode,
       'admins': group.admins,
       'message': encryptedText,
-      'reply_to_message_id': replyTo?.id ?? '',
-      'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+      'reply_to_message_id': replyToMessageId,
+      'reply_to_text': replyToText,
+      'message_effect': messageEffect,
       'is_channel_comment': isChannelComment,
       'group_key_id': groupKey.id,
       'group_key_sender_envelope': senderEnvelope,
@@ -1771,7 +3026,23 @@ class AppController extends ChangeNotifier {
       (message) => message.id == id,
     );
     if (existingIndex >= 0) {
+      final current = group.messages[existingIndex];
+      final replyToMessageId =
+          packet['reply_to_message_id']?.toString() ?? current.replyToMessageId;
+      group.messages[existingIndex] = current.copyWith(
+        replyToMessageId: replyToMessageId,
+        replyToText: packet['reply_to_text']?.toString() ?? current.replyToText,
+        isChannelComment:
+            packet['is_channel_comment'] == true ||
+            (group.isChannel && replyToMessageId.isNotEmpty) ||
+            current.isChannelComment,
+        pending: false,
+        delivered: true,
+        failed: false,
+      );
       await _repairGroupMessageText(group, existingIndex, packet);
+      await _saveCache();
+      notifyListeners();
       return;
     }
     final packetSender = packet['sender_node']?.toString().isNotEmpty == true
@@ -1800,6 +3071,7 @@ class AppController extends ChangeNotifier {
     final displayText = sentByMe || senderName.isEmpty || isServicePayload
         ? text
         : '$senderName: $text';
+    final replyToMessageId = packet['reply_to_message_id']?.toString() ?? '';
     group.messages.add(
       ChatMessage(
         id: id,
@@ -1807,8 +3079,12 @@ class AppController extends ChangeNotifier {
         receiverNode: groupId,
         text: displayText,
         createdAt: _parsePacketDate(packet),
-        replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
+        replyToMessageId: replyToMessageId,
         replyToText: packet['reply_to_text']?.toString() ?? '',
+        isChannelComment:
+            packet['is_channel_comment'] == true ||
+            (group.isChannel && replyToMessageId.isNotEmpty),
+        messageEffect: packet['message_effect']?.toString() ?? 'none',
         delivered: true,
       ),
     );
@@ -1973,6 +3249,73 @@ class AppController extends ChangeNotifier {
     completer?.complete(devices);
   }
 
+  String get _defaultDeviceName {
+    if (kIsWeb) return 'Web browser';
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android => 'Android device',
+      TargetPlatform.iOS => 'iPhone or iPad',
+      TargetPlatform.windows => 'Windows PC',
+      TargetPlatform.macOS => 'Mac',
+      TargetPlatform.linux => 'Linux PC',
+      TargetPlatform.fuchsia => 'MeshChat device',
+    };
+  }
+
+  void _handleActiveDeviceActionResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _activeDeviceActionCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    completer.complete(
+      packet['ok'] == true
+          ? null
+          : packet['reason']?.toString() ?? 'Device action failed',
+    );
+  }
+
+  Future<void> _applyMeshProPreferences(Object? raw) async {
+    if (raw is! Map) return;
+    final data = Map<String, dynamic>.from(raw);
+    final reactions = <String>[];
+    final rawReactions = data['quick_reactions'];
+    if (rawReactions is List) {
+      for (final item in rawReactions) {
+        final value = item?.toString().trim() ?? '';
+        if (value.isEmpty || value.length > 16 || reactions.contains(value)) {
+          continue;
+        }
+        reactions.add(value);
+      }
+    }
+    final updated = appSettings.copyWith(
+      quickReactions: reactions.isEmpty ? null : reactions,
+      meshProHdAudio: data['hd_audio'] == true,
+      meshProEnhancedNoiseSuppression:
+          data['enhanced_noise_suppression'] == true,
+    );
+    appSettings = updated;
+    await _settingsStore.save(updated);
+    notifyListeners();
+  }
+
+  Future<void> _handleMeshProPreferencesResult(
+    Map<String, dynamic> packet,
+  ) async {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _meshProPreferenceCompleters.remove(requestId);
+    if (packet['ok'] == true) {
+      await _applyMeshProPreferences(packet['preferences']);
+      if (completer != null && !completer.isCompleted) {
+        completer.complete(null);
+      }
+      return;
+    }
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(
+        packet['reason']?.toString() ?? 'Could not save MeshPro settings',
+      );
+    }
+  }
+
   void _handleProfileUpdateResult(Map<String, dynamic> packet) {
     final completer = _profileUpdateCompleter;
     if (completer == null || completer.isCompleted) return;
@@ -2045,6 +3388,14 @@ class AppController extends ChangeNotifier {
       'reaction': reaction,
       'source_node': myNodeId,
     });
+    if (thread.isBluetooth) {
+      await _sendBluetoothThreadPacket(thread, {
+        'type': 'message_reaction',
+        'message_id': message.id,
+        'reaction': reaction,
+      });
+      return;
+    }
     final basePacket = {
       'type': thread.isGroup ? 'group_reaction' : 'message_reaction',
       'protocol_version': MeshSocket.protocolVersion,
@@ -2097,6 +3448,23 @@ class AppController extends ChangeNotifier {
       message.id,
       (current) => current.copyWith(text: trimmed, edited: true),
     );
+    if (thread.isBluetooth) {
+      final publicKey = thread.profile.publicKey.trim();
+      if (publicKey.isEmpty) {
+        addDiagnostic(
+          'bluetooth',
+          'Could not edit ${message.id}: peer key is unavailable',
+        );
+        return;
+      }
+      await _sendBluetoothThreadPacket(thread, {
+        'type': 'message_edit',
+        'message_id': message.id,
+        'message': await _crypto.encryptText(publicKey, trimmed),
+        if (isCaption) 'file_caption': trimmed,
+      });
+      return;
+    }
     if (thread.isGroup) {
       final groupKey = _getOrCreateGroupKey(thread.groupId);
       final encryptedText = await _crypto.encryptGroupText(
@@ -2169,6 +3537,14 @@ class AppController extends ChangeNotifier {
     if (session == null || message.senderNode != myNodeId) return;
     await _rememberDeletedMessage(message.id);
     _deleteLocalMessage(thread, message.id);
+    if (thread.isBluetooth) {
+      await ble.cancelQueuedMessage(message.id);
+      await _sendBluetoothThreadPacket(thread, {
+        'type': 'message_delete',
+        'message_id': message.id,
+      });
+      return;
+    }
     final basePacket = {
       'type': thread.isGroup ? 'group_message_delete' : 'message_delete',
       'packet_id': const Uuid().v4(),
@@ -2206,6 +3582,9 @@ class AppController extends ChangeNotifier {
     ChatThread thread,
     ChatMessage message,
   ) async {
+    if (thread.isBluetooth) {
+      await ble.cancelQueuedMessage(message.id);
+    }
     await _rememberDeletedMessage(message.id);
     _deleteLocalMessage(thread, message.id);
   }
@@ -2233,6 +3612,17 @@ class AppController extends ChangeNotifier {
       'action': pinned ? 'unpin' : 'pin',
       'text': _replyPreview(message),
     };
+    if (thread.isBluetooth) {
+      unawaited(
+        _sendBluetoothThreadPacket(thread, {
+          'type': 'message_pin',
+          'message_id': message.id,
+          'action': pinned ? 'unpin' : 'pin',
+          'text': _replyPreview(message),
+        }),
+      );
+      return;
+    }
     if (thread.isGroup) {
       final recipients = thread.members
           .where((member) => member.isNotEmpty && member != myNodeId)
@@ -2275,6 +3665,338 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  String chatPreferenceKey(ChatThread thread) {
+    if (thread.isGroup && thread.groupId.isNotEmpty) {
+      return 'group:${thread.groupId}';
+    }
+    if (isSavedMessagesProfile(thread.profile)) return 'saved';
+    if (thread.isSecret && thread.threadId.isNotEmpty) {
+      return 'secret:${thread.threadId}';
+    }
+    if (thread.isBluetooth) {
+      final identity =
+          thread.profile.accountLogin.trim().toLowerCase().isNotEmpty
+          ? thread.profile.accountLogin.trim().toLowerCase()
+          : thread.profile.nodeId;
+      return 'bluetooth:$identity';
+    }
+    final login = thread.profile.accountLogin.trim().toLowerCase();
+    if (login.isNotEmpty) return 'direct:$login';
+    final username = thread.profile.publicUsername.trim().toLowerCase();
+    if (username.isNotEmpty) return 'direct:@$username';
+    return 'direct:${thread.profile.nodeId}';
+  }
+
+  Future<String?> updateChatAppearance(
+    ChatThread thread, {
+    required String themeId,
+    required String bubbleStyle,
+    required bool animatedBackground,
+  }) async {
+    if (session == null) return 'No active session';
+    if (!_socket.isConnected) return 'No server connection';
+    if (!meshProSubscription.isActiveNow ||
+        !meshProSubscription.entitlements.hasFeature('per_chat_theme') ||
+        !meshProSubscription.entitlements.hasFeature(
+          'custom_message_bubbles',
+        )) {
+      return 'MeshPro required';
+    }
+    if (animatedBackground &&
+        !meshProSubscription.entitlements.hasFeature(
+          'animated_chat_backgrounds',
+        )) {
+      return 'MeshPro required';
+    }
+    final chatKey = chatPreferenceKey(thread);
+    if (chatKey.isEmpty) return 'Chat is not ready';
+    final pending = _chatPreferenceCompleters[chatKey];
+    if (pending != null) return 'Appearance update is already in progress';
+    final completer = Completer<String?>();
+    _chatPreferenceCompleters[chatKey] = completer;
+    _socket.send({
+      'type': 'chat_preferences_update',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'chat_key': chatKey,
+      'theme_id': themeId,
+      'bubble_style': bubbleStyle,
+      'animated_background': animatedBackground,
+    });
+    final error = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => 'Server did not confirm the appearance',
+    );
+    _chatPreferenceCompleters.remove(chatKey);
+    if (error != null) return error;
+    thread
+      ..themeId = themeId
+      ..bubbleStyle = bubbleStyle
+      ..animatedBackground = animatedBackground;
+    await _saveCache();
+    notifyListeners();
+    return null;
+  }
+
+  void _handleChatPreferencesResult(Map<String, dynamic> packet) {
+    final chatKey = packet['chat_key']?.toString() ?? '';
+    final completer = _chatPreferenceCompleters[chatKey];
+    if (completer == null || completer.isCompleted) return;
+    completer.complete(
+      packet['ok'] == true
+          ? null
+          : packet['reason']?.toString() ?? 'Appearance update failed',
+    );
+  }
+
+  void _applyChatPreferences(dynamic rawPreferences) {
+    if (rawPreferences is! List) return;
+    final appearanceEnabled =
+        meshProSubscription.isActiveNow &&
+        meshProSubscription.entitlements.hasFeature('per_chat_theme') &&
+        meshProSubscription.entitlements.hasFeature('custom_message_bubbles');
+    final byKey = <String, Map<String, dynamic>>{};
+    for (final raw in rawPreferences) {
+      if (raw is! Map) continue;
+      final data = Map<String, dynamic>.from(raw);
+      final key = data['chat_key']?.toString() ?? '';
+      if (key.isNotEmpty) byKey[key] = data;
+    }
+    for (final thread in [...threads.values, ...groups.values]) {
+      if (!appearanceEnabled) {
+        thread
+          ..themeId = 'midnight'
+          ..bubbleStyle = 'classic'
+          ..animatedBackground = false;
+        continue;
+      }
+      final preference = byKey[chatPreferenceKey(thread)];
+      if (preference == null) continue;
+      thread
+        ..themeId = preference['theme_id']?.toString() ?? 'midnight'
+        ..bubbleStyle = preference['bubble_style']?.toString() ?? 'classic'
+        ..animatedBackground =
+            preference['animated_background'] == true &&
+            meshProSubscription.entitlements.hasFeature(
+              'animated_chat_backgrounds',
+            );
+    }
+  }
+
+  List<ScheduledMessageItem> scheduledForThread(ChatThread thread) {
+    final key = chatPreferenceKey(thread);
+    return scheduledMessages.where((item) => item.chatKey == key).toList()
+      ..sort((a, b) => a.nextRunAt.compareTo(b.nextRunAt));
+  }
+
+  Future<String?> scheduleTextMessage(
+    ChatThread thread,
+    String text, {
+    required DateTime sendAt,
+    String repeatInterval = 'none',
+  }) async {
+    final current = session;
+    final trimmed = text.trim();
+    if (current == null) return 'No active session';
+    if (trimmed.isEmpty) return 'Message is empty';
+    if (!_socket.isConnected) return 'No server connection';
+    if (!meshProSubscription.isActiveNow ||
+        !meshProSubscription.entitlements.hasFeature('scheduled_messages')) {
+      return 'MeshPro required';
+    }
+    if (repeatInterval != 'none' &&
+        !meshProSubscription.entitlements.hasFeature('recurring_reminders')) {
+      return 'Recurring reminders require MeshPro';
+    }
+    if (thread.isBluetooth || isSavedMessagesProfile(thread.profile)) {
+      return 'Scheduling is unavailable in this chat';
+    }
+    if (thread.isChannel && !_canPostToChannel(thread)) {
+      return 'Only channel admins can schedule posts';
+    }
+
+    final payloads = <Map<String, dynamic>>[];
+    if (thread.isGroup) {
+      final groupKey = _getOrCreateGroupKey(thread.groupId);
+      final encryptedText = await _crypto.encryptGroupText(
+        groupKey.key,
+        trimmed,
+      );
+      final senderEnvelope = await _crypto.wrapGroupKey(
+        _crypto.publicKey,
+        groupKey.key,
+      );
+      final basePacket = <String, dynamic>{
+        'type': 'group_message',
+        'source_node': myNodeId,
+        'ttl': 5,
+        'sender': current.login,
+        'group_id': thread.groupId,
+        'group_name': thread.groupName.isEmpty
+            ? thread.profile.displayName
+            : thread.groupName,
+        'is_channel': thread.isChannel,
+        'comments_enabled': thread.commentsEnabled,
+        'members': thread.members,
+        'owner_node': thread.ownerNode,
+        'admins': thread.admins,
+        'message': encryptedText,
+        'reply_to_message_id': '',
+        'reply_to_text': '',
+        'group_key_id': groupKey.id,
+        'group_key_sender_envelope': senderEnvelope,
+      };
+      for (final member in thread.members.where(
+        (member) => member != myNodeId,
+      )) {
+        final publicKey = profiles[member]?.publicKey ?? '';
+        if (publicKey.isEmpty) continue;
+        payloads.add({
+          ...basePacket,
+          'destination_node': member,
+          'group_key_envelope': await _crypto.wrapGroupKey(
+            publicKey,
+            groupKey.key,
+          ),
+        });
+      }
+      if (payloads.isEmpty) {
+        payloads.add({
+          ...basePacket,
+          'destination_node': 'SERVER',
+          'group_key_envelope': senderEnvelope,
+        });
+      }
+    } else {
+      final recipient = thread.profile;
+      final wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
+      payloads.add({
+        'type': 'chat_message',
+        'source_node': myNodeId,
+        'destination_node': recipient.nodeId,
+        'ttl': 5,
+        'sender': current.login,
+        'message': wireText,
+        'chat_kind': thread.chatKind,
+        'chat_id': thread.threadId,
+        'reply_to_message_id': '',
+        'reply_to_text': '',
+      });
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _scheduledMessageCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'scheduled_message_create',
+      'packet_id': const Uuid().v4(),
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'chat_key': chatPreferenceKey(thread),
+      'send_at': sendAt.toUtc().toIso8601String(),
+      'repeat_interval': repeatInterval,
+      'preview': trimmed,
+      'payloads': payloads,
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => 'Server did not confirm the schedule',
+    );
+    _scheduledMessageCompleters.remove(requestId);
+    return result;
+  }
+
+  Future<String?> cancelScheduledMessage(ScheduledMessageItem item) async {
+    if (!_socket.isConnected) return 'No server connection';
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _scheduledMessageCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'scheduled_message_cancel',
+      'packet_id': const Uuid().v4(),
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'schedule_id': item.id,
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => 'Server did not confirm cancellation',
+    );
+    _scheduledMessageCompleters.remove(requestId);
+    return result;
+  }
+
+  void _handleScheduledMessageResult(Map<String, dynamic> packet) {
+    final action = packet['action']?.toString() ?? '';
+    if (packet['ok'] == true) {
+      if (action == 'create' && packet['item'] is Map) {
+        final item = ScheduledMessageItem.fromJson(
+          Map<String, dynamic>.from(packet['item'] as Map),
+        );
+        if (item.id.isNotEmpty) {
+          scheduledMessages.removeWhere((existing) => existing.id == item.id);
+          scheduledMessages.add(item);
+        }
+      } else if (action == 'cancel') {
+        final id = packet['schedule_id']?.toString() ?? '';
+        scheduledMessages.removeWhere((item) => item.id == id);
+      }
+    }
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _scheduledMessageCompleters[requestId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(
+        packet['ok'] == true
+            ? null
+            : packet['reason']?.toString() ?? 'Schedule update failed',
+      );
+    }
+    notifyListeners();
+  }
+
+  void _applyScheduledMessages(dynamic rawItems) {
+    if (rawItems is! List) return;
+    scheduledMessages
+      ..clear()
+      ..addAll(
+        rawItems
+            .whereType<Map>()
+            .map(
+              (raw) =>
+                  ScheduledMessageItem.fromJson(Map<String, dynamic>.from(raw)),
+            )
+            .where((item) => item.id.isNotEmpty),
+      )
+      ..sort((a, b) => a.nextRunAt.compareTo(b.nextRunAt));
+  }
+
+  void _handleScheduledMessageSent(Map<String, dynamic> packet) {
+    final id = packet['schedule_id']?.toString() ?? '';
+    final repeat = packet['repeat_interval']?.toString() ?? 'none';
+    if (repeat == 'none') {
+      scheduledMessages.removeWhere((item) => item.id == id);
+    } else {
+      _socket.send({
+        'type': 'scheduled_messages_request',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+      });
+    }
+    _scheduleSoftResync('Scheduled message sent: refreshing history');
+  }
+
   Future<String?> publishStory({
     required String text,
     required String imageData,
@@ -2284,11 +4006,31 @@ class AppController extends ChangeNotifier {
     required StoryVisibility visibility,
     required List<String> selectedNodeIds,
     required List<String> excludedNodeIds,
+    bool hd = false,
+    int videoDurationSeconds = 0,
   }) async {
     if (session == null) return 'No active session';
     final trimmed = text.trim();
     if (trimmed.isEmpty && imageData.isEmpty && videoData.isEmpty) {
       return 'Story is empty';
+    }
+    final storyLimit =
+        meshProSubscription.entitlements.limitFor('story_parallel_items') ?? 3;
+    final ownActiveStories = stories.values
+        .where((story) => story.ownerNode == myNodeId && !story.expired)
+        .length;
+    if (ownActiveStories >= storyLimit) {
+      return 'Active story limit reached ($storyLimit)';
+    }
+    if (hd &&
+        (!meshProSubscription.isActiveNow ||
+            !meshProSubscription.entitlements.hasFeature('story_hd'))) {
+      return 'HD stories require MeshPro';
+    }
+    final durationLimit =
+        meshProSubscription.entitlements.limitFor('story_video_seconds') ?? 30;
+    if (videoDurationSeconds > durationLimit) {
+      return 'Story video can be up to $durationLimit seconds';
     }
     final story = StoryItem(
       id: const Uuid().v4(),
@@ -2304,6 +4046,8 @@ class AppController extends ChangeNotifier {
       visibility: visibility,
       allowedNodeIds: selectedNodeIds,
       excludedNodeIds: excludedNodeIds,
+      hd: hd,
+      videoDurationSeconds: videoDurationSeconds,
     );
     stories[story.id] = story;
     storyArchive
@@ -2317,7 +4061,7 @@ class AppController extends ChangeNotifier {
       visibility: visibility,
       selectedNodeIds: selectedNodeIds,
       excludedNodeIds: excludedNodeIds,
-    );
+    )..add('SERVER');
     final basePacket = {
       'type': 'story_update',
       'packet_id': story.id,
@@ -2334,15 +4078,40 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> likeStory(StoryItem story) async {
+    await reactToStory(story, 'heart');
+  }
+
+  Future<void> reactToStory(StoryItem story, String reaction) async {
     if (session == null || story.ownerNode == myNodeId || story.expired) return;
+    const allowed = {'heart', 'fire', 'laugh', 'wow', 'sad', 'clap'};
+    if (!allowed.contains(reaction)) return;
+    if (reaction != 'heart' &&
+        (!meshProSubscription.isActiveNow ||
+            !meshProSubscription.entitlements.hasFeature(
+              'story_extra_reactions',
+            ))) {
+      return;
+    }
     final current = stories[story.id] ?? story;
-    final liked = current.likedByNodeIds.contains(myNodeId);
-    final nextLikes = current.likedByNodeIds
-        .where((id) => id != myNodeId)
-        .toList();
-    if (!liked) nextLikes.add(myNodeId);
-    stories[story.id] = current.copyWith(likedByNodeIds: nextLikes);
+    final previousReaction = current.reactionFor(myNodeId);
+    final nextReaction = previousReaction == reaction ? '' : reaction;
+    final nextReactions = <String, List<String>>{
+      for (final entry in current.reactions.entries)
+        entry.key: entry.value.where((node) => node != myNodeId).toList(),
+    }..removeWhere((_, reactors) => reactors.isEmpty);
+    if (nextReaction.isNotEmpty) {
+      nextReactions[nextReaction] = [...?nextReactions[nextReaction], myNodeId];
+    }
+    final nextLikes = nextReactions['heart'] ?? const <String>[];
+    final updated = current.copyWith(
+      reactions: nextReactions,
+      likedByNodeIds: nextLikes,
+    );
+    stories[story.id] = updated;
+    final archiveIndex = storyArchive.indexWhere((item) => item.id == story.id);
+    if (archiveIndex >= 0) storyArchive[archiveIndex] = updated;
     await _saveStories();
+    await _saveStoryArchive();
     notifyListeners();
     _socket.send({
       'type': 'story_reaction',
@@ -2353,8 +4122,9 @@ class AppController extends ChangeNotifier {
       'ttl': 5,
       'sender': session!.login,
       'story_id': story.id,
-      'reaction': 'heart',
-      'liked': !liked,
+      'reaction': nextReaction.isEmpty ? reaction : nextReaction,
+      'liked': nextReaction.isNotEmpty,
+      'replace_existing': true,
     });
   }
 
@@ -2536,6 +4306,24 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _applyStoryArchive(dynamic rawArchive) async {
+    if (rawArchive is! List) return;
+    final merged = <String, StoryItem>{
+      for (final story in storyArchive) story.id: story,
+    };
+    for (final raw in rawArchive) {
+      if (raw is! Map) continue;
+      final story = StoryItem.fromJson(Map<String, dynamic>.from(raw));
+      if (story.id.isEmpty || story.ownerNode != myNodeId) continue;
+      merged[story.id] = story;
+    }
+    storyArchive
+      ..clear()
+      ..addAll(merged.values)
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    await _saveStoryArchive();
+  }
+
   Future<void> _applyStoryReactionPacket(Map<String, dynamic> packet) async {
     final storyId = packet['story_id']?.toString() ?? '';
     final reactor = packet['source_node']?.toString() ?? '';
@@ -2543,11 +4331,24 @@ class AppController extends ChangeNotifier {
     final story = stories[storyId];
     if (story == null) return;
     final liked = packet['liked'] != false;
-    final nextLikes = story.likedByNodeIds
-        .where((nodeId) => nodeId != reactor)
-        .toList();
-    if (liked) nextLikes.add(reactor);
-    stories[storyId] = story.copyWith(likedByNodeIds: nextLikes);
+    final reaction = packet['reaction']?.toString() ?? 'heart';
+    final nextReactions = <String, List<String>>{
+      for (final entry in story.reactions.entries)
+        entry.key: entry.value.where((nodeId) => nodeId != reactor).toList(),
+    }..removeWhere((_, reactors) => reactors.isEmpty);
+    if (liked) {
+      nextReactions[reaction] = [...?nextReactions[reaction], reactor];
+    }
+    final updated = story.copyWith(
+      reactions: nextReactions,
+      likedByNodeIds: nextReactions['heart'] ?? const <String>[],
+    );
+    stories[storyId] = updated;
+    final archiveIndex = storyArchive.indexWhere((item) => item.id == storyId);
+    if (archiveIndex >= 0) {
+      storyArchive[archiveIndex] = updated;
+      await _saveStoryArchive();
+    }
     await _saveStories();
   }
 
@@ -2590,7 +4391,6 @@ class AppController extends ChangeNotifier {
     final current = session;
     stories.clear();
     storyArchive.clear();
-    stickerLibrary = const StickerLibrary();
     hiddenStoryOwners.clear();
     if (current == null) return;
     stories.addAll(await _storyStore.load(current));
@@ -2617,6 +4417,11 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> deleteThread(ChatThread thread) async {
+    if (thread.isBluetooth) {
+      for (final message in thread.messages) {
+        await ble.cancelQueuedMessage(message.id);
+      }
+    }
     if (thread.isGroup) {
       if (thread.groupId.isNotEmpty) {
         await _rememberDeletedGroup(thread.groupId);
@@ -2652,6 +4457,11 @@ class AppController extends ChangeNotifier {
 
   Future<String?> deleteThreadForEveryone(ChatThread thread) async {
     if (session == null) return 'No active session';
+    if (thread.isBluetooth) {
+      await _sendBluetoothThreadPacket(thread, {'type': 'chat_delete'});
+      await deleteThread(thread);
+      return null;
+    }
     if (thread.isGroup && !_ownsGroup(thread)) {
       return thread.isChannel
           ? 'Only channel owner can delete it'
@@ -2669,14 +4479,7 @@ class AppController extends ChangeNotifier {
       'chat_kind': thread.chatKind,
       'chat_id': thread.threadId,
     };
-    final recipients = thread.isGroup
-        ? thread.members
-              .where((member) => member.isNotEmpty && member != myNodeId)
-              .toSet()
-        : {thread.profile.nodeId};
-    if (thread.isGroup) {
-      recipients.add('SERVER');
-    }
+    final recipients = thread.isGroup ? {'SERVER'} : {thread.profile.nodeId};
     for (final recipient in recipients) {
       _socket.send({
         ...packetBase,
@@ -2785,7 +4588,10 @@ class AppController extends ChangeNotifier {
     } else {
       final chatNodeId = packet['chat_node_id']?.toString() ?? source;
       final chatId = packet['chat_id']?.toString() ?? '';
-      final thread = chatId.isNotEmpty
+      final chatKind = packet['chat_kind']?.toString() ?? 'normal';
+      final thread = chatKind == 'bluetooth'
+          ? threads['bluetooth:$source']
+          : chatId.isNotEmpty
           ? threads[chatId]
           : (threads[chatNodeId] ?? threads[source]);
       if (thread == null) return;
@@ -2891,6 +4697,15 @@ class AppController extends ChangeNotifier {
       'chat_id': thread.threadId,
       'activity': kind,
     };
+    if (thread.isBluetooth) {
+      unawaited(
+        _sendBluetoothThreadPacket(thread, {
+          'type': 'typing',
+          'activity': kind,
+        }),
+      );
+      return;
+    }
     if (thread.isGroup) {
       for (final member in thread.members.where(
         (member) => member != myNodeId,
@@ -2911,10 +4726,10 @@ class AppController extends ChangeNotifier {
     final chatKind = packet['chat_kind']?.toString() ?? 'normal';
     final key = groupId.isNotEmpty
         ? groupId
-        : chatId.isNotEmpty
-        ? 'direct:$chatId'
         : chatKind == 'bluetooth'
         ? 'direct:bluetooth:$source'
+        : chatId.isNotEmpty
+        ? 'direct:$chatId'
         : 'direct:normal:$source';
     final activity = packet['activity']?.toString() ?? 'typing';
     typingUntil[key] = DateTime.now().add(const Duration(seconds: 4));
@@ -3028,6 +4843,15 @@ class AppController extends ChangeNotifier {
 
   ChatThread? bluetoothThreadForNode(String nodeId) {
     return threads['bluetooth:$nodeId'];
+  }
+
+  BlePeer? bluetoothPeerForNode(String nodeId) {
+    final normalized = nodeId.trim();
+    if (normalized.isEmpty) return null;
+    for (final peer in ble.peers) {
+      if (peer.nodeId == normalized) return peer;
+    }
+    return null;
   }
 
   Future<ChatThread> ensureSecretThread(Profile profile, String code) async {
@@ -3155,6 +4979,12 @@ class AppController extends ChangeNotifier {
     return 'secret:${base64Url.encode(digest.bytes).replaceAll('=', '')}';
   }
 
+  bool _meshProCallFeatureEnabled(String featureId, bool preference) {
+    return preference &&
+        meshProSubscription.isActiveNow &&
+        meshProSubscription.entitlements.hasFeature(featureId);
+  }
+
   Future<String?> startCall(Profile recipient) async {
     if (session == null) return 'No active session';
     if (isSavedMessagesProfile(recipient)) return 'Cannot call Saved Messages';
@@ -3164,18 +4994,30 @@ class AppController extends ChangeNotifier {
     if (activeCall != null && activeCall!.status != CallStatus.ended) {
       return 'Another call is already active';
     }
+    final hdAudio = _meshProCallFeatureEnabled(
+      'call_hd_audio',
+      appSettings.meshProHdAudio,
+    );
+    final enhancedNoiseSuppression = _meshProCallFeatureEnabled(
+      'call_noise_suppression_plus',
+      appSettings.meshProEnhancedNoiseSuppression,
+    );
     final call = ActiveCall(
       callId: const Uuid().v4(),
       peer: recipient,
       status: CallStatus.outgoing,
       incoming: false,
       startedAt: DateTime.now(),
+      hdAudio: hdAudio,
+      enhancedNoiseSuppression: enhancedNoiseSuppression,
     );
     _setActiveCall(call);
     notifyListeners();
     final offerSdp = await _calls
         .startOutgoing(
           onIceCandidate: (candidate) => _sendCallIce(call, candidate),
+          hdAudio: hdAudio,
+          enhancedNoiseSuppression: enhancedNoiseSuppression,
         )
         .catchError((error) async {
           _setActiveCall(
@@ -3200,6 +5042,8 @@ class AppController extends ChangeNotifier {
       'call_id': call.callId,
       'sender': session!.login,
       'media': 'audio',
+      'hd_audio': hdAudio,
+      'enhanced_noise_suppression': enhancedNoiseSuppression,
       'sdp': offerSdp,
     });
     return null;
@@ -3218,6 +5062,14 @@ class AppController extends ChangeNotifier {
         .toSet()
         .toList();
     if (recipients.isEmpty) return 'No group members to call';
+    final hdAudio = _meshProCallFeatureEnabled(
+      'call_hd_audio',
+      appSettings.meshProHdAudio,
+    );
+    final enhancedNoiseSuppression = _meshProCallFeatureEnabled(
+      'call_noise_suppression_plus',
+      appSettings.meshProEnhancedNoiseSuppression,
+    );
     final call = ActiveCall(
       callId: const Uuid().v4(),
       peer: thread.profile,
@@ -3227,6 +5079,8 @@ class AppController extends ChangeNotifier {
       isGroup: true,
       groupId: thread.groupId,
       groupMembers: recipients,
+      hdAudio: hdAudio,
+      enhancedNoiseSuppression: enhancedNoiseSuppression,
     );
     _setActiveCall(call);
     notifyListeners();
@@ -3239,6 +5093,8 @@ class AppController extends ChangeNotifier {
           .startOutgoing(
             onIceCandidate: (candidate) =>
                 _sendCallIceTo(call, recipientNode, candidate),
+            hdAudio: hdAudio,
+            enhancedNoiseSuppression: enhancedNoiseSuppression,
           )
           .catchError((_) async => '');
       if (offerSdp.isEmpty) {
@@ -3257,6 +5113,8 @@ class AppController extends ChangeNotifier {
         'call_id': call.callId,
         'sender': session!.login,
         'media': 'audio',
+        'hd_audio': hdAudio,
+        'enhanced_noise_suppression': enhancedNoiseSuppression,
         'sdp': offerSdp,
         'group_id': thread.groupId,
         'group_name': thread.groupName.isEmpty
@@ -3292,6 +5150,8 @@ class AppController extends ChangeNotifier {
         .acceptIncoming(
           remoteOfferSdp: call.remoteOfferSdp,
           onIceCandidate: (candidate) => _sendCallIce(call, candidate),
+          hdAudio: call.hdAudio,
+          enhancedNoiseSuppression: call.enhancedNoiseSuppression,
         )
         .catchError((error) async {
           _sendCallEnd(call, 'audio_error');
@@ -3374,6 +5234,81 @@ class AppController extends ChangeNotifier {
     for (final service in _groupCalls.values) {
       await service.setSpeakerEnabled(enabled).catchError((_) {});
     }
+  }
+
+  bool get canShareCallScreen {
+    final call = activeCall;
+    return call != null &&
+        call.status == CallStatus.active &&
+        !call.isGroup &&
+        meshProSubscription.isActiveNow &&
+        meshProSubscription.entitlements.hasFeature('call_screen_share');
+  }
+
+  Widget buildRemoteCallScreen() => _calls.remoteScreenView();
+
+  Future<String?> toggleCallScreenShare() async {
+    final call = activeCall;
+    if (call == null || call.status != CallStatus.active) {
+      return 'Start the call before sharing your screen';
+    }
+    if (call.isGroup) {
+      return 'Screen sharing is currently available in direct calls';
+    }
+    if (!meshProSubscription.isActiveNow ||
+        !meshProSubscription.entitlements.hasFeature('call_screen_share')) {
+      return 'Screen sharing requires MeshPro';
+    }
+    if (call.screenSharing) {
+      await _calls.stopScreenShare().catchError((_) {});
+      _setActiveCall(call.copyWith(screenSharing: false));
+      _socket.send({
+        'type': 'call_screen_stop',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': call.peer.nodeId,
+        'ttl': 5,
+        'call_id': call.callId,
+      });
+      notifyListeners();
+      return null;
+    }
+    try {
+      final offerSdp = await _calls.startScreenShare();
+      if (offerSdp.isEmpty) return 'Screen capture did not start';
+      _setActiveCall(call.copyWith(screenSharing: true));
+      _socket.send({
+        'type': 'call_screen_offer',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': call.peer.nodeId,
+        'ttl': 5,
+        'call_id': call.callId,
+        'sdp': offerSdp,
+      });
+      notifyListeners();
+      return null;
+    } catch (error) {
+      await _calls.stopScreenShare().catchError((_) {});
+      return 'Could not share the screen: $error';
+    }
+  }
+
+  void _handleRemoteScreenChanged() {
+    final call = activeCall;
+    if (call == null || call.status == CallStatus.ended) return;
+    final remoteSharing = _calls.hasRemoteScreen;
+    if (call.remoteScreenSharing == remoteSharing) return;
+    _setActiveCall(call.copyWith(remoteScreenSharing: remoteSharing));
+    notifyListeners();
+  }
+
+  void _handleLocalScreenEnded() {
+    final call = activeCall;
+    if (call == null || !call.screenSharing) return;
+    unawaited(toggleCallScreenShare());
   }
 
   Future<void> refreshCallAudioDevices() async {
@@ -3527,6 +5462,14 @@ class AppController extends ChangeNotifier {
         isGroup: groupId.isNotEmpty,
         groupId: groupId,
         groupMembers: _stringList(packet['group_members']),
+        hdAudio: _meshProCallFeatureEnabled(
+          'call_hd_audio',
+          appSettings.meshProHdAudio,
+        ),
+        enhancedNoiseSuppression: _meshProCallFeatureEnabled(
+          'call_noise_suppression_plus',
+          appSettings.meshProEnhancedNoiseSuppression,
+        ),
       ),
     );
     unawaited(
@@ -3744,6 +5687,53 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _handleCallScreenOffer(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (call == null || call.isGroup || call.status != CallStatus.active) {
+      return;
+    }
+    if (packet['call_id']?.toString() != call.callId) return;
+    final source = packet['source_node']?.toString() ?? '';
+    final offerSdp = packet['sdp']?.toString() ?? '';
+    if (source.isEmpty || offerSdp.isEmpty) return;
+    try {
+      final answerSdp = await _calls.acceptScreenShareOffer(offerSdp);
+      _setActiveCall(call.copyWith(remoteScreenSharing: true));
+      _socket.send({
+        'type': 'call_screen_answer',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': source,
+        'ttl': 5,
+        'call_id': call.callId,
+        'sdp': answerSdp,
+      });
+      notifyListeners();
+    } catch (error) {
+      addDiagnostic('call', 'Screen offer failed: $error');
+    }
+  }
+
+  Future<void> _handleCallScreenAnswer(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (call == null || call.isGroup || !call.screenSharing) return;
+    if (packet['call_id']?.toString() != call.callId) return;
+    final answerSdp = packet['sdp']?.toString() ?? '';
+    if (answerSdp.isEmpty) return;
+    await _calls.applyScreenShareAnswer(answerSdp).catchError((error) {
+      addDiagnostic('call', 'Screen answer failed: $error');
+    });
+  }
+
+  Future<void> _handleCallScreenStop(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (call == null || packet['call_id']?.toString() != call.callId) return;
+    await _calls.clearRemoteScreen().catchError((_) {});
+    _setActiveCall(call.copyWith(remoteScreenSharing: false));
+    notifyListeners();
+  }
+
   String _replyPreview(ChatMessage message) {
     if (message.kind == ChatMessageKind.sticker) {
       return message.text.isEmpty ? 'Sticker' : message.text;
@@ -3761,10 +5751,27 @@ class AppController extends ChangeNotifier {
     String text, {
     ChatMessage? replyTo,
     ChatThread? threadOverride,
+    ChatMessage? retryingMessage,
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null) return;
-    final id = const Uuid().v4();
+    if (threadOverride?.isBluetooth == true) {
+      final sendError = await sendBluetoothMessageToThread(
+        threadOverride!,
+        trimmed,
+        replyTo: replyTo,
+      );
+      if (sendError != null) addDiagnostic('bluetooth', sendError);
+      return;
+    }
+    final id = retryingMessage?.id ?? const Uuid().v4();
+    final messageEffect =
+        retryingMessage?.messageEffect ?? _outgoingMessageEffect;
+    final replyToMessageId =
+        retryingMessage?.replyToMessageId ?? replyTo?.id ?? '';
+    final replyToText =
+        retryingMessage?.replyToText ??
+        (replyTo == null ? '' : _replyPreview(replyTo));
     final thread = threadOverride ?? _ensureThread(recipient);
     if (isSavedMessagesProfile(recipient)) {
       thread.messages.add(
@@ -3776,6 +5783,7 @@ class AppController extends ChangeNotifier {
           createdAt: DateTime.now(),
           replyToMessageId: replyTo?.id ?? '',
           replyToText: replyTo == null ? '' : _replyPreview(replyTo),
+          messageEffect: messageEffect,
           delivered: true,
         ),
       );
@@ -3783,18 +5791,24 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    thread.messages.add(
-      ChatMessage(
-        id: id,
-        senderNode: myNodeId,
-        receiverNode: recipient.nodeId,
-        text: trimmed,
-        createdAt: DateTime.now(),
-        replyToMessageId: replyTo?.id ?? '',
-        replyToText: replyTo == null ? '' : _replyPreview(replyTo),
-        pending: true,
-      ),
-    );
+    final outgoing =
+        retryingMessage?.copyWith(
+          pending: true,
+          delivered: false,
+          failed: false,
+        ) ??
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: recipient.nodeId,
+          text: trimmed,
+          createdAt: DateTime.now(),
+          replyToMessageId: replyToMessageId,
+          replyToText: replyToText,
+          messageEffect: messageEffect,
+          pending: true,
+        );
+    _upsertOutgoingMessage(thread, outgoing);
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
@@ -3814,8 +5828,9 @@ class AppController extends ChangeNotifier {
       'message': wireText,
       'chat_kind': thread.chatKind,
       'chat_id': thread.threadId,
-      'reply_to_message_id': replyTo?.id ?? '',
-      'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+      'reply_to_message_id': replyToMessageId,
+      'reply_to_text': replyToText,
+      'message_effect': messageEffect,
     });
     _replaceMessage(id, (message) => message.copyWith(pending: false));
   }
@@ -3834,18 +5849,25 @@ class AppController extends ChangeNotifier {
 
   Future<void> stopBluetoothNearby() => ble.stop();
 
-  Future<String?> sendBluetoothMessage(BlePeer peer, String text) async {
+  Future<String?> sendBluetoothMessage(
+    BlePeer peer,
+    String text, {
+    ChatMessage? replyTo,
+    ChatMessage? retryingMessage,
+  }) async {
     final current = session;
     final trimmed = text.trim();
     if (current == null) return 'No active session';
     if (trimmed.isEmpty) return null;
+    final startError = await _ensureBluetoothReadyForSend();
+    if (startError != null) return startError;
     var connectedPeer = peer;
     try {
       connectedPeer = await ble.connect(peer);
     } catch (error) {
       return 'Bluetooth connect failed: $error';
     }
-    if (connectedPeer.nodeId.isEmpty) {
+    if (connectedPeer.nodeId.isEmpty || connectedPeer.publicKey.isEmpty) {
       return 'Could not read MeshChat profile over Bluetooth';
     }
     if (connectedPeer.nodeId == myNodeId) return 'Cannot send to yourself';
@@ -3859,23 +5881,39 @@ class AppController extends ChangeNotifier {
       online: true,
     );
     profiles[recipient.nodeId] = _mergeProfile(recipient, online: true);
-    final id = const Uuid().v4();
+    final id = retryingMessage?.id ?? const Uuid().v4();
+    final messageEffect =
+        retryingMessage?.messageEffect ?? _outgoingMessageEffect;
+    final replyToMessageId =
+        retryingMessage?.replyToMessageId ?? replyTo?.id ?? '';
+    final replyToText =
+        retryingMessage?.replyToText ??
+        (replyTo == null ? '' : _replyPreview(replyTo));
     final thread = _ensureBluetoothThread(recipient);
-    thread.messages.add(
-      ChatMessage(
-        id: id,
-        senderNode: myNodeId,
-        receiverNode: recipient.nodeId,
-        text: trimmed,
-        createdAt: DateTime.now(),
-        delivered: true,
-      ),
-    );
+    final createdAt = retryingMessage?.createdAt ?? DateTime.now();
+    final outgoing =
+        retryingMessage?.copyWith(
+          pending: true,
+          delivered: false,
+          failed: false,
+        ) ??
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: recipient.nodeId,
+          text: trimmed,
+          createdAt: createdAt,
+          replyToMessageId: replyToMessageId,
+          replyToText: replyToText,
+          messageEffect: messageEffect,
+          pending: true,
+        );
+    _upsertOutgoingMessage(thread, outgoing);
     unawaited(_saveCache());
     notifyListeners();
     final wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
     try {
-      await ble.sendPacket(connectedPeer, {
+      final packet = {
         'type': 'chat_message',
         'packet_id': id,
         'protocol_version': MeshSocket.protocolVersion,
@@ -3884,9 +5922,23 @@ class AppController extends ChangeNotifier {
         'ttl': 1,
         'sender': current.login,
         'message': wireText,
+        'reply_to_message_id': replyToMessageId,
+        'reply_to_text': replyToText,
+        'message_effect': messageEffect,
         'chat_kind': thread.chatKind,
         'chat_id': thread.threadId,
-      });
+        'created_at': createdAt.toUtc().toIso8601String(),
+      };
+      final result = connectedPeer.id.isEmpty
+          ? await ble.sendPacketToNode(recipient.nodeId, packet)
+          : await ble.sendPacket(connectedPeer, packet);
+      _replaceMessage(
+        id,
+        (message) => message.copyWith(
+          pending: result == BleSendResult.queued,
+          failed: false,
+        ),
+      );
       return null;
     } catch (error) {
       _replaceMessage(id, (message) => message.copyWith(failed: true));
@@ -3899,7 +5951,9 @@ class AppController extends ChangeNotifier {
     String filename,
     Uint8List bytes, {
     String caption = '',
+    ChatMessage? replyTo,
     ChatMessageKind kind = ChatMessageKind.file,
+    ChatMessage? retryingMessage,
   }) async {
     final current = session;
     if (current == null) return 'No active session';
@@ -3907,6 +5961,8 @@ class AppController extends ChangeNotifier {
     if (bytes.length > maxBluetoothFileBytes) {
       return 'Bluetooth files are limited to 512 KB';
     }
+    final startError = await _ensureBluetoothReadyForSend();
+    if (startError != null) return startError;
     var connectedPeer = peer;
     try {
       connectedPeer = await ble.connect(peer);
@@ -3929,33 +5985,51 @@ class AppController extends ChangeNotifier {
     );
     profiles[recipient.nodeId] = _mergeProfile(recipient, online: true);
 
-    final id = const Uuid().v4();
+    final id = retryingMessage?.id ?? const Uuid().v4();
+    final messageEffect =
+        retryingMessage?.messageEffect ?? _outgoingMessageEffect;
+    final replyToMessageId =
+        retryingMessage?.replyToMessageId ?? replyTo?.id ?? '';
+    final replyToText =
+        retryingMessage?.replyToText ??
+        (replyTo == null ? '' : _replyPreview(replyTo));
     final trimmedCaption = caption.trim();
     final data = _hexEncode(bytes);
     final thread = _ensureBluetoothThread(recipient);
-    thread.messages.add(
-      ChatMessage(
-        id: id,
-        senderNode: myNodeId,
-        receiverNode: recipient.nodeId,
-        text: trimmedCaption,
-        createdAt: DateTime.now(),
-        kind: kind,
-        fileName: filename,
-        fileData: data,
-        fileSize: bytes.length,
-        delivered: true,
-      ),
-    );
+    final createdAt = retryingMessage?.createdAt ?? DateTime.now();
+    final outgoing =
+        retryingMessage?.copyWith(
+          pending: true,
+          delivered: false,
+          failed: false,
+          progress: 0,
+        ) ??
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: recipient.nodeId,
+          text: trimmedCaption,
+          createdAt: createdAt,
+          kind: kind,
+          fileName: filename,
+          fileData: data,
+          fileSize: bytes.length,
+          replyToMessageId: replyToMessageId,
+          replyToText: replyToText,
+          messageEffect: messageEffect,
+          pending: true,
+        );
+    _upsertOutgoingMessage(thread, outgoing);
     unawaited(_saveCache());
     notifyListeners();
 
     final totalChunks = (data.length / _bluetoothFileChunkHexSize).ceil();
+    var queued = false;
     try {
       for (var index = 0; index < totalChunks; index++) {
         final start = index * _bluetoothFileChunkHexSize;
         final end = min(data.length, start + _bluetoothFileChunkHexSize);
-        await ble.sendPacket(connectedPeer, {
+        final packet = {
           'type': 'file_chunk',
           'packet_id': const Uuid().v4(),
           'protocol_version': MeshSocket.protocolVersion,
@@ -3969,16 +6043,116 @@ class AppController extends ChangeNotifier {
           'message_kind': kind.name,
           'filename': filename,
           'caption': trimmedCaption,
+          'reply_to_message_id': replyToMessageId,
+          'reply_to_text': replyToText,
+          'message_effect': messageEffect,
           'chunk_index': index,
           'total_chunks': totalChunks,
           'data': data.substring(start, end),
-          'created_at': DateTime.now().toUtc().toIso8601String(),
-        });
+          'created_at': createdAt.toUtc().toIso8601String(),
+        };
+        final result = connectedPeer.id.isEmpty
+            ? await ble.sendPacketToNode(recipient.nodeId, packet)
+            : await ble.sendPacket(connectedPeer, packet);
+        queued = queued || result == BleSendResult.queued;
       }
+      _replaceMessage(
+        id,
+        (message) => message.copyWith(
+          pending: queued,
+          failed: false,
+          progress: queued ? message.progress : 1,
+        ),
+      );
       return null;
     } catch (error) {
       _replaceMessage(id, (message) => message.copyWith(failed: true));
       return 'Bluetooth file send failed: $error';
+    }
+  }
+
+  Future<String?> sendBluetoothMessageToThread(
+    ChatThread thread,
+    String text, {
+    ChatMessage? replyTo,
+    ChatMessage? retryingMessage,
+  }) {
+    if (!thread.isBluetooth) {
+      return Future<String?>.value('This is not a Bluetooth chat');
+    }
+    return sendBluetoothMessage(
+      bluetoothPeerForNode(thread.profile.nodeId) ??
+          _cachedBluetoothPeer(thread.profile),
+      text,
+      replyTo: replyTo,
+      retryingMessage: retryingMessage,
+    );
+  }
+
+  Future<String?> sendBluetoothFileToThread(
+    ChatThread thread,
+    String filename,
+    Uint8List bytes, {
+    String caption = '',
+    ChatMessage? replyTo,
+    ChatMessageKind kind = ChatMessageKind.file,
+    ChatMessage? retryingMessage,
+  }) {
+    if (!thread.isBluetooth) {
+      return Future<String?>.value('This is not a Bluetooth chat');
+    }
+    return sendBluetoothFile(
+      bluetoothPeerForNode(thread.profile.nodeId) ??
+          _cachedBluetoothPeer(thread.profile),
+      filename,
+      bytes,
+      caption: caption,
+      replyTo: replyTo,
+      kind: kind,
+      retryingMessage: retryingMessage,
+    );
+  }
+
+  BlePeer _cachedBluetoothPeer(Profile profile) => BlePeer(
+    id: '',
+    name: profile.displayName,
+    nodeId: profile.nodeId,
+    displayName: profile.displayName,
+    publicUsername: profile.publicUsername,
+    publicKey: profile.publicKey,
+  );
+
+  Future<String?> _ensureBluetoothReadyForSend() async {
+    if (ble.running) return null;
+    return startBluetoothNearby();
+  }
+
+  Future<BleSendResult?> _sendBluetoothThreadPacket(
+    ChatThread thread,
+    Map<String, dynamic> payload,
+  ) async {
+    if (!thread.isBluetooth || thread.profile.nodeId.isEmpty) return null;
+    final startError = await _ensureBluetoothReadyForSend();
+    if (startError != null) {
+      addDiagnostic('bluetooth', startError);
+      return null;
+    }
+    try {
+      return await ble.sendPacketToNode(thread.profile.nodeId, {
+        ...payload,
+        'packet_id': payload['packet_id'] ?? const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': thread.profile.nodeId,
+        'ttl': 1,
+        'sender': session?.login ?? '',
+        'chat_kind': 'bluetooth',
+        'chat_id': '',
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      });
+    } catch (error) {
+      addDiagnostic('bluetooth', 'Bluetooth action failed: $error');
+      return null;
     }
   }
 
@@ -3990,14 +6164,33 @@ class AppController extends ChangeNotifier {
     ChatMessage? replyTo,
     ChatThread? threadOverride,
     ChatMessageKind kind = ChatMessageKind.file,
+    ChatMessage? retryingMessage,
   }) async {
     if (session == null) return 'Нет активной сессии';
+    if (threadOverride?.isBluetooth == true) {
+      return sendBluetoothFileToThread(
+        threadOverride!,
+        filename,
+        bytes,
+        caption: caption,
+        replyTo: replyTo,
+        kind: kind,
+        retryingMessage: retryingMessage,
+      );
+    }
     if (bytes.isEmpty) return 'Файл пустой';
     if (bytes.length > maxMobileFileBytes) {
       return 'Файл больше 64 МБ';
     }
 
-    final id = const Uuid().v4();
+    final id = retryingMessage?.id ?? const Uuid().v4();
+    final messageEffect =
+        retryingMessage?.messageEffect ?? _outgoingMessageEffect;
+    final replyToMessageId =
+        retryingMessage?.replyToMessageId ?? replyTo?.id ?? '';
+    final replyToText =
+        retryingMessage?.replyToText ??
+        (replyTo == null ? '' : _replyPreview(replyTo));
     final data = _hexEncode(bytes);
     final trimmedCaption = caption.trim();
     final thread = threadOverride ?? _ensureThread(recipient);
@@ -4015,6 +6208,7 @@ class AppController extends ChangeNotifier {
           fileSize: bytes.length,
           replyToMessageId: replyTo?.id ?? '',
           replyToText: replyTo == null ? '' : _replyPreview(replyTo),
+          messageEffect: messageEffect,
           delivered: true,
           progress: 1,
         ),
@@ -4023,22 +6217,29 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return null;
     }
-    thread.messages.add(
-      ChatMessage(
-        id: id,
-        senderNode: myNodeId,
-        receiverNode: recipient.nodeId,
-        text: trimmedCaption,
-        createdAt: DateTime.now(),
-        kind: kind,
-        fileName: filename,
-        fileData: _hexEncode(bytes),
-        fileSize: bytes.length,
-        replyToMessageId: replyTo?.id ?? '',
-        replyToText: replyTo == null ? '' : _replyPreview(replyTo),
-        pending: true,
-      ),
-    );
+    final outgoing =
+        retryingMessage?.copyWith(
+          pending: true,
+          delivered: false,
+          failed: false,
+          progress: 0,
+        ) ??
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: recipient.nodeId,
+          text: trimmedCaption,
+          createdAt: DateTime.now(),
+          kind: kind,
+          fileName: filename,
+          fileData: _hexEncode(bytes),
+          fileSize: bytes.length,
+          replyToMessageId: replyToMessageId,
+          replyToText: replyToText,
+          messageEffect: messageEffect,
+          pending: true,
+        );
+    _upsertOutgoingMessage(thread, outgoing);
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
@@ -4067,8 +6268,9 @@ class AppController extends ChangeNotifier {
         'message_kind': kind.name,
         'filename': filename,
         'caption': trimmedCaption,
-        'reply_to_message_id': replyTo?.id ?? '',
-        'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+        'reply_to_message_id': replyToMessageId,
+        'reply_to_text': replyToText,
+        'message_effect': messageEffect,
         'chunk_index': index,
         'total_chunks': totalChunks,
         'data': data.substring(start, end),
@@ -4096,7 +6298,15 @@ class AppController extends ChangeNotifier {
           ? 'meshchat_file'
           : message.fileName;
       final bytes = _hexDecode(message.fileData);
-      return target.isGroup
+      return target.isBluetooth
+          ? sendBluetoothFileToThread(
+              target,
+              filename,
+              bytes,
+              caption: message.text,
+              kind: message.kind,
+            )
+          : target.isGroup
           ? sendGroupFile(
               target,
               filename,
@@ -4114,7 +6324,9 @@ class AppController extends ChangeNotifier {
     }
     final text = message.text.trim();
     if (text.isEmpty) return 'Message is empty';
-    if (target.isGroup) {
+    if (target.isBluetooth) {
+      return sendBluetoothMessageToThread(target, text);
+    } else if (target.isGroup) {
       await sendGroupMessage(target, text);
     } else {
       await sendMessage(target.profile, text);
@@ -4149,36 +6361,72 @@ class AppController extends ChangeNotifier {
 
   Future<String?> retryMessage(ChatThread thread, ChatMessage message) async {
     if (!message.failed && !message.pending) return null;
-    _deleteLocalMessage(thread, message.id);
-    if (message.kind == ChatMessageKind.file ||
-        message.kind == ChatMessageKind.sticker) {
-      if (message.fileData.isEmpty) return 'File is not cached';
-      final bytes = _hexDecode(message.fileData);
-      final filename = message.fileName.isEmpty
-          ? message.text
-          : message.fileName;
-      return thread.isGroup
-          ? sendGroupFile(
-              thread,
-              filename,
-              bytes,
-              caption: message.text,
-              kind: message.kind,
-            )
-          : sendFile(
-              thread.profile,
-              filename,
-              bytes,
-              caption: message.text,
-              kind: message.kind,
-            );
+    if (!_resendingMessageIds.add(message.id)) {
+      return 'Message is already being retried';
     }
-    if (thread.isGroup) {
-      await sendGroupMessage(thread, message.text);
-    } else {
-      await sendMessage(thread.profile, message.text);
+    try {
+      if (message.kind == ChatMessageKind.file ||
+          message.kind == ChatMessageKind.sticker) {
+        if (message.fileData.isEmpty) return 'File is not cached';
+      }
+      if (thread.isBluetooth) {
+        await ble.cancelQueuedMessage(message.id);
+        if (message.kind == ChatMessageKind.file ||
+            message.kind == ChatMessageKind.sticker) {
+          return sendBluetoothFileToThread(
+            thread,
+            message.fileName.isEmpty ? message.text : message.fileName,
+            _hexDecode(message.fileData),
+            caption: message.text,
+            kind: message.kind,
+            retryingMessage: message,
+          );
+        }
+        return sendBluetoothMessageToThread(
+          thread,
+          message.text,
+          retryingMessage: message,
+        );
+      }
+      if (message.kind == ChatMessageKind.file ||
+          message.kind == ChatMessageKind.sticker) {
+        final bytes = _hexDecode(message.fileData);
+        final filename = message.fileName.isEmpty
+            ? message.text
+            : message.fileName;
+        return thread.isGroup
+            ? sendGroupFile(
+                thread,
+                filename,
+                bytes,
+                caption: message.text,
+                kind: message.kind,
+                retryingMessage: message,
+              )
+            : sendFile(
+                thread.profile,
+                filename,
+                bytes,
+                caption: message.text,
+                threadOverride: thread,
+                kind: message.kind,
+                retryingMessage: message,
+              );
+      }
+      if (thread.isGroup) {
+        await sendGroupMessage(thread, message.text, retryingMessage: message);
+      } else {
+        await sendMessage(
+          thread.profile,
+          message.text,
+          threadOverride: thread,
+          retryingMessage: message,
+        );
+      }
+      return null;
+    } finally {
+      _resendingMessageIds.remove(message.id);
     }
-    return null;
   }
 
   Future<void> _retryQueuedMessages() async {
@@ -4188,11 +6436,14 @@ class AppController extends ChangeNotifier {
     _retryingQueuedMessages = true;
     try {
       final queued = <({ChatThread thread, ChatMessage message})>[];
+      final seenMessageIds = <String>{};
       for (final thread in [...threads.values, ...groups.values]) {
+        if (thread.isBluetooth) continue;
         for (final message in thread.messages) {
           if (message.senderNode != myNodeId) continue;
           if (!message.pending && !message.failed) continue;
           if (message.deleted) continue;
+          if (!seenMessageIds.add(message.id)) continue;
           queued.add((thread: thread, message: message));
         }
       }
@@ -4610,10 +6861,18 @@ class AppController extends ChangeNotifier {
     String caption = '',
     ChatMessage? replyTo,
     ChatMessageKind kind = ChatMessageKind.file,
+    ChatMessage? retryingMessage,
   }) async {
     if (session == null) return 'Нет активной сессии';
     if (!group.isGroup) return 'Это не группа';
-    final isChannelComment = group.isChannel && replyTo != null;
+    final replyToMessageId =
+        retryingMessage?.replyToMessageId ?? replyTo?.id ?? '';
+    final replyToText =
+        retryingMessage?.replyToText ??
+        (replyTo == null ? '' : _replyPreview(replyTo));
+    final isChannelComment =
+        retryingMessage?.isChannelComment == true ||
+        (group.isChannel && replyToMessageId.isNotEmpty);
     if (isChannelComment && !canCommentInChannel(group)) {
       return 'Channel comments are disabled';
     }
@@ -4623,7 +6882,9 @@ class AppController extends ChangeNotifier {
     if (bytes.isEmpty) return 'Файл пустой';
     if (bytes.length > maxMobileFileBytes) return 'Файл больше 64 МБ';
 
-    final id = const Uuid().v4();
+    final id = retryingMessage?.id ?? const Uuid().v4();
+    final messageEffect =
+        retryingMessage?.messageEffect ?? _outgoingMessageEffect;
     final groupKey = _getOrCreateGroupKey(group.groupId);
     final trimmedCaption = caption.trim();
     final wireFilename = await _crypto.encryptGroupText(groupKey.key, filename);
@@ -4636,22 +6897,31 @@ class AppController extends ChangeNotifier {
       _crypto.publicKey,
       groupKey.key,
     );
-    group.messages.add(
-      ChatMessage(
-        id: id,
-        senderNode: myNodeId,
-        receiverNode: group.groupId,
-        text: trimmedCaption,
-        createdAt: DateTime.now(),
-        kind: kind,
-        fileName: filename,
-        fileData: _hexEncode(bytes),
-        fileSize: bytes.length,
-        replyToMessageId: replyTo?.id ?? '',
-        replyToText: replyTo == null ? '' : _replyPreview(replyTo),
-        pending: true,
-      ),
-    );
+    final outgoing =
+        retryingMessage?.copyWith(
+          isChannelComment: isChannelComment,
+          pending: true,
+          delivered: false,
+          failed: false,
+          progress: 0,
+        ) ??
+        ChatMessage(
+          id: id,
+          senderNode: myNodeId,
+          receiverNode: group.groupId,
+          text: trimmedCaption,
+          createdAt: DateTime.now(),
+          kind: kind,
+          fileName: filename,
+          fileData: _hexEncode(bytes),
+          fileSize: bytes.length,
+          replyToMessageId: replyToMessageId,
+          replyToText: replyToText,
+          isChannelComment: isChannelComment,
+          messageEffect: messageEffect,
+          pending: true,
+        );
+    _upsertOutgoingMessage(group, outgoing);
     unawaited(_saveCache());
     notifyListeners();
     if (!_socket.isConnected) {
@@ -4684,8 +6954,9 @@ class AppController extends ChangeNotifier {
           'message_kind': kind.name,
           'filename': wireFilename,
           'caption': wireCaption,
-          'reply_to_message_id': replyTo?.id ?? '',
-          'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+          'reply_to_message_id': replyToMessageId,
+          'reply_to_text': replyToText,
+          'message_effect': messageEffect,
           'is_channel_comment': isChannelComment,
           'group_id': group.groupId,
           'group_name': group.groupName.isEmpty
@@ -4726,8 +6997,9 @@ class AppController extends ChangeNotifier {
           'message_kind': kind.name,
           'filename': wireFilename,
           'caption': wireCaption,
-          'reply_to_message_id': replyTo?.id ?? '',
-          'reply_to_text': replyTo == null ? '' : _replyPreview(replyTo),
+          'reply_to_message_id': replyToMessageId,
+          'reply_to_text': replyToText,
+          'message_effect': messageEffect,
           'is_channel_comment': isChannelComment,
           'group_id': group.groupId,
           'group_name': group.groupName.isEmpty
@@ -4782,9 +7054,10 @@ class AppController extends ChangeNotifier {
         senderNode: sender,
         receiverNode: myNodeId,
         text: text,
-        createdAt: DateTime.now(),
+        createdAt: _parsePacketDate(packet),
         replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
         replyToText: packet['reply_to_text']?.toString() ?? '',
+        messageEffect: packet['message_effect']?.toString() ?? 'none',
         delivered: true,
       );
       thread.messages.add(message);
@@ -4800,15 +7073,7 @@ class AppController extends ChangeNotifier {
       _publishIncomingPreview(thread, message);
       unawaited(_saveCache());
     }
-    _socket.send({
-      'type': 'message_received',
-      'packet_id': const Uuid().v4(),
-      'protocol_version': MeshSocket.protocolVersion,
-      'source_node': myNodeId,
-      'destination_node': sender,
-      'message_id': id,
-      'ttl': 5,
-    });
+    await _sendDeliveryReceipt(packet, sender, id);
   }
 
   Future<void> _receiveFileChunk(
@@ -4905,6 +7170,22 @@ class AppController extends ChangeNotifier {
         fileSize: decryptedData.length ~/ 2,
         replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
         replyToText: first['reply_to_text']?.toString() ?? '',
+        isChannelComment:
+            first['is_channel_comment'] == true ||
+            (group.isChannel &&
+                (first['reply_to_message_id']?.toString() ?? '').isNotEmpty),
+        messageEffect: first['message_effect']?.toString() ?? 'none',
+        transcription: first['transcription']?.toString() ?? '',
+        transcriptionLanguage:
+            first['transcription_language']?.toString() ?? '',
+        transcriptionDurationSeconds:
+            double.tryParse(
+              first['transcription_duration_seconds']?.toString() ?? '',
+            ) ??
+            0,
+        ocrText: first['ocr_text']?.toString() ?? '',
+        ocrLanguage: first['ocr_language']?.toString() ?? '',
+        ocrProcessed: first['ocr_processed'] == true,
         delivered: true,
       );
       final inserted = _upsertFileMessage(group, message);
@@ -4994,6 +7275,17 @@ class AppController extends ChangeNotifier {
       fileSize: fullData.length ~/ 2,
       replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
       replyToText: first['reply_to_text']?.toString() ?? '',
+      messageEffect: first['message_effect']?.toString() ?? 'none',
+      transcription: first['transcription']?.toString() ?? '',
+      transcriptionLanguage: first['transcription_language']?.toString() ?? '',
+      transcriptionDurationSeconds:
+          double.tryParse(
+            first['transcription_duration_seconds']?.toString() ?? '',
+          ) ??
+          0,
+      ocrText: first['ocr_text']?.toString() ?? '',
+      ocrLanguage: first['ocr_language']?.toString() ?? '',
+      ocrProcessed: first['ocr_processed'] == true,
       delivered: true,
     );
     final inserted = _upsertFileMessage(thread, message);
@@ -5017,6 +7309,9 @@ class AppController extends ChangeNotifier {
     await _saveCache();
     notifyListeners();
     _incomingFiles.remove(fileId);
+    if (!fromSync && sender != myNodeId) {
+      await _sendDeliveryReceipt(first, sender, fileId);
+    }
   }
 
   bool _upsertFileMessage(ChatThread thread, ChatMessage incoming) {
@@ -5033,8 +7328,18 @@ class AppController extends ChangeNotifier {
         current.kind != incoming.kind ||
         current.fileData.isEmpty ||
         current.fileName.isEmpty ||
-        current.fileSize <= 0;
-    if (!shouldUpgrade) return false;
+        current.fileSize <= 0 ||
+        (incoming.transcription.isNotEmpty &&
+            incoming.transcription != current.transcription) ||
+        (incoming.ocrProcessed &&
+            (!current.ocrProcessed || incoming.ocrText != current.ocrText)) ||
+        (current.messageEffect == 'none' && incoming.messageEffect != 'none') ||
+        (current.replyToMessageId.isEmpty &&
+            incoming.replyToMessageId.isNotEmpty) ||
+        (!current.isChannelComment && incoming.isChannelComment);
+    final shouldConfirmDelivery =
+        current.pending || current.failed || !current.delivered;
+    if (!shouldUpgrade && !shouldConfirmDelivery) return false;
     final shouldReplaceText =
         incoming.text.isNotEmpty &&
         (current.text.isEmpty ||
@@ -5053,6 +7358,30 @@ class AppController extends ChangeNotifier {
           ? incoming.fileData
           : current.fileData,
       fileSize: incoming.fileSize > 0 ? incoming.fileSize : current.fileSize,
+      transcription: incoming.transcription.isNotEmpty
+          ? incoming.transcription
+          : current.transcription,
+      transcriptionLanguage: incoming.transcriptionLanguage.isNotEmpty
+          ? incoming.transcriptionLanguage
+          : current.transcriptionLanguage,
+      transcriptionDurationSeconds: incoming.transcriptionDurationSeconds > 0
+          ? incoming.transcriptionDurationSeconds
+          : current.transcriptionDurationSeconds,
+      ocrText: incoming.ocrProcessed ? incoming.ocrText : current.ocrText,
+      ocrLanguage: incoming.ocrProcessed
+          ? incoming.ocrLanguage
+          : current.ocrLanguage,
+      ocrProcessed: incoming.ocrProcessed || current.ocrProcessed,
+      messageEffect: incoming.messageEffect != 'none'
+          ? incoming.messageEffect
+          : current.messageEffect,
+      replyToMessageId: incoming.replyToMessageId.isNotEmpty
+          ? incoming.replyToMessageId
+          : current.replyToMessageId,
+      replyToText: incoming.replyToText.isNotEmpty
+          ? incoming.replyToText
+          : current.replyToText,
+      isChannelComment: incoming.isChannelComment || current.isChannelComment,
       delivered: true,
       pending: false,
       failed: false,
@@ -5331,7 +7660,23 @@ class AppController extends ChangeNotifier {
 
   void _markDelivered(String id) {
     if (id.isEmpty) return;
-    _replaceMessage(id, (message) => message.copyWith(delivered: true));
+    _replaceMessage(
+      id,
+      (message) =>
+          message.copyWith(delivered: true, pending: false, failed: false),
+    );
+  }
+
+  void _upsertOutgoingMessage(ChatThread thread, ChatMessage outgoing) {
+    final index = thread.messages.indexWhere(
+      (message) => message.id == outgoing.id,
+    );
+    if (index >= 0) {
+      thread.messages[index] = outgoing;
+    } else {
+      thread.messages.add(outgoing);
+    }
+    thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
   }
 
   void _replaceMessage(
@@ -5377,10 +7722,60 @@ class AppController extends ChangeNotifier {
     } else if (appSettings.notificationsEnabled &&
         !settings.notificationsEnabled) {
       unawaited(_unsubscribeWebPush());
+      unawaited(_unsubscribeAndroidPush());
     }
     appSettings = settings;
     await _settingsStore.save(settings);
     notifyListeners();
+  }
+
+  Future<String?> updateMeshProPreferences({
+    List<String>? quickReactions,
+    bool? hdAudio,
+    bool? enhancedNoiseSuppression,
+  }) async {
+    if (session == null) return 'Sign in first';
+    if (!meshProSubscription.isActiveNow) return 'MeshPro is required';
+    if (!_socket.isConnected) return 'Connect to the server first';
+    final limit =
+        meshProSubscription.entitlements.limitFor('quick_reactions') ?? 4;
+    final normalized = <String>[];
+    for (final raw in quickReactions ?? appSettings.quickReactions) {
+      final reaction = raw.trim();
+      if (reaction.isEmpty ||
+          reaction.length > 16 ||
+          normalized.contains(reaction)) {
+        continue;
+      }
+      normalized.add(reaction);
+      if (normalized.length >= limit) break;
+    }
+    if (normalized.isEmpty) return 'Choose at least one quick reaction';
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _meshProPreferenceCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'meshpro_preferences_update',
+      'packet_id': requestId,
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'quick_reactions': normalized,
+      'hd_audio': hdAudio ?? appSettings.meshProHdAudio,
+      'enhanced_noise_suppression':
+          enhancedNoiseSuppression ??
+          appSettings.meshProEnhancedNoiseSuppression,
+      'ttl': 5,
+    });
+    return completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        _meshProPreferenceCompleters.remove(requestId);
+        return 'Server did not confirm the settings';
+      },
+    );
   }
 
   void _setActiveCall(ActiveCall? call) {
@@ -5465,6 +7860,49 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<String?> renameActiveDevice(ActiveDevice device, String deviceName) {
+    return _activeDeviceAction(device, 'rename', deviceName: deviceName);
+  }
+
+  Future<String?> revokeActiveDevice(ActiveDevice device) {
+    if (device.nodeId == myNodeId) {
+      return Future<String?>.value('The current device cannot revoke itself');
+    }
+    return _activeDeviceAction(device, 'revoke');
+  }
+
+  Future<String?> _activeDeviceAction(
+    ActiveDevice device,
+    String action, {
+    String? deviceName,
+  }) async {
+    if (session == null || !_socket.isConnected) {
+      return 'Connect to the server first';
+    }
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _activeDeviceActionCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'active_device_action_request',
+      'packet_id': requestId,
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'target_node': device.nodeId,
+      'action': action,
+      if (deviceName != null) 'device_name': deviceName.trim(),
+      'ttl': 5,
+    });
+    return completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        _activeDeviceActionCompleters.remove(requestId);
+        return 'Server did not confirm the device action';
+      },
+    );
+  }
+
   Future<void> clearLocalCache() async {
     final current = session;
     await _cache.clear(session);
@@ -5477,11 +7915,27 @@ class AppController extends ChangeNotifier {
 
   Future<void> logout() async {
     await ble.stop();
+    await _unsubscribeAndroidPush();
     await _socket.close();
     await _store.clear();
     session = null;
     _clearLocalState();
     status = 'Offline';
+    notifyListeners();
+  }
+
+  Future<void> _handleDeviceRevoked() async {
+    final current = session;
+    await _socket.close();
+    await _store.clear();
+    if (current != null) {
+      await _store.removeRecent(current);
+    }
+    session = null;
+    recentSessions = await _store.loadRecent();
+    _clearLocalState();
+    status = 'This device was signed out remotely';
+    error = 'Enter the password again to reactivate this device';
     notifyListeners();
   }
 
@@ -5493,6 +7947,8 @@ class AppController extends ChangeNotifier {
     groupJoinRequests.clear();
     stories.clear();
     storyArchive.clear();
+    scheduledMessages.clear();
+    stickerLibrary = const StickerLibrary();
     hiddenStoryOwners.clear();
     typingUntil.clear();
     activityKinds.clear();
@@ -5505,6 +7961,76 @@ class AppController extends ChangeNotifier {
     incomingPreviewMessage = null;
     _groupKeys.clear();
     _groupKeyHistory.clear();
+    meshProSubscription = const MeshProSubscription.inactive();
+    final meshProCompleter = _meshProCompleter;
+    _meshProCompleter = null;
+    if (meshProCompleter != null && !meshProCompleter.isCompleted) {
+      meshProCompleter.complete(meshProSubscription);
+    }
+    for (final completer in _aiRewriteCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiRewriteException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiRewriteCompleters.clear();
+    for (final completer in _aiTranslationCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiTranslationException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiTranslationCompleters.clear();
+    for (final completer in _aiSummaryCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiSummaryException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiSummaryCompleters.clear();
+    for (final completer in _aiTranscriptionCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiTranscriptionException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiTranscriptionCompleters.clear();
+    for (final completer in _aiOcrCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiOcrException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiOcrCompleters.clear();
+    for (final completer in _aiSmartRepliesCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiSmartRepliesException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiSmartRepliesCompleters.clear();
+    for (final completer in _scheduledMessageCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _scheduledMessageCompleters.clear();
+    for (final completer in _chatPreferenceCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _chatPreferenceCompleters.clear();
+    for (final completer in _activeDeviceActionCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _activeDeviceActionCompleters.clear();
+    for (final completer in _meshProPreferenceCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _meshProPreferenceCompleters.clear();
   }
 
   Future<void> _saveCache() async {
@@ -5583,6 +8109,62 @@ class AppController extends ChangeNotifier {
     ble.removeListener(_handleBluetoothStateChanged);
     ble.dispose();
     _socket.close();
+    for (final completer in _aiRewriteCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiRewriteException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiRewriteCompleters.clear();
+    for (final completer in _aiTranslationCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiTranslationException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiTranslationCompleters.clear();
+    for (final completer in _aiSummaryCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiSummaryException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiSummaryCompleters.clear();
+    for (final completer in _aiTranscriptionCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiTranscriptionException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiTranscriptionCompleters.clear();
+    for (final completer in _aiOcrCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiOcrException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiOcrCompleters.clear();
+    for (final completer in _aiSmartRepliesCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiSmartRepliesException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiSmartRepliesCompleters.clear();
+    for (final completer in _scheduledMessageCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Application closed');
+    }
+    _scheduledMessageCompleters.clear();
+    for (final completer in _chatPreferenceCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Application closed');
+    }
+    _chatPreferenceCompleters.clear();
     super.dispose();
   }
 }
@@ -5631,23 +8213,29 @@ class ActiveDevice {
   const ActiveDevice({
     required this.nodeId,
     this.displayName = '',
+    this.deviceName = '',
     this.appVersion = '',
     this.online = false,
+    this.revoked = false,
     this.lastSeen = '',
   });
 
   final String nodeId;
   final String displayName;
+  final String deviceName;
   final String appVersion;
   final bool online;
+  final bool revoked;
   final String lastSeen;
 
   factory ActiveDevice.fromJson(Map<String, dynamic> json) {
     return ActiveDevice(
       nodeId: json['node_id']?.toString() ?? '',
       displayName: json['display_name']?.toString() ?? '',
+      deviceName: json['device_name']?.toString() ?? '',
       appVersion: json['app_version']?.toString() ?? '',
       online: json['online'] == true,
+      revoked: json['revoked'] == true,
       lastSeen: json['last_seen']?.toString() ?? '',
     );
   }

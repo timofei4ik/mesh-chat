@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111e">
+  <title>MeshPro</title>
+  <link rel="stylesheet" href="/meshpro/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/meshpro/" aria-label="MeshPro">
+      <img src="/meshpro/logo.png" alt="" width="52" height="52">
+      <span>
+        <strong>MeshPro</strong>
+        <small>MeshChat + MeshPrivacy</small>
+      </span>
+    </a>
+    <span class="secure-label">Оплата через Lava.top</span>
+  </header>
+
+  <main class="checkout-main">
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">Единая подписка</p>
+      <h1 id="page-title">MeshPro на <span id="period-days">30</span> дней</h1>
+      <p class="lead">Один доступ для премиальных возможностей MeshChat и защищённого подключения MeshPrivacy.</p>
+
+      <dl class="plan-details">
+        <div>
+          <dt>Стоимость</dt>
+          <dd id="plan-price">199 ₽</dd>
+        </div>
+        <div>
+          <dt>Период</dt>
+          <dd><span id="plan-days">30</span> дней</dd>
+        </div>
+        <div>
+          <dt>Продление</dt>
+          <dd>Автоматически</dd>
+        </div>
+      </dl>
+
+      <form id="checkout-form" novalidate>
+        <div class="checkout-fields">
+          <label for="login">
+            Логин MeshChat
+            <input
+              id="login"
+              name="login"
+              type="text"
+              autocomplete="username"
+              autocapitalize="none"
+              spellcheck="false"
+              maxlength="64"
+              placeholder="Например, losyara_admin"
+              required
+            >
+          </label>
+          <label for="email">
+            Email для чека и подписки
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autocomplete="email"
+              maxlength="254"
+              placeholder="name@example.com"
+              required
+            >
+          </label>
+        </div>
+        <button id="checkout-button" class="checkout-button" type="submit">Перейти к оплате</button>
+        <p id="form-error" class="error" role="alert" hidden></p>
+        <p class="checkout-note">Доступ включится автоматически после подтверждения платежа. Секретные ключи оплаты не передаются в браузер.</p>
+      </form>
+    </section>
+  </main>
+
+  <footer>
+    Продление можно отменить в Lava.top. Уже оплаченный доступ останется активным до конца периода.
+  </footer>
+
+  <script src="/meshpro/app.js" defer></script>
+</body>
+</html>

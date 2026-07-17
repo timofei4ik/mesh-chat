@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'src/app.dart';
+import 'src/services/android_push_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -11,6 +12,9 @@ Future<void> main() async {
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS)) {
     await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    await initializeAndroidPushBackgroundHandling();
   }
   if (!kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.windows ||

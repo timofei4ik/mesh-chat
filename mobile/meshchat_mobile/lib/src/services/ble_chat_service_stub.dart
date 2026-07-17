@@ -4,6 +4,8 @@ import '../models/profile.dart';
 
 typedef BlePacketHandler = Future<void> Function(Map<String, dynamic> packet);
 
+enum BleSendResult { sent, queued }
+
 class BlePeer {
   const BlePeer({
     required this.id,
@@ -58,7 +60,18 @@ class BleChatService extends ChangeNotifier {
 
   Future<void> disconnect(BlePeer peer) async {}
 
-  Future<void> sendPacket(BlePeer peer, Map<String, dynamic> packet) {
+  Future<BleSendResult> sendPacket(BlePeer peer, Map<String, dynamic> packet) {
     throw UnsupportedError('Bluetooth is not available in the web version');
   }
+
+  Future<BleSendResult> sendPacketToNode(
+    String nodeId,
+    Map<String, dynamic> packet,
+  ) {
+    throw UnsupportedError('Bluetooth is not available in the web version');
+  }
+
+  Future<void> cancelQueuedMessage(String messageId) async {}
+
+  Future<void> clearQueuedPackets() async {}
 }

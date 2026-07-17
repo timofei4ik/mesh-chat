@@ -34,3 +34,27 @@ Run the Flutter checks from `mobile/meshchat_mobile`:
 flutter analyze
 flutter test
 ```
+
+## MeshPro subscriptions
+
+The relay stores the shared `meshpro` entitlement in
+`account_subscriptions`. MeshPrivacy uses the same account as MeshChat and
+receives a dedicated WireGuard profile for each authenticated device only
+while MeshPro is active. MeshChat can use the same entitlement for premium
+features later. Passwords are not persisted by MeshPrivacy; the client stores
+a revocable, device-bound service token instead.
+
+For development or support, access can be managed on the server host:
+
+```bash
+.venv/bin/python -m server.subscription_admin status --login user
+.venv/bin/python -m server.subscription_admin grant --login user --days 30
+.venv/bin/python -m server.subscription_admin revoke --login user
+```
+
+Legacy `meshprivacy` entitlement rows are migrated to `meshpro` on access, so
+existing paid periods are preserved during rollout.
+
+Manual Sber orders, optional YooKassa checkout and webhooks, dynamic WireGuard
+peer provisioning, Nginx configuration, revocation behavior, and rollout are
+documented in `server/SUBSCRIPTIONS.md`.
