@@ -156,7 +156,9 @@ private final class MeshChatLiquidGlassView: NSObject, FlutterPlatformView {
         let glassEffect = UIGlassEffect()
         glassEffect.tintColor = tint
         glassEffect.isInteractive = interactive
-        effectView.cornerConfiguration = .fixed(radius)
+        effectView.cornerConfiguration = .corners(
+          radius: .fixed(Double(radius))
+        )
         effectView.effect = glassEffect
       } else {
         effectView.effect = UIBlurEffect(style: .systemUltraThinMaterialDark)
