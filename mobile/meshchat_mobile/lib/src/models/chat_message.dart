@@ -5,6 +5,7 @@ class ChatMessage {
     required this.receiverNode,
     required this.text,
     required this.createdAt,
+    this.senderName = '',
     this.kind = ChatMessageKind.text,
     this.fileName = '',
     this.fileData = '',
@@ -25,6 +26,7 @@ class ChatMessage {
     this.deleted = false,
     this.pending = false,
     this.delivered = false,
+    this.read = false,
     this.failed = false,
     this.progress = 0,
   }) : reactions = reactions ?? const {},
@@ -35,6 +37,7 @@ class ChatMessage {
   final String receiverNode;
   final String text;
   final DateTime createdAt;
+  final String senderName;
   final ChatMessageKind kind;
   final String fileName;
   final String fileData;
@@ -55,11 +58,13 @@ class ChatMessage {
   final bool deleted;
   final bool pending;
   final bool delivered;
+  final bool read;
   final bool failed;
   final double progress;
 
   ChatMessage copyWith({
     String? text,
+    String? senderName,
     ChatMessageKind? kind,
     String? fileName,
     String? fileData,
@@ -76,6 +81,7 @@ class ChatMessage {
     String? messageEffect,
     bool? pending,
     bool? delivered,
+    bool? read,
     bool? failed,
     double? progress,
     Map<String, int>? reactions,
@@ -88,6 +94,7 @@ class ChatMessage {
       senderNode: senderNode,
       receiverNode: receiverNode,
       text: text ?? this.text,
+      senderName: senderName ?? this.senderName,
       createdAt: createdAt,
       kind: kind ?? this.kind,
       fileName: fileName ?? this.fileName,
@@ -113,6 +120,7 @@ class ChatMessage {
       deleted: deleted ?? this.deleted,
       pending: pending ?? this.pending,
       delivered: delivered ?? this.delivered,
+      read: read ?? this.read,
       failed: failed ?? this.failed,
       progress: progress ?? this.progress,
     );
@@ -130,6 +138,7 @@ class ChatMessage {
       senderNode: json['sender_node']?.toString() ?? '',
       receiverNode: json['receiver_node']?.toString() ?? '',
       text: json['text']?.toString() ?? '',
+      senderName: json['sender_name']?.toString() ?? '',
       createdAt:
           DateTime.tryParse(json['created_at']?.toString() ?? '') ??
           DateTime.now(),
@@ -159,6 +168,7 @@ class ChatMessage {
       deleted: json['deleted'] == true,
       pending: json['pending'] == true,
       delivered: json['delivered'] == true,
+      read: json['read'] == true,
       failed: json['failed'] == true,
       progress: double.tryParse(json['progress']?.toString() ?? '') ?? 0,
     );
@@ -170,6 +180,7 @@ class ChatMessage {
       'sender_node': senderNode,
       'receiver_node': receiverNode,
       'text': text,
+      'sender_name': senderName,
       'created_at': createdAt.toUtc().toIso8601String(),
       'kind': kind.name,
       'file_name': fileName,
@@ -191,6 +202,7 @@ class ChatMessage {
       'deleted': deleted,
       'pending': pending,
       'delivered': delivered,
+      'read': read,
       'failed': failed,
       'progress': progress,
     };

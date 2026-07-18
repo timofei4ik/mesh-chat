@@ -144,12 +144,7 @@ class ChatsPage extends StatelessWidget {
     } else if (action == 'saved') {
       final thread = controller.ensureSavedMessagesThread();
       if (!context.mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ChatPage(controller: controller, thread: thread),
-        ),
-      );
+      openThread(context, thread);
     } else if (action == 'group') {
       await createGroup(context);
     } else if (action == 'channel') {
@@ -359,8 +354,41 @@ class ChatsPage extends StatelessWidget {
     controller.markRead(thread);
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => ChatPage(controller: controller, thread: thread),
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 330),
+        reverseTransitionDuration: const Duration(milliseconds: 230),
+        pageBuilder: (_, _, _) =>
+            ChatPage(controller: controller, thread: thread),
+        transitionsBuilder: (_, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          final secondary = CurvedAnimation(
+            parent: secondaryAnimation,
+            curve: Curves.easeOutCubic,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.03, 0.035),
+                end: Offset.zero,
+              ).animate(curved),
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.965, end: 1).animate(curved),
+                child: FadeTransition(
+                  opacity: Tween<double>(
+                    begin: 1,
+                    end: 0.92,
+                  ).animate(ReverseAnimation(secondary)),
+                  child: child,
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1550,6 +1578,7 @@ class _StoriesStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final stories = controller.activeStories;
+    final showHint = stories.isEmpty;
     return Padding(
       padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
       child: SizedBox(
@@ -1557,11 +1586,14 @@ class _StoriesStrip extends StatelessWidget {
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 4),
-          itemCount: stories.length + 1,
+          itemCount: stories.length + 1 + (showHint ? 1 : 0),
           separatorBuilder: (_, _) => const SizedBox(width: 10),
           itemBuilder: (context, index) {
             if (index == 0) {
               return _AddStoryTile(onTap: onAdd, onArchive: onArchive);
+            }
+            if (showHint && index == 1) {
+              return const _StoriesHintTile();
             }
             final story = stories[index - 1];
             return _StoryTile(
@@ -1571,6 +1603,55 @@ class _StoriesStrip extends StatelessWidget {
               onTap: () => onOpen(story),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _StoriesHintTile extends StatelessWidget {
+  const _StoriesHintTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 184,
+      child: _HomeGlassSurface(
+        accent: Colors.blueGrey,
+        radius: 22,
+        dim: true,
+        child: const Padding(
+          padding: EdgeInsets.fromLTRB(14, 14, 14, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.auto_stories_outlined,
+                    size: 18,
+                    color: Colors.white70,
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'Add story',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 8),
+              Text(
+                "Friends' stories will appear here.",
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Colors.white54, height: 1.25),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -2861,7 +2942,7 @@ class _HomeHeader extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           _HomeSearchField(onTap: onSearch),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           _ConnectionStatusPill(status: controller.status),
         ],
       ),
@@ -2973,10 +3054,10 @@ class _BluetoothStatusCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(15),
         child: Padding(
           padding: EdgeInsets.fromLTRB(
-            compact ? 9 : 12,
-            8,
-            compact ? 9 : 12,
-            8,
+            compact ? 9 : 13,
+            9,
+            compact ? 9 : 13,
+            9,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -3060,14 +3141,15 @@ class _HomeSearchFieldState extends State<_HomeSearchField> {
       curve: Curves.easeOutCubic,
       child: MeshLiquidGlass(
         accent: pressed ? Colors.lightBlueAccent : Colors.blueGrey,
-        radius: 16,
-        dim: !pressed,
+        radius: 18,
+        dim: false,
         selected: pressed,
         interactive: true,
         fallbackBuilder: (context, child) => _HomeGlassSurface(
           accent: pressed ? Colors.lightBlueAccent : Colors.blueGrey,
-          radius: 16,
-          dim: !pressed,
+          radius: 18,
+          dim: false,
+          selected: pressed,
           child: child,
         ),
         child: InkWell(
@@ -3075,14 +3157,20 @@ class _HomeSearchFieldState extends State<_HomeSearchField> {
           onTapDown: (_) => setState(() => pressed = true),
           onTapCancel: () => setState(() => pressed = false),
           onTapUp: (_) => setState(() => pressed = false),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           child: const Padding(
-            padding: EdgeInsets.fromLTRB(12, 9, 12, 9),
+            padding: EdgeInsets.fromLTRB(14, 12, 14, 12),
             child: Row(
               children: [
-                Icon(Icons.search_rounded, size: 20, color: Colors.white54),
-                SizedBox(width: 8),
-                Text('Search', style: TextStyle(color: Colors.white54)),
+                Icon(Icons.search_rounded, size: 21, color: Colors.white60),
+                SizedBox(width: 10),
+                Text(
+                  'Search',
+                  style: TextStyle(
+                    color: Colors.white60,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ],
             ),
           ),
@@ -3103,8 +3191,8 @@ class _GlassLogoChip extends StatelessWidget {
       children: [
         Image.asset(
           'assets/app_icon.png',
-          width: compact ? 40 : 48,
-          height: compact ? 40 : 48,
+          width: compact ? 44 : 54,
+          height: compact ? 44 : 54,
         ),
         SizedBox(width: compact ? 7 : 10),
         Flexible(
@@ -3113,7 +3201,7 @@ class _GlassLogoChip extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: compact ? 18 : 22,
+              fontSize: compact ? 19 : 24,
               fontWeight: FontWeight.w900,
             ),
           ),
@@ -3308,7 +3396,7 @@ class _HomeFilterBar extends StatelessWidget {
             ),
           );
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 5, 14, 8),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: liquidGlass
           ? MeshLiquidGlass(
               accent: Colors.lightBlueAccent,
@@ -4497,7 +4585,19 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
-      decoration: const BoxDecoration(color: Color(0xFF07111E)),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF06101D),
+            Color(0xFF071422),
+            Color(0xFF111329),
+            Color(0xFF07111E),
+          ],
+          stops: [0, 0.42, 0.72, 1],
+        ),
+      ),
       child: RepaintBoundary(
         child: AnimatedBuilder(
           animation: controller,
@@ -4844,24 +4944,24 @@ class _HomeGlassSurface extends StatelessWidget {
         ? selected
               ? const Color(0xFF263746)
               : dim
-              ? const Color(0xFF172330)
-              : const Color(0xFF1C2A38)
+              ? const Color(0xFF111A25)
+              : const Color(0xFF1B2B3B)
         : selected
-        ? const Color(0xFF2C3945)
+        ? const Color(0xFF30414D)
         : dim
-        ? const Color(0xFF1F2832)
-        : const Color(0xFF26313B);
+        ? const Color(0xFF18222D)
+        : const Color(0xFF243241);
     final alpha = nativeMaterial
         ? selected
               ? 0.38
               : dim
-              ? 0.19
-              : 0.29
+              ? 0.17
+              : 0.31
         : selected
-        ? 0.76
+        ? 0.80
         : dim
-        ? 0.58
-        : 0.66;
+        ? 0.50
+        : 0.70;
     final surface = DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(radius),
@@ -4873,21 +4973,44 @@ class _HomeGlassSurface extends StatelessWidget {
                     ? 0.035
                     : 0.022
               : selected
-              ? 0.06
-              : 0.045,
+              ? 0.075
+              : dim
+              ? 0.03
+              : 0.052,
         ),
         border: Border.all(
           color: selected
-              ? accent.withValues(alpha: 0.40)
-              : Colors.white.withValues(alpha: nativeMaterial ? 0.15 : 0.12),
+              ? accent.withValues(alpha: 0.44)
+              : dim
+              ? Colors.white.withValues(alpha: nativeMaterial ? 0.10 : 0.08)
+              : Colors.white.withValues(alpha: nativeMaterial ? 0.16 : 0.13),
         ),
         boxShadow: [
           if (selected)
             BoxShadow(color: accent.withValues(alpha: 0.16), blurRadius: 14),
+          if (!dim)
+            BoxShadow(
+              color: Colors.white.withValues(
+                alpha: nativeMaterial ? 0.02 : 0.018,
+              ),
+              blurRadius: 1,
+              offset: const Offset(0, 1),
+            ),
           BoxShadow(
-            color: Colors.black.withValues(alpha: nativeMaterial ? 0.10 : 0.18),
-            blurRadius: nativeMaterial ? 12 : 16,
-            offset: Offset(0, nativeMaterial ? 4 : 8),
+            color: Colors.black.withValues(alpha: nativeMaterial ? 0.12 : 0.24),
+            blurRadius: nativeMaterial
+                ? 13
+                : dim
+                ? 10
+                : 20,
+            offset: Offset(
+              0,
+              nativeMaterial
+                  ? 4
+                  : dim
+                  ? 5
+                  : 10,
+            ),
           ),
         ],
       ),

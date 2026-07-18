@@ -1262,6 +1262,22 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             await alice_legacy.receive_type("chat_message", timeout=0.15)
 
+        read_receipt = {
+            "type": "message_read",
+            "packet_id": "live-read-1",
+            "protocol_version": 5,
+            "source_node": bob_phone.node_id,
+            "destination_node": alice_phone.node_id,
+            "message_ids": ["live-message-1"],
+            "ttl": 5,
+        }
+        await bob_phone.send(read_receipt)
+
+        alice_read = await alice_phone.receive_type("message_read")
+        bob_mirror_read = await bob_desktop.receive_type("message_read")
+        self.assertEqual(["live-message-1"], alice_read["message_ids"])
+        self.assertEqual(True, bob_mirror_read["account_mirror"])
+
         reaction = {
             "type": "message_reaction",
             "packet_id": "live-reaction-1",

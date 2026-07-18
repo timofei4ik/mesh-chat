@@ -2259,6 +2259,8 @@ class AppController extends ChangeNotifier {
         await _applyStickerLibrarySyncChunk(packet);
       case 'message_received':
         _markDelivered(packet['message_id']?.toString() ?? '');
+      case 'message_read':
+        _markMessagesRead(_stringList(packet['message_ids']));
       case 'message_reaction':
       case 'group_reaction':
         _applyReactionPacket(packet);
@@ -2382,6 +2384,7 @@ class AppController extends ChangeNotifier {
       'chat_message',
       'file_chunk',
       'message_received',
+      'message_read',
       'message_reaction',
       'message_edit',
       'message_delete',
@@ -3175,6 +3178,7 @@ class AppController extends ChangeNotifier {
           senderNode: myNodeId,
           receiverNode: group.groupId,
           text: trimmed,
+          senderName: ownProfile.displayName,
           createdAt: DateTime.now(),
           replyToMessageId: replyToMessageId,
           replyToText: replyToText,
@@ -3204,6 +3208,8 @@ class AppController extends ChangeNotifier {
       'source_node': myNodeId,
       'ttl': 5,
       'sender': session!.login,
+      'sender_name': ownProfile.displayName,
+      'sender_login': session!.login,
       'group_id': group.groupId,
       'group_name': group.groupName.isEmpty
           ? group.profile.displayName
@@ -3327,9 +3333,7 @@ class AppController extends ChangeNotifier {
     final isServicePayload =
         text.startsWith('::meshchat_location_v1::') ||
         text.startsWith('::meshchat_meeting_v1::');
-    final displayText = sentByMe || senderName.isEmpty || isServicePayload
-        ? text
-        : '$senderName: $text';
+    final displayText = text;
     final replyToMessageId = packet['reply_to_message_id']?.toString() ?? '';
     group.messages.add(
       ChatMessage(
@@ -3337,6 +3341,7 @@ class AppController extends ChangeNotifier {
         senderNode: sender,
         receiverNode: groupId,
         text: displayText,
+        senderName: isServicePayload ? '' : senderName,
         createdAt: _parsePacketDate(packet),
         replyToMessageId: replyToMessageId,
         replyToText: packet['reply_to_text']?.toString() ?? '',
@@ -8088,6 +8093,21 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  void _markMessagesRead(List<String> ids) {
+    for (final id in ids.toSet()) {
+      if (id.isEmpty) continue;
+      _replaceMessage(
+        id,
+        (message) => message.copyWith(
+          read: true,
+          delivered: true,
+          pending: false,
+          failed: false,
+        ),
+      );
+    }
+  }
+
   void _applyMutationAck(Map<String, dynamic> packet) {
     if (packet['operation_complete'] != true) return;
     final messageId = packet['packet_id']?.toString() ?? '';
@@ -8158,6 +8178,30 @@ class AppController extends ChangeNotifier {
 
   void markRead(ChatThread thread) {
     thread.unread = 0;
+    final unreadBySender = <String, List<String>>{};
+    for (var index = 0; index < thread.messages.length; index++) {
+      final message = thread.messages[index];
+      final sender = message.senderNode.trim();
+      if (sender.isEmpty || sender == myNodeId || message.read) continue;
+      unreadBySender.putIfAbsent(sender, () => <String>[]).add(message.id);
+      thread.messages[index] = message.copyWith(read: true);
+    }
+    for (final entry in unreadBySender.entries) {
+      final receipt = {
+        'type': 'message_read',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': entry.key,
+        'message_ids': entry.value,
+        'ttl': thread.isBluetooth ? 1 : 5,
+      };
+      if (thread.isBluetooth) {
+        unawaited(ble.sendPacketToNode(entry.key, receipt));
+      } else {
+        _socket.send(receipt);
+      }
+    }
     unawaited(_saveCache());
     notifyListeners();
   }

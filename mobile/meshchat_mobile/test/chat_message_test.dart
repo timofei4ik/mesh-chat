@@ -162,4 +162,24 @@ void main() {
       'heart': ['login:alice'],
     });
   });
+
+  test('group sender and read receipt survive cache round trip', () {
+    final message = ChatMessage(
+      id: 'group-status-1',
+      senderNode: 'node-alice',
+      receiverNode: 'group-1',
+      senderName: 'Alice',
+      text: 'Hello without an embedded sender prefix',
+      createdAt: DateTime.utc(2026, 7, 18),
+      delivered: true,
+      read: true,
+    );
+
+    final restored = ChatMessage.fromJson(message.toJson());
+
+    expect(restored.senderName, 'Alice');
+    expect(restored.text, 'Hello without an embedded sender prefix');
+    expect(restored.delivered, isTrue);
+    expect(restored.read, isTrue);
+  });
 }

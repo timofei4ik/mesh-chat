@@ -97,6 +97,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Timer? liveLocationTimer;
   DateTime? liveLocationUntil;
   String? liveLocationMessageId;
+  String? highlightedMessageId;
   final deletingMessageIds = <String>{};
 
   bool get isChannelCommentThread =>
@@ -2710,6 +2711,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       duration: const Duration(milliseconds: 260),
       curve: Curves.easeOutCubic,
     );
+    setState(() => highlightedMessageId = messageId);
+    Future<void>.delayed(const Duration(milliseconds: 1100), () {
+      if (mounted && highlightedMessageId == messageId) {
+        setState(() => highlightedMessageId = null);
+      }
+    });
   }
 
   Future<void> openMediaList() async {
@@ -3005,6 +3012,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                           !isChannelCommentThread
                                       ? openChannelComments(message)
                                       : setState(() => replyTo = message),
+                                  onReplyQuoteTap:
+                                      message.replyToMessageId.isEmpty
+                                      ? null
+                                      : () => jumpToMessageById(
+                                          message.replyToMessageId,
+                                        ),
+                                  highlighted:
+                                      highlightedMessageId == message.id,
                                   onOpenComments:
                                       widget.thread.isChannel &&
                                           !isChannelCommentThread &&
@@ -6060,6 +6075,8 @@ class _MessageBubble extends StatefulWidget {
     required this.dataSaver,
     required this.onLongPress,
     required this.onReply,
+    this.onReplyQuoteTap,
+    this.highlighted = false,
     this.onOpenComments,
     this.commentCount = 0,
   });
@@ -6071,6 +6088,8 @@ class _MessageBubble extends StatefulWidget {
   final bool dataSaver;
   final VoidCallback onLongPress;
   final VoidCallback onReply;
+  final VoidCallback? onReplyQuoteTap;
+  final bool highlighted;
   final VoidCallback? onOpenComments;
   final int commentCount;
 
@@ -6108,6 +6127,7 @@ class _MessageBubble extends StatefulWidget {
 
 class _MessageBubbleState extends State<_MessageBubble> {
   double replyDrag = 0;
+  bool replyArmed = false;
   bool appeared = false;
 
   @override
@@ -6121,15 +6141,22 @@ class _MessageBubbleState extends State<_MessageBubble> {
   void _updateReplyDrag(DragUpdateDetails details) {
     final delta = details.primaryDelta ?? 0;
     if (delta <= 0 && replyDrag <= 0) return;
+    final next = (replyDrag + delta).clamp(0, 86).toDouble();
+    final armed = next >= 54;
+    if (armed && !replyArmed) HapticFeedback.selectionClick();
     setState(() {
-      replyDrag = (replyDrag + delta).clamp(0, 86);
+      replyDrag = next;
+      replyArmed = armed;
     });
   }
 
   void _finishReplyDrag(DragEndDetails details) {
     final shouldReply = replyDrag >= 54 || (details.primaryVelocity ?? 0) > 650;
     if (shouldReply) widget.onReply();
-    setState(() => replyDrag = 0);
+    setState(() {
+      replyDrag = 0;
+      replyArmed = false;
+    });
   }
 
   @override
@@ -6190,11 +6217,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
             GestureDetector(
               onHorizontalDragUpdate: _updateReplyDrag,
               onHorizontalDragEnd: _finishReplyDrag,
-              onHorizontalDragCancel: () => setState(() => replyDrag = 0),
+              onHorizontalDragCancel: () => setState(() {
+                replyDrag = 0;
+                replyArmed = false;
+              }),
               onLongPress: widget.onLongPress,
               onTap: imageBytes == null
                   ? null
-                  : () => _showImage(context, imageBytes),
+                  : () => _showImage(context, imageBytes, message.id),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 120),
                 curve: Curves.easeOutCubic,
@@ -6217,6 +6247,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     message: message,
                     mine: mine,
                     imageBytes: imageBytes,
+                    onReplyQuoteTap: widget.onReplyQuoteTap,
+                    highlighted: widget.highlighted,
                     onOpenComments: widget.onOpenComments,
                     commentCount: widget.commentCount,
                   ),
@@ -6229,14 +6261,17 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
   }
 
-  void _showImage(BuildContext context, Uint8List bytes) {
+  void _showImage(BuildContext context, Uint8List bytes, String messageId) {
     showDialog<void>(
       context: context,
       builder: (_) => Dialog(
         insetPadding: const EdgeInsets.all(14),
         backgroundColor: Colors.black,
-        child: InteractiveViewer(
-          child: Image.memory(bytes, fit: BoxFit.contain),
+        child: Hero(
+          tag: 'message-media-$messageId',
+          child: InteractiveViewer(
+            child: Image.memory(bytes, fit: BoxFit.contain),
+          ),
         ),
       ),
     );
@@ -6250,6 +6285,8 @@ class _MessageBubbleBody extends StatelessWidget {
     required this.message,
     required this.mine,
     required this.imageBytes,
+    this.onReplyQuoteTap,
+    this.highlighted = false,
     this.onOpenComments,
     this.commentCount = 0,
   });
@@ -6259,6 +6296,8 @@ class _MessageBubbleBody extends StatelessWidget {
   final ChatMessage message;
   final bool mine;
   final Uint8List? imageBytes;
+  final VoidCallback? onReplyQuoteTap;
+  final bool highlighted;
   final VoidCallback? onOpenComments;
   final int commentCount;
 
@@ -6267,12 +6306,29 @@ class _MessageBubbleBody extends StatelessWidget {
     final time = message.createdAt.toLocal();
     final meetingPoint = _MeetingPoint.fromMessageText(message.text);
     final sharedLocation = _SharedLocation.fromMessageText(message.text);
+    final groupPresentation = _groupMessagePresentation(
+      controller: controller,
+      thread: thread,
+      message: message,
+      mine: mine,
+    );
     if (message.kind == ChatMessageKind.sticker) {
       return Column(
         crossAxisAlignment: mine
             ? CrossAxisAlignment.end
             : CrossAxisAlignment.start,
         children: [
+          if (groupPresentation.senderName.isNotEmpty) ...[
+            Text(
+              groupPresentation.senderName,
+              style: TextStyle(
+                color: _senderAccent(message.senderNode),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 3),
+          ],
           if (message.replyToText.isNotEmpty) ...[
             Container(
               constraints: const BoxConstraints(maxWidth: 220),
@@ -6281,7 +6337,10 @@ class _MessageBubbleBody extends StatelessWidget {
                 color: const Color(0xFF2A2E35).withValues(alpha: 0.72),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: _ReplyQuote(text: message.replyToText),
+              child: _ReplyQuote(
+                text: message.replyToText,
+                onTap: onReplyQuoteTap,
+              ),
             ),
             const SizedBox(height: 6),
           ],
@@ -6365,7 +6424,9 @@ class _MessageBubbleBody extends StatelessWidget {
           ? CrossAxisAlignment.end
           : CrossAxisAlignment.start,
       children: [
-        Container(
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
           constraints: const BoxConstraints(maxWidth: 340),
           padding: _chatBubblePadding(
             thread.bubbleStyle,
@@ -6377,13 +6438,38 @@ class _MessageBubbleBody extends StatelessWidget {
           decoration: BoxDecoration(
             color: _chatBubbleColor(thread.themeId, mine),
             borderRadius: _chatBubbleRadius(thread.bubbleStyle, mine),
+            border: highlighted
+                ? Border.all(
+                    color: const Color(0xFF82D8FF).withValues(alpha: 0.78),
+                    width: 1.4,
+                  )
+                : null,
+            boxShadow: highlighted
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF82D8FF).withValues(alpha: 0.2),
+                      blurRadius: 18,
+                    ),
+                  ]
+                : null,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (groupPresentation.senderName.isNotEmpty) ...[
+                Text(
+                  groupPresentation.senderName,
+                  style: TextStyle(
+                    color: _senderAccent(message.senderNode),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+              ],
               if (message.replyToText.isNotEmpty) ...[
-                _ReplyQuote(text: message.replyToText),
+                _ReplyQuote(text: message.replyToText, onTap: onReplyQuoteTap),
                 const SizedBox(height: 6),
               ],
               message.kind == ChatMessageKind.sticker
@@ -6399,7 +6485,7 @@ class _MessageBubbleBody extends StatelessWidget {
                     )
                   : meetingPoint == null
                   ? sharedLocation == null
-                        ? Text(message.text)
+                        ? Text(groupPresentation.text)
                         : _SharedLocationPreview(location: sharedLocation)
                   : _MeetingPointPreview(
                       controller: controller,
@@ -6554,27 +6640,32 @@ class _ChannelCommentsButton extends StatelessWidget {
 }
 
 class _ReplyQuote extends StatelessWidget {
-  const _ReplyQuote({required this.text});
+  const _ReplyQuote({required this.text, this.onTap});
 
   final String text;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(7),
-        border: const Border(
-          left: BorderSide(color: Color(0xFF8EC8FF), width: 3),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(7),
+          border: const Border(
+            left: BorderSide(color: Color(0xFF8EC8FF), width: 3),
+          ),
         ),
-      ),
-      child: Text(
-        text,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 12, color: Colors.white70),
+        child: Text(
+          text,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 12, color: Colors.white70),
+        ),
       ),
     );
   }
@@ -7071,19 +7162,22 @@ class _StickerMessagePreview extends StatelessWidget {
         ),
       );
     }
-    return ConstrainedBox(
-      constraints: const BoxConstraints(
-        minWidth: 96,
-        maxWidth: 180,
-        minHeight: 92,
-        maxHeight: 190,
-      ),
-      child: Image.memory(
-        bytes,
-        fit: BoxFit.contain,
-        gaplessPlayback: true,
-        errorBuilder: (_, _, _) =>
-            const Icon(Icons.broken_image_rounded, color: Colors.white38),
+    return Hero(
+      tag: 'message-media-${message.id}',
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          minWidth: 96,
+          maxWidth: 180,
+          minHeight: 92,
+          maxHeight: 190,
+        ),
+        child: Image.memory(
+          bytes,
+          fit: BoxFit.contain,
+          gaplessPlayback: true,
+          errorBuilder: (_, _, _) =>
+              const Icon(Icons.broken_image_rounded, color: Colors.white38),
+        ),
       ),
     );
   }
@@ -7169,14 +7263,20 @@ class _FilePreviewState extends State<_FilePreview> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(7),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 300, maxHeight: 260),
-              child: Image.memory(
-                bytes,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
+          Hero(
+            tag: 'message-media-${message.id}',
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(7),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: 300,
+                  maxHeight: 260,
+                ),
+                child: Image.memory(
+                  bytes,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                ),
               ),
             ),
           ),
@@ -7374,30 +7474,83 @@ class _OcrResultCard extends StatelessWidget {
   }
 }
 
-class _MessageStatusLabel extends StatelessWidget {
+class _MessageStatusLabel extends StatefulWidget {
   const _MessageStatusLabel({required this.message});
 
   final ChatMessage message;
 
   @override
+  State<_MessageStatusLabel> createState() => _MessageStatusLabelState();
+}
+
+class _MessageStatusLabelState extends State<_MessageStatusLabel>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController clock;
+
+  @override
+  void initState() {
+    super.initState();
+    clock = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    );
+    _syncClock();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MessageStatusLabel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncClock();
+  }
+
+  void _syncClock() {
+    if (widget.message.pending && !widget.message.failed) {
+      clock.repeat();
+    } else {
+      clock.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    clock.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final isFile = message.kind == ChatMessageKind.file;
-    final (icon, label, color) = message.failed
-        ? (Icons.error_outline_rounded, 'failed', Colors.redAccent)
+    final message = widget.message;
+    final tooltip = message.failed
+        ? 'Failed'
         : message.pending
-        ? (
-            Icons.schedule_rounded,
-            isFile && message.progress > 0
-                ? '${(message.progress * 100).clamp(1, 99).round()}%'
-                : 'sending',
-            Colors.white60,
-          )
+        ? 'Sending'
+        : message.read
+        ? 'Read'
         : message.delivered
-        ? (Icons.done_all_rounded, 'delivered', Colors.white60)
-        : (Icons.done_rounded, 'sent', Colors.white60);
+        ? 'Delivered'
+        : 'Sent';
+    final child = message.failed
+        ? const Icon(
+            Icons.error_outline_rounded,
+            size: 14,
+            color: Colors.redAccent,
+          )
+        : message.pending
+        ? AnimatedBuilder(
+            animation: clock,
+            builder: (context, _) => CustomPaint(
+              size: const Size.square(14),
+              painter: _SendingClockPainter(progress: clock.value),
+            ),
+          )
+        : Icon(
+            message.read ? Icons.done_all_rounded : Icons.done_rounded,
+            size: 14,
+            color: message.read ? const Color(0xFF82D8FF) : Colors.white60,
+          );
     return TweenAnimationBuilder<double>(
       key: ValueKey(
-        '${message.id}-${message.pending}-${message.delivered}-${message.failed}',
+        '${message.id}-${message.pending}-${message.delivered}-${message.read}-${message.failed}',
       ),
       tween: Tween(begin: 0, end: 1),
       duration: const Duration(milliseconds: 240),
@@ -7406,23 +7559,77 @@ class _MessageStatusLabel extends StatelessWidget {
         opacity: value.clamp(0.0, 1.0),
         child: Transform.scale(scale: 0.82 + value * 0.18, child: child),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 13, color: color),
-          const SizedBox(width: 3),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 10,
-              color: color,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
+      child: Tooltip(
+        message: tooltip,
+        child: SizedBox.square(dimension: 15, child: child),
       ),
     );
   }
+}
+
+class _SendingClockPainter extends CustomPainter {
+  const _SendingClockPainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide / 2 - 1;
+    final paint = Paint()
+      ..color = Colors.white60
+      ..strokeWidth = 1.35
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    canvas.drawCircle(center, radius, paint);
+    final minuteAngle = progress * math.pi * 2 - math.pi / 2;
+    final hourAngle = progress * math.pi - math.pi / 2;
+    canvas.drawLine(
+      center,
+      center + Offset(math.cos(hourAngle), math.sin(hourAngle)) * radius * 0.46,
+      paint,
+    );
+    canvas.drawLine(
+      center,
+      center +
+          Offset(math.cos(minuteAngle), math.sin(minuteAngle)) * radius * 0.72,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SendingClockPainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
+
+({String senderName, String text}) _groupMessagePresentation({
+  required AppController controller,
+  required ChatThread thread,
+  required ChatMessage message,
+  required bool mine,
+}) {
+  if (!thread.isGroup || mine) return (senderName: '', text: message.text);
+  var senderName = message.senderName.trim();
+  senderName = senderName.isNotEmpty
+      ? senderName
+      : controller.profiles[message.senderNode]?.displayName.trim() ?? '';
+  var text = message.text;
+  if (senderName.isNotEmpty && text.startsWith('$senderName: ')) {
+    text = text.substring(senderName.length + 2);
+  }
+  return (senderName: senderName, text: text);
+}
+
+Color _senderAccent(String senderNode) {
+  const palette = <Color>[
+    Color(0xFF79CFFF),
+    Color(0xFF9EB7FF),
+    Color(0xFFB9A1FF),
+    Color(0xFF73D9C2),
+    Color(0xFFE3A7C6),
+    Color(0xFFD6BD82),
+  ];
+  return palette[senderNode.hashCode.abs() % palette.length];
 }
 
 class _FileCaption extends StatelessWidget {
