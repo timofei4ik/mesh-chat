@@ -3136,22 +3136,35 @@ class _RoundFilterButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
+    final button = InkWell(
+      onTap: onTap,
+      customBorder: const CircleBorder(),
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: liquidGlass
+            ? BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.055),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.10),
+                ),
+              )
+            : null,
+        child: Icon(icon, size: 20, color: Colors.white70),
+      ),
+    );
     return Tooltip(
       message: tooltip,
-      child: _HomeGlassSurface(
-        accent: Colors.blueGrey,
-        radius: 999,
-        dim: true,
-        child: InkWell(
-          onTap: onTap,
-          customBorder: const CircleBorder(),
-          child: SizedBox(
-            width: 38,
-            height: 38,
-            child: Icon(icon, size: 20, color: Colors.white70),
-          ),
-        ),
-      ),
+      child: liquidGlass
+          ? button
+          : _HomeGlassSurface(
+              accent: Colors.blueGrey,
+              radius: 999,
+              dim: true,
+              child: button,
+            ),
     );
   }
 }
@@ -3169,57 +3182,71 @@ class _HomeFilterBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
+    final gap = SizedBox(width: liquidGlass ? 5 : 9);
+    final content = SizedBox(
+      height: 44,
+      child: ListView(
+        padding: liquidGlass
+            ? const EdgeInsets.symmetric(horizontal: 3, vertical: 3)
+            : EdgeInsets.zero,
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        children: [
+          _FilterPill(
+            label: 'All',
+            icon: Icons.all_inbox_rounded,
+            selected: selected == _HomeFilter.all,
+            onTap: () => onChanged(_HomeFilter.all),
+          ),
+          gap,
+          _FilterPill(
+            label: 'Personal',
+            icon: Icons.person_outline_rounded,
+            selected: selected == _HomeFilter.personal,
+            onTap: () => onChanged(_HomeFilter.personal),
+          ),
+          gap,
+          _FilterPill(
+            label: 'Groups',
+            icon: Icons.groups_rounded,
+            selected: selected == _HomeFilter.groups,
+            onTap: () => onChanged(_HomeFilter.groups),
+          ),
+          gap,
+          _FilterPill(
+            label: 'Channels',
+            icon: Icons.campaign_outlined,
+            selected: selected == _HomeFilter.channels,
+            onTap: () => onChanged(_HomeFilter.channels),
+          ),
+          gap,
+          _FilterPill(
+            label: 'Bluetooth',
+            icon: Icons.bluetooth_rounded,
+            selected: selected == _HomeFilter.bluetooth,
+            onTap: () => onChanged(_HomeFilter.bluetooth),
+          ),
+          gap,
+          _RoundFilterButton(
+            icon: Icons.tune_rounded,
+            tooltip: 'Settings',
+            onTap: onSettings,
+          ),
+        ],
+      ),
+    );
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 5, 14, 8),
-      child: SizedBox(
-        height: 44,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          physics: const BouncingScrollPhysics(),
-          children: [
-            _FilterPill(
-              label: 'All',
-              icon: Icons.all_inbox_rounded,
-              selected: selected == _HomeFilter.all,
-              onTap: () => onChanged(_HomeFilter.all),
-            ),
-            const SizedBox(width: 9),
-            _FilterPill(
-              label: 'Personal',
-              icon: Icons.person_outline_rounded,
-              selected: selected == _HomeFilter.personal,
-              onTap: () => onChanged(_HomeFilter.personal),
-            ),
-            const SizedBox(width: 9),
-            _FilterPill(
-              label: 'Groups',
-              icon: Icons.groups_rounded,
-              selected: selected == _HomeFilter.groups,
-              onTap: () => onChanged(_HomeFilter.groups),
-            ),
-            const SizedBox(width: 9),
-            _FilterPill(
-              label: 'Channels',
-              icon: Icons.campaign_outlined,
-              selected: selected == _HomeFilter.channels,
-              onTap: () => onChanged(_HomeFilter.channels),
-            ),
-            const SizedBox(width: 9),
-            _FilterPill(
-              label: 'Bluetooth',
-              icon: Icons.bluetooth_rounded,
-              selected: selected == _HomeFilter.bluetooth,
-              onTap: () => onChanged(_HomeFilter.bluetooth),
-            ),
-            const SizedBox(width: 9),
-            _RoundFilterButton(
-              icon: Icons.tune_rounded,
-              tooltip: 'Settings',
-              onTap: onSettings,
-            ),
-          ],
-        ),
-      ),
+      child: liquidGlass
+          ? MeshLiquidGlass(
+              accent: Colors.lightBlueAccent,
+              radius: 22,
+              dim: true,
+              interactive: true,
+              child: content,
+            )
+          : content,
     );
   }
 }
@@ -3239,42 +3266,68 @@ class _FilterPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
+    final content = InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(19),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        constraints: const BoxConstraints(minWidth: 100),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: liquidGlass
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(19),
+                color: selected
+                    ? Colors.lightBlueAccent.withValues(alpha: 0.14)
+                    : Colors.black.withValues(alpha: 0.08),
+                border: Border.all(
+                  color: selected
+                      ? Colors.lightBlueAccent.withValues(alpha: 0.36)
+                      : Colors.white.withValues(alpha: 0.055),
+                ),
+                boxShadow: selected
+                    ? [
+                        BoxShadow(
+                          color: Colors.lightBlueAccent.withValues(alpha: 0.12),
+                          blurRadius: 12,
+                        ),
+                      ]
+                    : const [],
+              )
+            : null,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 18,
+              color: selected ? Colors.lightBlueAccent : Colors.white70,
+            ),
+            const SizedBox(width: 7),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.fade,
+              softWrap: false,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                color: selected ? Colors.white : Colors.white70,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (liquidGlass) return content;
     return _HomeGlassSurface(
       accent: selected ? Colors.lightBlueAccent : Colors.blueGrey,
       radius: 22,
       selected: selected,
       dim: !selected,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(22),
-        child: Container(
-          constraints: const BoxConstraints(minWidth: 106),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                size: 18,
-                color: selected ? Colors.lightBlueAccent : Colors.white70,
-              ),
-              const SizedBox(width: 7),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.fade,
-                softWrap: false,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                  color: selected ? Colors.white : Colors.white70,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      child: content,
     );
   }
 }
@@ -4590,48 +4643,70 @@ class _HomeGlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(radius),
-            gradient: _edgeGlassGradient(
-              base: selected
-                  ? const Color(0xFF2C3945)
-                  : dim
-                  ? const Color(0xFF1F2832)
-                  : const Color(0xFF26313B),
-              alpha: selected
-                  ? 0.76
-                  : dim
-                  ? 0.58
-                  : 0.66,
-              edgeBoost: selected ? 0.06 : 0.045,
-            ),
-            border: Border.all(
-              color: selected
-                  ? accent.withValues(alpha: 0.40)
-                  : Colors.white.withValues(alpha: 0.12),
-            ),
-            boxShadow: [
-              if (selected)
-                BoxShadow(
-                  color: accent.withValues(alpha: 0.16),
-                  blurRadius: 14,
-                ),
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.18),
-                blurRadius: 16,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: child,
+    final nativeMaterial = MeshPlatformScope.liquidGlassOf(context);
+    final base = nativeMaterial
+        ? selected
+              ? const Color(0xFF263746)
+              : dim
+              ? const Color(0xFF172330)
+              : const Color(0xFF1C2A38)
+        : selected
+        ? const Color(0xFF2C3945)
+        : dim
+        ? const Color(0xFF1F2832)
+        : const Color(0xFF26313B);
+    final alpha = nativeMaterial
+        ? selected
+              ? 0.38
+              : dim
+              ? 0.19
+              : 0.29
+        : selected
+        ? 0.76
+        : dim
+        ? 0.58
+        : 0.66;
+    final surface = DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        gradient: _edgeGlassGradient(
+          base: base,
+          alpha: alpha,
+          edgeBoost: nativeMaterial
+              ? selected
+                    ? 0.035
+                    : 0.022
+              : selected
+              ? 0.06
+              : 0.045,
         ),
+        border: Border.all(
+          color: selected
+              ? accent.withValues(alpha: 0.40)
+              : Colors.white.withValues(alpha: nativeMaterial ? 0.15 : 0.12),
+        ),
+        boxShadow: [
+          if (selected)
+            BoxShadow(color: accent.withValues(alpha: 0.16), blurRadius: 14),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: nativeMaterial ? 0.10 : 0.18),
+            blurRadius: nativeMaterial ? 12 : 16,
+            offset: Offset(0, nativeMaterial ? 4 : 8),
+          ),
+        ],
       ),
+      child: child,
     );
+    final clipped = ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: nativeMaterial
+          ? surface
+          : BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+              child: surface,
+            ),
+    );
+    return RepaintBoundary(child: clipped);
   }
 }
 
