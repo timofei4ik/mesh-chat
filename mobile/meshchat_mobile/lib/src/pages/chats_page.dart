@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
 import '../controllers/app_controller.dart';
@@ -3177,62 +3177,136 @@ class _HomeFilterBar extends StatelessWidget {
   final ValueChanged<_HomeFilter> onChanged;
   final VoidCallback onSettings;
 
+  int _selectedIndex() => switch (selected) {
+    _HomeFilter.all => 0,
+    _HomeFilter.personal => 1,
+    _HomeFilter.groups => 2,
+    _HomeFilter.channels => 3,
+    _HomeFilter.bluetooth => 4,
+  };
+
   @override
   Widget build(BuildContext context) {
     final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
-    final gap = SizedBox(width: liquidGlass ? 5 : 9);
-    final content = SizedBox(
-      height: 44,
-      child: ListView(
-        padding: liquidGlass
-            ? const EdgeInsets.symmetric(horizontal: 3, vertical: 3)
-            : EdgeInsets.zero,
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        children: [
-          _FilterPill(
-            label: 'All',
-            icon: Icons.all_inbox_rounded,
-            selected: selected == _HomeFilter.all,
-            onTap: () => onChanged(_HomeFilter.all),
-          ),
-          gap,
-          _FilterPill(
-            label: 'Personal',
-            icon: Icons.person_outline_rounded,
-            selected: selected == _HomeFilter.personal,
-            onTap: () => onChanged(_HomeFilter.personal),
-          ),
-          gap,
-          _FilterPill(
-            label: 'Groups',
-            icon: Icons.groups_rounded,
-            selected: selected == _HomeFilter.groups,
-            onTap: () => onChanged(_HomeFilter.groups),
-          ),
-          gap,
-          _FilterPill(
-            label: 'Channels',
-            icon: Icons.campaign_outlined,
-            selected: selected == _HomeFilter.channels,
-            onTap: () => onChanged(_HomeFilter.channels),
-          ),
-          gap,
-          _FilterPill(
-            label: 'Bluetooth',
-            icon: Icons.bluetooth_rounded,
-            selected: selected == _HomeFilter.bluetooth,
-            onTap: () => onChanged(_HomeFilter.bluetooth),
-          ),
-          gap,
-          _RoundFilterButton(
-            icon: Icons.tune_rounded,
-            tooltip: 'Settings',
-            onTap: onSettings,
-          ),
-        ],
+    const itemWidth = 104.0;
+    const itemGap = 5.0;
+    const settingsWidth = 38.0;
+    const edgePadding = 3.0;
+    final pills = <Widget>[
+      _FilterPill(
+        label: 'All',
+        icon: Icons.all_inbox_rounded,
+        selected: selected == _HomeFilter.all,
+        onTap: () => onChanged(_HomeFilter.all),
       ),
-    );
+      _FilterPill(
+        label: 'Personal',
+        icon: Icons.person_outline_rounded,
+        selected: selected == _HomeFilter.personal,
+        onTap: () => onChanged(_HomeFilter.personal),
+      ),
+      _FilterPill(
+        label: 'Groups',
+        icon: Icons.groups_rounded,
+        selected: selected == _HomeFilter.groups,
+        onTap: () => onChanged(_HomeFilter.groups),
+      ),
+      _FilterPill(
+        label: 'Channels',
+        icon: Icons.campaign_outlined,
+        selected: selected == _HomeFilter.channels,
+        onTap: () => onChanged(_HomeFilter.channels),
+      ),
+      _FilterPill(
+        label: 'Bluetooth',
+        icon: Icons.bluetooth_rounded,
+        selected: selected == _HomeFilter.bluetooth,
+        onTap: () => onChanged(_HomeFilter.bluetooth),
+      ),
+    ];
+    final content = liquidGlass
+        ? SizedBox(
+            height: 44,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              child: SizedBox(
+                width:
+                    edgePadding * 2 +
+                    itemWidth * pills.length +
+                    itemGap * pills.length +
+                    settingsWidth,
+                height: 44,
+                child: Stack(
+                  children: [
+                    AnimatedPositioned(
+                      left:
+                          edgePadding +
+                          _selectedIndex() * (itemWidth + itemGap),
+                      top: edgePadding,
+                      width: itemWidth,
+                      height: 38,
+                      duration: const Duration(milliseconds: 320),
+                      curve: Curves.easeOutCubic,
+                      child: MeshLiquidGlass(
+                        accent: Colors.lightBlueAccent,
+                        radius: 19,
+                        selected: true,
+                        interactive: false,
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                    Positioned.fill(
+                      child: Padding(
+                        padding: const EdgeInsets.all(edgePadding),
+                        child: Row(
+                          children: [
+                            for (
+                              var index = 0;
+                              index < pills.length;
+                              index++
+                            ) ...[
+                              SizedBox(width: itemWidth, child: pills[index]),
+                              const SizedBox(width: itemGap),
+                            ],
+                            const SizedBox(width: settingsWidth),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: edgePadding,
+                      top: edgePadding,
+                      width: settingsWidth,
+                      height: settingsWidth,
+                      child: _RoundFilterButton(
+                        icon: Icons.tune_rounded,
+                        tooltip: 'Settings',
+                        onTap: onSettings,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
+        : SizedBox(
+            height: 44,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              itemCount: pills.length + 1,
+              separatorBuilder: (_, _) => const SizedBox(width: 9),
+              itemBuilder: (context, index) {
+                if (index < pills.length) return pills[index];
+                return _RoundFilterButton(
+                  icon: Icons.tune_rounded,
+                  tooltip: 'Settings',
+                  onTap: onSettings,
+                );
+              },
+            ),
+          );
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 5, 14, 8),
       child: liquidGlass
@@ -3264,52 +3338,48 @@ class _FilterPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
-    final content = InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(19),
-      child: Container(
-        constraints: const BoxConstraints(minWidth: 100),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 18,
-              color: selected ? Colors.lightBlueAccent : Colors.white70,
-            ),
-            const SizedBox(width: 7),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.fade,
-              softWrap: false,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                color: selected ? Colors.white : Colors.white70,
+    final content = TweenAnimationBuilder<double>(
+      tween: Tween(end: selected ? 1 : 0),
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, _) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(19),
+        child: Container(
+          constraints: const BoxConstraints(minWidth: 100),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: Color.lerp(
+                  Colors.white70,
+                  Colors.lightBlueAccent,
+                  value,
+                ),
               ),
-            ),
-          ],
+              const SizedBox(width: 7),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.fade,
+                softWrap: false,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                  color: Color.lerp(Colors.white70, Colors.white, value),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
     if (liquidGlass) {
-      return AnimatedScale(
-        scale: selected ? 1 : 0.98,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        child: selected
-            ? MeshLiquidGlass(
-                accent: Colors.lightBlueAccent,
-                radius: 19,
-                selected: true,
-                interactive: true,
-                child: content,
-              )
-            : content,
-      );
+      return content;
     }
     return _HomeGlassSurface(
       accent: selected ? Colors.lightBlueAccent : Colors.blueGrey,
@@ -3949,7 +4019,7 @@ class _InlineActionTileState extends State<_InlineActionTile> {
   }
 }
 
-class _HomeBottomBar extends StatelessWidget {
+class _HomeBottomBar extends StatefulWidget {
   const _HomeBottomBar({
     required this.selected,
     required this.onChats,
@@ -3962,11 +4032,92 @@ class _HomeBottomBar extends StatelessWidget {
   final VoidCallback onSettings;
   final VoidCallback onBluetooth;
 
-  int _index() => switch (selected) {
+  @override
+  State<_HomeBottomBar> createState() => _HomeBottomBarState();
+}
+
+class _HomeBottomBarState extends State<_HomeBottomBar> {
+  double? _dragCenterX;
+  int? _dragIndex;
+  bool _dragging = false;
+  bool _dragMoving = false;
+  bool _settling = false;
+  Timer? _pauseTimer;
+  Timer? _settleTimer;
+
+  int _index(_HomeTab tab) => switch (tab) {
     _HomeTab.chats => 0,
     _HomeTab.settings => 1,
     _HomeTab.bluetooth => 2,
   };
+
+  void _selectIndex(int index) {
+    switch (index) {
+      case 0:
+        widget.onChats();
+      case 1:
+        widget.onSettings();
+      case 2:
+        widget.onBluetooth();
+    }
+  }
+
+  void _updateDrag(double localX, double width) {
+    final itemWidth = width / 3;
+    final center = localX.clamp(itemWidth / 2, width - itemWidth / 2);
+    final nextIndex = (center / itemWidth).floor().clamp(0, 2);
+    if (_dragIndex != null && _dragIndex != nextIndex) {
+      HapticFeedback.selectionClick();
+    }
+    _pauseTimer?.cancel();
+    setState(() {
+      _dragCenterX = center;
+      _dragIndex = nextIndex;
+      _dragMoving = true;
+    });
+    _pauseTimer = Timer(const Duration(milliseconds: 115), () {
+      if (!mounted || !_dragging) return;
+      setState(() => _dragMoving = false);
+    });
+  }
+
+  void _startDrag(DragStartDetails details, double width) {
+    _settleTimer?.cancel();
+    setState(() {
+      _dragging = true;
+      _settling = false;
+    });
+    _updateDrag(details.localPosition.dx, width);
+  }
+
+  void _finishDrag({required bool commit}) {
+    if (!_dragging) return;
+    final target = _dragIndex ?? _index(widget.selected);
+    _pauseTimer?.cancel();
+    setState(() {
+      _dragging = false;
+      _dragMoving = false;
+      _dragCenterX = null;
+      _dragIndex = null;
+      _settling = true;
+    });
+    if (commit) {
+      HapticFeedback.mediumImpact();
+      _selectIndex(target);
+    }
+    _settleTimer?.cancel();
+    _settleTimer = Timer(const Duration(milliseconds: 150), () {
+      if (!mounted) return;
+      setState(() => _settling = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pauseTimer?.cancel();
+    _settleTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3978,79 +4129,111 @@ class _HomeBottomBar extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final itemWidth = constraints.maxWidth / 3;
-            return Stack(
-              children: [
-                AnimatedPositioned(
-                  left: itemWidth * _index(),
-                  top: 0,
-                  width: itemWidth,
-                  height: 56,
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutCubic,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                    child: liquidGlass
-                        ? MeshLiquidGlass(
-                            accent: Colors.lightBlueAccent,
-                            radius: 22,
-                            selected: true,
-                            interactive: false,
-                            child: const SizedBox.expand(),
-                          )
-                        : DecoratedBox(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(22),
-                              gradient: _edgeGlassGradient(
-                                base: const Color(0xFF314456),
-                                alpha: 0.72,
-                                edgeBoost: 0.08,
-                              ),
-                              border: Border.all(
-                                color: Colors.lightBlueAccent.withValues(
-                                  alpha: 0.32,
-                                ),
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.lightBlueAccent.withValues(
-                                    alpha: 0.18,
+            final selectedIndex = _dragIndex ?? _index(widget.selected);
+            final indicatorLeft = _dragCenterX == null
+                ? itemWidth * _index(widget.selected)
+                : _dragCenterX! - itemWidth / 2;
+            final indicatorScale = _dragging
+                ? _dragMoving
+                      ? const Offset(1.08, 0.90)
+                      : const Offset(0.92, 0.94)
+                : _settling
+                ? const Offset(0.88, 0.86)
+                : const Offset(1, 1);
+            return GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragStart: (details) =>
+                  _startDrag(details, constraints.maxWidth),
+              onHorizontalDragUpdate: (details) =>
+                  _updateDrag(details.localPosition.dx, constraints.maxWidth),
+              onHorizontalDragEnd: (_) => _finishDrag(commit: true),
+              onHorizontalDragCancel: () => _finishDrag(commit: false),
+              child: Stack(
+                children: [
+                  AnimatedPositioned(
+                    left: indicatorLeft,
+                    top: 0,
+                    width: itemWidth,
+                    height: 56,
+                    duration: _dragging
+                        ? Duration.zero
+                        : const Duration(milliseconds: 300),
+                    curve: Curves.easeOutCubic,
+                    child: TweenAnimationBuilder<Offset>(
+                      tween: Tween(end: indicatorScale),
+                      duration: Duration(milliseconds: _dragging ? 105 : 220),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, scale, child) => Transform.scale(
+                        scaleX: scale.dx,
+                        scaleY: scale.dy,
+                        child: child,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 3),
+                        child: liquidGlass
+                            ? MeshLiquidGlass(
+                                accent: Colors.lightBlueAccent,
+                                radius: 22,
+                                selected: true,
+                                interactive: false,
+                                child: const SizedBox.expand(),
+                              )
+                            : DecoratedBox(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(22),
+                                  gradient: _edgeGlassGradient(
+                                    base: const Color(0xFF314456),
+                                    alpha: 0.72,
+                                    edgeBoost: 0.08,
                                   ),
-                                  blurRadius: 18,
+                                  border: Border.all(
+                                    color: Colors.lightBlueAccent.withValues(
+                                      alpha: 0.32,
+                                    ),
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.lightBlueAccent.withValues(
+                                        alpha: 0.18,
+                                      ),
+                                      blurRadius: 18,
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                          ),
+                              ),
+                      ),
+                    ),
                   ),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _BottomNavItem(
-                        icon: Icons.forum_rounded,
-                        label: 'Chats',
-                        selected: selected == _HomeTab.chats,
-                        onTap: onChats,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _BottomNavItem(
+                          icon: Icons.forum_rounded,
+                          label: 'Chats',
+                          selected: selectedIndex == 0,
+                          onTap: widget.onChats,
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      child: _BottomNavItem(
-                        icon: Icons.settings_outlined,
-                        label: 'Settings',
-                        selected: selected == _HomeTab.settings,
-                        onTap: onSettings,
+                      Expanded(
+                        child: _BottomNavItem(
+                          icon: Icons.settings_outlined,
+                          label: 'Settings',
+                          selected: selectedIndex == 1,
+                          onTap: widget.onSettings,
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      child: _BottomNavItem(
-                        icon: Icons.bluetooth_rounded,
-                        label: 'Bluetooth',
-                        selected: selected == _HomeTab.bluetooth,
-                        onTap: onBluetooth,
+                      Expanded(
+                        child: _BottomNavItem(
+                          icon: Icons.bluetooth_rounded,
+                          label: 'Bluetooth',
+                          selected: selectedIndex == 2,
+                          onTap: widget.onBluetooth,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                ],
+              ),
             );
           },
         ),
