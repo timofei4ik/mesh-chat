@@ -3140,25 +3140,22 @@ class _RoundFilterButton extends StatelessWidget {
     final button = InkWell(
       onTap: onTap,
       customBorder: const CircleBorder(),
-      child: Container(
+      child: SizedBox(
         width: 38,
         height: 38,
-        decoration: liquidGlass
-            ? BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.055),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.10),
-                ),
-              )
-            : null,
         child: Icon(icon, size: 20, color: Colors.white70),
       ),
     );
     return Tooltip(
       message: tooltip,
       child: liquidGlass
-          ? button
+          ? MeshLiquidGlass(
+              accent: Colors.lightBlueAccent,
+              radius: 999,
+              dim: true,
+              interactive: true,
+              child: button,
+            )
           : _HomeGlassSurface(
               accent: Colors.blueGrey,
               radius: 999,
@@ -3270,32 +3267,9 @@ class _FilterPill extends StatelessWidget {
     final content = InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(19),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
+      child: Container(
         constraints: const BoxConstraints(minWidth: 100),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: liquidGlass
-            ? BoxDecoration(
-                borderRadius: BorderRadius.circular(19),
-                color: selected
-                    ? Colors.lightBlueAccent.withValues(alpha: 0.14)
-                    : Colors.black.withValues(alpha: 0.08),
-                border: Border.all(
-                  color: selected
-                      ? Colors.lightBlueAccent.withValues(alpha: 0.36)
-                      : Colors.white.withValues(alpha: 0.055),
-                ),
-                boxShadow: selected
-                    ? [
-                        BoxShadow(
-                          color: Colors.lightBlueAccent.withValues(alpha: 0.12),
-                          blurRadius: 12,
-                        ),
-                      ]
-                    : const [],
-              )
-            : null,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,
@@ -3321,7 +3295,22 @@ class _FilterPill extends StatelessWidget {
         ),
       ),
     );
-    if (liquidGlass) return content;
+    if (liquidGlass) {
+      return AnimatedScale(
+        scale: selected ? 1 : 0.98,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        child: selected
+            ? MeshLiquidGlass(
+                accent: Colors.lightBlueAccent,
+                radius: 19,
+                selected: true,
+                interactive: true,
+                child: content,
+              )
+            : content,
+      );
+    }
     return _HomeGlassSurface(
       accent: selected ? Colors.lightBlueAccent : Colors.blueGrey,
       radius: 22,
@@ -3973,89 +3962,113 @@ class _HomeBottomBar extends StatelessWidget {
   final VoidCallback onSettings;
   final VoidCallback onBluetooth;
 
-  Alignment _alignment() => switch (selected) {
-    _HomeTab.chats => Alignment.centerLeft,
-    _HomeTab.settings => Alignment.center,
-    _HomeTab.bluetooth => Alignment.centerRight,
+  int _index() => switch (selected) {
+    _HomeTab.chats => 0,
+    _HomeTab.settings => 1,
+    _HomeTab.bluetooth => 2,
   };
 
   @override
   Widget build(BuildContext context) {
     final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
-    return MeshLiquidGlass(
-      accent: Colors.lightBlueAccent,
-      radius: 28,
-      prominent: true,
-      interactive: true,
-      fallbackBuilder: (context, child) => _HomeGlassSurface(
-        accent: Colors.lightBlueAccent,
-        radius: 28,
-        child: child,
-      ),
-      child: SizedBox(
-        height: 76,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          child: Stack(
-            children: [
-              AnimatedAlign(
-                alignment: _alignment(),
-                duration: const Duration(milliseconds: 260),
-                curve: Curves.easeOutCubic,
-                child: Container(
-                  width: 96,
+    final content = SizedBox(
+      height: 76,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final itemWidth = constraints.maxWidth / 3;
+            return Stack(
+              children: [
+                AnimatedPositioned(
+                  left: itemWidth * _index(),
+                  top: 0,
+                  width: itemWidth,
                   height: 56,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(22),
-                    color: liquidGlass
-                        ? Colors.lightBlueAccent.withValues(alpha: 0.13)
-                        : null,
-                    gradient: liquidGlass
-                        ? null
-                        : _edgeGlassGradient(
-                            base: const Color(0xFF314456),
-                            alpha: 0.72,
-                            edgeBoost: 0.08,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: liquidGlass
+                        ? MeshLiquidGlass(
+                            accent: Colors.lightBlueAccent,
+                            radius: 22,
+                            selected: true,
+                            interactive: false,
+                            child: const SizedBox.expand(),
+                          )
+                        : DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(22),
+                              gradient: _edgeGlassGradient(
+                                base: const Color(0xFF314456),
+                                alpha: 0.72,
+                                edgeBoost: 0.08,
+                              ),
+                              border: Border.all(
+                                color: Colors.lightBlueAccent.withValues(
+                                  alpha: 0.32,
+                                ),
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.lightBlueAccent.withValues(
+                                    alpha: 0.18,
+                                  ),
+                                  blurRadius: 18,
+                                ),
+                              ],
+                            ),
                           ),
-                    border: Border.all(
-                      color: Colors.lightBlueAccent.withValues(alpha: 0.32),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.lightBlueAccent.withValues(alpha: 0.18),
-                        blurRadius: 18,
-                      ),
-                    ],
                   ),
                 ),
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _BottomNavItem(
-                    icon: Icons.forum_rounded,
-                    label: 'Chats',
-                    selected: selected == _HomeTab.chats,
-                    onTap: onChats,
-                  ),
-                  _BottomNavItem(
-                    icon: Icons.settings_outlined,
-                    label: 'Settings',
-                    selected: selected == _HomeTab.settings,
-                    onTap: onSettings,
-                  ),
-                  _BottomNavItem(
-                    icon: Icons.bluetooth_rounded,
-                    label: 'Bluetooth',
-                    selected: selected == _HomeTab.bluetooth,
-                    onTap: onBluetooth,
-                  ),
-                ],
-              ),
-            ],
-          ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _BottomNavItem(
+                        icon: Icons.forum_rounded,
+                        label: 'Chats',
+                        selected: selected == _HomeTab.chats,
+                        onTap: onChats,
+                      ),
+                    ),
+                    Expanded(
+                      child: _BottomNavItem(
+                        icon: Icons.settings_outlined,
+                        label: 'Settings',
+                        selected: selected == _HomeTab.settings,
+                        onTap: onSettings,
+                      ),
+                    ),
+                    Expanded(
+                      child: _BottomNavItem(
+                        icon: Icons.bluetooth_rounded,
+                        label: 'Bluetooth',
+                        selected: selected == _HomeTab.bluetooth,
+                        onTap: onBluetooth,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
         ),
       ),
+    );
+    if (liquidGlass) {
+      return MeshLiquidGlass(
+        accent: Colors.lightBlueAccent,
+        radius: 28,
+        prominent: true,
+        interactive: true,
+        child: content,
+      );
+    }
+    return _HomeGlassSurface(
+      accent: Colors.lightBlueAccent,
+      radius: 28,
+      child: content,
     );
   }
 }
