@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../models/profile.dart';
+import 'mesh_frame_clock.dart';
 
 class ProfileAvatar extends StatelessWidget {
   const ProfileAvatar({
@@ -120,8 +121,8 @@ class _AnimatedAvatarDecoration extends StatefulWidget {
 }
 
 class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController controller;
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller;
   AppLifecycleState lifecycleState = AppLifecycleState.resumed;
   bool tickerEnabled = true;
 
@@ -129,9 +130,9 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    controller = AnimationController(
-      vsync: this,
+    controller = MeshFrameClock(
       duration: const Duration(seconds: 9),
+      frameInterval: const Duration(milliseconds: 50),
       value: 0.17,
     );
   }

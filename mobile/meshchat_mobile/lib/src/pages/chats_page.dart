@@ -15,6 +15,7 @@ import '../models/profile.dart';
 import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
@@ -4182,8 +4183,8 @@ class _HomeLiquidBackground extends StatefulWidget {
 }
 
 class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController controller;
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller;
   late final Timer timer;
   bool appActive = true;
   bool tickerModeActive = true;
@@ -4194,9 +4195,9 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    controller = AnimationController(
-      vsync: this,
+    controller = MeshFrameClock(
       duration: const Duration(milliseconds: 3200),
+      frameInterval: const Duration(milliseconds: 80),
     );
     timer = Timer.periodic(const Duration(milliseconds: 9400), (_) {
       if (canAnimate) controller.forward(from: 0);
@@ -4252,11 +4253,10 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
         child: AnimatedBuilder(
           animation: controller,
           builder: (context, _) {
-            final frame = (controller.value * 96).floor();
             return CustomPaint(
               isComplex: true,
               willChange: controller.isAnimating,
-              painter: _HomeMeshPainter(t: canAnimate ? frame / 96 : 0),
+              painter: _HomeMeshPainter(t: canAnimate ? controller.value : 0),
             );
           },
         ),

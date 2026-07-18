@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/profile.dart';
+import 'mesh_frame_clock.dart';
 
 class MeshProBadge extends StatelessWidget {
   const MeshProBadge({super.key, this.size = 18});
@@ -98,14 +99,49 @@ class _AnimatedProfileName extends StatefulWidget {
 }
 
 class _AnimatedProfileNameState extends State<_AnimatedProfileName>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController controller = AnimationController(
-    vsync: this,
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller = MeshFrameClock(
     duration: const Duration(seconds: 8),
+    frameInterval: const Duration(milliseconds: 66),
   )..repeat();
+  AppLifecycleState lifecycleState = AppLifecycleState.resumed;
+  bool tickerEnabled = true;
+
+  bool get canAnimate =>
+      lifecycleState == AppLifecycleState.resumed && tickerEnabled;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final enabled = TickerMode.valuesOf(context).enabled;
+    if (tickerEnabled == enabled) return;
+    tickerEnabled = enabled;
+    _syncAnimation();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    lifecycleState = state;
+    _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    if (canAnimate) {
+      if (!controller.isAnimating) controller.repeat();
+    } else {
+      controller.stop(canceled: false);
+    }
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
   }

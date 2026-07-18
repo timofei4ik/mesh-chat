@@ -76,10 +76,9 @@ class MeshLiquidGlass extends StatelessWidget {
         : prominent
         ? 0.16
         : 0.10;
-    final nativeTint = Color.alphaBlend(
-      accent.withValues(alpha: tintStrength),
-      darkBase,
-    );
+    // UIGlassEffect expects a translucent accent. An opaque, pre-blended tint
+    // makes the native material look like an ordinary Flutter panel.
+    final nativeTint = accent.withValues(alpha: tintStrength);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -122,10 +121,10 @@ class MeshLiquidGlass extends StatelessWidget {
                 child: ColoredBox(
                   color: darkBase.withValues(
                     alpha: dim
-                        ? 0.10
+                        ? 0.018
                         : prominent
-                        ? 0.16
-                        : 0.12,
+                        ? 0.038
+                        : 0.026,
                   ),
                 ),
               ),

@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_painting.dart';
 
 import '../controllers/app_controller.dart';
@@ -269,8 +270,8 @@ class _LoginGlowBackground extends StatefulWidget {
 }
 
 class _LoginGlowBackgroundState extends State<_LoginGlowBackground>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController controller;
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller;
   bool appActive = true;
   bool tickerModeActive = true;
 
@@ -280,9 +281,9 @@ class _LoginGlowBackgroundState extends State<_LoginGlowBackground>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    controller = AnimationController(
-      vsync: this,
+    controller = MeshFrameClock(
       duration: const Duration(seconds: 18),
+      frameInterval: const Duration(milliseconds: 66),
     )..repeat();
   }
 
@@ -322,11 +323,10 @@ class _LoginGlowBackgroundState extends State<_LoginGlowBackground>
       child: AnimatedBuilder(
         animation: controller,
         builder: (context, _) {
-          final frame = (controller.value * 432).floor();
           return CustomPaint(
             isComplex: true,
             willChange: controller.isAnimating,
-            painter: _LoginGlowPainter(frame / 432),
+            painter: _LoginGlowPainter(controller.value),
             size: Size.infinite,
           );
         },

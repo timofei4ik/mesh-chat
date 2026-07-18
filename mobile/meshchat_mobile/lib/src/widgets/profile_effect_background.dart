@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../models/profile.dart';
+import 'mesh_frame_clock.dart';
 
 @visibleForTesting
 double profileEffectPulse(double animationValue) {
@@ -27,8 +28,8 @@ class ProfileEffectBackground extends StatefulWidget {
 }
 
 class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController controller;
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller;
   int seed = 4;
   double _lastAnimationValue = 0;
   bool appActive = true;
@@ -40,9 +41,9 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    controller = AnimationController(
-      vsync: this,
+    controller = MeshFrameClock(
       duration: const Duration(milliseconds: 13500),
+      frameInterval: const Duration(milliseconds: 66),
     );
     controller.addListener(_trackAnimationCycle);
     Future<void>.delayed(const Duration(milliseconds: 320), () {

@@ -174,11 +174,12 @@ private final class MeshChatLiquidGlassView: NSObject, FlutterPlatformView {
 
   private static func color(fromARGB value: NSNumber?) -> UIColor {
     guard let argb = value?.uint32Value else {
-      return UIColor(red: 0.08, green: 0.14, blue: 0.22, alpha: 1)
+      return UIColor(red: 0.08, green: 0.14, blue: 0.22, alpha: 0.12)
     }
+    let alpha = CGFloat((argb >> 24) & 0xff) / 255
     let red = CGFloat((argb >> 16) & 0xff) / 255
     let green = CGFloat((argb >> 8) & 0xff) / 255
     let blue = CGFloat(argb & 0xff) / 255
-    return UIColor(red: red, green: green, blue: blue, alpha: 1)
+    return UIColor(red: red, green: green, blue: blue, alpha: alpha)
   }
 }

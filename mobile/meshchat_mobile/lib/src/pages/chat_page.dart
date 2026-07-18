@@ -23,6 +23,7 @@ import '../models/profile.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
@@ -4089,20 +4090,50 @@ class _CallEqualizer extends StatefulWidget {
 }
 
 class _CallEqualizerState extends State<_CallEqualizer>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController controller;
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller;
+  AppLifecycleState lifecycleState = AppLifecycleState.resumed;
+  bool tickerEnabled = true;
+
+  bool get canAnimate =>
+      lifecycleState == AppLifecycleState.resumed && tickerEnabled;
 
   @override
   void initState() {
     super.initState();
-    controller = AnimationController(
-      vsync: this,
+    WidgetsBinding.instance.addObserver(this);
+    controller = MeshFrameClock(
       duration: const Duration(milliseconds: 1250),
+      frameInterval: const Duration(milliseconds: 50),
     )..repeat();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final enabled = TickerMode.valuesOf(context).enabled;
+    if (tickerEnabled == enabled) return;
+    tickerEnabled = enabled;
+    _syncAnimation();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    lifecycleState = state;
+    _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    if (canAnimate) {
+      if (!controller.isAnimating) controller.repeat();
+    } else {
+      controller.stop(canceled: false);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
   }
@@ -5243,8 +5274,8 @@ class _LiquidMeshBackground extends StatefulWidget {
 }
 
 class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final AnimationController controller;
+    with WidgetsBindingObserver {
+  late final MeshFrameClock controller;
   late final Timer timer;
   final random = math.Random();
   List<int> activePoints = const [0, 6];
@@ -5259,9 +5290,9 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     activeColors = _chatThemeGlowColors(widget.themeId);
-    controller = AnimationController(
-      vsync: this,
+    controller = MeshFrameClock(
       duration: const Duration(milliseconds: 2200),
+      frameInterval: const Duration(milliseconds: 50),
     );
     timer = Timer.periodic(const Duration(milliseconds: 8200), (_) {
       if (!canAnimate) return;
@@ -5344,10 +5375,7 @@ class _LiquidMeshBackgroundState extends State<_LiquidMeshBackground>
               activePoints: activePoints,
               activeColors: activeColors,
               pulse: canAnimate
-                  ? math
-                        .sin(((controller.value * 66).floor() / 66) * math.pi)
-                        .clamp(0, 1)
-                        .toDouble()
+                  ? math.sin(controller.value * math.pi).clamp(0, 1).toDouble()
                   : 0,
             ),
           ),
