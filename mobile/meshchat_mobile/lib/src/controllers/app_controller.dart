@@ -29,6 +29,8 @@ import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
 import '../services/sticker_store.dart';
 import '../services/story_store.dart';
+import '../services/sync_cursor_store.dart';
+import '../services/sync_delta_buffer.dart';
 
 enum CallStatus { ringing, outgoing, active, ended }
 
@@ -246,7 +248,6 @@ class ActiveCall {
 }
 
 class AppController extends ChangeNotifier {
-  static const _fileChunkHexSize = 128 * 1024;
   static const maxMobileFileBytes = 64 * 1024 * 1024;
   static const maxBluetoothFileBytes = 512 * 1024;
   static const _bluetoothFileChunkHexSize = 8 * 1024;
@@ -257,6 +258,8 @@ class AppController extends ChangeNotifier {
   final ChatCacheStore _cache = ChatCacheStore();
   final StoryStore _storyStore = StoryStore();
   final StickerStore _stickerStore = StickerStore();
+  final SyncCursorStore _syncCursorStore = SyncCursorStore();
+  final SyncDeltaBuffer _syncDeltaBuffer = SyncDeltaBuffer();
   final MeshSocket _socket = MeshSocket();
   final MeshCrypto _crypto = MeshCrypto();
   final BleChatService ble = BleChatService();
@@ -319,6 +322,9 @@ class AppController extends ChangeNotifier {
   bool _retryingQueuedMessages = false;
   final Set<String> _resendingMessageIds = {};
   bool _ownProfileHydrated = false;
+  int _lastAppliedSyncCursor = 0;
+  bool _applyingSyncDelta = false;
+  final List<Map<String, dynamic>> _livePacketsDuringDeltaApply = [];
   Timer? _incomingPreviewTimer;
   final List<DiagnosticEvent> diagnostics = [];
   final List<GroupJoinRequest> groupJoinRequests = [];
@@ -747,6 +753,67 @@ class AppController extends ChangeNotifier {
           ? existing.emojiStatus
           : incoming.emojiStatus,
     );
+  }
+
+  Profile _resolveDirectPeerProfile({
+    required String nodeId,
+    required String accountLogin,
+    required String fallbackName,
+  }) {
+    final normalizedLogin = accountLogin.trim().toLowerCase();
+    Profile? known = profiles[nodeId];
+    if (known == null) {
+      for (final candidate in profiles.values) {
+        final sameLogin =
+            normalizedLogin.isNotEmpty &&
+            candidate.accountLogin.trim().toLowerCase() == normalizedLogin;
+        if (sameLogin || candidate.nodeAliases.contains(nodeId)) {
+          known = candidate;
+          break;
+        }
+      }
+    }
+    if (known == null) {
+      for (final thread in threads.values) {
+        if (thread.isGroup || thread.chatKind != 'normal') continue;
+        final candidate = thread.profile;
+        final sameLogin =
+            normalizedLogin.isNotEmpty &&
+            candidate.accountLogin.trim().toLowerCase() == normalizedLogin;
+        if (sameLogin || candidate.nodeAliases.contains(nodeId)) {
+          known = candidate;
+          break;
+        }
+      }
+    }
+
+    final canonicalNode = known?.nodeId.isNotEmpty == true
+        ? known!.nodeId
+        : nodeId;
+    final displayName = known?.displayName.trim().isNotEmpty == true
+        ? known!.displayName
+        : fallbackName.trim().isNotEmpty
+        ? fallbackName.trim()
+        : (canonicalNode.length > 8
+              ? canonicalNode.substring(0, 8)
+              : canonicalNode);
+    final incoming =
+        (known ?? Profile(nodeId: canonicalNode, displayName: displayName))
+            .copyWith(
+              displayName: displayName,
+              accountLogin: normalizedLogin.isEmpty
+                  ? known?.accountLogin ?? ''
+                  : normalizedLogin,
+              nodeAliases: <String>{
+                ...?known?.nodeAliases,
+                canonicalNode,
+                nodeId,
+              }.where((value) => value.isNotEmpty).toList(),
+            );
+    final merged = _mergeProfile(incoming);
+    profiles[canonicalNode] = merged;
+    _applyProfileToThreads(merged);
+    return merged;
   }
 
   void _applyProfileToThreads(Profile profile) {
@@ -1953,6 +2020,7 @@ class AppController extends ChangeNotifier {
   Future<void> forgetRecent(Session recent) async {
     await _store.removeRecent(recent);
     await _ownProfileStore.remove(recent);
+    await _syncCursorStore.clear(recent);
     recentSessions = await _store.loadRecent();
     notifyListeners();
   }
@@ -1961,12 +2029,34 @@ class AppController extends ChangeNotifier {
     final current = session;
     if (current == null) return;
     await _crypto.initialize(current.login, current.password);
+    final accountCursor = await _syncCursorStore.load(current);
+    final cacheCursor = await _cache.loadSyncCursor(current);
+    final syncCursor = SyncCursorStore.safeCursor(
+      accountCursor: accountCursor,
+      cacheCursor: cacheCursor,
+    );
+    if (accountCursor > 0 && cacheCursor == null) {
+      addDiagnostic(
+        'sync',
+        'Local cache has no matching checkpoint; requesting full snapshot',
+      );
+    } else if (syncCursor < accountCursor) {
+      addDiagnostic(
+        'sync',
+        'Local cache checkpoint is behind; resuming from $syncCursor',
+      );
+    }
+    _lastAppliedSyncCursor = syncCursor;
+    _syncDeltaBuffer.abort();
+    _applyingSyncDelta = false;
+    _livePacketsDuringDeltaApply.clear();
     await _socket.connect(
       session: current,
       publicKey: _crypto.publicKey,
       profile: _publicOwnProfile,
       deviceName: _defaultDeviceName,
       reactivateDevice: reactivateDevice,
+      syncCursor: syncCursor,
       onPacket: _handlePacket,
       onStatus: (value) {
         status = value;
@@ -1976,9 +2066,56 @@ class AppController extends ChangeNotifier {
     );
   }
 
-  Future<void> _handlePacket(Map<String, dynamic> packet) async {
+  Future<void> _handlePacket(
+    Map<String, dynamic> packet, {
+    bool fromDeltaReplay = false,
+  }) async {
+    final packetType = packet['type']?.toString() ?? '';
+    if (_applyingSyncDelta &&
+        !fromDeltaReplay &&
+        SyncDeltaBuffer.isDurableEventPacket(packet)) {
+      _livePacketsDuringDeltaApply.add(Map<String, dynamic>.from(packet));
+      return;
+    }
+    if (packetType == 'server_sync_delta_begin') {
+      try {
+        _syncDeltaBuffer.begin(packet, localCursor: _lastAppliedSyncCursor);
+        status = 'Syncing changes...';
+        addDiagnostic('sync', 'Delta sync started');
+      } catch (syncError) {
+        _requestAuthoritativeSnapshot('invalid delta begin: $syncError');
+      }
+      notifyListeners();
+      return;
+    }
+    if (packetType == 'server_sync_delta_event') {
+      try {
+        _syncDeltaBuffer.addEvent(packet);
+      } catch (syncError) {
+        _requestAuthoritativeSnapshot('invalid delta event: $syncError');
+      }
+      return;
+    }
+    if (packetType == 'server_sync_done' && _syncDeltaBuffer.isActive) {
+      await _completeDeltaSync(packet);
+      return;
+    }
+    if (packetType == 'server_sync_done' &&
+        packet['sync_v2'] is Map &&
+        (packet['sync_v2'] as Map)['mode'] == 'delta') {
+      _requestAuthoritativeSnapshot('delta completion without active sync');
+      return;
+    }
+    if (_syncDeltaBuffer.shouldBufferLivePacket(packet)) {
+      _syncDeltaBuffer.bufferLivePacket(packet);
+      return;
+    }
+
     switch (packet['type']) {
       case 'server_welcome':
+        _syncDeltaBuffer.abort();
+        _applyingSyncDelta = false;
+        _livePacketsDuringDeltaApply.clear();
         _applyMeshProSubscription(packet['subscription']);
         if (!MeshSocket.isProtocolCompatible(packet)) {
           status = MeshSocket.protocolError(packet);
@@ -2010,11 +2147,31 @@ class AppController extends ChangeNotifier {
       case 'server_sync':
         await _applySync(packet);
       case 'server_sync_done':
+        final syncCursor = int.tryParse(
+          packet['sync_cursor']?.toString() ?? '',
+        );
+        final current = session;
+        await _saveCache();
+        if (current != null && syncCursor != null && syncCursor >= 0) {
+          await _cache.saveSyncCursor(current, syncCursor);
+          await _syncCursorStore.save(current, syncCursor);
+          _lastAppliedSyncCursor = syncCursor;
+          _socket.updateSyncCursor(syncCursor);
+          _socket.send({
+            'type': 'sync_v2_ack',
+            'source_node': myNodeId,
+            'cursor': syncCursor,
+            'protocol_version': MeshSocket.protocolVersion,
+          });
+        }
         status = 'Online';
         lastSyncAt = DateTime.now();
         addDiagnostic('sync', 'Sync received');
-        await _saveCache();
         notifyListeners();
+      case 'mutation_ack':
+        _applyMutationAck(packet);
+      case 'file_transfer_progress':
+        _applyFileTransferProgress(packet);
       case 'username_lookup_result':
         _handleLookup(packet);
       case 'profile_update_result':
@@ -2110,6 +2267,65 @@ class AppController extends ChangeNotifier {
         await _handleCallScreenAnswer(packet);
       case 'call_screen_stop':
         await _handleCallScreenStop(packet);
+    }
+    notifyListeners();
+  }
+
+  Future<void> _completeDeltaSync(Map<String, dynamic> packet) async {
+    try {
+      final batch = _syncDeltaBuffer.complete(packet);
+      _applyingSyncDelta = true;
+      _livePacketsDuringDeltaApply.clear();
+      for (final event in batch.events) {
+        await _handlePacket(event, fromDeltaReplay: true);
+      }
+      final current = session;
+      if (current == null) {
+        throw const FormatException('session ended during delta sync');
+      }
+      await _saveCache();
+      await _cache.saveSyncCursor(current, batch.targetCursor);
+      await _syncCursorStore.save(current, batch.targetCursor);
+      _lastAppliedSyncCursor = batch.targetCursor;
+      _socket.updateSyncCursor(batch.targetCursor);
+      _socket.send({
+        'type': 'sync_v2_ack',
+        'source_node': myNodeId,
+        'cursor': batch.targetCursor,
+        'protocol_version': MeshSocket.protocolVersion,
+      });
+      final bufferedLivePackets = <Map<String, dynamic>>[
+        ...batch.livePackets,
+        ..._livePacketsDuringDeltaApply,
+      ];
+      _applyingSyncDelta = false;
+      _livePacketsDuringDeltaApply.clear();
+      for (final livePacket in bufferedLivePackets) {
+        await _handlePacket(livePacket);
+      }
+      status = 'Online';
+      lastSyncAt = DateTime.now();
+      addDiagnostic('sync', 'Delta sync applied through ${batch.targetCursor}');
+      notifyListeners();
+    } catch (syncError) {
+      _applyingSyncDelta = false;
+      _livePacketsDuringDeltaApply.clear();
+      _requestAuthoritativeSnapshot('delta apply failed: $syncError');
+    }
+  }
+
+  void _requestAuthoritativeSnapshot(String reason) {
+    _syncDeltaBuffer.abort();
+    status = 'Repairing sync...';
+    addDiagnostic('sync', reason);
+    if (_socket.isConnected) {
+      _socket.send({
+        'type': 'sync_v2_snapshot_request',
+        'source_node': myNodeId,
+        'cursor': _lastAppliedSyncCursor,
+        'reason': reason,
+        'protocol_version': MeshSocket.protocolVersion,
+      });
     }
     notifyListeners();
   }
@@ -2270,20 +2486,14 @@ class AppController extends ChangeNotifier {
       final peerId = sentByMe ? receiver : sender;
       if (!sentByMe && !receivedByMe) continue;
       if (peerId.isEmpty || peerId == myNodeId) continue;
-      final profile =
-          profiles[peerId] ??
-          Profile(
-            nodeId: peerId,
-            displayName: sentByMe
-                ? (receiverLogin.isNotEmpty
-                      ? receiverLogin
-                      : peerId.substring(0, 8))
-                : (data['sender_name']?.toString() ?? peerId.substring(0, 8)),
-            accountLogin: sentByMe ? receiverLogin : senderLogin,
-          );
-      profiles[peerId] = _mergeProfile(profile);
-      _applyProfileToThreads(profiles[peerId]!);
-      final thread = _ensurePacketThread(profiles[peerId]!, data);
+      final profile = _resolveDirectPeerProfile(
+        nodeId: peerId,
+        accountLogin: sentByMe ? receiverLogin : senderLogin,
+        fallbackName: sentByMe
+            ? receiverLogin
+            : data['sender_name']?.toString() ?? '',
+      );
+      final thread = _ensurePacketThread(profile, data);
       final id = data['message_id']?.toString() ?? const Uuid().v4();
       if (_isDeletedMessage(id)) continue;
       final existingIndex = thread.messages.indexWhere(
@@ -2986,7 +3196,9 @@ class AppController extends ChangeNotifier {
         'group_key_envelope': senderEnvelope,
       });
     }
-    _replaceMessage(id, (message) => message.copyWith(pending: false));
+    if (!_socket.supportsMutationAck) {
+      _replaceMessage(id, (message) => message.copyWith(pending: false));
+    }
     return id;
   }
 
@@ -3334,8 +3546,12 @@ class AppController extends ChangeNotifier {
     _reactionActors.clear();
     for (final thread in [...threads.values, ...groups.values]) {
       for (var i = 0; i < thread.messages.length; i++) {
-        if (thread.messages[i].reactions.isNotEmpty) {
-          thread.messages[i] = thread.messages[i].copyWith(reactions: const {});
+        if (thread.messages[i].reactions.isNotEmpty ||
+            thread.messages[i].reactionActors.isNotEmpty) {
+          thread.messages[i] = thread.messages[i].copyWith(
+            reactions: const {},
+            reactionActors: const {},
+          );
         }
       }
     }
@@ -3352,29 +3568,61 @@ class AppController extends ChangeNotifier {
         '';
     final reaction = packet['reaction']?.toString() ?? '';
     if (messageId.isEmpty || reaction.isEmpty) return;
-    final actor =
-        packet['reactor_node']?.toString() ??
-        packet['source_node']?.toString() ??
-        '';
-    if (actor.isNotEmpty) {
-      final byReaction = _reactionActors.putIfAbsent(messageId, () => {});
-      final actors = byReaction.putIfAbsent(reaction, () => <String>{});
-      if (!actors.add(actor)) return;
-    }
+    final actor = _reactionActorIdentity(packet);
     for (final thread in [...threads.values, ...groups.values]) {
       final index = thread.messages.indexWhere(
         (message) => message.id == messageId,
       );
       if (index < 0) continue;
-      final current = Map<String, int>.from(thread.messages[index].reactions);
-      current[reaction] = (current[reaction] ?? 0) + 1;
-      thread.messages[index] = thread.messages[index].copyWith(
+      final message = thread.messages[index];
+      final byReaction = _reactionActors.putIfAbsent(messageId, () => {});
+      final actors = byReaction.putIfAbsent(reaction, () => <String>{})
+        ..addAll(message.reactionActors[reaction] ?? const <String>[]);
+      if (actor.isNotEmpty && !actors.add(actor)) return;
+
+      final nextActors = <String, List<String>>{
+        for (final entry in message.reactionActors.entries)
+          entry.key: [...entry.value],
+      };
+      if (actors.isNotEmpty) {
+        nextActors[reaction] = actors.toList(growable: false)..sort();
+      }
+      final current = Map<String, int>.from(message.reactions);
+      current[reaction] = actors.isNotEmpty
+          ? actors.length
+          : (current[reaction] ?? 0) + 1;
+      thread.messages[index] = message.copyWith(
         reactions: current,
+        reactionActors: nextActors,
       );
       unawaited(_saveCache());
       notifyListeners();
       return;
     }
+  }
+
+  String _reactionActorIdentity(Map<String, dynamic> packet) {
+    final explicit = packet['reactor_identity']?.toString().trim() ?? '';
+    if (explicit.isNotEmpty) {
+      final separator = explicit.indexOf(':');
+      if (separator > 0 && separator < explicit.length - 1) {
+        final kind = explicit.substring(0, separator).trim().toLowerCase();
+        final value = explicit.substring(separator + 1).trim();
+        if (kind == 'login') return 'login:${value.toLowerCase()}';
+        if (kind == 'node') return 'node:$value';
+      }
+      return explicit.toLowerCase();
+    }
+    final actorLogin =
+        packet['reactor_login']?.toString().trim().toLowerCase() ??
+        packet['sender_login']?.toString().trim().toLowerCase() ??
+        '';
+    if (actorLogin.isNotEmpty) return 'login:$actorLogin';
+    final actorNode =
+        packet['reactor_node']?.toString().trim() ??
+        packet['source_node']?.toString().trim() ??
+        '';
+    return actorNode.isEmpty ? '' : 'node:$actorNode';
   }
 
   Future<void> sendReaction(
@@ -3387,6 +3635,7 @@ class AppController extends ChangeNotifier {
       'message_id': message.id,
       'reaction': reaction,
       'source_node': myNodeId,
+      'reactor_login': session!.login,
     });
     if (thread.isBluetooth) {
       await _sendBluetoothThreadPacket(thread, {
@@ -3398,6 +3647,9 @@ class AppController extends ChangeNotifier {
     }
     final basePacket = {
       'type': thread.isGroup ? 'group_reaction' : 'message_reaction',
+      'operation_id':
+          '${thread.isGroup ? 'group_reaction' : 'message_reaction'}:'
+          '${const Uuid().v4()}',
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
       'ttl': 5,
@@ -3405,6 +3657,7 @@ class AppController extends ChangeNotifier {
       'group_message_id': message.id,
       'group_id': thread.groupId,
       'reaction': reaction,
+      'reactor_login': session!.login,
     };
     if (thread.isGroup) {
       final recipients = thread.members
@@ -3477,6 +3730,7 @@ class AppController extends ChangeNotifier {
       );
       final basePacket = {
         'type': 'group_message_edit',
+        'operation_id': 'group_message_edit:${const Uuid().v4()}',
         'protocol_version': MeshSocket.protocolVersion,
         'source_node': myNodeId,
         'ttl': 5,
@@ -3535,6 +3789,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> deleteMessage(ChatThread thread, ChatMessage message) async {
     if (session == null || message.senderNode != myNodeId) return;
+    if (!thread.isBluetooth &&
+        (message.kind == ChatMessageKind.file ||
+            message.kind == ChatMessageKind.sticker)) {
+      await _socket.cancelFileTransfer(message.id);
+    }
     await _rememberDeletedMessage(message.id);
     _deleteLocalMessage(thread, message.id);
     if (thread.isBluetooth) {
@@ -3547,6 +3806,9 @@ class AppController extends ChangeNotifier {
     }
     final basePacket = {
       'type': thread.isGroup ? 'group_message_delete' : 'message_delete',
+      'operation_id':
+          '${thread.isGroup ? 'group_message_delete' : 'message_delete'}:'
+          '${const Uuid().v4()}',
       'packet_id': const Uuid().v4(),
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
@@ -3602,6 +3864,9 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     final basePacket = {
       'type': thread.isGroup ? 'group_pin' : 'message_pin',
+      'operation_id':
+          '${thread.isGroup ? 'group_pin' : 'message_pin'}:'
+          '${const Uuid().v4()}',
       'packet_id': const Uuid().v4(),
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
@@ -4064,6 +4329,7 @@ class AppController extends ChangeNotifier {
     )..add('SERVER');
     final basePacket = {
       'type': 'story_update',
+      'operation_id': 'story_update:${const Uuid().v4()}',
       'packet_id': story.id,
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
@@ -4204,6 +4470,7 @@ class AppController extends ChangeNotifier {
     )..add('SERVER');
     final basePacket = {
       'type': 'story_delete',
+      'operation_id': 'story_delete:${const Uuid().v4()}',
       'packet_id': const Uuid().v4(),
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
@@ -4469,6 +4736,9 @@ class AppController extends ChangeNotifier {
     }
     final packetBase = {
       'type': thread.isGroup ? 'group_delete' : 'chat_delete',
+      'operation_id':
+          '${thread.isGroup ? 'group_delete' : 'chat_delete'}:'
+          '${const Uuid().v4()}',
       'packet_id': const Uuid().v4(),
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
@@ -4510,6 +4780,7 @@ class AppController extends ChangeNotifier {
           ..sort();
     final packetBase = {
       'type': 'group_member_leave',
+      'operation_id': 'group_member_leave:${const Uuid().v4()}',
       'packet_id': const Uuid().v4(),
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
@@ -5832,7 +6103,9 @@ class AppController extends ChangeNotifier {
       'reply_to_text': replyToText,
       'message_effect': messageEffect,
     });
-    _replaceMessage(id, (message) => message.copyWith(pending: false));
+    if (!_socket.supportsMutationAck) {
+      _replaceMessage(id, (message) => message.copyWith(pending: false));
+    }
   }
 
   Future<String?> startBluetoothNearby() async {
@@ -6194,6 +6467,7 @@ class AppController extends ChangeNotifier {
     final data = _hexEncode(bytes);
     final trimmedCaption = caption.trim();
     final thread = threadOverride ?? _ensureThread(recipient);
+    final createdAt = retryingMessage?.createdAt ?? DateTime.now();
     if (isSavedMessagesProfile(recipient)) {
       thread.messages.add(
         ChatMessage(
@@ -6201,7 +6475,7 @@ class AppController extends ChangeNotifier {
           senderNode: myNodeId,
           receiverNode: savedMessagesNodeId,
           text: trimmedCaption,
-          createdAt: DateTime.now(),
+          createdAt: createdAt,
           kind: kind,
           fileName: filename,
           fileData: data,
@@ -6232,7 +6506,7 @@ class AppController extends ChangeNotifier {
           createdAt: DateTime.now(),
           kind: kind,
           fileName: filename,
-          fileData: _hexEncode(bytes),
+          fileData: data,
           fileSize: bytes.length,
           replyToMessageId: replyToMessageId,
           replyToText: replyToText,
@@ -6242,50 +6516,43 @@ class AppController extends ChangeNotifier {
     _upsertOutgoingMessage(thread, outgoing);
     unawaited(_saveCache());
     notifyListeners();
-    if (!_socket.isConnected) {
-      status = 'Queued: waiting for server connection';
-      notifyListeners();
+    final operationId = 'file_transfer:$id';
+    try {
+      await _socket.queueFileTransfer(
+        transferId: const Uuid().v4(),
+        operationId: operationId,
+        bytes: bytes,
+        packet: {
+          'type': 'file_chunk',
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': myNodeId,
+          'destination_node': recipient.nodeId,
+          'ttl': 5,
+          'sender': session!.login,
+          'chat_kind': thread.chatKind,
+          'chat_id': thread.threadId,
+          'file_id': id,
+          'message_kind': kind.name,
+          'filename': filename,
+          'caption': trimmedCaption,
+          'reply_to_message_id': replyToMessageId,
+          'reply_to_text': replyToText,
+          'message_effect': messageEffect,
+          'created_at': createdAt.toUtc().toIso8601String(),
+        },
+      );
+      if (!_socket.isConnected) {
+        status = 'Queued: waiting for server connection';
+        notifyListeners();
+      }
       return null;
-    }
-
-    final totalChunks = (data.length / _fileChunkHexSize).ceil();
-    for (var index = 0; index < totalChunks; index++) {
-      final start = index * _fileChunkHexSize;
-      final end = start + _fileChunkHexSize > data.length
-          ? data.length
-          : start + _fileChunkHexSize;
-      _socket.send({
-        'type': 'file_chunk',
-        'packet_id': const Uuid().v4(),
-        'protocol_version': MeshSocket.protocolVersion,
-        'source_node': myNodeId,
-        'destination_node': recipient.nodeId,
-        'ttl': 5,
-        'sender': session!.login,
-        'chat_kind': thread.chatKind,
-        'chat_id': thread.threadId,
-        'file_id': id,
-        'message_kind': kind.name,
-        'filename': filename,
-        'caption': trimmedCaption,
-        'reply_to_message_id': replyToMessageId,
-        'reply_to_text': replyToText,
-        'message_effect': messageEffect,
-        'chunk_index': index,
-        'total_chunks': totalChunks,
-        'data': data.substring(start, end),
-      });
+    } catch (error) {
       _replaceMessage(
         id,
-        (message) => message.copyWith(progress: (index + 1) / totalChunks),
+        (message) => message.copyWith(pending: false, failed: true),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 8));
+      return 'File queue failed: $error';
     }
-    _replaceMessage(
-      id,
-      (message) => message.copyWith(pending: false, progress: 1),
-    );
-    return null;
   }
 
   Future<String?> forwardMessage(ChatMessage message, ChatThread target) async {
@@ -6365,6 +6632,17 @@ class AppController extends ChangeNotifier {
       return 'Message is already being retried';
     }
     try {
+      if (!thread.isBluetooth &&
+          (message.kind == ChatMessageKind.file ||
+              message.kind == ChatMessageKind.sticker) &&
+          await _socket.hasQueuedFileTransfer(message.id)) {
+        _replaceMessage(
+          message.id,
+          (current) => current.copyWith(pending: true, failed: false),
+        );
+        await _socket.retryFileTransfer(message.id);
+        return null;
+      }
       if (message.kind == ChatMessageKind.file ||
           message.kind == ChatMessageKind.sticker) {
         if (message.fileData.isEmpty) return 'File is not cached';
@@ -6768,6 +7046,7 @@ class AppController extends ChangeNotifier {
         : group.profile.displayName;
     final basePacket = {
       'type': 'group_update',
+      'operation_id': 'group_update:${const Uuid().v4()}',
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
       'ttl': 5,
@@ -6825,6 +7104,7 @@ class AppController extends ChangeNotifier {
       );
       final basePacket = {
         'type': 'group_update',
+        'operation_id': 'group_update:${const Uuid().v4()}',
         'protocol_version': MeshSocket.protocolVersion,
         'source_node': myNodeId,
         'ttl': 5,
@@ -6892,11 +7172,12 @@ class AppController extends ChangeNotifier {
         ? ''
         : await _crypto.encryptGroupText(groupKey.key, trimmedCaption);
     final wireBytes = await _crypto.encryptGroupBytes(groupKey.key, bytes);
-    final data = _hexEncode(Uint8List.fromList(wireBytes));
+    final encryptedBytes = Uint8List.fromList(wireBytes);
     final senderEnvelope = await _crypto.wrapGroupKey(
       _crypto.publicKey,
       groupKey.key,
     );
+    final createdAt = retryingMessage?.createdAt ?? DateTime.now();
     final outgoing =
         retryingMessage?.copyWith(
           isChannelComment: isChannelComment,
@@ -6910,7 +7191,7 @@ class AppController extends ChangeNotifier {
           senderNode: myNodeId,
           receiverNode: group.groupId,
           text: trimmedCaption,
-          createdAt: DateTime.now(),
+          createdAt: createdAt,
           kind: kind,
           fileName: filename,
           fileData: _hexEncode(bytes),
@@ -6924,135 +7205,161 @@ class AppController extends ChangeNotifier {
     _upsertOutgoingMessage(group, outgoing);
     unawaited(_saveCache());
     notifyListeners();
-    if (!_socket.isConnected) {
-      status = 'Queued: waiting for server connection';
-      notifyListeners();
-      return null;
-    }
-
-    final totalChunks = (data.length / _fileChunkHexSize).ceil();
-    final recipients = group.members.where((member) => member != myNodeId);
+    final operationId = 'file_transfer:$id';
+    final recipients = group.members
+        .where((member) => member.isNotEmpty && member != myNodeId)
+        .toSet();
     var sent = false;
-    for (final member in recipients) {
-      final publicKey = profiles[member]?.publicKey ?? '';
-      if (publicKey.isEmpty) continue;
-      final envelope = await _crypto.wrapGroupKey(publicKey, groupKey.key);
-      for (var index = 0; index < totalChunks; index++) {
-        final start = index * _fileChunkHexSize;
-        final end = start + _fileChunkHexSize > data.length
-            ? data.length
-            : start + _fileChunkHexSize;
-        _socket.send({
-          'type': 'file_chunk',
-          'packet_id': const Uuid().v4(),
-          'protocol_version': MeshSocket.protocolVersion,
-          'source_node': myNodeId,
-          'destination_node': member,
-          'ttl': 5,
-          'sender': session!.login,
-          'file_id': id,
-          'message_kind': kind.name,
-          'filename': wireFilename,
-          'caption': wireCaption,
-          'reply_to_message_id': replyToMessageId,
-          'reply_to_text': replyToText,
-          'message_effect': messageEffect,
-          'is_channel_comment': isChannelComment,
-          'group_id': group.groupId,
-          'group_name': group.groupName.isEmpty
-              ? group.profile.displayName
-              : group.groupName,
-          'is_channel': group.isChannel,
-          'comments_enabled': group.commentsEnabled,
-          'group_key_id': groupKey.id,
-          'group_key_envelope': envelope,
-          'group_key_sender_envelope': senderEnvelope,
-          'chunk_index': index,
-          'total_chunks': totalChunks,
-          'data': data.substring(start, end),
-        });
-        _replaceMessage(
-          id,
-          (message) => message.copyWith(progress: (index + 1) / totalChunks),
+    try {
+      for (final member in recipients) {
+        final publicKey = profiles[member]?.publicKey ?? '';
+        if (publicKey.isEmpty) continue;
+        final envelope = await _crypto.wrapGroupKey(publicKey, groupKey.key);
+        await _socket.queueFileTransfer(
+          transferId: const Uuid().v4(),
+          operationId: operationId,
+          bytes: encryptedBytes,
+          deferSend: true,
+          packet: {
+            'type': 'file_chunk',
+            'protocol_version': MeshSocket.protocolVersion,
+            'source_node': myNodeId,
+            'destination_node': member,
+            'ttl': 5,
+            'sender': session!.login,
+            'file_id': id,
+            'message_kind': kind.name,
+            'filename': wireFilename,
+            'caption': wireCaption,
+            'reply_to_message_id': replyToMessageId,
+            'reply_to_text': replyToText,
+            'message_effect': messageEffect,
+            'is_channel_comment': isChannelComment,
+            'group_id': group.groupId,
+            'group_name': group.groupName.isEmpty
+                ? group.profile.displayName
+                : group.groupName,
+            'is_channel': group.isChannel,
+            'comments_enabled': group.commentsEnabled,
+            'group_key_id': groupKey.id,
+            'group_key_envelope': envelope,
+            'group_key_sender_envelope': senderEnvelope,
+            'created_at': createdAt.toUtc().toIso8601String(),
+          },
         );
-        await Future<void>.delayed(const Duration(milliseconds: 8));
+        sent = true;
       }
-      sent = true;
-    }
-    if (!sent) {
-      for (var index = 0; index < totalChunks; index++) {
-        final start = index * _fileChunkHexSize;
-        final end = start + _fileChunkHexSize > data.length
-            ? data.length
-            : start + _fileChunkHexSize;
-        _socket.send({
-          'type': 'file_chunk',
-          'packet_id': const Uuid().v4(),
-          'protocol_version': MeshSocket.protocolVersion,
-          'source_node': myNodeId,
-          'destination_node': 'SERVER',
-          'ttl': 5,
-          'sender': session!.login,
-          'file_id': id,
-          'message_kind': kind.name,
-          'filename': wireFilename,
-          'caption': wireCaption,
-          'reply_to_message_id': replyToMessageId,
-          'reply_to_text': replyToText,
-          'message_effect': messageEffect,
-          'is_channel_comment': isChannelComment,
-          'group_id': group.groupId,
-          'group_name': group.groupName.isEmpty
-              ? group.profile.displayName
-              : group.groupName,
-          'is_channel': group.isChannel,
-          'comments_enabled': group.commentsEnabled,
-          'group_key_id': groupKey.id,
-          'group_key_envelope': senderEnvelope,
-          'group_key_sender_envelope': senderEnvelope,
-          'chunk_index': index,
-          'total_chunks': totalChunks,
-          'data': data.substring(start, end),
-        });
-        _replaceMessage(
-          id,
-          (message) => message.copyWith(progress: (index + 1) / totalChunks),
+      if (!sent) {
+        await _socket.queueFileTransfer(
+          transferId: const Uuid().v4(),
+          operationId: operationId,
+          bytes: encryptedBytes,
+          deferSend: true,
+          packet: {
+            'type': 'file_chunk',
+            'protocol_version': MeshSocket.protocolVersion,
+            'source_node': myNodeId,
+            'destination_node': 'SERVER',
+            'ttl': 5,
+            'sender': session!.login,
+            'file_id': id,
+            'message_kind': kind.name,
+            'filename': wireFilename,
+            'caption': wireCaption,
+            'reply_to_message_id': replyToMessageId,
+            'reply_to_text': replyToText,
+            'message_effect': messageEffect,
+            'is_channel_comment': isChannelComment,
+            'group_id': group.groupId,
+            'group_name': group.groupName.isEmpty
+                ? group.profile.displayName
+                : group.groupName,
+            'is_channel': group.isChannel,
+            'comments_enabled': group.commentsEnabled,
+            'group_key_id': groupKey.id,
+            'group_key_envelope': senderEnvelope,
+            'group_key_sender_envelope': senderEnvelope,
+            'created_at': createdAt.toUtc().toIso8601String(),
+          },
         );
       }
+      await _socket.flushFileTransfers();
+      if (!_socket.isConnected) {
+        status = 'Queued: waiting for server connection';
+        notifyListeners();
+      }
+      return null;
+    } catch (error) {
+      _replaceMessage(
+        id,
+        (message) => message.copyWith(pending: false, failed: true),
+      );
+      return 'File queue failed: $error';
     }
-    _replaceMessage(
-      id,
-      (message) => message.copyWith(pending: false, progress: 1),
-    );
-    return null;
   }
 
   Future<void> _receiveMessage(Map<String, dynamic> packet) async {
-    final sender = packet['source_node']?.toString() ?? '';
+    final sender = packet['sender_node']?.toString().isNotEmpty == true
+        ? packet['sender_node'].toString()
+        : packet['source_node']?.toString() ?? '';
     if (sender.isEmpty) return;
-    if (isBlocked(sender)) return;
-    final profile =
-        profiles[sender] ??
-        Profile(
-          nodeId: sender,
-          displayName: packet['sender']?.toString() ?? sender.substring(0, 8),
-        );
-    profiles[sender] = _mergeProfile(profile);
-    _applyProfileToThreads(profiles[sender]!);
-    final thread = _ensurePacketThread(profiles[sender]!, packet);
+    final receiver =
+        packet['original_destination_node']?.toString().isNotEmpty == true
+        ? packet['original_destination_node'].toString()
+        : packet['receiver_node']?.toString().isNotEmpty == true
+        ? packet['receiver_node'].toString()
+        : packet['destination_node']?.toString() ?? '';
+    final senderLogin =
+        packet['sender_login']?.toString().trim().toLowerCase() ?? '';
+    final receiverLogin =
+        packet['receiver_login']?.toString().trim().toLowerCase() ?? '';
+    final myLogin = session?.login.trim().toLowerCase() ?? '';
+    final sentByMe =
+        sender == myNodeId ||
+        (senderLogin.isNotEmpty && senderLogin == myLogin);
+    final receivedByMe =
+        receiver == myNodeId ||
+        (receiverLogin.isNotEmpty && receiverLogin == myLogin);
+    if (!sentByMe && !receivedByMe) return;
+    if (!sentByMe && isBlocked(sender)) return;
+
+    final peerId = sentByMe ? receiver : sender;
+    if (peerId.isEmpty || peerId == myNodeId) return;
+    final peerLogin = sentByMe ? receiverLogin : senderLogin;
+    final profile = _resolveDirectPeerProfile(
+      nodeId: peerId,
+      accountLogin: peerLogin,
+      fallbackName: sentByMe
+          ? receiverLogin
+          : packet['sender_name']?.toString() ??
+                packet['sender']?.toString() ??
+                '',
+    );
+    final thread = _ensurePacketThread(profile, packet);
     final id =
         packet['message_id']?.toString() ??
         packet['packet_id']?.toString() ??
         const Uuid().v4();
     if (_isDeletedMessage(id)) return;
-    if (!thread.messages.any((message) => message.id == id)) {
+    final existingIndex = thread.messages.indexWhere(
+      (message) => message.id == id,
+    );
+    if (existingIndex >= 0) {
+      final current = thread.messages[existingIndex];
+      thread.messages[existingIndex] = current.copyWith(
+        pending: false,
+        delivered: true,
+        failed: false,
+      );
+      unawaited(_saveCache());
+    } else {
       final text = await _crypto.decryptText(
         packet['message']?.toString() ?? '',
       );
       final message = ChatMessage(
         id: id,
-        senderNode: sender,
-        receiverNode: myNodeId,
+        senderNode: sentByMe ? myNodeId : sender,
+        receiverNode: receiver,
         text: text,
         createdAt: _parsePacketDate(packet),
         replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
@@ -7061,19 +7368,24 @@ class AppController extends ChangeNotifier {
         delivered: true,
       );
       thread.messages.add(message);
-      final active = _isThreadActive(thread);
-      if (active) {
-        thread.unread = 0;
-      } else {
-        thread.unread++;
+      thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      if (!sentByMe) {
+        final active = _isThreadActive(thread);
+        if (active) {
+          thread.unread = 0;
+        } else {
+          thread.unread++;
+        }
+        if (!active && !thread.muted) {
+          unawaited(_showNotification(title: profile.displayName, body: text));
+        }
+        _publishIncomingPreview(thread, message);
       }
-      if (!active && !thread.muted) {
-        unawaited(_showNotification(title: profile.displayName, body: text));
-      }
-      _publishIncomingPreview(thread, message);
       unawaited(_saveCache());
     }
-    await _sendDeliveryReceipt(packet, sender, id);
+    if (!sentByMe) {
+      await _sendDeliveryReceipt(packet, sender, id);
+    }
   }
 
   Future<void> _receiveFileChunk(
@@ -7134,6 +7446,10 @@ class AppController extends ChangeNotifier {
         incoming.totalChunks,
         (index) => incoming.chunks[index] ?? '',
       ).join();
+      if (!await _verifyIncomingFilePayload(first, fullData)) {
+        _incomingFiles.remove(fileId);
+        return;
+      }
       final decryptedName = await _crypto.decryptGroupText(
         _groupKeyForPacket(groupId, first['group_key_id']?.toString() ?? ''),
         filename,
@@ -7263,6 +7579,10 @@ class AppController extends ChangeNotifier {
       incoming.totalChunks,
       (index) => incoming.chunks[index] ?? '',
     ).join();
+    if (!await _verifyIncomingFilePayload(first, fullData)) {
+      _incomingFiles.remove(fileId);
+      return;
+    }
     final message = ChatMessage(
       id: fileId,
       senderNode: sentByMe ? myNodeId : sender,
@@ -7311,6 +7631,35 @@ class AppController extends ChangeNotifier {
     _incomingFiles.remove(fileId);
     if (!fromSync && sender != myNodeId) {
       await _sendDeliveryReceipt(first, sender, fileId);
+    }
+  }
+
+  Future<bool> _verifyIncomingFilePayload(
+    Map<String, dynamic> packet,
+    String hexData,
+  ) async {
+    final expected =
+        packet['file_sha256']?.toString().trim().toLowerCase() ?? '';
+    if (expected.isEmpty) return true;
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(expected)) {
+      addDiagnostic('file', 'Rejected malformed file checksum');
+      return false;
+    }
+    try {
+      final bytes = _hexDecode(hexData);
+      final digest = await Sha256().hash(bytes);
+      final actual = digest.bytes
+          .map((value) => value.toRadixString(16).padLeft(2, '0'))
+          .join();
+      if (actual == expected) return true;
+      addDiagnostic(
+        'file',
+        'Rejected file ${packet['file_id']}: checksum mismatch',
+      );
+      return false;
+    } catch (error) {
+      addDiagnostic('file', 'Rejected invalid file payload: $error');
+      return false;
     }
   }
 
@@ -7665,6 +8014,37 @@ class AppController extends ChangeNotifier {
       (message) =>
           message.copyWith(delivered: true, pending: false, failed: false),
     );
+  }
+
+  void _applyMutationAck(Map<String, dynamic> packet) {
+    if (packet['operation_complete'] != true) return;
+    final messageId = packet['packet_id']?.toString() ?? '';
+    if (messageId.isEmpty) return;
+    final accepted = packet['ok'] != false;
+    _replaceMessage(
+      messageId,
+      (message) => message.copyWith(pending: false, failed: !accepted),
+    );
+  }
+
+  void _applyFileTransferProgress(Map<String, dynamic> packet) {
+    final fileId = packet['file_id']?.toString() ?? '';
+    if (fileId.isEmpty) return;
+    final progress = double.tryParse(packet['progress']?.toString() ?? '') ?? 0;
+    final complete = packet['complete'] == true;
+    final failed = packet['failed'] == true;
+    _replaceMessage(
+      fileId,
+      (message) => message.copyWith(
+        progress: progress.clamp(0.0, 1.0),
+        pending: !complete && !failed,
+        failed: failed,
+      ),
+    );
+    if (failed) {
+      final reason = packet['reason']?.toString() ?? 'transfer_failed';
+      addDiagnostic('file', 'Transfer $fileId failed: $reason');
+    }
   }
 
   void _upsertOutgoingMessage(ChatThread thread, ChatMessage outgoing) {

@@ -5,6 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'src/app.dart';
 import 'src/services/android_push_service.dart';
+import 'src/services/platform_capabilities.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,5 +24,6 @@ Future<void> main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
-  runApp(const MeshChatApp());
+  final platformCapabilities = await MeshPlatformCapabilities.detect();
+  runApp(MeshChatApp(platformCapabilities: platformCapabilities));
 }

@@ -1,6 +1,10 @@
+import hashlib
 import json
+import os
 import re
+import shutil
 import sqlite3
+from contextlib import contextmanager
 
 try:
     from server.config import DB_PATH
@@ -24,6 +28,10 @@ OFFLINE_QUEUE_PACKET_TYPES = frozenset(
     }
 )
 OFFLINE_PACKET_MAX_AGE_DAYS = 30
+FILE_TRANSFER_MAX_BYTES = 96 * 1024 * 1024
+FILE_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024
+FILE_TRANSFER_MAX_CHUNKS = 4096
+FILE_TRANSFER_STALE_DAYS = 7
 PROFILE_BLINK_SHAPE_ALIASES = {
     "auto": "auto",
     "dot": "dot",
@@ -79,6 +87,38 @@ AVATAR_DECORATION_ALIASES = {
 
 
 class ServerStorageMixin:
+    def _commit_storage(self):
+        if getattr(self, "_storage_transaction_depth", 0) <= 0:
+            self.db.commit()
+
+    @contextmanager
+    def atomic_storage_transaction(self):
+        depth = getattr(self, "_storage_transaction_depth", 0)
+        if depth > 0:
+            self._storage_transaction_depth = depth + 1
+            try:
+                yield
+            finally:
+                self._storage_transaction_depth = depth
+            return
+
+        if self.db.in_transaction:
+            raise RuntimeError(
+                "atomic storage transaction requires a clean connection"
+            )
+
+        self.db.execute("BEGIN IMMEDIATE")
+        self._storage_transaction_depth = 1
+        try:
+            yield
+        except BaseException:
+            self.db.rollback()
+            raise
+        else:
+            self.db.commit()
+        finally:
+            self._storage_transaction_depth = 0
+
     def _looks_like_node_id(
         self,
         node_id
@@ -161,6 +201,103 @@ class ServerStorageMixin:
             """
             CREATE INDEX IF NOT EXISTS idx_offline_packets_created_at
             ON offline_packets(created_at)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_events(
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_login TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                packet_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(account_login, operation_id, packet_type)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sync_events_account_cursor
+            ON sync_events(account_login, event_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_event_state(
+                account_login TEXT PRIMARY KEY,
+                retained_floor INTEGER NOT NULL DEFAULT 0,
+                latest_cursor INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO sync_event_state(
+                account_login,
+                retained_floor,
+                latest_cursor
+            )
+            SELECT account_login,
+                   0,
+                   MAX(event_id)
+            FROM sync_events
+            GROUP BY account_login
+            """
+        )
+
+        conn.execute(
+            """
+            UPDATE sync_event_state
+            SET latest_cursor=MAX(
+                    latest_cursor,
+                    COALESCE(
+                        (
+                            SELECT MAX(event_id)
+                            FROM sync_events
+                            WHERE account_login=sync_event_state.account_login
+                        ),
+                        0
+                    )
+                )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_cursors(
+                account_login TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                cursor INTEGER NOT NULL DEFAULT 0,
+                acknowledged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(account_login, node_id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_mutations(
+                account_login TEXT NOT NULL,
+                outbox_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL DEFAULT '',
+                packet_type TEXT NOT NULL DEFAULT '',
+                packet_id TEXT NOT NULL DEFAULT '',
+                processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(account_login, outbox_id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_processed_mutations_processed_at
+            ON processed_mutations(processed_at)
             """
         )
 
@@ -927,9 +1064,76 @@ class ServerStorageMixin:
                 message_id TEXT,
                 reactor_node TEXT,
                 reactor_login TEXT,
+                reactor_identity TEXT NOT NULL DEFAULT '',
                 reaction TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(scope, message_id, reactor_node, reaction)
+            )
+            """
+        )
+
+        reaction_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(server_reactions)"
+            ).fetchall()
+        }
+        if "reactor_identity" not in reaction_columns:
+            conn.execute(
+                """
+                ALTER TABLE server_reactions
+                ADD COLUMN reactor_identity TEXT NOT NULL DEFAULT ''
+                """
+            )
+        conn.execute(
+            """
+            UPDATE server_reactions
+            SET reactor_login=COALESCE(
+                    NULLIF(LOWER(TRIM(reactor_login)), ''),
+                    (SELECT LOWER(TRIM(login))
+                     FROM account_devices
+                     WHERE node_id=server_reactions.reactor_node
+                     LIMIT 1),
+                    (SELECT LOWER(TRIM(login))
+                     FROM accounts
+                     WHERE node_id=server_reactions.reactor_node
+                     LIMIT 1),
+                    ''
+                )
+            """
+        )
+        conn.execute(
+            """
+            UPDATE server_reactions
+            SET reactor_identity=CASE
+                WHEN COALESCE(reactor_login, '')!=''
+                    THEN 'login:' || LOWER(TRIM(reactor_login))
+                ELSE 'node:' || COALESCE(reactor_node, '')
+            END
+            """
+        )
+        conn.execute(
+            """
+            DELETE FROM server_reactions
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid)
+                FROM server_reactions
+                GROUP BY scope,
+                         message_id,
+                         reactor_identity,
+                         reaction
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_server_reactions_account_unique
+            ON server_reactions(
+                scope,
+                message_id,
+                reactor_identity,
+                reaction
             )
             """
         )
@@ -956,8 +1160,59 @@ class ServerStorageMixin:
                 group_key_id TEXT,
                 message_kind TEXT DEFAULT 'file',
                 message_effect TEXT DEFAULT 'none',
+                storage_path TEXT DEFAULT '',
+                sha256 TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS file_transfer_sessions(
+                account_login TEXT NOT NULL,
+                transfer_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL DEFAULT '',
+                source_node TEXT NOT NULL,
+                destination_node TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                total_chunks INTEGER NOT NULL,
+                chunk_size INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'receiving',
+                storage_path TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(account_login, transfer_id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS file_transfer_chunks(
+                account_login TEXT NOT NULL,
+                transfer_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                chunk_path TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(account_login, transfer_id, chunk_index),
+                FOREIGN KEY(account_login, transfer_id)
+                    REFERENCES file_transfer_sessions(account_login, transfer_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_file_transfer_sessions_status
+            ON file_transfer_sessions(status, updated_at)
             """
         )
 
@@ -1089,6 +1344,18 @@ class ServerStorageMixin:
         if "message_effect" not in file_columns:
             conn.execute(
                 "ALTER TABLE server_files ADD COLUMN message_effect TEXT DEFAULT 'none'"
+            )
+        if "storage_path" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN storage_path TEXT DEFAULT ''"
+            )
+        if "sha256" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN sha256 TEXT DEFAULT ''"
+            )
+        if "size_bytes" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN size_bytes INTEGER DEFAULT 0"
             )
 
         conn.execute(
@@ -1313,6 +1580,9 @@ class ServerStorageMixin:
             "expired_packets": 0,
             "orphan_reactions": 0,
             "expired_service_sessions": 0,
+            "expired_processed_mutations": 0,
+            "expired_file_transfers": 0,
+            "expired_file_transfer_receipts": 0,
         }
 
         cursor = conn.execute(
@@ -1396,6 +1666,14 @@ class ServerStorageMixin:
         )
         stats["expired_service_sessions"] = max(cursor.rowcount, 0)
 
+        cursor = conn.execute(
+            """
+            DELETE FROM processed_mutations
+            WHERE processed_at < DATETIME('now', '-90 days')
+            """
+        )
+        stats["expired_processed_mutations"] = max(cursor.rowcount, 0)
+
         rows = conn.execute(
             """
             SELECT id,
@@ -1465,6 +1743,45 @@ class ServerStorageMixin:
             """
         )
         stats["orphan_reactions"] = max(cursor.rowcount, 0)
+
+        stale_transfers = conn.execute(
+            """
+            SELECT account_login, transfer_id
+            FROM file_transfer_sessions
+            WHERE status!='complete'
+              AND updated_at < DATETIME('now', ?)
+            """,
+            (f"-{FILE_TRANSFER_STALE_DAYS} days",),
+        ).fetchall()
+        for account_login, transfer_id in stale_transfers:
+            conn.execute(
+                """
+                DELETE FROM file_transfer_chunks
+                WHERE account_login=? AND transfer_id=?
+                """,
+                (account_login, transfer_id),
+            )
+            conn.execute(
+                """
+                DELETE FROM file_transfer_sessions
+                WHERE account_login=? AND transfer_id=?
+                """,
+                (account_login, transfer_id),
+            )
+            shutil.rmtree(
+                self._file_transfer_pending_path(account_login, transfer_id),
+                ignore_errors=True,
+            )
+        stats["expired_file_transfers"] = len(stale_transfers)
+
+        cursor = conn.execute(
+            """
+            DELETE FROM file_transfer_sessions
+            WHERE status='complete'
+              AND updated_at < DATETIME('now', '-30 days')
+            """
+        )
+        stats["expired_file_transfer_receipts"] = max(cursor.rowcount, 0)
 
         if connection is None:
             conn.commit()
@@ -1849,7 +2166,7 @@ class ServerStorageMixin:
             )
         else:
             return False, "unsupported_action"
-        self.db.commit()
+        self._commit_storage()
         return True, "ok"
 
     def get_account_node_ids(
@@ -2307,7 +2624,7 @@ class ServerStorageMixin:
                 1 if normalized_noise else 0,
             ),
         )
-        self.db.commit()
+        self._commit_storage()
         return True, "ok"
 
     def get_meshpro_preferences(self, login):
@@ -2944,6 +3261,759 @@ class ServerStorageMixin:
             )
         )
 
+    def _file_transfer_root(self):
+
+        root = DB_PATH.parent / f"{DB_PATH.stem}_file_storage"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _file_transfer_storage_key(self, account_login, transfer_id):
+
+        return hashlib.sha256(
+            f"{account_login}\0{transfer_id}".encode("utf-8")
+        ).hexdigest()
+
+    def _file_transfer_pending_path(self, account_login, transfer_id):
+
+        return (
+            self._file_transfer_root()
+            / "pending"
+            / self._file_transfer_storage_key(account_login, transfer_id)
+        )
+
+    def _atomic_write_bytes(self, destination, data):
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+
+    def _file_transfer_ranges(self, indexes):
+
+        ordered = sorted({int(index) for index in indexes if int(index) >= 0})
+        if not ordered:
+            return []
+        ranges = []
+        start = ordered[0]
+        end = start
+        for index in ordered[1:]:
+            if index == end + 1:
+                end = index
+                continue
+            ranges.append([start, end])
+            start = index
+            end = index
+        ranges.append([start, end])
+        return ranges
+
+    def _file_transfer_result(
+        self,
+        *,
+        ok,
+        transfer_id,
+        file_id,
+        chunk_index=None,
+        received_indexes=(),
+        complete=False,
+        newly_completed=False,
+        retryable=False,
+        reset=False,
+        reason="",
+        metadata=None,
+        storage_path="",
+        sha256="",
+        size_bytes=0,
+    ):
+
+        return {
+            "ok": bool(ok),
+            "transfer_id": transfer_id,
+            "file_id": file_id,
+            "chunk_index": chunk_index,
+            "received_ranges": self._file_transfer_ranges(received_indexes),
+            "complete": bool(complete),
+            "newly_completed": bool(newly_completed),
+            "retryable": bool(retryable),
+            "reset": bool(reset),
+            "reason": reason,
+            "metadata": metadata or {},
+            "storage_path": storage_path or "",
+            "sha256": sha256 or "",
+            "size_bytes": int(size_bytes or 0),
+        }
+
+    def save_file_transfer_chunk(self, packet, account_login):
+
+        account_login = str(account_login or "").strip().lower()
+        transfer_id = str(packet.get("transfer_id") or "").strip()
+        operation_id = str(packet.get("operation_id") or "").strip()
+        file_id = str(packet.get("file_id") or "").strip()
+        source_node = str(packet.get("source_node") or "").strip()
+        destination_node = str(packet.get("destination_node") or "").strip()
+        filename = str(packet.get("filename") or "").strip()
+        sha256 = str(packet.get("file_sha256") or "").strip().lower()
+
+        try:
+            chunk_index = int(packet.get("chunk_index"))
+            total_chunks = int(packet.get("total_chunks"))
+            chunk_size = int(packet.get("chunk_size_bytes"))
+            size_bytes = int(packet.get("file_size"))
+        except (TypeError, ValueError):
+            chunk_index = -1
+            total_chunks = 0
+            chunk_size = 0
+            size_bytes = 0
+
+        invalid_identity = (
+            not account_login
+            or not transfer_id
+            or len(transfer_id) > 160
+            or not file_id
+            or len(file_id) > 256
+            or not source_node
+            or not destination_node
+            or not filename
+        )
+        invalid_shape = (
+            total_chunks < 1
+            or total_chunks > FILE_TRANSFER_MAX_CHUNKS
+            or chunk_index < 0
+            or chunk_index >= total_chunks
+            or chunk_size < 1
+            or chunk_size > FILE_TRANSFER_MAX_CHUNK_BYTES
+            or size_bytes < 1
+            or size_bytes > FILE_TRANSFER_MAX_BYTES
+            or total_chunks != (size_bytes + chunk_size - 1) // chunk_size
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        )
+        if invalid_identity or invalid_shape:
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                reason="invalid_file_transfer_metadata",
+            )
+
+        encoded_data = packet.get("data")
+        if (
+            not isinstance(encoded_data, str)
+            or len(encoded_data) % 2 != 0
+            or len(encoded_data) > FILE_TRANSFER_MAX_CHUNK_BYTES * 2
+            or re.fullmatch(r"[0-9a-fA-F]+", encoded_data) is None
+        ):
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                reason="invalid_file_chunk",
+            )
+
+        try:
+            chunk_data = bytes.fromhex(encoded_data)
+        except ValueError:
+            chunk_data = b""
+
+        expected_chunk_size = min(
+            chunk_size,
+            size_bytes - (chunk_index * chunk_size),
+        )
+        if len(chunk_data) != expected_chunk_size:
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                retryable=True,
+                reason="invalid_file_chunk_size",
+            )
+
+        metadata = {
+            key: value
+            for key, value in packet.items()
+            if key not in {
+                "data",
+                "chunk_index",
+                "packet_id",
+                "protocol_version",
+            }
+        }
+        metadata["source_node"] = source_node
+        metadata["destination_node"] = destination_node
+        metadata["file_id"] = file_id
+        metadata["filename"] = filename
+        self.save_group_key_envelopes(packet)
+        metadata_json = json.dumps(
+            metadata,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        row = self.db.execute(
+            """
+            SELECT operation_id,
+                   source_node,
+                   destination_node,
+                   file_id,
+                   total_chunks,
+                   chunk_size,
+                   size_bytes,
+                   sha256,
+                   metadata_json,
+                   status,
+                   storage_path
+            FROM file_transfer_sessions
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (account_login, transfer_id),
+        ).fetchone()
+
+        if row:
+            consistent = (
+                row[0] == operation_id
+                and row[1] == source_node
+                and row[2] == destination_node
+                and row[3] == file_id
+                and int(row[4]) == total_chunks
+                and int(row[5]) == chunk_size
+                and int(row[6]) == size_bytes
+                and row[7] == sha256
+            )
+            if not consistent:
+                return self._file_transfer_result(
+                    ok=False,
+                    transfer_id=transfer_id,
+                    file_id=file_id,
+                    chunk_index=chunk_index,
+                    reason="file_transfer_metadata_mismatch",
+                )
+            if row[9] == "complete":
+                try:
+                    stored_metadata = json.loads(row[8] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    stored_metadata = metadata
+                return self._file_transfer_result(
+                    ok=True,
+                    transfer_id=transfer_id,
+                    file_id=file_id,
+                    chunk_index=chunk_index,
+                    received_indexes=range(total_chunks),
+                    complete=True,
+                    metadata=stored_metadata,
+                    storage_path=row[10],
+                    sha256=sha256,
+                    size_bytes=size_bytes,
+                )
+        else:
+            self.db.execute(
+                """
+                INSERT INTO file_transfer_sessions(
+                    account_login,
+                    transfer_id,
+                    operation_id,
+                    source_node,
+                    destination_node,
+                    file_id,
+                    total_chunks,
+                    chunk_size,
+                    size_bytes,
+                    sha256,
+                    metadata_json,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,'receiving',
+                       CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                """,
+                (
+                    account_login,
+                    transfer_id,
+                    operation_id,
+                    source_node,
+                    destination_node,
+                    file_id,
+                    total_chunks,
+                    chunk_size,
+                    size_bytes,
+                    sha256,
+                    metadata_json,
+                ),
+            )
+
+        pending_path = self._file_transfer_pending_path(
+            account_login,
+            transfer_id,
+        )
+        chunk_path = pending_path / f"{chunk_index:08d}.part"
+        chunk_sha256 = hashlib.sha256(chunk_data).hexdigest()
+        existing_chunk = self.db.execute(
+            """
+            SELECT size_bytes, sha256, chunk_path
+            FROM file_transfer_chunks
+            WHERE account_login=?
+              AND transfer_id=?
+              AND chunk_index=?
+            """,
+            (account_login, transfer_id, chunk_index),
+        ).fetchone()
+        if not (
+            existing_chunk
+            and int(existing_chunk[0]) == len(chunk_data)
+            and existing_chunk[1] == chunk_sha256
+            and os.path.isfile(existing_chunk[2])
+        ):
+            self._atomic_write_bytes(chunk_path, chunk_data)
+            self.db.execute(
+                """
+                INSERT INTO file_transfer_chunks(
+                    account_login,
+                    transfer_id,
+                    chunk_index,
+                    size_bytes,
+                    sha256,
+                    chunk_path,
+                    created_at
+                )
+                VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(account_login, transfer_id, chunk_index)
+                DO UPDATE SET
+                    size_bytes=excluded.size_bytes,
+                    sha256=excluded.sha256,
+                    chunk_path=excluded.chunk_path,
+                    created_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    account_login,
+                    transfer_id,
+                    chunk_index,
+                    len(chunk_data),
+                    chunk_sha256,
+                    str(chunk_path),
+                ),
+            )
+
+        self.db.execute(
+            """
+            UPDATE file_transfer_sessions
+            SET updated_at=CURRENT_TIMESTAMP
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (account_login, transfer_id),
+        )
+        self.db.commit()
+
+        chunk_rows = self.db.execute(
+            """
+            SELECT chunk_index, chunk_path
+            FROM file_transfer_chunks
+            WHERE account_login=? AND transfer_id=?
+            ORDER BY chunk_index
+            """,
+            (account_login, transfer_id),
+        ).fetchall()
+        received_indexes = [int(item[0]) for item in chunk_rows]
+        if len(received_indexes) < total_chunks:
+            return self._file_transfer_result(
+                ok=True,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                received_indexes=received_indexes,
+                metadata=metadata,
+                sha256=sha256,
+                size_bytes=size_bytes,
+            )
+
+        if received_indexes != list(range(total_chunks)):
+            return self._file_transfer_result(
+                ok=True,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                received_indexes=received_indexes,
+                retryable=True,
+                reason="file_transfer_has_gaps",
+                metadata=metadata,
+                sha256=sha256,
+                size_bytes=size_bytes,
+            )
+
+        completed_key = hashlib.sha256(
+            f"{file_id}\0{sha256}".encode("utf-8")
+        ).hexdigest()
+        completed_path = (
+            self._file_transfer_root()
+            / "completed"
+            / completed_key[:2]
+            / f"{completed_key}.bin"
+        )
+        completed_path.parent.mkdir(parents=True, exist_ok=True)
+        assembling_path = completed_path.with_suffix(".assembling")
+        digest = hashlib.sha256()
+        assembled_size = 0
+        missing_indexes = []
+        try:
+            with assembling_path.open("wb") as output:
+                for index, raw_path in chunk_rows:
+                    path = str(raw_path or "")
+                    if not os.path.isfile(path):
+                        missing_indexes.append(int(index))
+                        continue
+                    with open(path, "rb") as source:
+                        while True:
+                            block = source.read(1024 * 1024)
+                            if not block:
+                                break
+                            output.write(block)
+                            digest.update(block)
+                            assembled_size += len(block)
+                output.flush()
+                os.fsync(output.fileno())
+        except OSError:
+            try:
+                assembling_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                received_indexes=received_indexes,
+                retryable=True,
+                reason="file_transfer_storage_error",
+            )
+
+        if missing_indexes:
+            assembling_path.unlink(missing_ok=True)
+            self.db.executemany(
+                """
+                DELETE FROM file_transfer_chunks
+                WHERE account_login=?
+                  AND transfer_id=?
+                  AND chunk_index=?
+                """,
+                [
+                    (account_login, transfer_id, index)
+                    for index in missing_indexes
+                ],
+            )
+            self.db.commit()
+            received_indexes = [
+                index
+                for index in received_indexes
+                if index not in set(missing_indexes)
+            ]
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                received_indexes=received_indexes,
+                retryable=True,
+                reason="file_transfer_chunk_missing",
+            )
+
+        if assembled_size != size_bytes or digest.hexdigest() != sha256:
+            assembling_path.unlink(missing_ok=True)
+            self.db.execute(
+                """
+                DELETE FROM file_transfer_chunks
+                WHERE account_login=? AND transfer_id=?
+                """,
+                (account_login, transfer_id),
+            )
+            self.db.execute(
+                """
+                UPDATE file_transfer_sessions
+                SET updated_at=CURRENT_TIMESTAMP,
+                    status='receiving',
+                    storage_path=''
+                WHERE account_login=? AND transfer_id=?
+                """,
+                (account_login, transfer_id),
+            )
+            self.db.commit()
+            shutil.rmtree(pending_path, ignore_errors=True)
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                retryable=True,
+                reset=True,
+                reason="file_checksum_mismatch",
+            )
+
+        os.replace(assembling_path, completed_path)
+        sender_login = self.get_login_by_node(source_node)
+        receiver_login = self.get_login_by_node(destination_node)
+        self.db.execute(
+            """
+            INSERT OR IGNORE INTO server_files(
+                file_id,
+                sender_node,
+                sender_login,
+                sender_name,
+                receiver_node,
+                receiver_login,
+                group_id,
+                group_name,
+                is_channel,
+                comments_enabled,
+                filename,
+                caption,
+                reply_to_message_id,
+                reply_to_text,
+                is_channel_comment,
+                data,
+                group_key_id,
+                message_kind,
+                chat_kind,
+                chat_id,
+                message_effect,
+                storage_path,
+                sha256,
+                size_bytes,
+                created_at
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,
+                   STRFTIME('%Y-%m-%d %H:%M:%f','now'))
+            """,
+            (
+                file_id,
+                source_node,
+                sender_login,
+                metadata.get("sender") or source_node,
+                destination_node,
+                receiver_login,
+                metadata.get("group_id"),
+                metadata.get("group_name") or "",
+                1 if metadata.get("is_channel") is True else 0,
+                0 if metadata.get("comments_enabled") is False else 1,
+                filename,
+                metadata.get("caption") or "",
+                metadata.get("reply_to_message_id") or "",
+                metadata.get("reply_to_text") or "",
+                1 if metadata.get("is_channel_comment") is True else 0,
+                metadata.get("group_key_id"),
+                metadata.get("message_kind") or metadata.get("kind") or "file",
+                metadata.get("chat_kind") or "normal",
+                metadata.get("chat_id") or "",
+                metadata.get("message_effect") or "none",
+                str(completed_path),
+                sha256,
+                size_bytes,
+            ),
+        )
+        existing_file = self.db.execute(
+            """
+            SELECT COALESCE(sha256, ''), COALESCE(storage_path, '')
+            FROM server_files
+            WHERE file_id=?
+            """,
+            (file_id,),
+        ).fetchone()
+        if existing_file and existing_file[0] not in {"", sha256}:
+            self.db.rollback()
+            completed_path.unlink(missing_ok=True)
+            return self._file_transfer_result(
+                ok=False,
+                transfer_id=transfer_id,
+                file_id=file_id,
+                chunk_index=chunk_index,
+                reason="file_id_conflict",
+            )
+        if existing_file and not existing_file[0]:
+            self.db.execute(
+                """
+                UPDATE server_files
+                SET storage_path=?, sha256=?, size_bytes=?, data=''
+                WHERE file_id=?
+                """,
+                (str(completed_path), sha256, size_bytes, file_id),
+            )
+
+        self.db.execute(
+            """
+            UPDATE file_transfer_sessions
+            SET status='complete',
+                storage_path=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (str(completed_path), account_login, transfer_id),
+        )
+        self.db.execute(
+            """
+            DELETE FROM file_transfer_chunks
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (account_login, transfer_id),
+        )
+        self.db.commit()
+        shutil.rmtree(pending_path, ignore_errors=True)
+
+        return self._file_transfer_result(
+            ok=True,
+            transfer_id=transfer_id,
+            file_id=file_id,
+            chunk_index=chunk_index,
+            received_indexes=range(total_chunks),
+            complete=True,
+            newly_completed=True,
+            metadata=metadata,
+            storage_path=str(completed_path),
+            sha256=sha256,
+            size_bytes=size_bytes,
+        )
+
+    def cancel_file_transfer(self, account_login, transfer_id):
+
+        account_login = str(account_login or "").strip().lower()
+        transfer_id = str(transfer_id or "").strip()
+        if not account_login or not transfer_id:
+            return False
+        row = self.db.execute(
+            """
+            SELECT status
+            FROM file_transfer_sessions
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (account_login, transfer_id),
+        ).fetchone()
+        if not row:
+            return False
+        if row[0] == "complete":
+            return True
+        self.db.execute(
+            """
+            DELETE FROM file_transfer_chunks
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (account_login, transfer_id),
+        )
+        self.db.execute(
+            """
+            DELETE FROM file_transfer_sessions
+            WHERE account_login=? AND transfer_id=?
+            """,
+            (account_login, transfer_id),
+        )
+        self.db.commit()
+        shutil.rmtree(
+            self._file_transfer_pending_path(account_login, transfer_id),
+            ignore_errors=True,
+        )
+        return True
+
+    def iter_file_transfer_delivery_packets(
+        self,
+        transfer_result,
+        chunk_size=64 * 1024,
+    ):
+
+        metadata = dict(transfer_result.get("metadata") or {})
+        storage_path = str(transfer_result.get("storage_path") or "")
+        size_bytes = int(transfer_result.get("size_bytes") or 0)
+        if not storage_path or not os.path.isfile(storage_path) or size_bytes < 1:
+            return
+        total_chunks = max(1, (size_bytes + chunk_size - 1) // chunk_size)
+        with open(storage_path, "rb") as source:
+            for chunk_index in range(total_chunks):
+                data = source.read(chunk_size)
+                if not data:
+                    break
+                yield {
+                    **metadata,
+                    "type": "file_chunk",
+                    "packet_id": (
+                        f"{transfer_result.get('transfer_id')}:"
+                        f"delivery:{chunk_index}"
+                    ),
+                    "file_transfer_v2": True,
+                    "transfer_id": transfer_result.get("transfer_id"),
+                    "file_sha256": transfer_result.get("sha256") or "",
+                    "file_size": size_bytes,
+                    "chunk_size_bytes": chunk_size,
+                    "chunk_index": chunk_index,
+                    "total_chunks": total_chunks,
+                    "data": data.hex(),
+                }
+
+    def _delete_server_files(self, where_clause, parameters):
+
+        rows = self.db.execute(
+            f"""
+            SELECT file_id, COALESCE(storage_path, '')
+            FROM server_files
+            WHERE {where_clause}
+            """,
+            parameters,
+        ).fetchall()
+        if not rows:
+            return 0
+        file_ids = [row[0] for row in rows if row[0]]
+        placeholders = ",".join("?" for _ in file_ids)
+        transfer_rows = []
+        if file_ids:
+            transfer_rows = self.db.execute(
+                f"""
+                SELECT account_login, transfer_id
+                FROM file_transfer_sessions
+                WHERE file_id IN ({placeholders})
+                """,
+                file_ids,
+            ).fetchall()
+            self.db.execute(
+                f"""
+                DELETE FROM file_transfer_chunks
+                WHERE (account_login, transfer_id) IN (
+                    SELECT account_login, transfer_id
+                    FROM file_transfer_sessions
+                    WHERE file_id IN ({placeholders})
+                )
+                """,
+                file_ids,
+            )
+            self.db.execute(
+                f"""
+                DELETE FROM file_transfer_sessions
+                WHERE file_id IN ({placeholders})
+                """,
+                file_ids,
+            )
+        cursor = self.db.execute(
+            f"DELETE FROM server_files WHERE {where_clause}",
+            parameters,
+        )
+        for account_login, transfer_id in transfer_rows:
+            shutil.rmtree(
+                self._file_transfer_pending_path(account_login, transfer_id),
+                ignore_errors=True,
+            )
+        for _, storage_path in rows:
+            if not storage_path:
+                continue
+            still_used = self.db.execute(
+                "SELECT 1 FROM server_files WHERE storage_path=? LIMIT 1",
+                (storage_path,),
+            ).fetchone()
+            if still_used:
+                continue
+            try:
+                os.remove(storage_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                print("File payload cleanup failed:", storage_path, error)
+        return max(cursor.rowcount, 0)
+
     def save_history_packet(
         self,
         packet
@@ -3003,7 +4073,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "profile_update":
 
@@ -3044,7 +4114,7 @@ class ServerStorageMixin:
             library = packet.get("sticker_library")
 
             if not login or not isinstance(library, dict):
-                return
+                return False
 
             self.db.execute(
                 """
@@ -3064,7 +4134,8 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
+            return True
 
         elif packet_type == "story_update":
 
@@ -3169,7 +4240,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "story_reaction":
 
@@ -3251,7 +4322,7 @@ class ServerStorageMixin:
                     )
                 )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "story_view":
 
@@ -3281,7 +4352,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "story_delete":
 
@@ -3325,7 +4396,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "message_edit":
 
@@ -3386,7 +4457,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "message_delete":
 
@@ -3430,20 +4501,15 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.execute(
+            self._delete_server_files(
                 """
-                DELETE FROM server_files
-                WHERE file_id=?
+                file_id=?
                 AND (
                     sender_node=?
                     OR (sender_login!='' AND sender_login=?)
                 )
                 """,
-                (
-                    message_id,
-                    sender_node,
-                    sender_login
-                )
+                (message_id, sender_node, sender_login),
             )
 
             self.db.execute(
@@ -3456,7 +4522,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "chat_delete":
 
@@ -3476,6 +4542,15 @@ class ServerStorageMixin:
 
                 owner_login = self.get_login_by_node(owner_node) or ""
                 peer_login = self.get_login_by_node(peer_node) or ""
+
+                if self._same_account_nodes(owner_node, peer_node):
+                    continue
+                if (
+                    owner_login
+                    and peer_login
+                    and owner_login.strip().lower() == peer_login.strip().lower()
+                ):
+                    continue
 
                 self.db.execute(
                     """
@@ -3503,7 +4578,7 @@ class ServerStorageMixin:
                     )
                 )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type in (
             "message_pin",
@@ -3578,7 +4653,7 @@ class ServerStorageMixin:
                     )
                 )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "group_message":
 
@@ -3660,7 +4735,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "group_update":
 
@@ -3760,14 +4835,9 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.execute(
-                """
-                DELETE FROM server_files
-                WHERE group_id=?
-                """,
-                (
-                    group_id,
-                )
+            self._delete_server_files(
+                "group_id=?",
+                (group_id,),
             )
 
             self.db.execute(
@@ -3820,7 +4890,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "group_message_edit":
 
@@ -3881,7 +4951,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type == "group_message_delete":
 
@@ -3924,20 +4994,15 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.execute(
+            self._delete_server_files(
                 """
-                DELETE FROM server_files
-                WHERE file_id=?
+                file_id=?
                 AND (
                     sender_node=?
                     OR (sender_login!='' AND sender_login=?)
                 )
                 """,
-                (
-                    message_id,
-                    sender_node,
-                    sender_login
-                )
+                (message_id, sender_node, sender_login),
             )
 
             self.db.execute(
@@ -3950,7 +5015,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
         elif packet_type in ("message_reaction", "group_reaction"):
 
@@ -3971,6 +5036,17 @@ class ServerStorageMixin:
             if not message_id or not reactor_node or not reaction:
                 return
 
+            reactor_login = (
+                self.get_login_by_node(reactor_node) or ""
+            ).strip().lower()
+            reactor_identity = (
+                f"login:{reactor_login}"
+                if reactor_login
+                else f"node:{reactor_node}"
+            )
+            packet["reactor_login"] = reactor_login
+            packet["reactor_identity"] = reactor_identity
+
             cursor = self.db.execute(
                 """
                 INSERT OR IGNORE INTO server_reactions(
@@ -3978,21 +5054,23 @@ class ServerStorageMixin:
                     message_id,
                     reactor_node,
                     reactor_login,
+                    reactor_identity,
                     reaction
                 )
-                VALUES(?,?,?,?,?)
+                VALUES(?,?,?,?,?,?)
                 """,
                 (
                     scope,
                     message_id,
                     reactor_node,
-                    self.get_login_by_node(reactor_node),
+                    reactor_login,
+                    reactor_identity,
                     reaction
                 )
             )
 
-            self.db.commit()
-            return cursor.rowcount > 0
+            self._commit_storage()
+            return True if cursor.rowcount > 0 else "duplicate"
 
         elif packet_type == "file_chunk":
 
@@ -4034,7 +5112,7 @@ class ServerStorageMixin:
             ]
 
             if len(info["chunks"]) != info["total_chunks"]:
-                return
+                return "pending"
 
             full_data = "".join(
                 info["chunks"][i]
@@ -4047,7 +5125,7 @@ class ServerStorageMixin:
             sender_node = first_packet.get("source_node")
             receiver_node = first_packet.get("destination_node")
 
-            self.db.execute(
+            insert_cursor = self.db.execute(
                 """
                 INSERT OR IGNORE INTO server_files(
                     file_id,
@@ -4103,11 +5181,10 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.commit()
+            self._commit_storage()
 
-            del self.file_chunks[
-                file_id
-            ]
+            del self.file_chunks[file_id]
+            return True if insert_cursor.rowcount > 0 else "duplicate"
 
     def save_group_key_envelopes(
         self,
@@ -4164,7 +5241,64 @@ class ServerStorageMixin:
                 )
             )
 
-        self.db.commit()
+        self._commit_storage()
+
+    def mutation_was_processed(self, account_login, outbox_id):
+
+        normalized_login = str(account_login or "").strip().lower()
+        normalized_outbox_id = str(outbox_id or "").strip()
+        if not normalized_login or not normalized_outbox_id:
+            return False
+
+        row = self.db.execute(
+            """
+            SELECT 1
+            FROM processed_mutations
+            WHERE account_login=? AND outbox_id=?
+            LIMIT 1
+            """,
+            (
+                normalized_login,
+                normalized_outbox_id,
+            )
+        ).fetchone()
+        return row is not None
+
+    def mark_mutation_processed(
+        self,
+        account_login,
+        outbox_id,
+        operation_id="",
+        packet_type="",
+        packet_id=""
+    ):
+
+        normalized_login = str(account_login or "").strip().lower()
+        normalized_outbox_id = str(outbox_id or "").strip()
+        if not normalized_login or not normalized_outbox_id:
+            return False
+
+        cursor = self.db.execute(
+            """
+            INSERT OR IGNORE INTO processed_mutations(
+                account_login,
+                outbox_id,
+                operation_id,
+                packet_type,
+                packet_id
+            )
+            VALUES(?,?,?,?,?)
+            """,
+            (
+                normalized_login,
+                normalized_outbox_id,
+                str(operation_id or "").strip(),
+                str(packet_type or "").strip(),
+                str(packet_id or "").strip(),
+            )
+        )
+        self._commit_storage()
+        return cursor.rowcount > 0
 
     def save_offline_packet(
         self,
@@ -4220,7 +5354,8 @@ class ServerStorageMixin:
     async def flush_offline_packets(
         self,
         node_id,
-        websocket
+        websocket,
+        require_ack=False
     ):
 
         cursor = self.db.cursor()
@@ -4245,19 +5380,56 @@ class ServerStorageMixin:
 
         for packet_id, packet_json in rows:
 
-            await websocket.send(
-                packet_json
-            )
+            if require_ack:
+                try:
+                    packet = json.loads(packet_json)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    packet = None
+
+                if not isinstance(packet, dict):
+                    self.db.execute(
+                        "DELETE FROM offline_packets WHERE id=?",
+                        (packet_id,)
+                    )
+                    continue
+
+                await websocket.send(
+                    json.dumps(
+                        {
+                            **packet,
+                            "_offline_queue_id": packet_id
+                        },
+                        ensure_ascii=False
+                    )
+                )
+                continue
+
+            await websocket.send(packet_json)
 
             self.db.execute(
-                """
-                DELETE FROM offline_packets
-
-                WHERE id=?
-                """,
-                (
-                    packet_id,
-                )
+                "DELETE FROM offline_packets WHERE id=?",
+                (packet_id,)
             )
 
         self.db.commit()
+
+    def acknowledge_offline_packet(self, node_id, queue_id):
+
+        try:
+            normalized_queue_id = int(queue_id)
+        except (TypeError, ValueError):
+            return False
+
+        cursor = self.db.execute(
+            """
+            DELETE FROM offline_packets
+            WHERE id=?
+              AND destination_node=?
+            """,
+            (
+                normalized_queue_id,
+                node_id
+            )
+        )
+        self._commit_storage()
+        return cursor.rowcount > 0

@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -9,6 +8,7 @@ import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../models/session.dart';
+import 'app_database_path.dart';
 
 class ChatCacheStore {
   static const _maxMessagesPerThread = 500;
@@ -94,13 +94,53 @@ class ChatCacheStore {
     if (session == null) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_key(session));
+    await prefs.remove(_syncKey(session));
     if (kIsWeb) return;
     final db = await _db();
-    await db.delete(
-      'chat_threads',
+    await db.transaction((transaction) async {
+      await transaction.delete(
+        'chat_threads',
+        where: 'session_key=?',
+        whereArgs: [_key(session)],
+      );
+      await transaction.delete(
+        'chat_sync_state',
+        where: 'session_key=?',
+        whereArgs: [_key(session)],
+      );
+    });
+  }
+
+  Future<int?> loadSyncCursor(Session session) async {
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getInt(_syncKey(session));
+    }
+    final db = await _db();
+    final rows = await db.query(
+      'chat_sync_state',
+      columns: ['cursor'],
       where: 'session_key=?',
       whereArgs: [_key(session)],
+      limit: 1,
     );
+    if (rows.isEmpty) return null;
+    return int.tryParse(rows.first['cursor']?.toString() ?? '');
+  }
+
+  Future<void> saveSyncCursor(Session session, int cursor) async {
+    if (cursor < 0) return;
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_syncKey(session), cursor);
+      return;
+    }
+    final db = await _db();
+    await db.insert('chat_sync_state', {
+      'session_key': _key(session),
+      'cursor': cursor,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> deleteThread(Session? session, ChatThread thread) async {
@@ -202,24 +242,51 @@ class ChatCacheStore {
   Future<Database> _db() async {
     final existing = _database;
     if (existing != null) return existing;
-    final path = p.join(await getDatabasesPath(), _dbName);
+    final path = await appDatabasePath(_dbName);
     _database = await openDatabase(
       path,
-      version: 1,
+      version: 3,
       onCreate: (db, _) async {
-        await db.execute('''
-          CREATE TABLE chat_threads(
-            session_key TEXT NOT NULL,
-            thread_key TEXT NOT NULL,
-            is_group INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL DEFAULT 0,
-            payload TEXT NOT NULL,
-            PRIMARY KEY(session_key, thread_key)
-          )
-          ''');
+        await _createTables(db);
+      },
+      onUpgrade: (db, oldVersion, _) async {
+        if (oldVersion < 2) {
+          await _createSyncStateTable(db);
+        }
+        if (oldVersion < 3) {
+          await _createSyncStateTable(db);
+          await db.delete('chat_sync_state');
+        }
+      },
+      onOpen: (db) async {
+        await _createSyncStateTable(db);
       },
     );
     return _database!;
+  }
+
+  Future<void> _createTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS chat_threads(
+        session_key TEXT NOT NULL,
+        thread_key TEXT NOT NULL,
+        is_group INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        payload TEXT NOT NULL,
+        PRIMARY KEY(session_key, thread_key)
+      )
+      ''');
+    await _createSyncStateTable(db);
+  }
+
+  Future<void> _createSyncStateTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS chat_sync_state(
+        session_key TEXT PRIMARY KEY,
+        cursor INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+      ''');
   }
 
   Future<void> _migrateLegacy(Session session, Database db) async {
@@ -276,7 +343,7 @@ class ChatCacheStore {
   ) async {
     final prefs = await SharedPreferences.getInstance();
     final payload = {
-      'version': 2,
+      'version': 3,
       'threads': threads
           .map((thread) => _trimThread(thread, forWeb: true).toJson())
           .toList(),
@@ -287,7 +354,7 @@ class ChatCacheStore {
     } catch (_) {
       await prefs.remove(key);
       final minimalPayload = {
-        'version': 2,
+        'version': 3,
         'threads': threads
             .map((thread) => _trimThread(thread, forWeb: true, minimal: true))
             .toList()
@@ -414,6 +481,8 @@ class ChatCacheStore {
   String _key(Session session) {
     return 'chat_cache_${session.login}_${session.nodeId}';
   }
+
+  String _syncKey(Session session) => '${_key(session)}_sync_cursor_v3';
 }
 
 class CacheStats {

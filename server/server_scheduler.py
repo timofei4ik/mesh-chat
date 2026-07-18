@@ -140,6 +140,18 @@ class ServerSchedulerMixin:
             "next_run_at": due_at.isoformat(),
             "run_count": 0,
         }
+        invalidate_snapshot = getattr(
+            self,
+            "invalidate_sync_v2_snapshot",
+            None,
+        )
+        if callable(invalidate_snapshot):
+            invalidate_snapshot(
+                login,
+                "scheduled_message_created",
+                f"scheduled-create:{schedule_id}",
+                {"schedule_id": schedule_id},
+            )
         return True, "ok", item
 
     def list_scheduled_messages(self, login):
@@ -187,7 +199,20 @@ class ServerSchedulerMixin:
             (str(schedule_id or ""), login)
         )
         self.db.commit()
-        return cursor.rowcount > 0
+        changed = cursor.rowcount > 0
+        invalidate_snapshot = getattr(
+            self,
+            "invalidate_sync_v2_snapshot",
+            None,
+        )
+        if changed and callable(invalidate_snapshot):
+            invalidate_snapshot(
+                login,
+                "scheduled_message_cancelled",
+                f"scheduled-cancel:{schedule_id}",
+                {"schedule_id": str(schedule_id or "")},
+            )
+        return changed
 
     def _due_scheduled_rows(self):
         return self.db.execute(
@@ -209,6 +234,17 @@ class ServerSchedulerMixin:
 
     async def dispatch_due_scheduled_messages(self):
         dispatched = 0
+        sync_accounts_for_packet = getattr(
+            self,
+            "sync_v2_accounts_for_packet",
+            None,
+        )
+        persist_history_mutation = getattr(
+            self,
+            "persist_history_mutation",
+            None,
+        )
+        record_sync_event = getattr(self, "record_sync_v2_event", None)
         for row in self._due_scheduled_rows():
             schedule_id, login, source_node, payloads_json, repeat_interval, due_at, chat_key = row
             try:
@@ -235,7 +271,21 @@ class ServerSchedulerMixin:
                 payload["scheduled_message_id"] = schedule_id
                 if payload.get("type") == "group_message":
                     payload["group_message_id"] = message_id
-                saved = self.save_history_packet(payload)
+                sync_event_accounts = (
+                    sync_accounts_for_packet(payload)
+                    if callable(sync_accounts_for_packet)
+                    else ()
+                )
+                if callable(persist_history_mutation):
+                    mutation_result = persist_history_mutation(
+                        payload,
+                        sync_event_accounts,
+                    )
+                    saved = mutation_result["saved"]
+                else:
+                    saved = self.save_history_packet(payload)
+                    if saved is not False and callable(record_sync_event):
+                        record_sync_event(payload, sync_event_accounts)
                 if saved is False:
                     continue
                 await self.route_packet(payload)
@@ -270,6 +320,18 @@ class ServerSchedulerMixin:
                     (next_run.isoformat(), schedule_id)
                 )
             self.db.commit()
+            invalidate_snapshot = getattr(
+                self,
+                "invalidate_sync_v2_snapshot",
+                None,
+            )
+            if callable(invalidate_snapshot):
+                invalidate_snapshot(
+                    login,
+                    "scheduled_message_dispatched",
+                    f"scheduled-dispatch:{schedule_id}:{message_id}",
+                    {"schedule_id": schedule_id},
+                )
             dispatched += 1
             await self._notify_schedule_owner(
                 login,

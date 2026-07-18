@@ -8,6 +8,13 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
+      - name: Verify Xcode 26 for native Liquid Glass
+        script: |
+          XCODE_MAJOR="$(xcodebuild -version | awk 'NR == 1 { split($2, version, "."); print version[1] }')"
+          if [ "$XCODE_MAJOR" -lt 26 ]; then
+            echo "MeshChat requires Xcode 26+ to compile native UIGlassEffect support."
+            exit 1
+          fi
       - name: Get Flutter packages
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
@@ -51,6 +58,13 @@ workflows:
         distribution_type: ad_hoc
         bundle_identifier: com.meshchat.mobile
     scripts:
+      - name: Verify Xcode 26 for native Liquid Glass
+        script: |
+          XCODE_MAJOR="$(xcodebuild -version | awk 'NR == 1 { split($2, version, "."); print version[1] }')"
+          if [ "$XCODE_MAJOR" -lt 26 ]; then
+            echo "MeshChat requires Xcode 26+ to compile native UIGlassEffect support."
+            exit 1
+          fi
       - name: Set up code signing
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
@@ -67,7 +81,6 @@ workflows:
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
           flutter build ipa --release \
-            --build-name=1.0.9 \
             --build-number=$PROJECT_BUILD_NUMBER \
             --export-options-plist=/Users/builder/export_options.plist
     artifacts:

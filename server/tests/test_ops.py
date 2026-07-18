@@ -39,6 +39,42 @@ class ServerOperationsTests(unittest.TestCase):
             VALUES('backup-user', 'salt', 'hash', 'Backup User')
             """
         )
+        self.relay.save_group_members(
+            "backup-group",
+            "Backup group",
+            ["backup-owner-device", "backup-admin-device"],
+            owner_node="backup-owner-device",
+            admins=["backup-admin-device"],
+        )
+        event_packet = {
+            "type": "message_delete",
+            "packet_id": "backup-delete-packet",
+            "operation_id": "message_delete:backup-message",
+            "message_id": "backup-message",
+            "source_node": "backup-owner-device",
+            "destination_node": "backup-admin-device",
+        }
+        cursors = self.relay.record_sync_v2_event(
+            event_packet,
+            ["backup-user"],
+        )
+        cursor = cursors["backup-user"]
+        self.assertTrue(
+            self.relay.acknowledge_sync_v2_cursor(
+                "backup-user",
+                "backup-owner-device",
+                cursor,
+            )
+        )
+        self.assertTrue(
+            self.relay.mark_mutation_processed(
+                "backup-user",
+                "message_delete:backup-message|backup-admin-device|",
+                "message_delete:backup-message",
+                "message_delete",
+                "backup-message",
+            )
+        )
         self.relay.db.commit()
 
         start = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -72,6 +108,54 @@ class ServerOperationsTests(unittest.TestCase):
             self.assertEqual(
                 "ok",
                 connection.execute("PRAGMA integrity_check").fetchone()[0],
+            )
+            self.assertEqual(
+                (
+                    "backup-owner-device",
+                    '["backup-admin-device"]',
+                ),
+                connection.execute(
+                    """
+                    SELECT owner_node, admins_json
+                    FROM server_groups
+                    WHERE group_id='backup-group'
+                    """
+                ).fetchone(),
+            )
+            self.assertEqual(
+                (
+                    "message_delete:backup-message",
+                    "message_delete",
+                ),
+                connection.execute(
+                    """
+                    SELECT operation_id, packet_type
+                    FROM sync_events
+                    WHERE account_login='backup-user'
+                    """
+                ).fetchone(),
+            )
+            self.assertEqual(
+                cursor,
+                connection.execute(
+                    """
+                    SELECT cursor
+                    FROM sync_cursors
+                    WHERE account_login='backup-user'
+                      AND node_id='backup-owner-device'
+                    """
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                1,
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM processed_mutations
+                    WHERE account_login='backup-user'
+                      AND operation_id='message_delete:backup-message'
+                    """
+                ).fetchone()[0],
             )
         finally:
             connection.close()

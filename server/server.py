@@ -41,6 +41,27 @@ WEBSOCKET_MAX_SIZE = 16 * 1024 * 1024
 WEBSOCKET_PING_INTERVAL_SECONDS = 30
 WEBSOCKET_PING_TIMEOUT_SECONDS = 120
 SUPPORTED_SERVICES = frozenset({"meshprivacy"})
+ACCOUNT_LIVE_FANOUT_PACKET_TYPES = frozenset(
+    {
+        "chat_message",
+        "message_edit",
+        "message_delete",
+        "chat_delete",
+        "message_pin",
+        "message_reaction",
+        "group_message",
+        "group_update",
+        "group_member_leave",
+        "group_delete",
+        "group_message_edit",
+        "group_message_delete",
+        "group_pin",
+        "group_reaction",
+        "story_update",
+        "story_reaction",
+        "story_delete",
+    }
+)
 
 
 def _version_tuple(value):
@@ -64,6 +85,8 @@ try:
         SERVER_TOKEN,
         REQUIRE_LOGIN,
         MESHPRIVACY_MIN_APP_VERSION,
+        SYNC_V2_DELTA_ENABLED,
+        SYNC_V2_DELTA_TEST_ACCOUNTS,
     )
     from server.server_storage import ServerStorageMixin
     from server.server_auth import ServerAuthMixin
@@ -83,6 +106,8 @@ except ModuleNotFoundError:
         SERVER_TOKEN,
         REQUIRE_LOGIN,
         MESHPRIVACY_MIN_APP_VERSION,
+        SYNC_V2_DELTA_ENABLED,
+        SYNC_V2_DELTA_TEST_ACCOUNTS,
     )
     from server_storage import ServerStorageMixin
     from server_auth import ServerAuthMixin
@@ -110,6 +135,16 @@ class MeshRelayServer(
     ServerSubscriptionMixin
 ):
 
+    def sync_v2_delta_enabled_for(self, login):
+        normalized_login = str(login or "").strip().lower()
+        return bool(
+            SYNC_V2_DELTA_ENABLED
+            or (
+                normalized_login
+                and normalized_login in SYNC_V2_DELTA_TEST_ACCOUNTS
+            )
+        )
+
     def __init__(self):
 
         self.clients = {}
@@ -118,6 +153,7 @@ class MeshRelayServer(
         self.service_clients = {}
         self.service_logins = {}
         self.client_services = {}
+        self.client_capabilities = {}
         self.file_chunks = {}
         self.db = self.open_db()
 
@@ -412,6 +448,29 @@ class MeshRelayServer(
                         node_id
                     ] = username
 
+                    delta_enabled = self.sync_v2_delta_enabled_for(login)
+                    self.client_capabilities[node_id] = {
+                        "sync_v2": bool(packet.get("supports_sync_v2", False)),
+                        "sync_v2_delta": bool(
+                            packet.get("supports_sync_v2_delta", False)
+                        ) and delta_enabled,
+                        "sticker_library_chunks": bool(
+                            packet.get("supports_sticker_library_chunks", False)
+                        ),
+                        "offline_packet_ack": bool(
+                            packet.get("supports_offline_packet_ack", False)
+                        ),
+                        "mutation_ack": bool(
+                            packet.get("supports_mutation_ack", False)
+                        ),
+                        "file_transfer_v2": bool(
+                            packet.get("supports_file_transfer_v2", False)
+                        ),
+                        "account_live_fanout": bool(
+                            packet.get("supports_account_live_fanout", False)
+                        ),
+                    }
+
                     if login:
 
                         normalized_login = login.strip().lower()
@@ -432,6 +491,14 @@ class MeshRelayServer(
                     welcome = {
                         "type": "server_welcome",
                         "web_push_vapid_public_key": self.web_push_public_key(),
+                        "capabilities": {
+                            "sync_v2": True,
+                            "sync_v2_delta": delta_enabled,
+                            "offline_packet_ack": True,
+                            "mutation_ack": True,
+                            "file_transfer_v2": True,
+                            "account_live_fanout": True,
+                        },
                         **version_payload()
                     }
 
@@ -460,13 +527,23 @@ class MeshRelayServer(
                                     "supports_sticker_library_chunks",
                                     False
                                 )
-                            )
+                            ),
+                            bool(packet.get("supports_sync_v2", False)),
+                            bool(packet.get("supports_sync_v2_delta", False))
+                            and delta_enabled,
+                            packet.get("sync_cursor", 0),
                         )
 
                     await self.send_user_list()
                     await self.flush_offline_packets(
                         node_id,
-                        websocket
+                        websocket,
+                        bool(
+                            packet.get(
+                                "supports_offline_packet_ack",
+                                False
+                            )
+                        )
                     )
 
                     continue
@@ -529,6 +606,129 @@ class MeshRelayServer(
                         )
                     )
 
+                    continue
+
+                if packet.get("type") == "offline_packet_ack":
+
+                    self.acknowledge_offline_packet(
+                        node_id,
+                        packet.get("queue_id")
+                    )
+                    continue
+
+                if packet.get("type") == "sync_v2_ack":
+
+                    login = (
+                        self.client_logins.get(node_id)
+                        or self.get_login_by_node(node_id)
+                        or ""
+                    )
+                    self.acknowledge_sync_v2_cursor(
+                        login,
+                        node_id,
+                        packet.get("cursor")
+                    )
+                    continue
+
+                if packet.get("type") == "sync_v2_snapshot_request":
+
+                    login = (
+                        self.client_logins.get(node_id)
+                        or self.get_login_by_node(node_id)
+                        or ""
+                    )
+                    capabilities = self.client_capabilities.get(node_id, {})
+                    if login:
+                        await self.send_account_sync(
+                            websocket,
+                            login,
+                            node_id,
+                            capabilities.get("sticker_library_chunks") is True,
+                            capabilities.get("sync_v2") is True,
+                            False,
+                            0,
+                        )
+                    continue
+
+                file_transfer_v2 = (
+                    self.client_capabilities.get(node_id, {}).get(
+                        "file_transfer_v2"
+                    ) is True
+                )
+                if (
+                    file_transfer_v2
+                    and packet.get("type") == "file_transfer_cancel"
+                ):
+                    account_login = (
+                        self.client_logins.get(node_id)
+                        or self.get_login_by_node(node_id)
+                        or f"@node:{node_id}"
+                    )
+                    cancelled = self.cancel_file_transfer(
+                        account_login,
+                        packet.get("transfer_id"),
+                    )
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "file_chunk_ack",
+                                "ok": True,
+                                "cancelled": cancelled,
+                                "transfer_id": packet.get("transfer_id"),
+                                "file_id": packet.get("file_id"),
+                                "operation_id": packet.get("operation_id"),
+                                "received_ranges": [],
+                                "complete": False,
+                                **version_payload(),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    continue
+
+                if (
+                    file_transfer_v2
+                    and packet.get("type") == "file_chunk"
+                    and packet.get("file_transfer_v2") is True
+                ):
+                    packet["source_node"] = node_id
+                    account_login = (
+                        self.client_logins.get(node_id)
+                        or self.get_login_by_node(node_id)
+                        or f"@node:{node_id}"
+                    )
+                    transfer_result = self.save_file_transfer_chunk(
+                        packet,
+                        account_login,
+                    )
+                    await self.send_file_transfer_ack(
+                        websocket,
+                        packet,
+                        transfer_result,
+                    )
+                    if transfer_result.get("newly_completed") is True:
+                        await self.deliver_completed_file_transfer(
+                            transfer_result
+                        )
+                    continue
+
+                mutation_context = self.mutation_ack_context(
+                    node_id,
+                    packet
+                )
+                if (
+                    mutation_context
+                    and self.mutation_was_processed(
+                        mutation_context["account_login"],
+                        mutation_context["outbox_id"]
+                    )
+                ):
+                    await self.send_mutation_ack(
+                        websocket,
+                        packet,
+                        mutation_context,
+                        duplicate=True
+                    )
                     continue
 
                 if packet.get("type") == "meshpro_catalog_request":
@@ -985,6 +1185,15 @@ class MeshRelayServer(
                         node_id
                     )
 
+                    if mutation_context:
+                        await self.send_mutation_ack(
+                            websocket,
+                            packet,
+                            mutation_context,
+                            ok=False,
+                            reason="unauthorized_group_management"
+                        )
+
                     continue
 
                 if packet.get("type") == "active_device_action_request":
@@ -1070,6 +1279,14 @@ class MeshRelayServer(
                     preferences = self.get_meshpro_preferences(
                         preference_login
                     )
+                    if ok:
+                        self.invalidate_sync_v2_snapshot(
+                            preference_login,
+                            "meshpro_preferences_changed",
+                            packet.get("operation_id")
+                            or packet.get("request_id")
+                            or str(uuid.uuid4()),
+                        )
                     await websocket.send(
                         json.dumps(
                             {
@@ -1139,6 +1356,15 @@ class MeshRelayServer(
                         packet.get("bubble_style"),
                         packet.get("animated_background") is True
                     )
+                    if ok:
+                        self.invalidate_sync_v2_snapshot(
+                            preference_login,
+                            "chat_preferences_changed",
+                            packet.get("operation_id")
+                            or packet.get("request_id")
+                            or str(uuid.uuid4()),
+                            {"chat_key": packet.get("chat_key")},
+                        )
                     await websocket.send(
                         json.dumps(
                             {
@@ -1221,12 +1447,70 @@ class MeshRelayServer(
                     else []
                 )
 
-                saved = self.save_history_packet(
-                    packet
+                source_login = str(
+                    self.client_logins.get(node_id)
+                    or self.get_login_by_node(node_id)
+                    or ""
+                ).strip().lower()
+                destination_login = str(
+                    self.get_login_by_node(packet.get("destination_node"))
+                    or ""
+                ).strip().lower()
+                if source_login:
+                    packet["sender_login"] = source_login
+                    if packet.get("type") in {
+                        "message_reaction",
+                        "group_reaction",
+                        "story_reaction",
+                    }:
+                        packet["reactor_login"] = source_login
+                        packet["reactor_identity"] = f"login:{source_login}"
+                if destination_login:
+                    packet["receiver_login"] = destination_login
+
+                sync_event_accounts = self.sync_v2_accounts_for_packet(
+                    packet,
+                    group_delete_targets
                 )
 
-                if saved is False:
+                mutation_result = self.persist_history_mutation(
+                    packet,
+                    sync_event_accounts,
+                    mutation_context,
+                )
+                saved = mutation_result["saved"]
+
+                if saved == "duplicate":
+                    if mutation_context:
+                        await self.send_mutation_ack(
+                            websocket,
+                            packet,
+                            mutation_context,
+                            duplicate=True
+                        )
                     continue
+
+                if saved is False:
+                    if mutation_context:
+                        await self.send_mutation_ack(
+                            websocket,
+                            packet,
+                            mutation_context,
+                            ok=False,
+                            reason="rejected"
+                        )
+                    continue
+
+                if mutation_context:
+                    inserted = mutation_result["processed_inserted"]
+                    await self.send_mutation_ack(
+                        websocket,
+                        packet,
+                        mutation_context,
+                        duplicate=not inserted
+                    )
+
+                await self.mirror_packet_to_source_account_devices(packet)
 
                 if packet.get("type") == "group_delete":
                     source_node = packet.get("source_node") or ""
@@ -1278,6 +1562,11 @@ class MeshRelayServer(
                     None
                 )
 
+                self.client_capabilities.pop(
+                    node_id,
+                    None
+                )
+
                 login = self.client_logins.pop(
                     node_id,
                     None
@@ -1297,6 +1586,114 @@ class MeshRelayServer(
 
                 await self.send_user_list()
 
+    def mutation_ack_context(self, node_id, packet):
+
+        capabilities = self.client_capabilities.get(node_id) or {}
+        if capabilities.get("mutation_ack") is not True:
+            return None
+
+        outbox_id = str(packet.get("outbox_id") or "").strip()
+        operation_id = str(packet.get("operation_id") or "").strip()
+        if not outbox_id or not operation_id:
+            return None
+
+        account_login = str(
+            self.client_logins.get(node_id)
+            or self.get_login_by_node(node_id)
+            or f"@node:{node_id}"
+        ).strip().lower()
+        if not account_login:
+            return None
+
+        return {
+            "account_login": account_login,
+            "outbox_id": outbox_id,
+            "operation_id": operation_id,
+        }
+
+    async def send_mutation_ack(
+        self,
+        websocket,
+        packet,
+        context,
+        ok=True,
+        duplicate=False,
+        reason=""
+    ):
+
+        response = {
+            "type": "mutation_ack",
+            "ok": bool(ok),
+            "duplicate": bool(duplicate),
+            "outbox_id": context["outbox_id"],
+            "operation_id": context["operation_id"],
+            "packet_type": packet.get("type"),
+            "packet_id": (
+                packet.get("packet_id")
+                or packet.get("group_message_id")
+                or packet.get("message_id")
+                or packet.get("story_id")
+                or ""
+            ),
+            **version_payload()
+        }
+        if reason:
+            response["reason"] = reason
+        await websocket.send(
+            json.dumps(response, ensure_ascii=False)
+        )
+
+    async def send_file_transfer_ack(
+        self,
+        websocket,
+        packet,
+        transfer_result,
+    ):
+
+        response = {
+            "type": "file_chunk_ack",
+            "ok": transfer_result.get("ok") is True,
+            "transfer_id": transfer_result.get("transfer_id") or "",
+            "operation_id": packet.get("operation_id") or "",
+            "file_id": transfer_result.get("file_id") or "",
+            "chunk_index": transfer_result.get("chunk_index"),
+            "received_ranges": transfer_result.get("received_ranges") or [],
+            "complete": transfer_result.get("complete") is True,
+            "retryable": transfer_result.get("retryable") is True,
+            "reset": transfer_result.get("reset") is True,
+            **version_payload(),
+        }
+        reason = str(transfer_result.get("reason") or "").strip()
+        if reason:
+            response["reason"] = reason
+        await websocket.send(json.dumps(response, ensure_ascii=False))
+
+    async def deliver_completed_file_transfer(self, transfer_result):
+
+        metadata = transfer_result.get("metadata") or {}
+        destination_node = str(
+            metadata.get("destination_node") or ""
+        ).strip()
+        if not destination_node or destination_node.upper() == "SERVER":
+            return
+        destination_socket = self.clients.get(destination_node)
+        if not destination_socket:
+            return
+        try:
+            for delivery_packet in self.iter_file_transfer_delivery_packets(
+                transfer_result
+            ):
+                await destination_socket.send(
+                    json.dumps(delivery_packet, ensure_ascii=False)
+                )
+        except (OSError, websockets.exceptions.ConnectionClosed) as error:
+            print(
+                "Deferred durable file delivery:",
+                transfer_result.get("file_id"),
+                destination_node,
+                error,
+            )
+
     async def route_packet(
         self,
         packet
@@ -1312,11 +1709,57 @@ class MeshRelayServer(
         if str(destination_node).strip().upper() == "SERVER":
             return
 
+        is_call_packet = str(packet.get("type") or "").startswith("call_")
+
+        if not is_call_packet:
+            destination_login = str(
+                self.get_login_by_node(destination_node) or ""
+            ).strip().lower()
+            target_nodes = [str(destination_node)]
+            if destination_login:
+                target_nodes.extend(
+                    self.get_online_account_nodes(destination_login)
+                )
+
+            delivered = False
+            delivered_nodes = set()
+            for target_node in target_nodes:
+                if not target_node or target_node in delivered_nodes:
+                    continue
+                target_socket = self.clients.get(target_node)
+                if not target_socket:
+                    continue
+                routed_packet = packet
+                if target_node != destination_node:
+                    routed_packet = {
+                        **packet,
+                        "destination_node": target_node,
+                        "original_destination_node": destination_node,
+                    }
+                await target_socket.send(
+                    json.dumps(routed_packet, ensure_ascii=False)
+                )
+                delivered_nodes.add(target_node)
+                delivered = True
+
+            if delivered:
+                return
+
+            self.save_offline_packet(
+                destination_node,
+                packet
+            )
+
+            await self.send_web_push_for_packet(
+                destination_node,
+                packet
+            )
+
+            return
+
         websocket = self.clients.get(
             destination_node
         )
-
-        is_call_packet = str(packet.get("type") or "").startswith("call_")
 
         if websocket:
 
@@ -1326,9 +1769,6 @@ class MeshRelayServer(
                     ensure_ascii=False
                 )
             )
-
-            if not is_call_packet:
-                return
 
         if is_call_packet:
             source_node = packet.get("source_node") or ""
@@ -1362,15 +1802,45 @@ class MeshRelayServer(
 
             return
 
-        self.save_offline_packet(
-            destination_node,
-            packet
-        )
+    async def mirror_packet_to_source_account_devices(self, packet):
 
-        await self.send_web_push_for_packet(
-            destination_node,
-            packet
-        )
+        if str(packet.get("type") or "") not in ACCOUNT_LIVE_FANOUT_PACKET_TYPES:
+            return
+
+        source_node = str(packet.get("source_node") or "").strip()
+        if not source_node:
+            return
+
+        source_login = str(
+            packet.get("sender_login")
+            or self.client_logins.get(source_node)
+            or self.get_login_by_node(source_node)
+            or ""
+        ).strip().lower()
+        if not source_login:
+            return
+
+        original_destination = packet.get("destination_node")
+        for target_node in self.get_online_account_nodes(source_login):
+            if not target_node or target_node == source_node:
+                continue
+            if not self.client_capabilities.get(target_node, {}).get(
+                "account_live_fanout", False
+            ):
+                continue
+            target_socket = self.clients.get(target_node)
+            if not target_socket:
+                continue
+            await target_socket.send(
+                json.dumps(
+                    {
+                        **packet,
+                        "account_mirror": True,
+                        "original_destination_node": original_destination,
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
 
 async def main():
@@ -1456,6 +1926,17 @@ async def main():
                 "Protocol compatibility: "
                 f"{MIN_SUPPORTED_PROTOCOL_VERSION}..{PROTOCOL_VERSION}"
             )
+
+            if SYNC_V2_DELTA_ENABLED:
+                sync_v2_delta_rollout = "global"
+            elif SYNC_V2_DELTA_TEST_ACCOUNTS:
+                sync_v2_delta_rollout = (
+                    "canary "
+                    f"({len(SYNC_V2_DELTA_TEST_ACCOUNTS)} accounts)"
+                )
+            else:
+                sync_v2_delta_rollout = "disabled"
+            print(f"Sync v2 delta rollout: {sync_v2_delta_rollout}")
 
             if SERVER_TOKEN:
 

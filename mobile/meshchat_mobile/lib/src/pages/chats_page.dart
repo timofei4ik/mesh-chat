@@ -15,6 +15,7 @@ import '../models/profile.dart';
 import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
@@ -55,30 +56,35 @@ class _ActionSheetGlass extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: _edgeGlassGradient(
-                  base: const Color(0xFF26313B),
-                  alpha: 0.86,
-                  edgeBoost: 0.05,
-                ),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-              ),
-              child: SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: children,
+        child: MeshLiquidGlass(
+          radius: 28,
+          accent: Colors.lightBlueAccent,
+          prominent: true,
+          fallbackBuilder: (context, child) => ClipRRect(
+            borderRadius: BorderRadius.circular(28),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: _edgeGlassGradient(
+                    base: const Color(0xFF26313B),
+                    alpha: 0.86,
+                    edgeBoost: 0.05,
+                  ),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.14),
                   ),
                 ),
+                child: child,
               ),
+            ),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(mainAxisSize: MainAxisSize.min, children: children),
             ),
           ),
         ),
@@ -2954,9 +2960,13 @@ class _BluetoothStatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = running || connected > 0;
-    return _HomeGlassSurface(
-      accent: active ? Colors.greenAccent : Colors.blueGrey,
+    final accent = active ? Colors.greenAccent : Colors.blueGrey;
+    return MeshLiquidGlass(
+      accent: accent,
       radius: 15,
+      interactive: true,
+      fallbackBuilder: (context, child) =>
+          _HomeGlassSurface(accent: accent, radius: 15, child: child),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(15),
@@ -3047,10 +3057,18 @@ class _HomeSearchFieldState extends State<_HomeSearchField> {
       scale: pressed ? 0.985 : 1,
       duration: const Duration(milliseconds: 110),
       curve: Curves.easeOutCubic,
-      child: _HomeGlassSurface(
+      child: MeshLiquidGlass(
         accent: pressed ? Colors.lightBlueAccent : Colors.blueGrey,
         radius: 16,
         dim: !pressed,
+        selected: pressed,
+        interactive: true,
+        fallbackBuilder: (context, child) => _HomeGlassSurface(
+          accent: pressed ? Colors.lightBlueAccent : Colors.blueGrey,
+          radius: 16,
+          dim: !pressed,
+          child: child,
+        ),
         child: InkWell(
           onTap: widget.onTap,
           onTapDown: (_) => setState(() => pressed = true),
@@ -3909,9 +3927,17 @@ class _HomeBottomBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _HomeGlassSurface(
+    final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
+    return MeshLiquidGlass(
       accent: Colors.lightBlueAccent,
       radius: 28,
+      prominent: true,
+      interactive: true,
+      fallbackBuilder: (context, child) => _HomeGlassSurface(
+        accent: Colors.lightBlueAccent,
+        radius: 28,
+        child: child,
+      ),
       child: SizedBox(
         height: 76,
         child: Padding(
@@ -3927,11 +3953,16 @@ class _HomeBottomBar extends StatelessWidget {
                   height: 56,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(22),
-                    gradient: _edgeGlassGradient(
-                      base: const Color(0xFF314456),
-                      alpha: 0.72,
-                      edgeBoost: 0.08,
-                    ),
+                    color: liquidGlass
+                        ? Colors.lightBlueAccent.withValues(alpha: 0.13)
+                        : null,
+                    gradient: liquidGlass
+                        ? null
+                        : _edgeGlassGradient(
+                            base: const Color(0xFF314456),
+                            alpha: 0.72,
+                            edgeBoost: 0.08,
+                          ),
                     border: Border.all(
                       color: Colors.lightBlueAccent.withValues(alpha: 0.32),
                     ),
@@ -4121,9 +4152,12 @@ class _RoundGlassButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: _HomeGlassSurface(
+      child: MeshLiquidGlass(
         accent: accent,
         radius: 18,
+        interactive: true,
+        fallbackBuilder: (context, child) =>
+            _HomeGlassSurface(accent: accent, radius: 18, child: child),
         child: InkWell(
           onTap: onPressed,
           borderRadius: BorderRadius.circular(18),
@@ -4488,30 +4522,36 @@ class _HomeGlassCallSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            gradient: _edgeGlassGradient(
-              base: const Color(0xFF27313B),
-              alpha: 0.72,
-              edgeBoost: 0.05,
-            ),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.24),
-                blurRadius: 18,
-                offset: const Offset(0, 9),
+    return MeshLiquidGlass(
+      radius: 20,
+      accent: accent,
+      prominent: true,
+      fallbackBuilder: (context, child) => ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              gradient: _edgeGlassGradient(
+                base: const Color(0xFF27313B),
+                alpha: 0.72,
+                edgeBoost: 0.05,
               ),
-            ],
+              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.24),
+                  blurRadius: 18,
+                  offset: const Offset(0, 9),
+                ),
+              ],
+            ),
+            child: child,
           ),
-          child: child,
         ),
       ),
+      child: child,
     );
   }
 }

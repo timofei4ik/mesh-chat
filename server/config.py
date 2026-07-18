@@ -21,6 +21,20 @@ DB_PATH = Path(
     )
 )
 
+SYNC_V2_DELTA_ENABLED = os.environ.get(
+    "MESH_SYNC_V2_DELTA_ENABLED",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+SYNC_V2_DELTA_TEST_ACCOUNTS = frozenset(
+    login.strip().lower()
+    for login in os.environ.get(
+        "MESH_SYNC_V2_DELTA_TEST_ACCOUNTS",
+        "",
+    ).split(",")
+    if login.strip()
+)
+
 SUBSCRIPTION_CHECKOUT_URL = os.environ.get(
     "MESH_SUBSCRIPTION_CHECKOUT_URL",
     ""

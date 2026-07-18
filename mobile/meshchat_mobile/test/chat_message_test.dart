@@ -141,4 +141,25 @@ void main() {
     expect(delivered.pending, isFalse);
     expect(delivered.delivered, isTrue);
   });
+
+  test('reaction account identities survive cache round trip', () {
+    final message = ChatMessage(
+      id: 'reaction-1',
+      senderNode: 'sender',
+      receiverNode: 'receiver',
+      text: 'Hello',
+      createdAt: DateTime.utc(2026, 7, 18),
+      reactions: const {'heart': 1},
+      reactionActors: const {
+        'heart': ['login:alice'],
+      },
+    );
+
+    final restored = ChatMessage.fromJson(message.toJson());
+
+    expect(restored.reactions, const {'heart': 1});
+    expect(restored.reactionActors, const {
+      'heart': ['login:alice'],
+    });
+  });
 }

@@ -3,9 +3,16 @@ import 'package:flutter/material.dart';
 import 'controllers/app_controller.dart';
 import 'pages/chats_page.dart';
 import 'pages/login_page.dart';
+import 'services/platform_capabilities.dart';
+import 'widgets/mesh_liquid_glass.dart';
 
 class MeshChatApp extends StatefulWidget {
-  const MeshChatApp({super.key});
+  const MeshChatApp({
+    super.key,
+    this.platformCapabilities = MeshPlatformCapabilities.standard,
+  });
+
+  final MeshPlatformCapabilities platformCapabilities;
 
   @override
   State<MeshChatApp> createState() => _MeshChatAppState();
@@ -35,31 +42,34 @@ class _MeshChatAppState extends State<MeshChatApp> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: controller,
-      builder: (context, _) {
-        final settings = controller.appSettings;
-        return MaterialApp(
-          debugShowCheckedModeBanner: false,
-          title: 'MeshChat',
-          themeMode: settings.themeMode,
-          theme: _theme(settings.accentColor, Brightness.light),
-          darkTheme: _theme(settings.accentColor, Brightness.dark),
-          home: Builder(
-            builder: (context) {
-              if (!controller.initialized) {
-                return const Scaffold(
-                  body: Center(child: CircularProgressIndicator()),
-                );
-              }
-              if (!controller.hasSession) {
-                return LoginPage(controller: controller);
-              }
-              return ChatsPage(controller: controller);
-            },
-          ),
-        );
-      },
+    return MeshPlatformScope(
+      capabilities: widget.platformCapabilities,
+      child: ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) {
+          final settings = controller.appSettings;
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            title: 'MeshChat',
+            themeMode: settings.themeMode,
+            theme: _theme(settings.accentColor, Brightness.light),
+            darkTheme: _theme(settings.accentColor, Brightness.dark),
+            home: Builder(
+              builder: (context) {
+                if (!controller.initialized) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                if (!controller.hasSession) {
+                  return LoginPage(controller: controller);
+                }
+                return ChatsPage(controller: controller);
+              },
+            ),
+          );
+        },
+      ),
     );
   }
 

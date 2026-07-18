@@ -23,6 +23,7 @@ import '../models/profile.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
@@ -666,6 +667,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
           child: _ChatGlassSurface(
             radius: 26,
+            useNativeGlass: true,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
               child: Column(
@@ -802,6 +804,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             ),
             child: _ChatGlassSurface(
               radius: 28,
+              useNativeGlass: true,
               child: ConstrainedBox(
                 constraints: BoxConstraints(
                   maxHeight: MediaQuery.sizeOf(context).height * 0.82,
@@ -1032,6 +1035,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           padding: const EdgeInsets.fromLTRB(14, 0, 14, 18),
           child: _ChatGlassSurface(
             radius: 28,
+            useNativeGlass: true,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
               child: Column(
@@ -1551,6 +1555,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           top: false,
           child: _ChatGlassSurface(
             radius: 28,
+            useNativeGlass: true,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
               child: Column(
@@ -1690,6 +1695,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             top: false,
             child: _ChatGlassSurface(
               radius: 28,
+              useNativeGlass: true,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
                 child: Column(
@@ -1844,6 +1850,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         top: false,
         child: _ChatGlassSurface(
           radius: 28,
+          useNativeGlass: true,
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.sizeOf(context).height * 0.72,
@@ -1955,6 +1962,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       builder: (context) => SafeArea(
         child: _ChatGlassSurface(
           radius: 28,
+          useNativeGlass: true,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 6, 8, 12),
             child: Column(
@@ -2007,6 +2015,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       builder: (context) => SafeArea(
         child: _ChatGlassSurface(
           radius: 28,
+          useNativeGlass: true,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 6, 8, 12),
             child: Column(
@@ -3017,6 +3026,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
                   child: _ChatGlassSurface(
                     radius: 24,
+                    useNativeGlass: true,
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
                       child: canPostToThread
@@ -3530,161 +3540,165 @@ class _CallBottomSheet extends StatelessWidget {
         ? Colors.lightBlueAccent
         : const Color(0xFF7D8CFF);
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(34),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(34),
-            color: const Color(0xD8232D38),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.lightBlueAccent.withValues(alpha: 0.08),
-                blurRadius: 28,
-              ),
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.34),
-                blurRadius: 30,
-                offset: const Offset(0, 18),
-              ),
-            ],
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 18, 22, 22),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: _CallGlassButton(
-                    tooltip: 'Collapse',
-                    icon: Icons.keyboard_arrow_down_rounded,
-                    onPressed: controller.toggleCallCollapsed,
-                  ),
+    return MeshLiquidGlass(
+      radius: 34,
+      accent: accent,
+      prominent: true,
+      interactive: false,
+      fallbackBuilder: (context, child) => ClipRRect(
+        borderRadius: BorderRadius.circular(34),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(34),
+              color: const Color(0xD8232D38),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.lightBlueAccent.withValues(alpha: 0.08),
+                  blurRadius: 28,
                 ),
-                const _CallMeshLogo(),
-                const SizedBox(height: 12),
-                Text(
-                  call.peer.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 23,
-                    fontWeight: FontWeight.w800,
-                  ),
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.34),
+                  blurRadius: 30,
+                  offset: const Offset(0, 18),
                 ),
-                const SizedBox(height: 5),
-                Text(
-                  '$title · ${formatDuration(controller.callElapsed)}',
-                  style: const TextStyle(color: Colors.white70),
-                ),
-                const SizedBox(height: 12),
-                _CallStatusStrip(controller: controller),
-                if (call.remoteScreenSharing) ...[
-                  const SizedBox(height: 14),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: ColoredBox(
-                      color: const Color(0xFF07111E),
-                      child: SizedBox(
-                        height: 180,
-                        width: double.infinity,
-                        child: controller.buildRemoteCallScreen(),
-                      ),
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 18),
-                _CallEqualizer(accent: accent),
-                const SizedBox(height: 24),
-                if (incoming)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _CallGlassButton(
-                        tooltip: 'Decline',
-                        icon: Icons.call_end_rounded,
-                        accent: Colors.redAccent,
-                        onPressed: controller.declineCall,
-                      ),
-                      const SizedBox(width: 34),
-                      _CallGlassButton(
-                        tooltip: 'Accept',
-                        icon: Icons.call_rounded,
-                        accent: Colors.greenAccent,
-                        onPressed: controller.acceptCall,
-                      ),
-                    ],
-                  )
-                else ...[
-                  Wrap(
-                    alignment: WrapAlignment.spaceEvenly,
-                    runAlignment: WrapAlignment.center,
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      _CallGlassButton(
-                        tooltip: call.speakerOn ? 'Speaker off' : 'Speaker on',
-                        icon: call.speakerOn
-                            ? Icons.volume_up_rounded
-                            : Icons.hearing_rounded,
-                        onPressed: controller.toggleCallSpeaker,
-                      ),
-                      _CallGlassButton(
-                        tooltip: call.localMuted ? 'Unmute' : 'Mute',
-                        icon: call.localMuted
-                            ? Icons.mic_off_rounded
-                            : Icons.mic_rounded,
-                        onPressed: controller.toggleCallMute,
-                      ),
-                      _CallGlassButton(
-                        tooltip: 'Input',
-                        icon: Icons.input_rounded,
-                        onPressed: () =>
-                            _showAudioDevicePicker(context, input: true),
-                      ),
-                      _CallGlassButton(
-                        tooltip: 'Output',
-                        icon: Icons.headphones_rounded,
-                        onPressed: () =>
-                            _showAudioDevicePicker(context, input: false),
-                      ),
-                      if (controller.canShareCallScreen)
-                        _CallGlassButton(
-                          tooltip: call.screenSharing
-                              ? 'Stop screen sharing'
-                              : 'Share screen',
-                          icon: call.screenSharing
-                              ? Icons.stop_screen_share_rounded
-                              : Icons.screen_share_rounded,
-                          accent: call.screenSharing
-                              ? Colors.lightBlueAccent
-                              : Colors.white70,
-                          onPressed: () => _toggleScreenShare(context),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 22),
-                  SizedBox(
-                    width: 138,
-                    height: 52,
-                    child: FilledButton(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.redAccent,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                      onPressed: controller.endCall,
-                      child: const Icon(Icons.call_end_rounded, size: 28),
-                    ),
-                  ),
-                ],
               ],
             ),
+            child: child,
           ),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(22, 18, 22, 22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.centerRight,
+              child: _CallGlassButton(
+                tooltip: 'Collapse',
+                icon: Icons.keyboard_arrow_down_rounded,
+                onPressed: controller.toggleCallCollapsed,
+              ),
+            ),
+            const _CallMeshLogo(),
+            const SizedBox(height: 12),
+            Text(
+              call.peer.displayName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              '$title · ${formatDuration(controller.callElapsed)}',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 12),
+            _CallStatusStrip(controller: controller),
+            if (call.remoteScreenSharing) ...[
+              const SizedBox(height: 14),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: ColoredBox(
+                  color: const Color(0xFF07111E),
+                  child: SizedBox(
+                    height: 180,
+                    width: double.infinity,
+                    child: controller.buildRemoteCallScreen(),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 18),
+            _CallEqualizer(accent: accent),
+            const SizedBox(height: 24),
+            if (incoming)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _CallGlassButton(
+                    tooltip: 'Decline',
+                    icon: Icons.call_end_rounded,
+                    accent: Colors.redAccent,
+                    onPressed: controller.declineCall,
+                  ),
+                  const SizedBox(width: 34),
+                  _CallGlassButton(
+                    tooltip: 'Accept',
+                    icon: Icons.call_rounded,
+                    accent: Colors.greenAccent,
+                    onPressed: controller.acceptCall,
+                  ),
+                ],
+              )
+            else ...[
+              Wrap(
+                alignment: WrapAlignment.spaceEvenly,
+                runAlignment: WrapAlignment.center,
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  _CallGlassButton(
+                    tooltip: call.speakerOn ? 'Speaker off' : 'Speaker on',
+                    icon: call.speakerOn
+                        ? Icons.volume_up_rounded
+                        : Icons.hearing_rounded,
+                    onPressed: controller.toggleCallSpeaker,
+                  ),
+                  _CallGlassButton(
+                    tooltip: call.localMuted ? 'Unmute' : 'Mute',
+                    icon: call.localMuted
+                        ? Icons.mic_off_rounded
+                        : Icons.mic_rounded,
+                    onPressed: controller.toggleCallMute,
+                  ),
+                  _CallGlassButton(
+                    tooltip: 'Input',
+                    icon: Icons.input_rounded,
+                    onPressed: () =>
+                        _showAudioDevicePicker(context, input: true),
+                  ),
+                  _CallGlassButton(
+                    tooltip: 'Output',
+                    icon: Icons.headphones_rounded,
+                    onPressed: () =>
+                        _showAudioDevicePicker(context, input: false),
+                  ),
+                  if (controller.canShareCallScreen)
+                    _CallGlassButton(
+                      tooltip: call.screenSharing
+                          ? 'Stop screen sharing'
+                          : 'Share screen',
+                      icon: call.screenSharing
+                          ? Icons.stop_screen_share_rounded
+                          : Icons.screen_share_rounded,
+                      accent: call.screenSharing
+                          ? Colors.lightBlueAccent
+                          : Colors.white70,
+                      onPressed: () => _toggleScreenShare(context),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 22),
+              SizedBox(
+                width: 138,
+                height: 52,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                  onPressed: controller.endCall,
+                  child: const Icon(Icons.call_end_rounded, size: 28),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -3929,6 +3943,7 @@ class _CallGlassButton extends StatelessWidget {
             color: Colors.white.withValues(alpha: 0.12),
             child: InkWell(
               onTap: onPressed,
+              customBorder: const CircleBorder(),
               child: Container(
                 width: 58,
                 height: 58,
@@ -4222,20 +4237,29 @@ class _ChatRoundButton extends StatelessWidget {
       padding: const EdgeInsets.only(right: 7),
       child: Tooltip(
         message: tooltip,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(999),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: Material(
-              color: Colors.white.withValues(alpha: 0.10),
-              shape: CircleBorder(
-                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
+        child: MeshLiquidGlass(
+          radius: 999,
+          accent: Colors.lightBlueAccent,
+          interactive: true,
+          fallbackBuilder: (context, child) => ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: Material(
+                color: Colors.white.withValues(alpha: 0.10),
+                shape: CircleBorder(
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
+                ),
+                child: child,
               ),
-              child: InkWell(
-                onTap: onPressed,
-                customBorder: const CircleBorder(),
-                child: SizedBox(width: 42, height: 42, child: icon),
-              ),
+            ),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onPressed,
+              customBorder: const CircleBorder(),
+              child: SizedBox(width: 42, height: 42, child: icon),
             ),
           ),
         ),
@@ -4699,6 +4723,7 @@ class _StickerSheetState extends State<_StickerSheet> {
         ),
         child: _ChatGlassSurface(
           radius: 30,
+          useNativeGlass: true,
           child: SizedBox(
             height: math.min(MediaQuery.sizeOf(context).height * 0.7, 520),
             child: Padding(
@@ -5430,14 +5455,19 @@ class _LiquidMeshPainter extends CustomPainter {
 }
 
 class _ChatGlassSurface extends StatelessWidget {
-  const _ChatGlassSurface({required this.child, this.radius = 22});
+  const _ChatGlassSurface({
+    required this.child,
+    this.radius = 22,
+    this.useNativeGlass = false,
+  });
 
   final Widget child;
   final double radius;
+  final bool useNativeGlass;
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
+    Widget fallback(BuildContext context, Widget child) => ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
@@ -5462,6 +5492,14 @@ class _ChatGlassSurface extends StatelessWidget {
           child: child,
         ),
       ),
+    );
+
+    if (!useNativeGlass) return fallback(context, child);
+    return MeshLiquidGlass(
+      radius: radius,
+      accent: Colors.lightBlueAccent,
+      fallbackBuilder: fallback,
+      child: child,
     );
   }
 }
@@ -5561,31 +5599,37 @@ class _GlassCallSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(22),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            color: const Color(0xFF242D37).withValues(alpha: 0.76),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-            boxShadow: [
-              BoxShadow(
-                color: accent.withValues(alpha: 0.18),
-                blurRadius: 28,
-                offset: const Offset(0, 12),
-              ),
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.26),
-                blurRadius: 20,
-                offset: const Offset(0, 10),
-              ),
-            ],
+    return MeshLiquidGlass(
+      radius: 22,
+      accent: accent,
+      prominent: true,
+      fallbackBuilder: (context, child) => ClipRRect(
+        borderRadius: BorderRadius.circular(22),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(22),
+              color: const Color(0xFF242D37).withValues(alpha: 0.76),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+              boxShadow: [
+                BoxShadow(
+                  color: accent.withValues(alpha: 0.18),
+                  blurRadius: 28,
+                  offset: const Offset(0, 12),
+                ),
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.26),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: child,
           ),
-          child: Stack(children: [child]),
         ),
       ),
+      child: Stack(children: [child]),
     );
   }
 }

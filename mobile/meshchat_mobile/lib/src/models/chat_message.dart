@@ -20,13 +20,15 @@ class ChatMessage {
     this.isChannelComment = false,
     this.messageEffect = 'none',
     Map<String, int>? reactions,
+    Map<String, List<String>>? reactionActors,
     this.edited = false,
     this.deleted = false,
     this.pending = false,
     this.delivered = false,
     this.failed = false,
     this.progress = 0,
-  }) : reactions = reactions ?? const {};
+  }) : reactions = reactions ?? const {},
+       reactionActors = reactionActors ?? const {};
 
   final String id;
   final String senderNode;
@@ -48,6 +50,7 @@ class ChatMessage {
   final bool isChannelComment;
   final String messageEffect;
   final Map<String, int> reactions;
+  final Map<String, List<String>> reactionActors;
   final bool edited;
   final bool deleted;
   final bool pending;
@@ -76,6 +79,7 @@ class ChatMessage {
     bool? failed,
     double? progress,
     Map<String, int>? reactions,
+    Map<String, List<String>>? reactionActors,
     bool? edited,
     bool? deleted,
   }) {
@@ -104,6 +108,7 @@ class ChatMessage {
         messageEffect ?? this.messageEffect,
       ),
       reactions: reactions ?? this.reactions,
+      reactionActors: reactionActors ?? this.reactionActors,
       edited: edited ?? this.edited,
       deleted: deleted ?? this.deleted,
       pending: pending ?? this.pending,
@@ -149,6 +154,7 @@ class ChatMessage {
         json['message_effect']?.toString() ?? 'none',
       ),
       reactions: _reactionsFromJson(json['reactions']),
+      reactionActors: _reactionActorsFromJson(json['reaction_actors']),
       edited: json['edited'] == true,
       deleted: json['deleted'] == true,
       pending: json['pending'] == true,
@@ -180,6 +186,7 @@ class ChatMessage {
       'is_channel_comment': isChannelComment,
       'message_effect': messageEffect,
       'reactions': reactions,
+      'reaction_actors': reactionActors,
       'edited': edited,
       'deleted': deleted,
       'pending': pending,
@@ -195,6 +202,21 @@ class ChatMessage {
       (key, value) =>
           MapEntry(key.toString(), int.tryParse(value.toString()) ?? 0),
     )..removeWhere((_, count) => count <= 0);
+  }
+
+  static Map<String, List<String>> _reactionActorsFromJson(dynamic raw) {
+    if (raw is! Map) return const {};
+    final result = <String, List<String>>{};
+    for (final entry in raw.entries) {
+      if (entry.value is! List) continue;
+      final actors = (entry.value as List)
+          .map((value) => value.toString().trim().toLowerCase())
+          .where((value) => value.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+      if (actors.isNotEmpty) result[entry.key.toString()] = actors;
+    }
+    return result;
   }
 
   static String _normalizeMessageEffect(String value) {
