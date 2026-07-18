@@ -24,6 +24,7 @@ class SessionStore {
       password: password,
       publicUsername: prefs.getString('public_username') ?? login,
       nodeId: nodeId,
+      identityRecovery: prefs.getString('identity_recovery') ?? '',
     );
   }
 
@@ -93,6 +94,7 @@ class SessionStore {
     await prefs.setString('password', session.password);
     await prefs.setString('public_username', session.publicUsername);
     await prefs.setString('node_id', session.nodeId);
+    await prefs.setString('identity_recovery', session.identityRecovery);
     await prefs.setString(
       _nodeKey(session.serverUrl, session.login),
       session.nodeId,
@@ -141,6 +143,7 @@ class SessionStore {
     await prefs.remove('login');
     await prefs.remove('password');
     await prefs.remove('public_username');
+    await prefs.remove('identity_recovery');
   }
 
   Future<void> updatePublicUsername(String publicUsername) async {
@@ -195,6 +198,7 @@ class SessionStore {
       'password': session.password,
       'public_username': session.publicUsername,
       'node_id': session.nodeId,
+      'identity_recovery': session.identityRecovery,
     };
   }
 
@@ -216,6 +220,7 @@ class SessionStore {
       password: password,
       publicUsername: json['public_username']?.toString() ?? login,
       nodeId: nodeId,
+      identityRecovery: json['identity_recovery']?.toString() ?? '',
     );
   }
 }

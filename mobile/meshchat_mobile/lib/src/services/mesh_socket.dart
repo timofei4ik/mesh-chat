@@ -58,6 +58,7 @@ class MeshSocket {
   bool _supportsMutationAck = false;
   bool _supportsFileTransferV2 = false;
   bool _supportsSyncV2Delta = false;
+  String _lastIdentityRecovery = '';
   bool _flushingOutbox = false;
   bool _flushingFileOutbox = false;
   int _syncCursor = 0;
@@ -73,6 +74,7 @@ class MeshSocket {
   bool get supportsMutationAck => _supportsMutationAck;
   bool get supportsFileTransferV2 => _supportsFileTransferV2;
   bool get supportsSyncV2Delta => _supportsSyncV2Delta;
+  String get lastIdentityRecovery => _lastIdentityRecovery;
 
   Future<void> connect({
     required Session session,
@@ -126,6 +128,8 @@ class MeshSocket {
           if (decoded is Map<String, dynamic>) {
             final packetType = decoded['type']?.toString() ?? '';
             if (packetType == 'server_welcome') {
+              _lastIdentityRecovery =
+                  decoded['encryption_recovery']?.toString() ?? '';
               final rawCapabilities = decoded['capabilities'];
               final capabilities = rawCapabilities is Map
                   ? Map<String, dynamic>.from(rawCapabilities)
@@ -215,6 +219,7 @@ class MeshSocket {
     Session session,
     String publicKey,
   ) async {
+    _lastIdentityRecovery = '';
     final channel = WebSocketChannel.connect(Uri.parse(session.serverUrl));
     final startedAt = DateTime.now();
     try {
@@ -252,6 +257,7 @@ class MeshSocket {
           latency: latency,
         );
       }
+      _lastIdentityRecovery = packet['encryption_recovery']?.toString() ?? '';
       if (!isProtocolCompatible(packet)) {
         return ConnectionDiagnostics(
           ok: false,

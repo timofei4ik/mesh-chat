@@ -6,6 +6,7 @@ class Session {
     required this.password,
     required this.publicUsername,
     required this.nodeId,
+    this.identityRecovery = '',
   });
 
   final String serverUrl;
@@ -14,6 +15,7 @@ class Session {
   final String password;
   final String publicUsername;
   final String nodeId;
+  final String identityRecovery;
 
   Session copyWith({
     String? serverUrl,
@@ -22,6 +24,7 @@ class Session {
     String? password,
     String? publicUsername,
     String? nodeId,
+    String? identityRecovery,
   }) {
     return Session(
       serverUrl: serverUrl ?? this.serverUrl,
@@ -30,6 +33,7 @@ class Session {
       password: password ?? this.password,
       publicUsername: publicUsername ?? this.publicUsername,
       nodeId: nodeId ?? this.nodeId,
+      identityRecovery: identityRecovery ?? this.identityRecovery,
     );
   }
 }

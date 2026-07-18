@@ -1483,6 +1483,26 @@ class SecurityPage extends StatelessWidget {
           const SizedBox(height: 12),
           Card(
             child: ListTile(
+              leading: const Icon(Icons.password_rounded),
+              title: const Text('Change password'),
+              subtitle: const Text(
+                'Use this signed-in device and preserve encrypted history',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: session == null
+                  ? null
+                  : () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            ChangePasswordPage(controller: controller),
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
               leading: const Icon(Icons.block_outlined),
               title: const Text('Blocked users'),
               subtitle: Text(
@@ -1508,6 +1528,160 @@ class SecurityPage extends StatelessWidget {
                 'Text and media are encrypted before sending. Keep your account password private.',
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ChangePasswordPage extends StatefulWidget {
+  const ChangePasswordPage({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<ChangePasswordPage> createState() => _ChangePasswordPageState();
+}
+
+class _ChangePasswordPageState extends State<ChangePasswordPage> {
+  final newPassword = TextEditingController();
+  final confirmation = TextEditingController();
+  bool obscureNew = true;
+  bool obscureConfirmation = true;
+  bool saving = false;
+  String? validationError;
+
+  @override
+  void dispose() {
+    newPassword.dispose();
+    confirmation.dispose();
+    super.dispose();
+  }
+
+  Future<void> submit() async {
+    if (saving) return;
+    final password = newPassword.text;
+    if (password.length < 8) {
+      setState(() => validationError = 'Use at least 8 characters');
+      return;
+    }
+    if (password != confirmation.text) {
+      setState(() => validationError = 'Passwords do not match');
+      return;
+    }
+    setState(() {
+      saving = true;
+      validationError = null;
+    });
+    final result = await widget.controller.changePassword(password);
+    if (!mounted) return;
+    if (result != null) {
+      setState(() {
+        saving = false;
+        validationError = result;
+      });
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Password changed. Encrypted history was preserved.'),
+      ),
+    );
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF07111E),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        title: const Text('Change password'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.enhanced_encryption_outlined),
+              title: Text('Encrypted history stays available'),
+              subtitle: Text(
+                'This authorized device securely transfers your existing '
+                'encryption identity to the new password. The old password '
+                'is never displayed or sent as recovery data.',
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: newPassword,
+            obscureText: obscureNew,
+            autofillHints: const [AutofillHints.newPassword],
+            textInputAction: TextInputAction.next,
+            decoration: InputDecoration(
+              labelText: 'New password',
+              prefixIcon: const Icon(Icons.lock_outline_rounded),
+              suffixIcon: IconButton(
+                tooltip: obscureNew ? 'Show password' : 'Hide password',
+                onPressed: () => setState(() => obscureNew = !obscureNew),
+                icon: Icon(
+                  obscureNew
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: confirmation,
+            obscureText: obscureConfirmation,
+            autofillHints: const [AutofillHints.newPassword],
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => submit(),
+            decoration: InputDecoration(
+              labelText: 'Confirm new password',
+              prefixIcon: const Icon(Icons.lock_reset_rounded),
+              suffixIcon: IconButton(
+                tooltip: obscureConfirmation
+                    ? 'Show password'
+                    : 'Hide password',
+                onPressed: () =>
+                    setState(() => obscureConfirmation = !obscureConfirmation),
+                icon: Icon(
+                  obscureConfirmation
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+              ),
+            ),
+          ),
+          if (validationError != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              validationError!,
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+          ],
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: saving ? null : submit,
+            icon: saving
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_rounded),
+            label: Text(saving ? 'Changing password...' : 'Change password'),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Other signed-in devices will ask for the new password.',
+            textAlign: TextAlign.center,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.white60),
           ),
         ],
       ),

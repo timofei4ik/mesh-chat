@@ -310,6 +310,7 @@ class AppController extends ChangeNotifier {
   Completer<List<ActiveDevice>>? _activeDevicesCompleter;
   final Map<String, Completer<String?>> _activeDeviceActionCompleters = {};
   final Map<String, Completer<String?>> _meshProPreferenceCompleters = {};
+  final Map<String, Completer<String?>> _passwordChangeCompleters = {};
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
   Timer? _callTicker;
@@ -1937,7 +1938,7 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       final normalized = _normalizeServerUrl(serverUrl);
-      final candidate = await _store.save(
+      var candidate = await _store.save(
         serverUrl: normalized,
         serverToken: token.trim(),
         login: login.trim().toLowerCase(),
@@ -1947,7 +1948,7 @@ class AppController extends ChangeNotifier {
           '',
         ),
       );
-      await _crypto.initialize(candidate.login, candidate.password);
+      await _initializeCryptoForSession(candidate);
       final checkError = await _socket.check(candidate, _crypto.publicKey);
       if (checkError != null) {
         error = checkError;
@@ -1956,6 +1957,7 @@ class AppController extends ChangeNotifier {
         recentSessions = await _store.loadRecent();
         return false;
       }
+      candidate = await _adoptServerIdentityRecovery(candidate);
       await _socket.close();
       _clearLocalState();
       session = candidate;
@@ -1986,12 +1988,13 @@ class AppController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      await _crypto.initialize(candidate.login, candidate.password);
+      await _initializeCryptoForSession(candidate);
       final checkError = await _socket.check(candidate, _crypto.publicKey);
       if (checkError != null) {
         error = checkError;
         return false;
       }
+      candidate = await _adoptServerIdentityRecovery(candidate);
       await _socket.close();
       _clearLocalState();
       await _store.saveCurrent(candidate);
@@ -2017,6 +2020,45 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _initializeCryptoForSession(Session current) async {
+    final recovery = current.identityRecovery.trim();
+    if (recovery.isEmpty) {
+      await _crypto.initialize(current.login, current.password);
+      return;
+    }
+    final restored = await _crypto.initializeFromIdentityRecovery(
+      current.login,
+      current.password,
+      recovery,
+    );
+    if (!restored) {
+      throw StateError(
+        'Could not unlock the encrypted message history on this device',
+      );
+    }
+  }
+
+  Future<Session> _adoptServerIdentityRecovery(Session current) async {
+    final recovery = _socket.lastIdentityRecovery.trim();
+    if (recovery.isEmpty || recovery == current.identityRecovery) {
+      return current;
+    }
+    final restored = await _crypto.initializeFromIdentityRecovery(
+      current.login,
+      current.password,
+      recovery,
+    );
+    if (!restored) {
+      throw StateError(
+        'The password is valid, but the encrypted history key could not be restored',
+      );
+    }
+    final updated = current.copyWith(identityRecovery: recovery);
+    await _store.saveCurrent(updated);
+    await _store.saveRecent(updated);
+    return updated;
+  }
+
   Future<void> forgetRecent(Session recent) async {
     await _store.removeRecent(recent);
     await _ownProfileStore.remove(recent);
@@ -2028,7 +2070,7 @@ class AppController extends ChangeNotifier {
   Future<void> _connect({bool reactivateDevice = false}) async {
     final current = session;
     if (current == null) return;
-    await _crypto.initialize(current.login, current.password);
+    await _initializeCryptoForSession(current);
     final accountCursor = await _syncCursorStore.load(current);
     final cacheCursor = await _cache.loadSyncCursor(current);
     final syncCursor = SyncCursorStore.safeCursor(
@@ -2134,6 +2176,9 @@ class AppController extends ChangeNotifier {
         } else if (packet['code'] == 'device_revoked') {
           status = 'This device was signed out remotely';
           unawaited(_handleDeviceRevoked());
+        } else if (packet['code'] == 'account_password_changed') {
+          status = 'The account password was changed on another device';
+          unawaited(_handlePasswordChangedElsewhere());
         } else {
           status =
               packet['message']?.toString() ??
@@ -2176,6 +2221,8 @@ class AppController extends ChangeNotifier {
         _handleLookup(packet);
       case 'profile_update_result':
         _handleProfileUpdateResult(packet);
+      case 'account_password_change_result':
+        _handlePasswordChangeResult(packet);
       case 'subscription_status_result':
         _applyMeshProSubscription(packet['subscription']);
       case 'ai_text_rewrite_result':
@@ -3482,6 +3529,31 @@ class AppController extends ChangeNotifier {
           ? null
           : packet['reason']?.toString() ?? 'Device action failed',
     );
+  }
+
+  void _handlePasswordChangeResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _passwordChangeCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    completer.complete(
+      packet['ok'] == true
+          ? null
+          : _passwordChangeError(packet['reason']?.toString() ?? ''),
+    );
+  }
+
+  String _passwordChangeError(String reason) {
+    return switch (reason) {
+      'password_too_short' => 'Use at least 8 characters',
+      'password_too_long' => 'Password is too long',
+      'password_unchanged' => 'Choose a different password',
+      'invalid_current_password' =>
+        'This signed-in session no longer has the current password',
+      'invalid_encryption_recovery' =>
+        'Could not prepare encrypted history recovery',
+      'account_not_found' => 'Account was not found',
+      _ => 'Could not change the password',
+    };
   }
 
   Future<void> _applyMeshProPreferences(Object? raw) async {
@@ -6111,7 +6183,7 @@ class AppController extends ChangeNotifier {
   Future<String?> startBluetoothNearby() async {
     final current = session;
     if (current == null) return 'No active session';
-    await _crypto.initialize(current.login, current.password);
+    await _initializeCryptoForSession(current);
     try {
       await ble.start(profile: _publicOwnProfile, publicKey: _crypto.publicKey);
       return null;
@@ -8217,7 +8289,7 @@ class AppController extends ChangeNotifier {
         latency: Duration.zero,
       );
     }
-    await _crypto.initialize(current.login, current.password);
+    await _initializeCryptoForSession(current);
     return _socket.diagnose(current, _crypto.publicKey);
   }
 
@@ -8238,6 +8310,58 @@ class AppController extends ChangeNotifier {
         return const [];
       },
     );
+  }
+
+  Future<String?> changePassword(String newPassword) async {
+    final current = session;
+    if (current == null || !_socket.isConnected) {
+      return 'Connect to the server first';
+    }
+    if (newPassword.length < 8) return 'Use at least 8 characters';
+    if (newPassword.length > 256) return 'Password is too long';
+    if (newPassword == current.password) return 'Choose a different password';
+
+    final recovery = await _crypto.createIdentityRecovery(
+      current.login,
+      newPassword,
+    );
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _passwordChangeCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'account_password_change_request',
+      'packet_id': requestId,
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'current_password': current.password,
+      'new_password': newPassword,
+      'encryption_recovery': recovery,
+      'ttl': 5,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () {
+        _passwordChangeCompleters.remove(requestId);
+        return 'Server did not confirm the password change';
+      },
+    );
+    if (result != null) return result;
+
+    final updated = current.copyWith(
+      password: newPassword,
+      identityRecovery: recovery,
+    );
+    await _store.saveCurrent(updated);
+    await _store.saveRecent(updated);
+    session = updated;
+    recentSessions = await _store.loadRecent();
+    await _socket.close();
+    await _connect();
+    notifyListeners();
+    return null;
   }
 
   Future<String?> renameActiveDevice(ActiveDevice device, String deviceName) {
@@ -8316,6 +8440,19 @@ class AppController extends ChangeNotifier {
     _clearLocalState();
     status = 'This device was signed out remotely';
     error = 'Enter the password again to reactivate this device';
+    notifyListeners();
+  }
+
+  Future<void> _handlePasswordChangedElsewhere() async {
+    final current = session;
+    await _socket.close();
+    await _store.clear();
+    if (current != null) await _store.removeRecent(current);
+    session = null;
+    recentSessions = await _store.loadRecent();
+    _clearLocalState();
+    status = 'The account password was changed on another device';
+    error = 'Enter the new password to sign in again';
     notifyListeners();
   }
 
@@ -8411,6 +8548,10 @@ class AppController extends ChangeNotifier {
       if (!completer.isCompleted) completer.complete('Signed out');
     }
     _meshProPreferenceCompleters.clear();
+    for (final completer in _passwordChangeCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _passwordChangeCompleters.clear();
   }
 
   Future<void> _saveCache() async {
@@ -8545,6 +8686,10 @@ class AppController extends ChangeNotifier {
       if (!completer.isCompleted) completer.complete('Application closed');
     }
     _chatPreferenceCompleters.clear();
+    for (final completer in _passwordChangeCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Application closed');
+    }
+    _passwordChangeCompleters.clear();
     super.dispose();
   }
 }

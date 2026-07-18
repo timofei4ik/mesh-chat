@@ -1,7 +1,7 @@
 name: meshchat_mobile
 description: "MeshChat mobile client."
 publish_to: "none"
-version: 1.0.25+128
+version: 1.0.26+129
 
 environment:
   sdk: ^3.12.2

@@ -13,6 +13,7 @@ class MeshCrypto {
   static final _hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
 
   SimpleKeyPair? _keyPair;
+  List<int>? _identitySeed;
   String publicKey = '';
 
   Future<void> initialize(String login, String password) async {
@@ -31,10 +32,87 @@ class MeshCrypto {
             )
             .then((key) => key.extractBytes());
 
-    _keyPair = await _x25519.newKeyPairFromSeed(privateBytes);
+    await _initializeFromSeed(privateBytes);
+  }
+
+  Future<String> createIdentityRecovery(
+    String login,
+    String newPassword,
+  ) async {
+    final seed = _identitySeed;
+    if (seed == null || seed.length != 32) {
+      throw StateError('Encryption identity is not initialized');
+    }
+    final salt = _randomBytes(16);
+    final nonce = _randomBytes(12);
+    final wrappingKey = await _recoveryKey(newPassword, salt);
+    final box = await _aes.encrypt(
+      seed,
+      secretKey: wrappingKey,
+      nonce: nonce,
+      aad: _recoveryAad(login),
+    );
+    return jsonEncode({
+      'v': 1,
+      'i': _iterations,
+      's': _encode(salt),
+      'n': _encode(nonce),
+      'c': _encode(box.cipherText),
+      'm': _encode(box.mac.bytes),
+    });
+  }
+
+  Future<bool> initializeFromIdentityRecovery(
+    String login,
+    String password,
+    String recovery,
+  ) async {
+    try {
+      final decoded = jsonDecode(recovery);
+      if (decoded is! Map || decoded['v'] != 1 || decoded['i'] != _iterations) {
+        return false;
+      }
+      final salt = _decode(decoded['s']?.toString() ?? '');
+      final nonce = _decode(decoded['n']?.toString() ?? '');
+      final cipherText = _decode(decoded['c']?.toString() ?? '');
+      final mac = _decode(decoded['m']?.toString() ?? '');
+      if (salt.length != 16 ||
+          nonce.length != 12 ||
+          cipherText.length != 32 ||
+          mac.length != 16) {
+        return false;
+      }
+      final seed = await _aes.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
+        secretKey: await _recoveryKey(password, salt),
+        aad: _recoveryAad(login),
+      );
+      if (seed.length != 32) return false;
+      await _initializeFromSeed(seed);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _initializeFromSeed(List<int> seed) async {
+    final seedCopy = List<int>.from(seed);
+    _identitySeed = seedCopy;
+    _keyPair = await _x25519.newKeyPairFromSeed(seedCopy);
     final key = await _keyPair!.extractPublicKey();
     publicKey = _encode(key.bytes);
   }
+
+  Future<SecretKey> _recoveryKey(String password, List<int> salt) {
+    return Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: _iterations,
+      bits: 256,
+    ).deriveKey(secretKey: SecretKey(utf8.encode(password)), nonce: salt);
+  }
+
+  List<int> _recoveryAad(String login) =>
+      utf8.encode('meshchat-e2ee-recovery-v1:${login.trim().toLowerCase()}');
 
   Future<String> encryptText(String recipientPublicKey, String text) async {
     if (recipientPublicKey.isEmpty || _keyPair == null) return text;

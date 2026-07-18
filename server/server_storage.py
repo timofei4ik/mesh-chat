@@ -177,6 +177,7 @@ class ServerStorageMixin:
                 about TEXT,
                 avatar_data TEXT,
                 encryption_public_key TEXT,
+                encryption_recovery TEXT DEFAULT '',
                 profile_background TEXT DEFAULT 'mesh',
                 profile_effect TEXT DEFAULT 'stars',
                 profile_blink_shape TEXT DEFAULT 'auto',
@@ -332,6 +333,13 @@ class ServerStorageMixin:
 
             conn.execute(
                 "ALTER TABLE accounts ADD COLUMN encryption_public_key TEXT"
+            )
+
+        if "encryption_recovery" not in account_columns:
+
+            conn.execute(
+                "ALTER TABLE accounts ADD COLUMN "
+                "encryption_recovery TEXT DEFAULT ''"
             )
 
         if "profile_background" not in account_columns:

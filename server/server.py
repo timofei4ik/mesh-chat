@@ -400,6 +400,11 @@ class MeshRelayServer(
                         {
                             "type": "server_welcome",
                             "web_push_vapid_public_key": self.web_push_public_key(),
+                            "encryption_recovery": (
+                                self.get_account_encryption_recovery(login)
+                                if login
+                                else ""
+                            ),
                             **version_payload()
                         },
                                 ensure_ascii=False
@@ -506,6 +511,11 @@ class MeshRelayServer(
                         welcome["subscription"] = self.subscription_status(
                             normalized_login,
                             "meshpro"
+                        )
+                        welcome["encryption_recovery"] = (
+                            self.get_account_encryption_recovery(
+                                normalized_login
+                            )
                         )
 
                     await websocket.send(
@@ -1171,6 +1181,72 @@ class MeshRelayServer(
                             ensure_ascii=False
                         )
                     )
+
+                    continue
+
+                if packet.get("type") == "account_password_change_request":
+
+                    password_login = (
+                        self.client_logins.get(node_id)
+                        or self.get_login_by_node(node_id)
+                        or ""
+                    )
+                    request_id = packet.get("request_id")
+                    ok, reason = self.change_account_password(
+                        password_login,
+                        packet.get("current_password"),
+                        packet.get("new_password"),
+                        packet.get("encryption_recovery")
+                    )
+
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "account_password_change_result",
+                                "request_id": request_id,
+                                "ok": ok,
+                                "reason": reason,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+
+                    if ok:
+                        for other_node, other_login in list(
+                            self.client_logins.items()
+                        ):
+                            if (
+                                other_node == node_id
+                                or other_login != password_login
+                            ):
+                                continue
+                            other_socket = self.clients.get(other_node)
+                            if not other_socket:
+                                continue
+                            try:
+                                await other_socket.send(
+                                    json.dumps(
+                                        {
+                                            "type": "server_error",
+                                            "code": "account_password_changed",
+                                            "message": (
+                                                "The account password was changed "
+                                                "from another signed-in device."
+                                            ),
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                )
+                                await other_socket.close(
+                                    code=4004,
+                                    reason="account password changed",
+                                )
+                            except Exception as close_error:
+                                print(
+                                    "Password change device close failed:",
+                                    other_node,
+                                    close_error,
+                                )
 
                     continue
 
