@@ -27,7 +27,6 @@ workflows:
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
           flutter analyze
-        ignore_failure: true
       - name: Build unsigned iOS app
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
