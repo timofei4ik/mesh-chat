@@ -13,11 +13,13 @@ class ProfileAvatar extends StatelessWidget {
     required this.profile,
     this.radius = 24,
     this.animateDecoration,
+    this.squareProgress = 0,
   });
 
   final Profile profile;
   final double radius;
   final bool? animateDecoration;
+  final double squareProgress;
 
   static final Map<String, MemoryImage> _imageCache = {};
 
@@ -27,7 +29,9 @@ class ProfileAvatar extends StatelessWidget {
     final decoration = profile.effectiveAvatarDecoration;
     final decorated =
         decoration != Profile.defaultAvatarDecoration && radius >= 16;
-    final avatarRadius = decorated ? radius * 0.79 : radius;
+    final morph = squareProgress.clamp(0.0, 1.0);
+    final avatarRadius = decorated ? radius * (0.79 + 0.21 * morph) : radius;
+    final cornerRadius = avatarRadius + (18 - avatarRadius) * morph;
     return RepaintBoundary(
       child: SizedBox(
         width: radius * 2,
@@ -39,11 +43,12 @@ class ProfileAvatar extends StatelessWidget {
               width: avatarRadius * 2,
               height: avatarRadius * 2,
               child: DecoratedBox(
-                decoration: const BoxDecoration(
-                  color: Color(0xFF315A7D),
-                  shape: BoxShape.circle,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF315A7D),
+                  borderRadius: BorderRadius.circular(cornerRadius),
                 ),
-                child: ClipOval(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(cornerRadius),
                   child: image == null
                       ? Center(
                           child: Text(
@@ -66,9 +71,12 @@ class ProfileAvatar extends StatelessWidget {
             ),
             if (decorated)
               Positioned.fill(
-                child: _AnimatedAvatarDecoration(
-                  style: decoration,
-                  animate: animateDecoration ?? radius >= 40,
+                child: Opacity(
+                  opacity: 1 - morph,
+                  child: _AnimatedAvatarDecoration(
+                    style: decoration,
+                    animate: animateDecoration ?? radius >= 40,
+                  ),
                 ),
               ),
           ],

@@ -109,6 +109,13 @@ class AiSmartRepliesResult {
   final int remaining;
 }
 
+class AiPersonMemoryResult {
+  const AiPersonMemoryResult({required this.text, required this.remaining});
+
+  final String text;
+  final int remaining;
+}
+
 class AiRewriteException implements Exception {
   const AiRewriteException(this.code, this.message);
 
@@ -161,6 +168,16 @@ class AiOcrException implements Exception {
 
 class AiSmartRepliesException implements Exception {
   const AiSmartRepliesException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AiPersonMemoryException implements Exception {
+  const AiPersonMemoryException(this.code, this.message);
 
   final String code;
   final String message;
@@ -302,6 +319,8 @@ class AppController extends ChangeNotifier {
   _aiTranscriptionCompleters = {};
   final Map<String, Completer<AiOcrResult>> _aiOcrCompleters = {};
   final Map<String, Completer<AiSmartRepliesResult>> _aiSmartRepliesCompleters =
+      {};
+  final Map<String, Completer<AiPersonMemoryResult>> _aiPersonMemoryCompleters =
       {};
   final Map<String, Completer<String?>> _scheduledMessageCompleters = {};
   final Map<String, Completer<String?>> _chatPreferenceCompleters = {};
@@ -1394,6 +1413,63 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<AiSummaryResult> summarizeCallNotesWithAi(String notes) async {
+    final current = session;
+    final normalizedNotes = notes.trim();
+    if (current == null) {
+      throw const AiSummaryException('unauthorized', 'Sign in first');
+    }
+    if (normalizedNotes.isEmpty) {
+      throw const AiSummaryException(
+        'no_transcript',
+        'Add call notes or a transcript first',
+      );
+    }
+    if (!_socket.isConnected) {
+      throw const AiSummaryException(
+        'offline',
+        'Connect to the server to create a call summary',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_call_summary')) {
+      throw const AiSummaryException(
+        'meshpro_required',
+        'AI call summaries require MeshPro',
+      );
+    }
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiSummaryResult>();
+    _aiSummaryCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_call_summary_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'notes': normalizedNotes,
+      });
+    } catch (_) {
+      _aiSummaryCompleters.remove(requestId);
+      throw const AiSummaryException(
+        'send_failed',
+        'Could not send the call summary request',
+      );
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 55),
+      onTimeout: () {
+        _aiSummaryCompleters.remove(requestId);
+        throw const AiSummaryException(
+          'timeout',
+          'The call summary took too long',
+        );
+      },
+    );
+  }
+
   Future<AiTranscriptionResult> transcribeVoiceWithAi(
     ChatMessage message,
   ) async {
@@ -1619,6 +1695,107 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<AiPersonMemoryResult> askPersonMemoryWithAi({
+    required ChatThread thread,
+    required String question,
+  }) async {
+    final current = session;
+    final normalizedQuestion = question.trim();
+    if (current == null) {
+      throw const AiPersonMemoryException('unauthorized', 'Sign in first');
+    }
+    if (thread.isGroup || thread.isBluetooth) {
+      throw const AiPersonMemoryException(
+        'unsupported_chat',
+        'Personal memory is available in direct chats',
+      );
+    }
+    if (normalizedQuestion.isEmpty) {
+      throw const AiPersonMemoryException(
+        'empty_question',
+        'Ask a question about this conversation',
+      );
+    }
+    if (!_socket.isConnected) {
+      throw const AiPersonMemoryException(
+        'offline',
+        'Connect to the server to search chat memory',
+      );
+    }
+    if (!await _refreshMeshProFeature('ai_person_memory')) {
+      throw const AiPersonMemoryException(
+        'meshpro_required',
+        'Personal AI memory requires MeshPro',
+      );
+    }
+
+    final messages = thread.messages
+        .where((message) => !message.deleted)
+        .toList(growable: false);
+    final start = max(0, messages.length - 240);
+    final payload = <Map<String, String>>[];
+    for (final message in messages.skip(start)) {
+      var text = message.text.trim();
+      if (text.isEmpty && message.transcription.trim().isNotEmpty) {
+        text = '[Voice] ${message.transcription.trim()}';
+      } else if (text.isEmpty && message.ocrText.trim().isNotEmpty) {
+        text = '[Image text] ${message.ocrText.trim()}';
+      } else if (text.isEmpty && message.kind == ChatMessageKind.file) {
+        text = message.fileName.trim().isEmpty
+            ? '[Attachment]'
+            : '[Attachment: ${message.fileName.trim()}]';
+      } else if (text.isEmpty && message.kind == ChatMessageKind.sticker) {
+        text = '[Sticker]';
+      }
+      if (text.isEmpty) continue;
+      final mine = message.senderNode == myNodeId;
+      payload.add({
+        'sender': mine ? 'You' : thread.profile.displayName,
+        'text': text,
+        'date': message.createdAt.toUtc().toIso8601String(),
+      });
+    }
+    if (payload.isEmpty) {
+      throw const AiPersonMemoryException(
+        'no_messages',
+        'There are no searchable messages in this chat',
+      );
+    }
+
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiPersonMemoryResult>();
+    _aiPersonMemoryCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_person_memory_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'question': normalizedQuestion,
+        'messages': payload,
+      });
+    } catch (_) {
+      _aiPersonMemoryCompleters.remove(requestId);
+      throw const AiPersonMemoryException(
+        'send_failed',
+        'Could not send the memory request',
+      );
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 55),
+      onTimeout: () {
+        _aiPersonMemoryCompleters.remove(requestId);
+        throw const AiPersonMemoryException(
+          'timeout',
+          'Chat memory took too long to respond',
+        );
+      },
+    );
+  }
+
   double _voiceDurationHint(String filename) {
     final match = RegExp(r'_(\d+)s(?:\.|$)').firstMatch(filename);
     return double.tryParse(match?.group(1) ?? '') ?? 0;
@@ -1644,6 +1821,7 @@ class AppController extends ChangeNotifier {
       'ai_unavailable': 'AI is not configured on the server yet',
       'provider_error': 'The AI provider is temporarily unavailable',
       'no_messages': 'There are no unread messages to summarize',
+      'no_transcript': 'Add call notes or a transcript first',
       'unauthorized': 'Sign in again to use AI tools',
     };
     completer.completeError(
@@ -1764,6 +1942,37 @@ class AppController extends ChangeNotifier {
       AiSmartRepliesException(
         code,
         messages[code] ?? 'Could not generate smart replies',
+      ),
+    );
+  }
+
+  void _handleAiPersonMemoryResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _aiPersonMemoryCompleters.remove(requestId);
+    if (completer == null || completer.isCompleted) return;
+    if (packet['ok'] == true) {
+      completer.complete(
+        AiPersonMemoryResult(
+          text: packet['text']?.toString() ?? '',
+          remaining: int.tryParse(packet['remaining']?.toString() ?? '') ?? 0,
+        ),
+      );
+      return;
+    }
+    final code = packet['error']?.toString() ?? 'unknown_error';
+    const messages = <String, String>{
+      'meshpro_required': 'Personal AI memory requires MeshPro',
+      'quota_exceeded': 'The monthly memory search limit has been reached',
+      'ai_unavailable': 'AI is not configured on the server yet',
+      'provider_error': 'Could not search this conversation',
+      'empty_question': 'Ask a question about this conversation',
+      'no_messages': 'There are no searchable messages in this chat',
+      'unauthorized': 'Sign in again to use AI tools',
+    };
+    completer.completeError(
+      AiPersonMemoryException(
+        code,
+        messages[code] ?? 'Could not search chat memory',
       ),
     );
   }
@@ -2237,6 +2446,10 @@ class AppController extends ChangeNotifier {
         _handleAiOcrResult(packet);
       case 'ai_smart_replies_result':
         _handleAiSmartRepliesResult(packet);
+      case 'ai_person_memory_result':
+        _handleAiPersonMemoryResult(packet);
+      case 'ai_call_summary_result':
+        _handleAiSummaryResult(packet);
       case 'active_devices':
         _handleActiveDevices(packet);
       case 'active_device_action_result':
@@ -8576,6 +8789,14 @@ class AppController extends ChangeNotifier {
       }
     }
     _aiSmartRepliesCompleters.clear();
+    for (final completer in _aiPersonMemoryCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiPersonMemoryException('signed_out', 'Signed out'),
+        );
+      }
+    }
+    _aiPersonMemoryCompleters.clear();
     for (final completer in _scheduledMessageCompleters.values) {
       if (!completer.isCompleted) completer.complete('Signed out');
     }
@@ -8722,6 +8943,14 @@ class AppController extends ChangeNotifier {
       }
     }
     _aiSmartRepliesCompleters.clear();
+    for (final completer in _aiPersonMemoryCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          const AiPersonMemoryException('disposed', 'Application closed'),
+        );
+      }
+    }
+    _aiPersonMemoryCompleters.clear();
     for (final completer in _scheduledMessageCompleters.values) {
       if (!completer.isCompleted) completer.complete('Application closed');
     }

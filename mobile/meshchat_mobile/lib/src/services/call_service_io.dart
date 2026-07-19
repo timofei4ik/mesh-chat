@@ -298,14 +298,27 @@ class CallService {
     final peerConnection = _peerConnection;
     if (peerConnection == null) throw StateError('Call is not active');
     await _stopScreenMedia();
-    final stream = await navigator.mediaDevices.getDisplayMedia({
-      'audio': false,
-      'video': {
-        'frameRate': {'ideal': 15, 'max': 24},
-        'width': {'ideal': 1280},
-        'height': {'ideal': 720},
-      },
-    });
+    final MediaStream stream;
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      final sources = await desktopCapturer.getSources(
+        types: const [SourceType.Screen],
+      );
+      if (sources.isEmpty) {
+        throw StateError('No screen is available to share');
+      }
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        'audio': false,
+        'video': {
+          'deviceId': {'exact': sources.first.id},
+          'mandatory': {'frameRate': 20.0},
+        },
+      });
+    } else {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        'audio': false,
+        'video': true,
+      });
+    }
     final tracks = stream.getVideoTracks();
     if (tracks.isEmpty) {
       await stream.dispose();

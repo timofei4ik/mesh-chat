@@ -200,6 +200,16 @@ _FEATURES = {
         "category": "ai",
         "rollout": ROLLOUT_AVAILABLE,
     },
+    "ai_person_memory": {
+        "application": "meshchat",
+        "category": "ai",
+        "rollout": ROLLOUT_AVAILABLE,
+    },
+    "ai_call_summary": {
+        "application": "meshchat",
+        "category": "ai",
+        "rollout": ROLLOUT_AVAILABLE,
+    },
     "ai_message_translation": {
         "application": "meshchat",
         "category": "ai",
@@ -307,6 +317,18 @@ _LIMITS = {
         "unit": "count_per_month",
         "free": 0,
         "meshpro": 100,
+        "rollout": ROLLOUT_AVAILABLE,
+    },
+    "ai_person_memory_month": {
+        "unit": "count_per_month",
+        "free": 0,
+        "meshpro": 60,
+        "rollout": ROLLOUT_AVAILABLE,
+    },
+    "ai_call_summaries_month": {
+        "unit": "count_per_month",
+        "free": 0,
+        "meshpro": 30,
         "rollout": ROLLOUT_AVAILABLE,
     },
     "ai_message_translations_month": {

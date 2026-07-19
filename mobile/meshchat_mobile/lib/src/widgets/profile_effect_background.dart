@@ -102,18 +102,32 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
           animation: controller,
           builder: (context, _) {
             final phase = math.min(2, (controller.value * 3).floor());
-            return CustomPaint(
-              isComplex: true,
-              willChange: controller.isAnimating,
-              painter: _ProfileEffectPainter(
-                t: controller.value,
-                seed: seed + phase,
-                background: widget.profile.effectiveProfileBanner,
-                effect: widget.enabled
-                    ? widget.profile.effectiveProfileEffect
-                    : 'none',
-                blinkShape: widget.profile.effectiveProfileBlinkShape,
-                accent: Color(widget.profile.effectiveProfileAccent),
+            return ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (bounds) => const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.white,
+                  Colors.white,
+                  Colors.transparent,
+                ],
+                stops: [0, 0.05, 0.88, 1],
+              ).createShader(bounds),
+              child: CustomPaint(
+                isComplex: true,
+                willChange: controller.isAnimating,
+                painter: _ProfileEffectPainter(
+                  t: controller.value,
+                  seed: seed + phase,
+                  background: widget.profile.effectiveProfileBanner,
+                  effect: widget.enabled
+                      ? widget.profile.effectiveProfileEffect
+                      : 'none',
+                  blinkShape: widget.profile.effectiveProfileBlinkShape,
+                  accent: Color(widget.profile.effectiveProfileAccent),
+                ),
               ),
             );
           },
@@ -211,7 +225,9 @@ class _ProfileEffectPainter extends CustomPainter {
         ).createShader(Offset.zero & size);
         canvas.drawRect(Offset.zero & size, Paint()..shader = gradient);
         for (var i = 0; i < 4; i++) {
-          final dx = ((i * 0.29 + t * 0.07) % 1.25 - 0.12) * size.width;
+          final dx =
+              (0.08 + i * 0.27 + math.sin(t * math.pi * 2 + i) * 0.045) *
+              size.width;
           final dy = size.height * (0.20 + i * 0.18);
           final cloud = Rect.fromCenter(
             center: Offset(dx, dy),
@@ -295,7 +311,8 @@ class _ProfileEffectPainter extends CustomPainter {
     for (var i = 0; i < count; i++) {
       final x = ((i * 43 + seed * 7) % 101) / 100 * size.width;
       final base = ((i * 67 + 13) % 97) / 96;
-      final y = ((base - t * (0.10 + (i % 4) * 0.018)) % 1) * size.height;
+      final y =
+          (base + math.sin(t * math.pi * 2 + i * 0.73) * 0.075) * size.height;
       canvas.drawCircle(Offset(x, y), i % 5 == 0 ? 1.5 : 0.85, paint);
     }
   }

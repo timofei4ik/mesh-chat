@@ -15,6 +15,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
@@ -25,7 +26,6 @@ import '../services/call_alert_service.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
-import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
 import '../widgets/message_send_effect.dart';
@@ -86,7 +86,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool hasInputText = false;
   bool aiRewriting = false;
   bool aiSummarizing = false;
+  bool aiCallSummarizing = false;
   bool aiSmartRepliesLoading = false;
+  bool aiPersonMemoryLoading = false;
   List<String> smartReplies = const [];
   bool unreadSummaryVisible = false;
   final unreadMessageIds = <String>[];
@@ -99,6 +101,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String? liveLocationMessageId;
   String? highlightedMessageId;
   final deletingMessageIds = <String>{};
+  double edgeBackDrag = 0;
+  bool edgeBackHapticSent = false;
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
@@ -460,6 +464,101 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> showCallSummary() async {
+    if (aiCallSummarizing) return;
+    final allowed = await requireMeshPro(
+      context,
+      widget.controller,
+      featureId: 'ai_call_summary',
+      title: 'Call summary',
+      description:
+          'Structure a transcript or your call notes into topics, decisions, tasks and dates.',
+    );
+    if (!allowed || !mounted) return;
+    final notesController = TextEditingController();
+    final notes = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Call notes or transcript'),
+        content: SizedBox(
+          width: 540,
+          child: TextField(
+            controller: notesController,
+            autofocus: true,
+            minLines: 7,
+            maxLines: 14,
+            decoration: const InputDecoration(
+              hintText:
+                  'Paste a transcript or write what was discussed. MeshChat does not record calls automatically.',
+              alignLabelWithHint: true,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              final value = notesController.text.trim();
+              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+            },
+            icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+            label: const Text('Summarize'),
+          ),
+        ],
+      ),
+    );
+    notesController.dispose();
+    if (notes == null || !mounted) return;
+    setState(() => aiCallSummarizing = true);
+    try {
+      final result = await widget.controller.summarizeCallNotesWithAi(notes);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.auto_awesome_rounded, color: Color(0xFFB28AFF)),
+              SizedBox(width: 10),
+              Expanded(child: Text('Call summary')),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: SingleChildScrollView(child: SelectableText(result.text)),
+          ),
+          actions: [
+            Text(
+              '${result.remaining} summaries left',
+              style: const TextStyle(fontSize: 12, color: Colors.white54),
+            ),
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: result.text));
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+              },
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+    } on AiSummaryException catch (error) {
+      if (mounted) showSnack(error.message);
+    } catch (_) {
+      if (mounted) showSnack('Could not create a call summary');
+    } finally {
+      if (mounted) setState(() => aiCallSummarizing = false);
+    }
+  }
+
   Future<void> showSmartReplies() async {
     if (aiSmartRepliesLoading || input.text.trim().isNotEmpty) return;
     final allowed = await requireMeshPro(
@@ -500,6 +599,112 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       selection: TextSelection.collapsed(offset: reply.length),
     );
     inputFocus.requestFocus();
+  }
+
+  Future<void> showPersonMemory() async {
+    if (aiPersonMemoryLoading) return;
+    final allowed = await requireMeshPro(
+      context,
+      widget.controller,
+      featureId: 'ai_person_memory',
+      title: 'Memory about ${widget.thread.profile.displayName}',
+      description:
+          'Ask a question and get an answer based only on this conversation.',
+    );
+    if (!allowed || !mounted) return;
+    final questionController = TextEditingController();
+    final question = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.psychology_alt_rounded, color: Color(0xFFB28AFF)),
+            SizedBox(width: 10),
+            Expanded(child: Text('Ask chat memory')),
+          ],
+        ),
+        content: TextField(
+          controller: questionController,
+          autofocus: true,
+          minLines: 1,
+          maxLines: 4,
+          textInputAction: TextInputAction.done,
+          decoration: const InputDecoration(
+            hintText: 'What did we agree on last Friday?',
+            prefixIcon: Icon(Icons.search_rounded),
+          ),
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.pop(dialogContext, value.trim());
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              final value = questionController.text.trim();
+              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+            },
+            icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+            label: const Text('Ask'),
+          ),
+        ],
+      ),
+    );
+    questionController.dispose();
+    if (question == null || !mounted) return;
+    setState(() => aiPersonMemoryLoading = true);
+    try {
+      final result = await widget.controller.askPersonMemoryWithAi(
+        thread: widget.thread,
+        question: question,
+      );
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.psychology_alt_rounded, color: Color(0xFFB28AFF)),
+              SizedBox(width: 10),
+              Expanded(child: Text('Chat memory')),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 540),
+            child: SingleChildScrollView(child: SelectableText(result.text)),
+          ),
+          actions: [
+            Text(
+              '${result.remaining} searches left',
+              style: const TextStyle(fontSize: 12, color: Colors.white54),
+            ),
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: result.text));
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+              },
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+    } on AiPersonMemoryException catch (error) {
+      if (mounted) showSnack(error.message);
+    } catch (_) {
+      if (mounted) showSnack('Could not search chat memory');
+    } finally {
+      if (mounted) setState(() => aiPersonMemoryLoading = false);
+    }
   }
 
   Future<void> attachFile() async {
@@ -1985,6 +2190,21 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       widget.thread.profile,
                     ))
                   ListTile(
+                    leading: aiPersonMemoryLoading
+                        ? const SizedBox.square(
+                            dimension: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.psychology_alt_rounded),
+                    title: const Text('Ask chat memory'),
+                    subtitle: const Text('Answers only from this conversation'),
+                    onTap: () => Navigator.pop(context, 'person_memory'),
+                  ),
+                if (!widget.thread.isBluetooth &&
+                    !widget.controller.isSavedMessagesProfile(
+                      widget.thread.profile,
+                    ))
+                  ListTile(
                     leading: const Icon(Icons.schedule_rounded),
                     title: const Text('Scheduled messages'),
                     onTap: () => Navigator.pop(context, 'scheduled'),
@@ -2005,6 +2225,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         break;
       case 'scheduled':
         await showScheduledMessages();
+        break;
+      case 'person_memory':
+        await showPersonMemory();
         break;
     }
   }
@@ -2785,7 +3008,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        leadingWidth: 56,
+        centerTitle: true,
+        leadingWidth: 62,
         leading: Padding(
           padding: const EdgeInsets.only(left: 8),
           child: _ChatRoundButton(
@@ -2794,7 +3018,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             onPressed: () => Navigator.maybePop(context),
           ),
         ),
-        titleSpacing: 0,
+        titleSpacing: 4,
         title: ListenableBuilder(
           listenable: widget.controller,
           builder: (context, _) {
@@ -2802,81 +3026,37 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             final isSavedMessages = widget.controller.isSavedMessagesProfile(
               profile,
             );
-            return InkWell(
-              borderRadius: BorderRadius.circular(8),
+            final active = widget.controller.isTyping(widget.thread);
+            final subtitle = active
+                ? widget.controller.activityLabel(widget.thread)
+                : isChannelCommentThread
+                ? profile.displayName
+                : widget.thread.isGroup
+                ? widget.thread.isChannel
+                      ? '${widget.thread.members.length} subscribers'
+                      : '${widget.thread.members.length} members'
+                : isSavedMessages
+                ? 'private notes'
+                : profile.online
+                ? 'online'
+                : 'offline';
+            return _ChatHeaderIdentity(
+              title: isChannelCommentThread ? 'Comments' : profile.displayName,
+              subtitle: subtitle,
+              active: active || widget.thread.isGroup || profile.online,
               onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
-              child: Row(
-                children: [
-                  _ChatAvatarRing(profile: profile),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (isChannelCommentThread)
-                          const Text(
-                            'Comments',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          )
-                        else
-                          MeshProProfileName(profile: profile),
-                        Text(
-                          isChannelCommentThread
-                              ? profile.displayName
-                              : widget.thread.isGroup
-                              ? widget.thread.isChannel
-                                    ? '${widget.thread.members.length} subscribers'
-                                    : '${widget.thread.members.length} members'
-                              : isSavedMessages
-                              ? 'private notes'
-                              : profile.online
-                              ? 'online'
-                              : 'offline',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: widget.thread.isGroup || profile.online
-                                ? Colors.greenAccent
-                                : Colors.white54,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
             );
           },
         ),
-        actions: [
-          if (widget.thread.isGroup)
-            _ChatRoundButton(
-              tooltip: 'Group actions',
-              icon: const Icon(Icons.more_horiz_rounded),
-              onPressed: showGroupActions,
-            )
-          else ...[
-            if (!widget.controller.isSavedMessagesProfile(
-              widget.thread.profile,
-            ))
-              _ChatRoundButton(
-                tooltip: 'Call',
-                icon: const Icon(Icons.call_outlined),
-                onPressed: startCall,
-              ),
-            _ChatRoundButton(
-              tooltip: 'Search',
-              icon: const Icon(Icons.search_rounded),
-              onPressed: showSearchDialog,
+        actions: <Widget>[
+          ListenableBuilder(
+            listenable: widget.controller,
+            builder: (context, _) => _ChatHeaderAvatarButton(
+              profile: widget.thread.profile,
+              onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
             ),
-            _ChatRoundButton(
-              tooltip: 'More',
-              icon: const Icon(Icons.more_horiz_rounded),
-              onPressed: showDirectActions,
-            ),
-          ],
-          const SizedBox(width: 6),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Stack(
@@ -2924,7 +3104,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       thread: widget.thread,
                       onTap: openPinnedMessages,
                     ),
-                    _CallBanner(controller: widget.controller),
+                    _CallBanner(
+                      controller: widget.controller,
+                      onSummarize: showCallSummary,
+                      summaryLoading: aiCallSummarizing,
+                    ),
                     if (widget.controller.isTyping(widget.thread))
                       Padding(
                         padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
@@ -2991,43 +3175,50 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                     setState(() => replyTo = album.last),
                               )
                             else
-                              _MessageDisintegrator(
-                                deleting: deletingMessageIds.contains(
-                                  message.id,
-                                ),
-                                child: _MessageBubble(
-                                  key: ValueKey(message.id),
-                                  controller: widget.controller,
-                                  thread: widget.thread,
-                                  message: message,
-                                  mine:
-                                      message.senderNode ==
-                                      widget.controller.myNodeId,
-                                  dataSaver:
-                                      widget.controller.appSettings.dataSaver,
-                                  onLongPress: () =>
-                                      showMessageActions(message),
-                                  onReply: () =>
-                                      widget.thread.isChannel &&
-                                          !isChannelCommentThread
-                                      ? openChannelComments(message)
-                                      : setState(() => replyTo = message),
-                                  onReplyQuoteTap:
-                                      message.replyToMessageId.isEmpty
-                                      ? null
-                                      : () => jumpToMessageById(
-                                          message.replyToMessageId,
-                                        ),
-                                  highlighted:
-                                      highlightedMessageId == message.id,
-                                  onOpenComments:
-                                      widget.thread.isChannel &&
-                                          !isChannelCommentThread &&
-                                          message.replyToMessageId.isEmpty
-                                      ? () => openChannelComments(message)
-                                      : null,
-                                  commentCount: commentCountFor(message),
-                                ),
+                              _ViewportMessageTint(
+                                scrollController: scroll,
+                                builder: (context, positionTint) =>
+                                    _MessageDisintegrator(
+                                      deleting: deletingMessageIds.contains(
+                                        message.id,
+                                      ),
+                                      child: _MessageBubble(
+                                        key: ValueKey(message.id),
+                                        controller: widget.controller,
+                                        thread: widget.thread,
+                                        message: message,
+                                        mine:
+                                            message.senderNode ==
+                                            widget.controller.myNodeId,
+                                        dataSaver: widget
+                                            .controller
+                                            .appSettings
+                                            .dataSaver,
+                                        onLongPress: () =>
+                                            showMessageActions(message),
+                                        onReply: () =>
+                                            widget.thread.isChannel &&
+                                                !isChannelCommentThread
+                                            ? openChannelComments(message)
+                                            : setState(() => replyTo = message),
+                                        onReplyQuoteTap:
+                                            message.replyToMessageId.isEmpty
+                                            ? null
+                                            : () => jumpToMessageById(
+                                                message.replyToMessageId,
+                                              ),
+                                        highlighted:
+                                            highlightedMessageId == message.id,
+                                        onOpenComments:
+                                            widget.thread.isChannel &&
+                                                !isChannelCommentThread &&
+                                                message.replyToMessageId.isEmpty
+                                            ? () => openChannelComments(message)
+                                            : null,
+                                        commentCount: commentCountFor(message),
+                                        positionTint: positionTint,
+                                      ),
+                                    ),
                               ),
                           ],
                         );
@@ -3040,330 +3231,296 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 top: false,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
-                  child: _ChatGlassSurface(
-                    radius: 24,
-                    useNativeGlass: true,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-                      child: canPostToThread
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (replyTo != null) ...[
-                                  _ReplyComposer(
-                                    message: replyTo!,
-                                    onCancel: () =>
-                                        setState(() => replyTo = null),
+                  child: canPostToThread
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (replyTo != null) ...[
+                              _ReplyComposer(
+                                message: replyTo!,
+                                onCancel: () => setState(() => replyTo = null),
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 220),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              transitionBuilder: (child, animation) =>
+                                  SizeTransition(
+                                    sizeFactor: animation,
+                                    alignment: AlignmentDirectional.topStart,
+                                    child: FadeTransition(
+                                      opacity: animation,
+                                      child: child,
+                                    ),
                                   ),
-                                  const SizedBox(height: 8),
+                              child:
+                                  aiSmartRepliesLoading ||
+                                      smartReplies.isNotEmpty
+                                  ? Padding(
+                                      key: const ValueKey(
+                                        'smart-replies-visible',
+                                      ),
+                                      padding: const EdgeInsets.only(bottom: 8),
+                                      child: _SmartRepliesBar(
+                                        loading: aiSmartRepliesLoading,
+                                        replies: smartReplies,
+                                        onSelected: useSmartReply,
+                                        onClose: () => setState(
+                                          () => smartReplies = const [],
+                                        ),
+                                      ),
+                                    )
+                                  : const SizedBox.shrink(
+                                      key: ValueKey('smart-replies-hidden'),
+                                    ),
+                            ),
+                            Row(
+                              children: [
+                                if (!recording) ...[
+                                  _ComposerIconButton(
+                                    tooltip: 'Attach',
+                                    onPressed: showAttachMenu,
+                                    icon: Icons.attach_file_rounded,
+                                  ),
+                                  const SizedBox(width: 8),
                                 ],
-                                AnimatedSwitcher(
-                                  duration: const Duration(milliseconds: 220),
-                                  switchInCurve: Curves.easeOutCubic,
-                                  switchOutCurve: Curves.easeInCubic,
-                                  transitionBuilder: (child, animation) =>
-                                      SizeTransition(
-                                        sizeFactor: animation,
-                                        alignment:
-                                            AlignmentDirectional.topStart,
-                                        child: FadeTransition(
-                                          opacity: animation,
-                                          child: child,
-                                        ),
-                                      ),
-                                  child:
-                                      aiSmartRepliesLoading ||
-                                          smartReplies.isNotEmpty
-                                      ? Padding(
-                                          key: const ValueKey(
-                                            'smart-replies-visible',
-                                          ),
-                                          padding: const EdgeInsets.only(
-                                            bottom: 8,
-                                          ),
-                                          child: _SmartRepliesBar(
-                                            loading: aiSmartRepliesLoading,
-                                            replies: smartReplies,
-                                            onSelected: useSmartReply,
-                                            onClose: () => setState(
-                                              () => smartReplies = const [],
+                                Expanded(
+                                  child: _ComposerInputSurface(
+                                    child: recording
+                                        ? Transform.translate(
+                                            offset: Offset(
+                                              voiceCancelDrag * 0.22,
+                                              0,
                                             ),
-                                          ),
-                                        )
-                                      : const SizedBox.shrink(
-                                          key: ValueKey('smart-replies-hidden'),
-                                        ),
-                                ),
-                                Row(
-                                  children: [
-                                    if (!recording) ...[
-                                      _ComposerIconButton(
-                                        tooltip: 'Attach',
-                                        onPressed: showAttachMenu,
-                                        icon: Icons.attach_file_rounded,
-                                      ),
-                                      const SizedBox(width: 6),
-                                      _ComposerIconButton(
-                                        tooltip: 'Stickers',
-                                        onPressed: showStickerPanel,
-                                        icon: Icons.auto_awesome_motion_rounded,
-                                      ),
-                                      const SizedBox(width: 8),
-                                    ],
-                                    Expanded(
-                                      child: _ComposerInputSurface(
-                                        child: recording
-                                            ? Transform.translate(
-                                                offset: Offset(
-                                                  voiceCancelDrag * 0.22,
-                                                  0,
+                                            child: Row(
+                                              children: [
+                                                Icon(
+                                                  voiceCancelArmed
+                                                      ? Icons.delete_rounded
+                                                      : Icons.mic_rounded,
+                                                  color: voiceCancelArmed
+                                                      ? Colors.redAccent
+                                                      : Colors.lightBlueAccent,
                                                 ),
-                                                child: Row(
-                                                  children: [
-                                                    Icon(
-                                                      voiceCancelArmed
-                                                          ? Icons.delete_rounded
-                                                          : Icons.mic_rounded,
-                                                      color: voiceCancelArmed
-                                                          ? Colors.redAccent
-                                                          : Colors
-                                                                .lightBlueAccent,
-                                                    ),
-                                                    const SizedBox(width: 8),
-                                                    Expanded(
-                                                      child: Column(
-                                                        mainAxisSize:
-                                                            MainAxisSize.min,
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .start,
-                                                        children: [
-                                                          _Waveform(
-                                                            levels:
-                                                                recordLevels,
-                                                          ),
-                                                          const SizedBox(
-                                                            height: 3,
-                                                          ),
-                                                          Text(
-                                                            voiceCancelArmed
-                                                                ? 'Release to cancel'
-                                                                : 'Release to send · slide left to cancel',
-                                                            maxLines: 1,
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                            style: TextStyle(
-                                                              color:
-                                                                  voiceCancelArmed
-                                                                  ? Colors
-                                                                        .redAccent
-                                                                  : Colors
-                                                                        .white54,
-                                                              fontSize: 11,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w700,
-                                                            ),
-                                                          ),
-                                                        ],
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Column(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      _Waveform(
+                                                        levels: recordLevels,
                                                       ),
-                                                    ),
-                                                    const SizedBox(width: 8),
-                                                    Text(
-                                                      recordDuration(),
-                                                      style: const TextStyle(
-                                                        color: Colors.white70,
+                                                      const SizedBox(height: 3),
+                                                      Text(
+                                                        voiceCancelArmed
+                                                            ? 'Release to cancel'
+                                                            : 'Release to send · slide left to cancel',
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: TextStyle(
+                                                          color:
+                                                              voiceCancelArmed
+                                                              ? Colors.redAccent
+                                                              : Colors.white54,
+                                                          fontSize: 11,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                        ),
                                                       ),
-                                                    ),
-                                                  ],
+                                                    ],
+                                                  ),
                                                 ),
-                                              )
-                                            : Focus(
-                                                focusNode: inputFocus,
-                                                onKeyEvent: handleInputKey,
-                                                child: TextField(
-                                                  controller: input,
-                                                  minLines: 1,
-                                                  maxLines: 5,
-                                                  textCapitalization:
-                                                      TextCapitalization
-                                                          .sentences,
-                                                  keyboardType:
-                                                      TextInputType.multiline,
-                                                  textInputAction:
-                                                      desktopSendHotkeys
-                                                      ? TextInputAction.send
-                                                      : TextInputAction.newline,
-                                                  decoration: InputDecoration(
-                                                    hintText: 'Message',
-                                                    isDense: true,
-                                                    filled: false,
-                                                    border: InputBorder.none,
-                                                    suffixIcon: hasInputText
-                                                        ? IconButton(
-                                                            tooltip:
-                                                                'AI writing assistant',
-                                                            onPressed:
-                                                                aiRewriting
-                                                                ? null
-                                                                : showAiRewrite,
-                                                            visualDensity:
-                                                                VisualDensity
-                                                                    .compact,
-                                                            icon: AnimatedSwitcher(
-                                                              duration:
-                                                                  const Duration(
-                                                                    milliseconds:
-                                                                        180,
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  recordDuration(),
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          )
+                                        : Focus(
+                                            focusNode: inputFocus,
+                                            onKeyEvent: handleInputKey,
+                                            child: TextField(
+                                              controller: input,
+                                              minLines: 1,
+                                              maxLines: 5,
+                                              textCapitalization:
+                                                  TextCapitalization.sentences,
+                                              keyboardType:
+                                                  TextInputType.multiline,
+                                              textInputAction:
+                                                  desktopSendHotkeys
+                                                  ? TextInputAction.send
+                                                  : TextInputAction.newline,
+                                              decoration: InputDecoration(
+                                                hintText: 'Message',
+                                                isDense: true,
+                                                filled: false,
+                                                border: InputBorder.none,
+                                                suffixIcon: hasInputText
+                                                    ? IconButton(
+                                                        tooltip:
+                                                            'AI writing assistant',
+                                                        onPressed: aiRewriting
+                                                            ? null
+                                                            : showAiRewrite,
+                                                        visualDensity:
+                                                            VisualDensity
+                                                                .compact,
+                                                        icon: AnimatedSwitcher(
+                                                          duration:
+                                                              const Duration(
+                                                                milliseconds:
+                                                                    180,
+                                                              ),
+                                                          child: aiRewriting
+                                                              ? const SizedBox(
+                                                                  key: ValueKey(
+                                                                    'ai-loading',
                                                                   ),
-                                                              child: aiRewriting
-                                                                  ? const SizedBox(
-                                                                      key: ValueKey(
-                                                                        'ai-loading',
-                                                                      ),
-                                                                      width: 17,
-                                                                      height:
-                                                                          17,
-                                                                      child: CircularProgressIndicator(
-                                                                        strokeWidth:
-                                                                            2,
-                                                                      ),
-                                                                    )
-                                                                  : const Icon(
-                                                                      Icons
-                                                                          .auto_awesome_rounded,
-                                                                      key: ValueKey(
-                                                                        'ai-ready',
-                                                                      ),
-                                                                      size: 20,
-                                                                      color: Color(
-                                                                        0xFFB28AFF,
-                                                                      ),
-                                                                    ),
-                                                            ),
-                                                          )
-                                                        : IconButton(
-                                                            tooltip:
-                                                                'Smart replies',
-                                                            onPressed:
-                                                                aiSmartRepliesLoading
-                                                                ? null
-                                                                : showSmartReplies,
-                                                            visualDensity:
-                                                                VisualDensity
-                                                                    .compact,
-                                                            icon:
-                                                                aiSmartRepliesLoading
-                                                                ? const SizedBox(
-                                                                    width: 17,
-                                                                    height: 17,
-                                                                    child: CircularProgressIndicator(
+                                                                  width: 17,
+                                                                  height: 17,
+                                                                  child: CircularProgressIndicator(
+                                                                    strokeWidth:
+                                                                        2,
+                                                                  ),
+                                                                )
+                                                              : const Icon(
+                                                                  Icons
+                                                                      .auto_awesome_rounded,
+                                                                  key: ValueKey(
+                                                                    'ai-ready',
+                                                                  ),
+                                                                  size: 20,
+                                                                  color: Color(
+                                                                    0xFFB28AFF,
+                                                                  ),
+                                                                ),
+                                                        ),
+                                                      )
+                                                    : IconButton(
+                                                        tooltip:
+                                                            'Smart replies',
+                                                        onPressed:
+                                                            aiSmartRepliesLoading
+                                                            ? null
+                                                            : showSmartReplies,
+                                                        visualDensity:
+                                                            VisualDensity
+                                                                .compact,
+                                                        icon:
+                                                            aiSmartRepliesLoading
+                                                            ? const SizedBox(
+                                                                width: 17,
+                                                                height: 17,
+                                                                child:
+                                                                    CircularProgressIndicator(
                                                                       strokeWidth:
                                                                           2,
                                                                     ),
-                                                                  )
-                                                                : const Icon(
-                                                                    Icons
-                                                                        .quickreply_outlined,
-                                                                    size: 20,
-                                                                    color: Color(
-                                                                      0xFF73D9FF,
-                                                                    ),
-                                                                  ),
-                                                          ),
-                                                    suffixIconConstraints:
-                                                        const BoxConstraints(
-                                                          minWidth: 38,
-                                                          minHeight: 36,
-                                                        ),
-                                                  ),
-                                                  onTap:
-                                                      scheduleKeyboardScrollToBottom,
-                                                  onSubmitted:
-                                                      desktopSendHotkeys
-                                                      ? (_) => send()
-                                                      : null,
-                                                ),
+                                                              )
+                                                            : const Icon(
+                                                                Icons
+                                                                    .quickreply_outlined,
+                                                                size: 20,
+                                                                color: Color(
+                                                                  0xFF73D9FF,
+                                                                ),
+                                                              ),
+                                                      ),
+                                                suffixIconConstraints:
+                                                    const BoxConstraints(
+                                                      minWidth: 38,
+                                                      minHeight: 36,
+                                                    ),
                                               ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    if (recording && !voicePointerDown)
-                                      _ComposerIconButton(
-                                        tooltip: 'Cancel',
-                                        onPressed: cancelRecording,
-                                        icon: Icons.close_rounded,
-                                        accent: Colors.redAccent,
-                                      )
-                                    else
-                                      AnimatedSwitcher(
-                                        duration: const Duration(
-                                          milliseconds: 180,
-                                        ),
-                                        transitionBuilder: (child, animation) =>
-                                            ScaleTransition(
-                                              scale: CurvedAnimation(
-                                                parent: animation,
-                                                curve: Curves.easeOutBack,
-                                              ),
-                                              child: FadeTransition(
-                                                opacity: animation,
-                                                child: child,
-                                              ),
+                                              onTap:
+                                                  scheduleKeyboardScrollToBottom,
+                                              onSubmitted: desktopSendHotkeys
+                                                  ? (_) => send()
+                                                  : null,
                                             ),
-                                        child: hasInputText && !recording
-                                            ? _ComposerIconButton(
-                                                key: const ValueKey('send'),
-                                                tooltip:
-                                                    'Send · hold to schedule',
-                                                onPressed: send,
-                                                onLongPress:
-                                                    showScheduleComposer,
-                                                icon: Icons.send_rounded,
-                                                accent: _chatThemeAccent(
-                                                  widget.thread.themeId,
-                                                ),
-                                              )
-                                            : _VoiceHoldButton(
-                                                key: const ValueKey('mic'),
-                                                onStart: startVoiceHold,
-                                                onDragUpdate:
-                                                    updateVoiceHoldDrag,
-                                                onFinish: () =>
-                                                    finishVoiceHold(send: true),
-                                                onCancel: () => finishVoiceHold(
-                                                  send: false,
-                                                ),
-                                              ),
-                                      ),
-                                  ],
+                                          ),
+                                  ),
                                 ),
+                                const SizedBox(width: 8),
+                                if (recording && !voicePointerDown)
+                                  _ComposerIconButton(
+                                    tooltip: 'Cancel',
+                                    onPressed: cancelRecording,
+                                    icon: Icons.close_rounded,
+                                    accent: Colors.redAccent,
+                                  )
+                                else
+                                  AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 180),
+                                    transitionBuilder: (child, animation) =>
+                                        ScaleTransition(
+                                          scale: CurvedAnimation(
+                                            parent: animation,
+                                            curve: Curves.easeOutBack,
+                                          ),
+                                          child: FadeTransition(
+                                            opacity: animation,
+                                            child: child,
+                                          ),
+                                        ),
+                                    child: hasInputText && !recording
+                                        ? _ComposerIconButton(
+                                            key: const ValueKey('send'),
+                                            tooltip: 'Send · hold to schedule',
+                                            onPressed: send,
+                                            onLongPress: showScheduleComposer,
+                                            icon: Icons.send_rounded,
+                                            accent: _chatThemeAccent(
+                                              widget.thread.themeId,
+                                            ),
+                                          )
+                                        : _VoiceHoldButton(
+                                            key: const ValueKey('mic'),
+                                            onStart: startVoiceHold,
+                                            onDragUpdate: updateVoiceHoldDrag,
+                                            onFinish: () =>
+                                                finishVoiceHold(send: true),
+                                            onCancel: () =>
+                                                finishVoiceHold(send: false),
+                                          ),
+                                  ),
                               ],
-                            )
-                          : const Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.campaign_outlined,
-                                    color: Colors.white54,
-                                  ),
-                                  SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      'Only channel admins can post',
-                                      style: TextStyle(color: Colors.white60),
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ),
-                    ),
-                  ),
+                          ],
+                        )
+                      : const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.campaign_outlined,
+                                color: Colors.white54,
+                              ),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Only channel admins can post',
+                                  style: TextStyle(color: Colors.white60),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                 ),
               ),
             ],
@@ -3418,6 +3575,38 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               },
             ),
           ),
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 24,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragStart: (_) {
+                edgeBackDrag = 0;
+                edgeBackHapticSent = false;
+              },
+              onHorizontalDragUpdate: (details) {
+                edgeBackDrag = math.max(
+                  0,
+                  edgeBackDrag + (details.primaryDelta ?? 0),
+                );
+                if (edgeBackDrag >= 58 && !edgeBackHapticSent) {
+                  edgeBackHapticSent = true;
+                  unawaited(HapticFeedback.selectionClick());
+                }
+              },
+              onHorizontalDragEnd: (_) {
+                if (edgeBackDrag >= 58) Navigator.maybePop(context);
+                edgeBackDrag = 0;
+                edgeBackHapticSent = false;
+              },
+              onHorizontalDragCancel: () {
+                edgeBackDrag = 0;
+                edgeBackHapticSent = false;
+              },
+            ),
+          ),
           InAppMessageBanner(
             controller: widget.controller,
             top: MediaQuery.paddingOf(context).top + 8,
@@ -3439,9 +3628,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 }
 
 class _CallBanner extends StatelessWidget {
-  const _CallBanner({required this.controller});
+  const _CallBanner({
+    required this.controller,
+    required this.onSummarize,
+    required this.summaryLoading,
+  });
 
   final AppController controller;
+  final VoidCallback onSummarize;
+  final bool summaryLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -3462,6 +3657,16 @@ class _CallBanner extends StatelessWidget {
             : '${call.peer.displayName} - ${call.endReason}',
         color: Colors.redAccent,
         actions: [
+          TextButton.icon(
+            onPressed: summaryLoading ? null : onSummarize,
+            icon: summaryLoading
+                ? const SizedBox.square(
+                    dimension: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.auto_awesome_rounded, size: 18),
+            label: const Text('Summary'),
+          ),
           TextButton(
             onPressed: controller.clearEndedCall,
             child: const Text('Close'),
@@ -4266,6 +4471,155 @@ class _ChatAvatarRing extends StatelessWidget {
   }
 }
 
+class _ChatHeaderIdentity extends StatelessWidget {
+  const _ChatHeaderIdentity({
+    required this.title,
+    required this.subtitle,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 310),
+      child: MeshLiquidGlass(
+        radius: 23,
+        accent: const Color(0xFF72D7FF),
+        interactive: true,
+        fallbackBuilder: (context, child) => DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A2533).withValues(alpha: 0.94),
+            borderRadius: BorderRadius.circular(23),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          child: child,
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(23),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 180),
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(0, 0.25),
+                          end: Offset.zero,
+                        ).animate(animation),
+                        child: child,
+                      ),
+                    ),
+                    child: Text(
+                      subtitle,
+                      key: ValueKey(subtitle),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: active ? Colors.greenAccent : Colors.white54,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatHeaderAvatarButton extends StatelessWidget {
+  const _ChatHeaderAvatarButton({required this.profile, required this.onTap});
+
+  final Profile profile;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Open profile',
+      child: MeshLiquidGlass(
+        radius: 999,
+        accent: const Color(0xFFB463FF),
+        interactive: true,
+        fallbackBuilder: (context, child) => DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0xFF1A2533),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+          ),
+          child: child,
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(3),
+              child: _ChatAvatarRing(profile: profile),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ViewportMessageTint extends StatelessWidget {
+  const _ViewportMessageTint({
+    required this.scrollController,
+    required this.builder,
+  });
+
+  final ScrollController scrollController;
+  final Widget Function(BuildContext context, double position) builder;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: scrollController,
+      builder: (context, _) {
+        final renderObject = context.findRenderObject();
+        final viewportHeight = MediaQuery.sizeOf(context).height;
+        var position = 0.55;
+        if (renderObject is RenderBox && renderObject.hasSize) {
+          position =
+              (renderObject.localToGlobal(Offset.zero).dy / viewportHeight)
+                  .clamp(0.0, 1.0);
+        }
+        return builder(context, position);
+      },
+    );
+  }
+}
+
 class _ChatRoundButton extends StatelessWidget {
   const _ChatRoundButton({
     required this.tooltip,
@@ -4512,15 +4866,23 @@ class _ComposerInputSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      constraints: const BoxConstraints(minHeight: 42),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.13),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+    return MeshLiquidGlass(
+      radius: 22,
+      accent: const Color(0xFF72D7FF),
+      interactive: true,
+      fallbackBuilder: (context, child) => DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A2533).withValues(alpha: 0.96),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        ),
+        child: child,
       ),
-      child: child,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 44),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        child: child,
+      ),
     );
   }
 }
@@ -4545,20 +4907,28 @@ class _ComposerIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-          child: Material(
-            color: Colors.white.withValues(alpha: 0.11),
-            child: InkWell(
-              onTap: onPressed,
-              onLongPress: onLongPress,
-              child: SizedBox(
-                width: 42,
-                height: 42,
-                child: Icon(icon, color: accent),
-              ),
+      child: MeshLiquidGlass(
+        radius: 999,
+        accent: accent,
+        interactive: true,
+        fallbackBuilder: (context, child) => DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0xFF1A2533).withValues(alpha: 0.96),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          child: child,
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onPressed,
+            onLongPress: onLongPress,
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: Icon(icon, color: accent),
             ),
           ),
         ),
@@ -4635,58 +5005,65 @@ class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
         child: AnimatedScale(
           duration: const Duration(milliseconds: 120),
           scale: pressed ? 1.08 : 1,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(18),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
+          child: MeshLiquidGlass(
+            radius: 999,
+            accent: pressed ? Colors.redAccent : Colors.lightBlueAccent,
+            interactive: true,
+            fallbackBuilder: (context, child) => DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF1A2533).withValues(alpha: 0.96),
+                border: Border.all(
                   color: (pressed ? Colors.redAccent : Colors.white).withValues(
-                    alpha: pressed ? 0.22 : 0.11,
+                    alpha: pressed ? 0.34 : 0.12,
                   ),
-                  border: Border.all(
-                    color: (pressed ? Colors.redAccent : Colors.white)
-                        .withValues(alpha: pressed ? 0.34 : 0.10),
-                  ),
-                  borderRadius: BorderRadius.circular(18),
-                  boxShadow: [
-                    if (pressed)
-                      BoxShadow(
-                        color: Colors.redAccent.withValues(alpha: 0.22),
-                        blurRadius: 18,
-                      ),
-                  ],
                 ),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    if (pressed)
-                      TweenAnimationBuilder<double>(
-                        tween: Tween(begin: 0, end: 1),
-                        duration: const Duration(milliseconds: 520),
-                        curve: Curves.easeOutCubic,
-                        builder: (context, value, _) => Container(
-                          width: 22 + value * 17,
-                          height: 22 + value * 17,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: Colors.redAccent.withValues(
-                                alpha: (0.34 * (1 - value)).clamp(0.0, 1.0),
-                              ),
+              ),
+              child: child,
+            ),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: pressed
+                    ? Colors.redAccent.withValues(alpha: 0.14)
+                    : Colors.transparent,
+                boxShadow: [
+                  if (pressed)
+                    BoxShadow(
+                      color: Colors.redAccent.withValues(alpha: 0.22),
+                      blurRadius: 18,
+                    ),
+                ],
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  if (pressed)
+                    TweenAnimationBuilder<double>(
+                      tween: Tween(begin: 0, end: 1),
+                      duration: const Duration(milliseconds: 520),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, value, _) => Container(
+                        width: 22 + value * 17,
+                        height: 22 + value * 17,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.redAccent.withValues(
+                              alpha: (0.34 * (1 - value)).clamp(0.0, 1.0),
                             ),
                           ),
                         ),
                       ),
-                    Icon(
-                      pressed ? Icons.mic_rounded : Icons.mic_none_rounded,
-                      color: pressed ? Colors.redAccent : Colors.white70,
                     ),
-                  ],
-                ),
+                  Icon(
+                    pressed ? Icons.mic_rounded : Icons.mic_none_rounded,
+                    color: pressed ? Colors.redAccent : Colors.white70,
+                  ),
+                ],
               ),
             ),
           ),
@@ -6079,6 +6456,7 @@ class _MessageBubble extends StatefulWidget {
     this.highlighted = false,
     this.onOpenComments,
     this.commentCount = 0,
+    this.positionTint = 0.55,
   });
 
   final AppController controller;
@@ -6092,6 +6470,7 @@ class _MessageBubble extends StatefulWidget {
   final bool highlighted;
   final VoidCallback? onOpenComments;
   final int commentCount;
+  final double positionTint;
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -6251,6 +6630,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     highlighted: widget.highlighted,
                     onOpenComments: widget.onOpenComments,
                     commentCount: widget.commentCount,
+                    positionTint: widget.positionTint,
                   ),
                 ),
               ),
@@ -6289,6 +6669,7 @@ class _MessageBubbleBody extends StatelessWidget {
     this.highlighted = false,
     this.onOpenComments,
     this.commentCount = 0,
+    this.positionTint = 0.55,
   });
 
   final AppController controller;
@@ -6300,6 +6681,7 @@ class _MessageBubbleBody extends StatelessWidget {
   final bool highlighted;
   final VoidCallback? onOpenComments;
   final int commentCount;
+  final double positionTint;
 
   @override
   Widget build(BuildContext context) {
@@ -6312,6 +6694,11 @@ class _MessageBubbleBody extends StatelessWidget {
       message: message,
       mine: mine,
     );
+    final baseBubbleColor = _chatBubbleColor(thread.themeId, mine);
+    final verticalShade = ((0.52 - positionTint) * 0.10).clamp(-0.035, 0.055);
+    final bubbleColor = verticalShade >= 0
+        ? Color.lerp(baseBubbleColor, Colors.black, verticalShade)!
+        : Color.lerp(baseBubbleColor, Colors.white, -verticalShade)!;
     if (message.kind == ChatMessageKind.sticker) {
       return Column(
         crossAxisAlignment: mine
@@ -6436,7 +6823,7 @@ class _MessageBubbleBody extends StatelessWidget {
                 imageBytes != null,
           ),
           decoration: BoxDecoration(
-            color: _chatBubbleColor(thread.themeId, mine),
+            color: bubbleColor,
             borderRadius: _chatBubbleRadius(thread.bubbleStyle, mine),
             border: highlighted
                 ? Border.all(
@@ -6485,7 +6872,10 @@ class _MessageBubbleBody extends StatelessWidget {
                     )
                   : meetingPoint == null
                   ? sharedLocation == null
-                        ? Text(groupPresentation.text)
+                        ? _MessageTextContent(
+                            text: groupPresentation.text,
+                            createdAt: message.createdAt,
+                          )
                         : _SharedLocationPreview(location: sharedLocation)
                   : _MeetingPointPreview(
                       controller: controller,
@@ -6578,6 +6968,223 @@ class _MessageBubbleBody extends StatelessWidget {
     );
   }
 }
+
+class _MessageTextContent extends StatelessWidget {
+  const _MessageTextContent({required this.text, required this.createdAt});
+
+  final String text;
+  final DateTime createdAt;
+
+  @override
+  Widget build(BuildContext context) {
+    final suggestion = _ContextSuggestion.parse(text, createdAt.toLocal());
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(text),
+        if (suggestion != null) ...[
+          const SizedBox(height: 8),
+          _ContextActionCard(suggestion: suggestion),
+        ],
+      ],
+    );
+  }
+}
+
+class _ContextActionCard extends StatelessWidget {
+  const _ContextActionCard({required this.suggestion});
+
+  final _ContextSuggestion suggestion;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () async {
+          final opened = await launchUrl(
+            suggestion.uri,
+            mode: LaunchMode.externalApplication,
+          );
+          if (!opened && context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Could not ${suggestion.actionLabel.toLowerCase()}',
+                ),
+              ),
+            );
+          }
+        },
+        child: Ink(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: suggestion.color.withValues(alpha: 0.32)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(suggestion.icon, size: 18, color: suggestion.color),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      suggestion.actionLabel,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      suggestion.detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Colors.white60,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                Icons.arrow_outward_rounded,
+                size: 15,
+                color: suggestion.color,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ContextSuggestion {
+  const _ContextSuggestion({
+    required this.actionLabel,
+    required this.detail,
+    required this.icon,
+    required this.color,
+    required this.uri,
+  });
+
+  final String actionLabel;
+  final String detail;
+  final IconData icon;
+  final Color color;
+  final Uri uri;
+
+  static _ContextSuggestion? parse(String source, DateTime createdAt) {
+    final text = source.trim();
+    if (text.isEmpty || text.startsWith('::meshchat_')) return null;
+
+    final address = RegExp(
+      r'(?:адрес|address)\s*[:\-]?\s+([^\n]{5,80})',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (address != null) {
+      final query = address.group(1)!.trim();
+      return _ContextSuggestion(
+        actionLabel: 'Open on map',
+        detail: query,
+        icon: Icons.map_outlined,
+        color: const Color(0xFF65E6C4),
+        uri: Uri.https('www.google.com', '/maps/search/', {
+          'api': '1',
+          'query': query,
+        }),
+      );
+    }
+
+    final relative = RegExp(
+      r'(?:через|in)\s+(\d{1,3})\s*(минут(?:у|ы)?|мин|час(?:а|ов)?|minutes?|mins?|hours?|hrs?)',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (relative != null) {
+      final amount = int.parse(relative.group(1)!);
+      final unit = relative.group(2)!.toLowerCase();
+      final duration = unit.startsWith('ч') || unit.startsWith('h')
+          ? Duration(hours: amount)
+          : Duration(minutes: amount);
+      final start = DateTime.now().add(duration);
+      return _calendarSuggestion(
+        label: 'Create reminder',
+        detail: _contextDateLabel(start),
+        title: text,
+        start: start,
+        icon: Icons.alarm_add_rounded,
+      );
+    }
+
+    final tomorrow = RegExp(
+      r'(?:завтра|tomorrow)(?:\s+в|\s+at)?\s+(\d{1,2})[:.]?(\d{2})?',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (tomorrow != null) {
+      final now = DateTime.now();
+      final start = DateTime(
+        now.year,
+        now.month,
+        now.day + 1,
+        int.parse(tomorrow.group(1)!),
+        int.tryParse(tomorrow.group(2) ?? '') ?? 0,
+      );
+      return _calendarSuggestion(
+        label: 'Create event',
+        detail: _contextDateLabel(start),
+        title: text,
+        start: start,
+        icon: Icons.event_available_rounded,
+      );
+    }
+    return null;
+  }
+
+  static _ContextSuggestion _calendarSuggestion({
+    required String label,
+    required String detail,
+    required String title,
+    required DateTime start,
+    required IconData icon,
+  }) {
+    final end = start.add(const Duration(hours: 1));
+    return _ContextSuggestion(
+      actionLabel: label,
+      detail: detail,
+      icon: icon,
+      color: const Color(0xFF8EC8FF),
+      uri: Uri.https('calendar.google.com', '/calendar/render', {
+        'action': 'TEMPLATE',
+        'text': title,
+        'dates': '${_calendarStamp(start)}/${_calendarStamp(end)}',
+        'details': 'Created from a MeshChat message',
+      }),
+    );
+  }
+}
+
+String _calendarStamp(DateTime value) {
+  final utc = value.toUtc();
+  String two(int part) => part.toString().padLeft(2, '0');
+  return '${utc.year}${two(utc.month)}${two(utc.day)}T'
+      '${two(utc.hour)}${two(utc.minute)}${two(utc.second)}Z';
+}
+
+String _contextDateLabel(DateTime value) =>
+    '${value.day.toString().padLeft(2, '0')}.'
+    '${value.month.toString().padLeft(2, '0')} '
+    '${value.hour.toString().padLeft(2, '0')}:'
+    '${value.minute.toString().padLeft(2, '0')}';
 
 class _ChannelCommentsButton extends StatelessWidget {
   const _ChannelCommentsButton({

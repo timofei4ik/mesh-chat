@@ -19,6 +19,8 @@ class AiRelay(
         self.fail_transcription = False
         self.fail_ocr = False
         self.fail_smart_replies = False
+        self.fail_person_memory = False
+        self.fail_call_summary = False
 
     @property
     def ai_backend_ready(self):
@@ -70,6 +72,16 @@ class AiRelay(
         if self.fail_smart_replies:
             raise RuntimeError("provider unavailable")
         return ["Sounds good", "I will check", "Can we do it later?"]
+
+    async def _request_ai_person_memory(self, question, transcript):
+        if self.fail_person_memory:
+            raise RuntimeError("provider unavailable")
+        return f"{question}: {transcript.splitlines()[0]}"
+
+    async def _request_ai_call_summary(self, notes):
+        if self.fail_call_summary:
+            raise RuntimeError("provider unavailable")
+        return f"Topics: {notes}"
 
 
 class LanguageGuardRelay(server_ai.ServerAiMixin):
@@ -196,6 +208,63 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result["ok"])
         self.assertIn("Meet at six", result["text"])
+        self.assertEqual(29, result["remaining"])
+
+    async def test_person_memory_requires_meshpro_and_uses_chat_evidence(self):
+        messages = [
+            {
+                "sender": "Max",
+                "date": "2026-07-18T18:00:00Z",
+                "text": "Pepperoni is my favorite pizza",
+            }
+        ]
+        denied = await self.relay.answer_person_memory_with_ai(
+            "subscriber",
+            "Which pizza does Max like?",
+            messages,
+        )
+        self.assertEqual("meshpro_required", denied["error"])
+
+        self.relay.grant_subscription("subscriber", days=7)
+        result = await self.relay.answer_person_memory_with_ai(
+            "subscriber",
+            "Which pizza does Max like?",
+            messages,
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("Pepperoni", result["text"])
+        self.assertEqual(59, result["remaining"])
+
+    async def test_person_memory_provider_failure_releases_quota(self):
+        self.relay.grant_subscription("subscriber", days=7)
+        self.relay.fail_person_memory = True
+        result = await self.relay.answer_person_memory_with_ai(
+            "subscriber",
+            "What did Max choose?",
+            [{"sender": "Max", "text": "Pepperoni", "date": "today"}],
+        )
+        self.assertEqual("provider_error", result["error"])
+        usage = self.relay.meshpro_usage_count(
+            "subscriber",
+            "ai_person_memory",
+            datetime.now(timezone.utc).strftime("%Y-%m"),
+        )
+        self.assertEqual(0, usage)
+
+    async def test_call_summary_requires_meshpro_and_tracks_usage(self):
+        denied = await self.relay.summarize_call_notes_with_ai(
+            "subscriber",
+            "We agreed to meet on Friday",
+        )
+        self.assertEqual("meshpro_required", denied["error"])
+
+        self.relay.grant_subscription("subscriber", days=7)
+        result = await self.relay.summarize_call_notes_with_ai(
+            "subscriber",
+            "We agreed to meet on Friday",
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("Friday", result["text"])
         self.assertEqual(29, result["remaining"])
 
     async def test_transcription_is_metered_saved_and_reused(self):

@@ -902,6 +902,49 @@ class MeshRelayServer(
 
                     continue
 
+                if packet.get("type") == "ai_person_memory_request":
+
+                    authenticated_login = self.client_logins.get(node_id)
+                    result = await self.answer_person_memory_with_ai(
+                        authenticated_login,
+                        packet.get("question"),
+                        packet.get("messages"),
+                    )
+
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "ai_person_memory_result",
+                                "request_id": packet.get("request_id"),
+                                **result,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+
+                    continue
+
+                if packet.get("type") == "ai_call_summary_request":
+
+                    authenticated_login = self.client_logins.get(node_id)
+                    result = await self.summarize_call_notes_with_ai(
+                        authenticated_login,
+                        packet.get("notes"),
+                    )
+
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "ai_call_summary_result",
+                                "request_id": packet.get("request_id"),
+                                **result,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+
+                    continue
+
                 if packet.get("type") == "ai_voice_transcription_request":
 
                     authenticated_login = self.client_logins.get(node_id)

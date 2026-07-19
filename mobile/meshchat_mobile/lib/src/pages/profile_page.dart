@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -165,7 +167,7 @@ class ProfilePage extends StatelessWidget {
   }
 }
 
-class _ProfileHero extends StatelessWidget {
+class _ProfileHero extends StatefulWidget {
   const _ProfileHero({
     required this.profile,
     required this.username,
@@ -177,84 +179,201 @@ class _ProfileHero extends StatelessWidget {
   final bool showOnline;
 
   @override
+  State<_ProfileHero> createState() => _ProfileHeroState();
+}
+
+class _ProfileHeroState extends State<_ProfileHero>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController expansion;
+  bool hapticThresholdReached = false;
+
+  bool get isDesktop =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+
+  @override
+  void initState() {
+    super.initState();
+    expansion = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+      reverseDuration: const Duration(milliseconds: 330),
+    );
+  }
+
+  void updateExpansion(double delta) {
+    final previous = expansion.value;
+    expansion.value = (expansion.value - delta / 230).clamp(0.0, 1.0);
+    final crossed = previous < 0.56 && expansion.value >= 0.56;
+    if (crossed && !hapticThresholdReached) {
+      hapticThresholdReached = true;
+      unawaited(HapticFeedback.selectionClick());
+    } else if (expansion.value < 0.42) {
+      hapticThresholdReached = false;
+    }
+  }
+
+  Future<void> settleExpansion([bool? expand]) async {
+    final shouldExpand = expand ?? expansion.value >= 0.48;
+    if (shouldExpand) {
+      if (!hapticThresholdReached) {
+        hapticThresholdReached = true;
+        await HapticFeedback.selectionClick();
+      }
+      await expansion.animateTo(1, curve: Curves.easeOutCubic);
+    } else {
+      hapticThresholdReached = false;
+      await expansion.animateBack(0, curve: Curves.easeOutCubic);
+    }
+  }
+
+  @override
+  void dispose() {
+    expansion.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final profile = widget.profile;
+    final username = widget.username;
     final hasAvatarDecoration =
         profile.effectiveAvatarDecoration != Profile.defaultAvatarDecoration;
-    return SizedBox(
-      height: 276,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Positioned.fill(
-            child: ProfileEffectBackground(
-              profile: profile,
-              enabled: profile.meshProBadge == true,
-            ),
-          ),
-          Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: EdgeInsets.all(hasAvatarDecoration ? 0 : 6),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: hasAvatarDecoration
-                      ? null
-                      : Border.all(
-                          color: Color(
-                            profile.effectiveProfileAccent,
-                          ).withValues(alpha: 0.58),
+    return LayoutBuilder(
+      builder: (context, constraints) => AnimatedBuilder(
+        animation: expansion,
+        builder: (context, _) {
+          final value = Curves.easeInOutCubic.transform(expansion.value);
+          final expandedSide = (constraints.maxWidth - 8).clamp(220.0, 520.0);
+          final avatarRadius = lerpDouble(76, expandedSide / 2, value)!;
+          final height = lerpDouble(276, expandedSide + 20, value)!;
+          final labelOpacity = (1 - value * 1.5).clamp(0.0, 1.0);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: isDesktop
+                ? () => settleExpansion(expansion.value < 0.5)
+                : null,
+            onVerticalDragUpdate: isDesktop
+                ? null
+                : (details) => updateExpansion(details.delta.dy),
+            onVerticalDragEnd: isDesktop ? null : (_) => settleExpansion(),
+            child: SizedBox(
+              height: height,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(lerpDouble(28, 18, value)!),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Positioned.fill(
+                      child: ProfileEffectBackground(
+                        profile: profile,
+                        enabled: profile.meshProBadge == true,
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment(0, lerpDouble(-0.42, 0, value)!),
+                      child: Container(
+                        padding: EdgeInsets.all(
+                          hasAvatarDecoration ? 0 : lerpDouble(6, 0, value)!,
                         ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Color(profile.effectiveProfileAccent).withValues(
-                        alpha: profile.effectiveProfileGlow ? 0.42 : 0.18,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(
+                            lerpDouble(avatarRadius, 18, value)!,
+                          ),
+                          border: hasAvatarDecoration || value > 0.92
+                              ? null
+                              : Border.all(
+                                  color: Color(
+                                    profile.effectiveProfileAccent,
+                                  ).withValues(alpha: 0.58 * (1 - value)),
+                                ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Color(profile.effectiveProfileAccent)
+                                  .withValues(
+                                    alpha:
+                                        (profile.effectiveProfileGlow
+                                            ? 0.42
+                                            : 0.18) *
+                                        (1 - value * 0.7),
+                                  ),
+                              blurRadius: profile.effectiveProfileGlow
+                                  ? 46
+                                  : 28,
+                              spreadRadius: profile.effectiveProfileGlow
+                                  ? 4
+                                  : 1,
+                            ),
+                          ],
+                        ),
+                        child: Hero(
+                          tag: 'profile-avatar-${profile.nodeId}',
+                          transitionOnUserGestures: true,
+                          placeholderBuilder: (context, size, child) => child,
+                          child: ProfileAvatar(
+                            profile: profile,
+                            radius: avatarRadius,
+                            squareProgress: value,
+                            animateDecoration: value < 0.9,
+                          ),
+                        ),
                       ),
-                      blurRadius: profile.effectiveProfileGlow ? 46 : 28,
-                      spreadRadius: profile.effectiveProfileGlow ? 4 : 1,
                     ),
-                    BoxShadow(
-                      color: const Color(0xFFA56BFF).withValues(
-                        alpha: profile.effectiveProfileGlow ? 0.28 : 0.12,
+                    Positioned(
+                      bottom: 22,
+                      child: IgnorePointer(
+                        child: Opacity(
+                          opacity: labelOpacity,
+                          child: Column(
+                            children: [
+                              MeshProProfileName(
+                                profile: profile,
+                                animate: true,
+                                badgeSize: 22,
+                                style: const TextStyle(
+                                  fontSize: 25,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              if (username.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  username,
+                                  style: const TextStyle(color: Colors.white60),
+                                ),
+                              ],
+                              if (widget.showOnline) ...[
+                                const SizedBox(height: 8),
+                                _OnlinePill(online: profile.online),
+                              ],
+                            ],
+                          ),
+                        ),
                       ),
-                      blurRadius: profile.effectiveProfileGlow ? 44 : 30,
-                      spreadRadius: profile.effectiveProfileGlow ? 3 : 1,
                     ),
+                    if (!isDesktop)
+                      Positioned(
+                        top: 10,
+                        child: Opacity(
+                          opacity: (1 - value).clamp(0.0, 1.0),
+                          child: Container(
+                            width: 38,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: Colors.white24,
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
-                child: Hero(
-                  tag: 'profile-avatar-${profile.nodeId}',
-                  transitionOnUserGestures: true,
-                  placeholderBuilder: (context, size, child) => child,
-                  flightShuttleBuilder:
-                      (context, animation, direction, fromContext, toContext) =>
-                          direction == HeroFlightDirection.push
-                          ? toContext.widget
-                          : fromContext.widget,
-                  child: ProfileAvatar(profile: profile, radius: 76),
-                ),
               ),
-              const SizedBox(height: 16),
-              MeshProProfileName(
-                profile: profile,
-                animate: true,
-                badgeSize: 22,
-                style: const TextStyle(
-                  fontSize: 25,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              if (username.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(username, style: const TextStyle(color: Colors.white60)),
-              ],
-              if (showOnline) ...[
-                const SizedBox(height: 8),
-                _OnlinePill(online: profile.online),
-              ],
-            ],
-          ),
-        ],
+            ),
+          );
+        },
       ),
     );
   }
