@@ -209,9 +209,25 @@ class GroupInfoPage extends StatelessWidget {
   }
 
   void openProfile(BuildContext context, Profile profile) {
-    Navigator.push(
+    Navigator.push<void>(
       context,
-      MaterialPageRoute(builder: (_) => ProfilePage(profile: profile)),
+      PageRouteBuilder<void>(
+        opaque: true,
+        allowSnapshotting: false,
+        transitionDuration: const Duration(milliseconds: 200),
+        reverseTransitionDuration: const Duration(milliseconds: 165),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            RepaintBoundary(child: ProfilePage(profile: profile)),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+            FadeTransition(
+              opacity: CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+                reverseCurve: Curves.easeInCubic,
+              ),
+              child: child,
+            ),
+      ),
     );
   }
 
@@ -231,7 +247,15 @@ class GroupInfoPage extends StatelessWidget {
   Future<void> startGroupCall(BuildContext context) async {
     final error = await controller.startGroupCall(thread);
     if (!context.mounted) return;
-    if (error != null) _showSnack(context, error);
+    if (error != null) {
+      _showSnack(context, error);
+      return;
+    }
+    Navigator.of(context).pop();
+    final call = controller.activeCall;
+    if (call != null && call.status != CallStatus.ended && call.collapsed) {
+      controller.toggleCallCollapsed();
+    }
   }
 
   Future<void> openMemberMap(BuildContext context) async {

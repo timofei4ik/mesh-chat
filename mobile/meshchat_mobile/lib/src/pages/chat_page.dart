@@ -1728,7 +1728,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       onMessage: () => Navigator.maybePop(context),
       onCall: widget.controller.isSavedMessagesProfile(widget.thread.profile)
           ? null
-          : () => unawaited(startCall()),
+          : () => unawaited(startCallFromProfile(context)),
       onMedia: openMediaList,
     );
     final usesPlatformViewGlass =
@@ -1761,12 +1761,49 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     await Navigator.push<void>(context, route);
   }
 
+  Future<void> startCallFromProfile(BuildContext profileContext) async {
+    Navigator.of(profileContext).pop();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    await startCall();
+    final call = widget.controller.activeCall;
+    if (call != null && call.status != CallStatus.ended && call.collapsed) {
+      widget.controller.toggleCallCollapsed();
+    }
+  }
+
   void openGroupInfo() {
-    Navigator.push(
+    Navigator.push<void>(
       context,
-      MaterialPageRoute(
-        builder: (_) =>
-            GroupInfoPage(controller: widget.controller, thread: widget.thread),
+      PageRouteBuilder<void>(
+        opaque: true,
+        allowSnapshotting: false,
+        transitionDuration: const Duration(milliseconds: 210),
+        reverseTransitionDuration: const Duration(milliseconds: 170),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            RepaintBoundary(
+              child: GroupInfoPage(
+                controller: widget.controller,
+                thread: widget.thread,
+              ),
+            ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.018, 0),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          );
+        },
       ),
     );
   }
@@ -3111,6 +3148,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           ),
           Column(
             children: [
+              SizedBox(height: headerInset),
               ListenableBuilder(
                 listenable: widget.controller,
                 builder: (context, _) => Column(
@@ -3183,12 +3221,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     scheduleInitialScrollToBottom(messages.length);
                     return ListView.builder(
                       controller: scroll,
-                      padding: EdgeInsets.fromLTRB(
-                        12,
-                        headerInset + 14,
-                        12,
-                        10,
-                      ),
+                      padding: EdgeInsets.fromLTRB(12, 14, 12, 10),
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final message = messages[index];
@@ -4691,10 +4724,17 @@ class _ChatRoundButton extends StatelessWidget {
           ),
           child: Material(
             color: Colors.transparent,
-            child: InkWell(
-              onTap: onPressed,
-              customBorder: const CircleBorder(),
-              child: SizedBox(width: 42, height: 42, child: icon),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.055),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+              ),
+              child: InkWell(
+                onTap: onPressed,
+                customBorder: const CircleBorder(),
+                child: SizedBox(width: 42, height: 42, child: icon),
+              ),
             ),
           ),
         ),

@@ -388,7 +388,7 @@ class ChatsPage extends StatelessWidget {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ProfilePage(
+        builder: (profileContext) => ProfilePage(
           profile: profile,
           controller: controller,
           thread: thread,
@@ -396,11 +396,25 @@ class ChatsPage extends StatelessWidget {
             Navigator.pop(context);
             openChat(context, profile);
           },
-          onCall: () => unawaited(controller.startCall(profile)),
+          onCall: () {
+            Navigator.of(profileContext).pop();
+            unawaited(_startCallAfterProfileClose(context, profile));
+          },
           onMedia: thread == null ? null : () => openThread(context, thread),
         ),
       ),
     );
+  }
+
+  Future<void> _startCallAfterProfileClose(
+    BuildContext context,
+    Profile profile,
+  ) async {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (!context.mounted) return;
+    final error = await controller.startCall(profile);
+    if (!context.mounted || error == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
   }
 
   void editOwnProfile(BuildContext context) {
