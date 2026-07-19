@@ -186,6 +186,7 @@ class _ProfileHeroState extends State<_ProfileHero>
     with SingleTickerProviderStateMixin {
   late final AnimationController expansion;
   bool hapticThresholdReached = false;
+  bool closingAfterCollapse = false;
 
   bool get isDesktop =>
       !kIsWeb &&
@@ -229,6 +230,13 @@ class _ProfileHeroState extends State<_ProfileHero>
     }
   }
 
+  Future<void> handleRoutePop(bool didPop) async {
+    if (didPop || closingAfterCollapse || expansion.value < 0.04) return;
+    closingAfterCollapse = true;
+    await settleExpansion(false);
+    if (mounted) Navigator.of(context).pop();
+  }
+
   @override
   void dispose() {
     expansion.dispose();
@@ -250,86 +258,87 @@ class _ProfileHeroState extends State<_ProfileHero>
           final avatarRadius = lerpDouble(76, expandedSide / 2, value)!;
           final height = lerpDouble(276, expandedSide + 20, value)!;
           final labelOpacity = (1 - value * 1.5).clamp(0.0, 1.0);
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => settleExpansion(expansion.value < 0.5),
-            onVerticalDragUpdate: isDesktop
-                ? null
-                : (details) => updateExpansion(details.delta.dy),
-            onVerticalDragEnd: isDesktop ? null : (_) => settleExpansion(),
-            child: SizedBox(
-              height: height,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(lerpDouble(28, 18, value)!),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Positioned.fill(
-                      child: ProfileEffectBackground(
-                        profile: profile,
-                        enabled: profile.meshProBadge == true,
+          return PopScope<void>(
+            canPop: expansion.value < 0.04,
+            onPopInvokedWithResult: (didPop, _) => handleRoutePop(didPop),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => settleExpansion(expansion.value < 0.5),
+              onVerticalDragUpdate: isDesktop
+                  ? null
+                  : (details) => updateExpansion(details.delta.dy),
+              onVerticalDragEnd: isDesktop ? null : (_) => settleExpansion(),
+              child: SizedBox(
+                height: height,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(
+                    lerpDouble(28, 18, value)!,
+                  ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Positioned.fill(
+                        child: ProfileEffectBackground(
+                          profile: profile,
+                          enabled: profile.meshProBadge == true,
+                        ),
                       ),
-                    ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 0,
-                      height: lerpDouble(72, 34, value),
-                      child: IgnorePointer(
-                        child: DecoratedBox(
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: 0,
+                        height: lerpDouble(72, 34, value),
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  const Color(0xFF07111E),
+                                  const Color(0xFF07111E).withValues(alpha: 0),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment(0, lerpDouble(-0.42, 0, value)!),
+                        child: Container(
+                          padding: EdgeInsets.all(
+                            hasAvatarDecoration ? 0 : lerpDouble(6, 0, value)!,
+                          ),
                           decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                const Color(0xFF07111E),
-                                const Color(0xFF07111E).withValues(alpha: 0),
-                              ],
+                            borderRadius: BorderRadius.circular(
+                              lerpDouble(avatarRadius, 18, value)!,
                             ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Align(
-                      alignment: Alignment(0, lerpDouble(-0.42, 0, value)!),
-                      child: Container(
-                        padding: EdgeInsets.all(
-                          hasAvatarDecoration ? 0 : lerpDouble(6, 0, value)!,
-                        ),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(
-                            lerpDouble(avatarRadius, 18, value)!,
-                          ),
-                          border: hasAvatarDecoration || value > 0.92
-                              ? null
-                              : Border.all(
-                                  color: Color(
-                                    profile.effectiveProfileAccent,
-                                  ).withValues(alpha: 0.58 * (1 - value)),
-                                ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Color(profile.effectiveProfileAccent)
-                                  .withValues(
-                                    alpha:
-                                        (profile.effectiveProfileGlow
-                                            ? 0.42
-                                            : 0.18) *
-                                        (1 - value * 0.7),
+                            border: hasAvatarDecoration || value > 0.92
+                                ? null
+                                : Border.all(
+                                    color: Color(
+                                      profile.effectiveProfileAccent,
+                                    ).withValues(alpha: 0.58 * (1 - value)),
                                   ),
-                              blurRadius: profile.effectiveProfileGlow
-                                  ? 46
-                                  : 28,
-                              spreadRadius: profile.effectiveProfileGlow
-                                  ? 4
-                                  : 1,
-                            ),
-                          ],
-                        ),
-                        child: Hero(
-                          tag: 'profile-avatar-${profile.nodeId}',
-                          transitionOnUserGestures: true,
-                          placeholderBuilder: (context, size, child) => child,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Color(profile.effectiveProfileAccent)
+                                    .withValues(
+                                      alpha:
+                                          (profile.effectiveProfileGlow
+                                              ? 0.42
+                                              : 0.18) *
+                                          (1 - value * 0.7),
+                                    ),
+                                blurRadius: profile.effectiveProfileGlow
+                                    ? 46
+                                    : 28,
+                                spreadRadius: profile.effectiveProfileGlow
+                                    ? 4
+                                    : 1,
+                              ),
+                            ],
+                          ),
                           child: ProfileAvatar(
                             profile: profile,
                             radius: avatarRadius,
@@ -338,55 +347,57 @@ class _ProfileHeroState extends State<_ProfileHero>
                           ),
                         ),
                       ),
-                    ),
-                    Positioned(
-                      bottom: 22,
-                      child: IgnorePointer(
-                        child: Opacity(
-                          opacity: labelOpacity,
-                          child: Column(
-                            children: [
-                              MeshProProfileName(
-                                profile: profile,
-                                animate: true,
-                                badgeSize: 22,
-                                style: const TextStyle(
-                                  fontSize: 25,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                              if (username.isNotEmpty) ...[
-                                const SizedBox(height: 4),
-                                Text(
-                                  username,
-                                  style: const TextStyle(color: Colors.white60),
-                                ),
-                              ],
-                              if (widget.showOnline) ...[
-                                const SizedBox(height: 8),
-                                _OnlinePill(online: profile.online),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (!isDesktop)
                       Positioned(
-                        top: 10,
-                        child: Opacity(
-                          opacity: (1 - value).clamp(0.0, 1.0),
-                          child: Container(
-                            width: 38,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: Colors.white24,
-                              borderRadius: BorderRadius.circular(99),
+                        bottom: 22,
+                        child: IgnorePointer(
+                          child: Opacity(
+                            opacity: labelOpacity,
+                            child: Column(
+                              children: [
+                                MeshProProfileName(
+                                  profile: profile,
+                                  animate: true,
+                                  badgeSize: 22,
+                                  style: const TextStyle(
+                                    fontSize: 25,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                                if (username.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    username,
+                                    style: const TextStyle(
+                                      color: Colors.white60,
+                                    ),
+                                  ),
+                                ],
+                                if (widget.showOnline) ...[
+                                  const SizedBox(height: 8),
+                                  _OnlinePill(online: profile.online),
+                                ],
+                              ],
                             ),
                           ),
                         ),
                       ),
-                  ],
+                      if (!isDesktop)
+                        Positioned(
+                          top: 10,
+                          child: Opacity(
+                            opacity: (1 - value).clamp(0.0, 1.0),
+                            child: Container(
+                              width: 38,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: Colors.white24,
+                                borderRadius: BorderRadius.circular(99),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),

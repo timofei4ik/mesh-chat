@@ -32,57 +32,60 @@ class ProfileAvatar extends StatelessWidget {
     final morph = squareProgress.clamp(0.0, 1.0);
     final avatarRadius = decorated ? radius * (0.79 + 0.21 * morph) : radius;
     final cornerRadius = avatarRadius + (18 - avatarRadius) * morph;
-    return RepaintBoundary(
-      child: SizedBox(
-        width: radius * 2,
-        height: radius * 2,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            SizedBox(
-              width: avatarRadius * 2,
-              height: avatarRadius * 2,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF315A7D),
-                  borderRadius: BorderRadius.circular(cornerRadius),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(cornerRadius),
-                  child: image == null
-                      ? Center(
-                          child: Text(
-                            _initials(profile.displayName),
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: avatarRadius * 0.58,
-                              fontWeight: FontWeight.w700,
-                            ),
+    final avatar = SizedBox(
+      width: radius * 2,
+      height: radius * 2,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          SizedBox(
+            width: avatarRadius * 2,
+            height: avatarRadius * 2,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xFF315A7D),
+                borderRadius: BorderRadius.circular(cornerRadius),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(cornerRadius),
+                child: image == null
+                    ? Center(
+                        child: Text(
+                          _initials(profile.displayName),
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: avatarRadius * 0.58,
+                            fontWeight: FontWeight.w700,
                           ),
-                        )
-                      : Image(
-                          image: image,
-                          fit: BoxFit.cover,
-                          gaplessPlayback: true,
-                          filterQuality: FilterQuality.medium,
                         ),
+                      )
+                    : Image(
+                        image: image,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                        filterQuality: FilterQuality.medium,
+                      ),
+              ),
+            ),
+          ),
+          if (decorated)
+            Positioned.fill(
+              child: Opacity(
+                opacity: 1 - morph,
+                child: _AnimatedAvatarDecoration(
+                  style: decoration,
+                  animate: animateDecoration ?? radius >= 40,
                 ),
               ),
             ),
-            if (decorated)
-              Positioned.fill(
-                child: Opacity(
-                  opacity: 1 - morph,
-                  child: _AnimatedAvatarDecoration(
-                    style: decoration,
-                    animate: animateDecoration ?? radius >= 40,
-                  ),
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
     );
+    // Large morphing avatars create a sizeable retained GPU layer. Keeping
+    // that layer alive while the profile route closes can leave a stale frame
+    // over the chat until another window or scroll repaint occurs.
+    if (radius > 96 || morph > 0.02) return avatar;
+    return RepaintBoundary(child: avatar);
   }
 
   static MemoryImage? _avatarImage(String value) {

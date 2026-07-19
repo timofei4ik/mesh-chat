@@ -1711,23 +1711,43 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return '$minutes:$seconds';
   }
 
-  void openProfile() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ProfilePage(
-          profile: widget.thread.profile,
-          controller: widget.controller,
-          thread: widget.thread,
-          onMessage: () => Navigator.maybePop(context),
-          onCall:
-              widget.controller.isSavedMessagesProfile(widget.thread.profile)
-              ? null
-              : () => unawaited(startCall()),
-          onMedia: openMediaList,
-        ),
-      ),
+  Future<void> openProfile() async {
+    Widget buildProfile(BuildContext context) => ProfilePage(
+      profile: widget.thread.profile,
+      controller: widget.controller,
+      thread: widget.thread,
+      onMessage: () => Navigator.maybePop(context),
+      onCall: widget.controller.isSavedMessagesProfile(widget.thread.profile)
+          ? null
+          : () => unawaited(startCall()),
+      onMedia: openMediaList,
     );
+    final Route<void> route = desktopSendHotkeys
+        ? PageRouteBuilder<void>(
+            opaque: false,
+            barrierColor: Colors.transparent,
+            allowSnapshotting: false,
+            transitionDuration: const Duration(milliseconds: 220),
+            reverseTransitionDuration: const Duration(milliseconds: 190),
+            pageBuilder: (context, animation, secondaryAnimation) =>
+                buildProfile(context),
+            transitionsBuilder:
+                (context, animation, secondaryAnimation, child) {
+                  return FadeTransition(
+                    opacity: CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                      reverseCurve: Curves.easeInCubic,
+                    ),
+                    child: child,
+                  );
+                },
+          )
+        : MaterialPageRoute<void>(
+            allowSnapshotting: false,
+            builder: buildProfile,
+          );
+    await Navigator.push<void>(context, route);
   }
 
   void openGroupInfo() {
@@ -3005,9 +3025,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final headerInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
     return Scaffold(
+      backgroundColor: Colors.transparent,
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        forceMaterialTransparency: true,
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
         shadowColor: Colors.transparent,
@@ -3148,7 +3172,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     scheduleInitialScrollToBottom(messages.length);
                     return ListView.builder(
                       controller: scroll,
-                      padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
+                      padding: EdgeInsets.fromLTRB(
+                        12,
+                        headerInset + 14,
+                        12,
+                        10,
+                      ),
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final message = messages[index];
@@ -4453,25 +4482,14 @@ class _ChatAvatarRing extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tag = 'profile-avatar-${profile.nodeId}';
-    return Hero(
-      tag: tag,
-      transitionOnUserGestures: true,
-      placeholderBuilder: (context, size, child) => child,
-      flightShuttleBuilder:
-          (context, animation, direction, fromContext, toContext) =>
-              direction == HeroFlightDirection.push
-              ? toContext.widget
-              : fromContext.widget,
-      child: Container(
-        padding: const EdgeInsets.all(2.5),
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.white.withValues(alpha: 0.12),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-        ),
-        child: ProfileAvatar(profile: profile, radius: 19),
+    return Container(
+      padding: const EdgeInsets.all(2.5),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.white.withValues(alpha: 0.12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
       ),
+      child: ProfileAvatar(profile: profile, radius: 19),
     );
   }
 }
