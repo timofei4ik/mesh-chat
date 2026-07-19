@@ -252,9 +252,7 @@ class _ProfileHeroState extends State<_ProfileHero>
           final labelOpacity = (1 - value * 1.5).clamp(0.0, 1.0);
           return GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: isDesktop
-                ? () => settleExpansion(expansion.value < 0.5)
-                : null,
+            onTap: () => settleExpansion(expansion.value < 0.5),
             onVerticalDragUpdate: isDesktop
                 ? null
                 : (details) => updateExpansion(details.delta.dy),
@@ -270,6 +268,26 @@ class _ProfileHeroState extends State<_ProfileHero>
                       child: ProfileEffectBackground(
                         profile: profile,
                         enabled: profile.meshProBadge == true,
+                      ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      height: lerpDouble(72, 34, value),
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                const Color(0xFF07111E),
+                                const Color(0xFF07111E).withValues(alpha: 0),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                     Align(

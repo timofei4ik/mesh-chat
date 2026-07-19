@@ -113,7 +113,7 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
                   Colors.white,
                   Colors.transparent,
                 ],
-                stops: [0, 0.05, 0.88, 1],
+                stops: [0, 0.18, 0.88, 1],
               ).createShader(bounds),
               child: CustomPaint(
                 isComplex: true,

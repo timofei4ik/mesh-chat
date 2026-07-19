@@ -3008,6 +3008,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
         centerTitle: true,
         leadingWidth: 62,
         leading: Padding(
@@ -6695,7 +6700,7 @@ class _MessageBubbleBody extends StatelessWidget {
       mine: mine,
     );
     final baseBubbleColor = _chatBubbleColor(thread.themeId, mine);
-    final verticalShade = ((0.52 - positionTint) * 0.10).clamp(-0.035, 0.055);
+    final verticalShade = ((0.54 - positionTint) * 0.20).clamp(-0.07, 0.10);
     final bubbleColor = verticalShade >= 0
         ? Color.lerp(baseBubbleColor, Colors.black, verticalShade)!
         : Color.lerp(baseBubbleColor, Colors.white, -verticalShade)!;

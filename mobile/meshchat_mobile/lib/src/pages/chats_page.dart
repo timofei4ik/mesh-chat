@@ -359,15 +359,11 @@ class ChatsPage extends StatelessWidget {
         reverseTransitionDuration: const Duration(milliseconds: 230),
         pageBuilder: (_, _, _) =>
             ChatPage(controller: controller, thread: thread),
-        transitionsBuilder: (_, animation, secondaryAnimation, child) {
+        transitionsBuilder: (_, animation, _, child) {
           final curved = CurvedAnimation(
             parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          );
-          final secondary = CurvedAnimation(
-            parent: secondaryAnimation,
-            curve: Curves.easeOutCubic,
+            curve: Curves.easeInOutCubic,
+            reverseCurve: Curves.easeInOutCubic,
           );
           return FadeTransition(
             opacity: curved,
@@ -378,13 +374,7 @@ class ChatsPage extends StatelessWidget {
               ).animate(curved),
               child: ScaleTransition(
                 scale: Tween<double>(begin: 0.965, end: 1).animate(curved),
-                child: FadeTransition(
-                  opacity: Tween<double>(
-                    begin: 1,
-                    end: 0.92,
-                  ).animate(ReverseAnimation(secondary)),
-                  child: child,
-                ),
+                child: child,
               ),
             ),
           );
