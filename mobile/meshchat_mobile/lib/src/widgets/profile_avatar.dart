@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -134,6 +135,8 @@ class _AnimatedAvatarDecoration extends StatefulWidget {
 class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
     with WidgetsBindingObserver {
   late final MeshFrameClock controller;
+  Timer? activationTimer;
+  bool activationReady = false;
   AppLifecycleState lifecycleState = AppLifecycleState.resumed;
   bool tickerEnabled = true;
 
@@ -146,6 +149,11 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
       frameInterval: const Duration(milliseconds: 50),
       value: 0.17,
     );
+    activationTimer = Timer(const Duration(milliseconds: 280), () {
+      if (!mounted) return;
+      activationReady = true;
+      _syncAnimation();
+    });
   }
 
   @override
@@ -170,6 +178,7 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
   void _syncAnimation() {
     final shouldAnimate =
         widget.animate &&
+        activationReady &&
         tickerEnabled &&
         lifecycleState == AppLifecycleState.resumed;
     if (shouldAnimate) {
@@ -181,6 +190,7 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
 
   @override
   void dispose() {
+    activationTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();

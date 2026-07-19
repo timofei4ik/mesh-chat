@@ -62,7 +62,9 @@ class BlePeer {
 }
 
 class BleChatService extends ChangeNotifier {
-  static const _peerTtl = Duration(seconds: 18);
+  static const _peerTtl = Duration(seconds: 40);
+  static const _mobileScanWindow = Duration(seconds: 12);
+  static const _mobileScanPause = Duration(seconds: 8);
   static const _connectTimeout = Duration(seconds: 12);
   static const _gattTimeout = Duration(seconds: 10);
   static const _writeTimeout = Duration(seconds: 8);
@@ -88,6 +90,8 @@ class BleChatService extends ChangeNotifier {
   final List<_QueuedBlePacket> _queue = [];
   final List<StreamSubscription> _subscriptions = [];
   Timer? _pruneTimer;
+  Timer? _scanPauseTimer;
+  Timer? _scanResumeTimer;
   String _queueOwnerNodeId = '';
 
   BlePacketHandler? onPacket;
@@ -151,6 +155,9 @@ class BleChatService extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    _cancelScanDutyCycle();
+    _pruneTimer?.cancel();
+    _pruneTimer = null;
     await stopScan();
     for (final entry in _connected.values.toList()) {
       await _central.disconnect(entry.peripheral).catchError((_) {});
@@ -183,6 +190,7 @@ class BleChatService extends ChangeNotifier {
         ? 'Scanning for MeshChat devices'
         : 'Scanning';
     notifyListeners();
+    _scheduleScanDutyCycle();
   }
 
   Future<void> startWideScan() async {
@@ -221,12 +229,35 @@ class BleChatService extends ChangeNotifier {
   }
 
   Future<void> stopScan() async {
+    _cancelScanDutyCycle();
     if (!scanning) return;
     await _central.stopDiscovery().catchError((_) {});
     scanning = false;
     wideScanning = false;
     status = running ? 'Bluetooth nearby is running' : 'Bluetooth stopped';
     notifyListeners();
+  }
+
+  void _scheduleScanDutyCycle() {
+    if (Platform.isWindows || !running || !scanning) return;
+    _scanPauseTimer?.cancel();
+    _scanPauseTimer = Timer(_mobileScanWindow, () async {
+      if (!running || !scanning) return;
+      await _central.stopDiscovery().catchError((_) {});
+      scanning = false;
+      status = 'Bluetooth nearby is running';
+      notifyListeners();
+      _scanResumeTimer = Timer(_mobileScanPause, () {
+        if (running && !scanning) unawaited(startScan());
+      });
+    });
+  }
+
+  void _cancelScanDutyCycle() {
+    _scanPauseTimer?.cancel();
+    _scanPauseTimer = null;
+    _scanResumeTimer?.cancel();
+    _scanResumeTimer = null;
   }
 
   Future<BlePeer> connect(BlePeer peer) async {
@@ -816,6 +847,7 @@ class BleChatService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _cancelScanDutyCycle();
     _pruneTimer?.cancel();
     for (final subscription in _subscriptions) {
       subscription.cancel();

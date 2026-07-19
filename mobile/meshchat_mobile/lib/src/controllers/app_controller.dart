@@ -1093,6 +1093,11 @@ class AppController extends ChangeNotifier {
     } else {
       unawaited(refreshMeshProSubscription());
     }
+    if (ble.running && !ble.scanning) unawaited(ble.startScan());
+  }
+
+  Future<void> handleAppPaused() async {
+    if (ble.running) await ble.stopScan();
   }
 
   Future<MeshProSubscription> refreshMeshProSubscription() async {

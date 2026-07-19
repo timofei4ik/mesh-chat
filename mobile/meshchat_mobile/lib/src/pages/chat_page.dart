@@ -927,7 +927,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         unawaited(deleteLastLiveLocationMessage());
         return;
       }
-      unawaited(sendCurrentLocationMessage(expiresAt: target, silent: true));
+      unawaited(
+        sendCurrentLocationMessage(
+          expiresAt: target,
+          silent: true,
+          lowPowerLocation: true,
+        ),
+      );
     });
   }
 
@@ -946,8 +952,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<String?> sendCurrentLocationMessage({
     DateTime? expiresAt,
     bool silent = false,
+    bool lowPowerLocation = false,
   }) async {
-    final current = await getCurrentLocationText();
+    final current = await getCurrentLocationText(lowPower: lowPowerLocation);
     if (!mounted) return null;
     if (current.error != null || current.text == null) {
       if (!silent) {
@@ -1192,7 +1199,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return result;
   }
 
-  Future<({String? text, String? error})> getCurrentLocationText() async {
+  Future<({String? text, String? error})> getCurrentLocationText({
+    bool lowPower = false,
+  }) async {
     try {
       final enabled = await Geolocator.isLocationServiceEnabled();
       if (!enabled) {
@@ -1217,9 +1226,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
 
       final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 12),
+        locationSettings: LocationSettings(
+          accuracy: lowPower ? LocationAccuracy.medium : LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 12),
         ),
       );
       return (
@@ -1722,7 +1731,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           : () => unawaited(startCall()),
       onMedia: openMediaList,
     );
-    final Route<void> route = desktopSendHotkeys
+    final usesPlatformViewGlass =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+    final Route<void> route = desktopSendHotkeys || usesPlatformViewGlass
         ? PageRouteBuilder<void>(
             opaque: false,
             barrierColor: Colors.transparent,
@@ -4663,6 +4674,7 @@ class _ChatRoundButton extends StatelessWidget {
         child: MeshLiquidGlass(
           radius: 999,
           accent: Colors.lightBlueAccent,
+          prominent: true,
           interactive: true,
           fallbackBuilder: (context, child) => ClipRRect(
             borderRadius: BorderRadius.circular(999),

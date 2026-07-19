@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:ui';
+import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -497,38 +497,31 @@ class _ProfileRoundButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: ClipOval(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-          child: Material(
-            color: Colors.white.withValues(alpha: onTap == null ? 0.06 : 0.11),
-            child: InkWell(
-              onTap: onTap,
-              child: Container(
-                width: 54,
-                height: 54,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.14),
+      child: Material(
+        clipBehavior: Clip.antiAlias,
+        shape: const CircleBorder(),
+        color: Colors.white.withValues(alpha: onTap == null ? 0.06 : 0.11),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.lightBlueAccent.withValues(
+                    alpha: onTap == null ? 0 : 0.14,
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.lightBlueAccent.withValues(
-                        alpha: onTap == null ? 0 : 0.14,
-                      ),
-                      blurRadius: 18,
-                    ),
-                  ],
+                  blurRadius: 18,
                 ),
-                child: Icon(
-                  icon,
-                  color: onTap == null
-                      ? Colors.white30
-                      : Colors.lightBlueAccent,
-                  size: 24,
-                ),
-              ),
+              ],
+            ),
+            child: Icon(
+              icon,
+              color: onTap == null ? Colors.white30 : Colors.lightBlueAccent,
+              size: 24,
             ),
           ),
         ),
@@ -1096,25 +1089,22 @@ class _ProfileGlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: const Color(0xAA24303B),
-            borderRadius: BorderRadius.circular(radius),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.13)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.18),
-                blurRadius: 18,
-                offset: const Offset(0, 9),
-              ),
-            ],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xE024303B),
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.13)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 18,
+            offset: const Offset(0, 9),
           ),
-          child: child,
-        ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: child,
       ),
     );
   }

@@ -38,6 +38,7 @@ class _MeshChatAppState extends State<MeshChatApp> {
   late final _MeshChatLifecycleObserver _lifecycleObserver =
       _MeshChatLifecycleObserver(
         onResumed: () => controller.handleAppResumed(),
+        onPaused: () => controller.handleAppPaused(),
       );
 
   @override
@@ -110,14 +111,19 @@ class _MeshChatAppState extends State<MeshChatApp> {
 }
 
 class _MeshChatLifecycleObserver extends WidgetsBindingObserver {
-  _MeshChatLifecycleObserver({required this.onResumed});
+  _MeshChatLifecycleObserver({required this.onResumed, required this.onPaused});
 
   final Future<void> Function() onResumed;
+  final Future<void> Function() onPaused;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       onResumed();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      onPaused();
     }
   }
 }
