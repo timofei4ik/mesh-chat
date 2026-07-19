@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "786382561874",
+    "project_id": "meshchat-losa",
+    "storage_bucket": "meshchat-losa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:786382561874:android:d7eded5b2a81c7f56ef58b",
+        "android_client_info": {
+          "package_name": "com.meshchat.meshchat_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAh4DIgITq0edI8hijmoGn_WhI-SkC0t1Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

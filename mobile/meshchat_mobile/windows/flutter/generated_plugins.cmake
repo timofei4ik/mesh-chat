@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
   bluetooth_low_energy_windows
   file_selector_windows
+  firebase_core
   flutter_webrtc
   geolocator_windows
   record_windows

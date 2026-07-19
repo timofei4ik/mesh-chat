@@ -1,6 +1,8 @@
 {
   "MESH_FIREBASE_API_KEY": "firebase-api-key",
   "MESH_FIREBASE_APP_ID": "1:1234567890:android:example",
+  "MESH_FIREBASE_IOS_APP_ID": "1:1234567890:ios:example",
+  "MESH_FIREBASE_IOS_BUNDLE_ID": "com.meshchat.mobile",
   "MESH_FIREBASE_MESSAGING_SENDER_ID": "1234567890",
   "MESH_FIREBASE_PROJECT_ID": "meshchat-example",
   "MESH_FIREBASE_STORAGE_BUCKET": "meshchat-example.firebasestorage.app"

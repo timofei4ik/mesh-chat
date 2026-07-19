@@ -31,7 +31,11 @@ workflows:
       - name: Build unsigned iOS app
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
-          flutter build ios --release --no-codesign
+          FIREBASE_DEFINES=""
+          if [ -n "$MESH_FIREBASE_API_KEY" ] && [ -n "$MESH_FIREBASE_IOS_APP_ID" ]; then
+            FIREBASE_DEFINES="--dart-define=MESH_FIREBASE_API_KEY=$MESH_FIREBASE_API_KEY --dart-define=MESH_FIREBASE_IOS_APP_ID=$MESH_FIREBASE_IOS_APP_ID --dart-define=MESH_FIREBASE_IOS_BUNDLE_ID=com.meshchat.mobile --dart-define=MESH_FIREBASE_MESSAGING_SENDER_ID=$MESH_FIREBASE_MESSAGING_SENDER_ID --dart-define=MESH_FIREBASE_PROJECT_ID=$MESH_FIREBASE_PROJECT_ID --dart-define=MESH_FIREBASE_STORAGE_BUCKET=$MESH_FIREBASE_STORAGE_BUCKET"
+          fi
+          flutter build ios --release --no-codesign $FIREBASE_DEFINES
       - name: Package unsigned IPA for sideload signing
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
@@ -80,9 +84,14 @@ workflows:
       - name: Build signed IPA
         script: |
           cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          FIREBASE_DEFINES=""
+          if [ -n "$MESH_FIREBASE_API_KEY" ] && [ -n "$MESH_FIREBASE_IOS_APP_ID" ]; then
+            FIREBASE_DEFINES="--dart-define=MESH_FIREBASE_API_KEY=$MESH_FIREBASE_API_KEY --dart-define=MESH_FIREBASE_IOS_APP_ID=$MESH_FIREBASE_IOS_APP_ID --dart-define=MESH_FIREBASE_IOS_BUNDLE_ID=com.meshchat.mobile --dart-define=MESH_FIREBASE_MESSAGING_SENDER_ID=$MESH_FIREBASE_MESSAGING_SENDER_ID --dart-define=MESH_FIREBASE_PROJECT_ID=$MESH_FIREBASE_PROJECT_ID --dart-define=MESH_FIREBASE_STORAGE_BUCKET=$MESH_FIREBASE_STORAGE_BUCKET"
+          fi
           flutter build ipa --release \
             --build-number=$PROJECT_BUILD_NUMBER \
-            --export-options-plist=/Users/builder/export_options.plist
+            --export-options-plist=/Users/builder/export_options.plist \
+            $FIREBASE_DEFINES
     artifacts:
       - mobile/meshchat_mobile/build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
