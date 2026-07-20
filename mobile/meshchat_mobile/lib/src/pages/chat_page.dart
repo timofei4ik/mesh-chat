@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
@@ -24,6 +25,7 @@ import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
+import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
@@ -71,6 +73,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final input = TextEditingController();
   final inputFocus = FocusNode();
   final scroll = ScrollController();
+  final composerInputKey = GlobalKey();
   final recorder = AudioRecorder();
   final imagePicker = image_picker.ImagePicker();
   final recordLevels = List<double>.filled(22, 0.25);
@@ -81,6 +84,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool recording = false;
   bool voicePointerDown = false;
   bool didInitialScrollToBottom = false;
+  Timer? initialScrollSettleTimer;
+  bool initialScrollInterrupted = false;
   bool showJumpToBottom = false;
   double voiceCancelDrag = 0;
   bool voiceCancelArmed = false;
@@ -103,8 +108,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String? highlightedMessageId;
   final deletingMessageIds = <String>{};
   final selectedMessageIds = <String>{};
-  double edgeBackDrag = 0;
-  bool edgeBackHapticSent = false;
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
@@ -222,6 +225,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     amplitudeSubscription?.cancel();
     voiceRecordingTicker?.cancel();
+    initialScrollSettleTimer?.cancel();
     liveLocationTimer?.cancel();
     unawaited(deleteLastLiveLocationMessage());
     widget.controller.removeListener(syncRingback);
@@ -351,6 +355,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       showSnack(channelWriteBlockedMessage);
       return;
     }
+    playSendFlight(text.trim());
     input.clear();
     widget.controller.updateDraft(widget.thread, '');
     final quote = fixedCommentRoot ?? replyTo;
@@ -1138,7 +1143,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                 final picked =
                                     await Navigator.push<MeetingPointMapResult>(
                                       context,
-                                      MaterialPageRoute(
+                                      meshPageRoute<MeetingPointMapResult>(
                                         builder: (_) => MeetingPointMapPage(
                                           title: titleInput.text.trim().isEmpty
                                               ? 'Meeting point'
@@ -1693,10 +1698,68 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void scheduleInitialScrollToBottom(int messageCount) {
     if (didInitialScrollToBottom || messageCount == 0) return;
     didInitialScrollToBottom = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      jumpToBottom();
-    });
+    initialScrollInterrupted = false;
+    var ticks = 0;
+    void settle() {
+      if (!mounted || initialScrollInterrupted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !initialScrollInterrupted) jumpToBottom();
+      });
+    }
+
+    settle();
+    initialScrollSettleTimer?.cancel();
+    initialScrollSettleTimer = Timer.periodic(
+      const Duration(milliseconds: 140),
+      (timer) {
+        ticks++;
+        settle();
+        if (ticks >= 12 || initialScrollInterrupted) timer.cancel();
+      },
+    );
+  }
+
+  bool handleInitialUserScroll(ScrollNotification notification) {
+    if (notification is UserScrollNotification &&
+        notification.direction != ScrollDirection.idle) {
+      initialScrollInterrupted = true;
+      initialScrollSettleTimer?.cancel();
+    }
+    return false;
+  }
+
+  void playSendFlight(String text) {
+    if (text.isEmpty || !mounted) return;
+    final inputBox =
+        composerInputKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final overlayBox = overlay.context.findRenderObject() as RenderBox?;
+    if (inputBox == null || overlayBox == null || !inputBox.hasSize) return;
+    final origin = overlayBox.globalToLocal(
+      inputBox.localToGlobal(Offset.zero),
+    );
+    final start = origin & inputBox.size;
+    final targetWidth = (72.0 + text.length * 7.0)
+        .clamp(88.0, 250.0)
+        .toDouble();
+    final media = MediaQuery.of(context);
+    final end = Rect.fromLTWH(
+      media.size.width - targetWidth - 14,
+      math.max(media.padding.top + 76, start.top - 104),
+      targetWidth,
+      math.min(48, start.height),
+    );
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => _SendFlightOverlay(
+        start: start,
+        end: end,
+        text: text,
+        color: _chatBubbleColor(widget.thread.themeId, true),
+        onFinished: () => entry.remove(),
+      ),
+    );
+    overlay.insert(entry);
   }
 
   void handleScroll() {
@@ -1762,34 +1825,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       onMedia: openMediaList,
       onAppearance: () => unawaited(showChatAppearance()),
     );
-    final usesPlatformViewGlass =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
-    final Route<void> route = desktopSendHotkeys || usesPlatformViewGlass
-        ? PageRouteBuilder<void>(
-            opaque: false,
-            barrierColor: Colors.transparent,
-            allowSnapshotting: false,
-            transitionDuration: const Duration(milliseconds: 220),
-            reverseTransitionDuration: const Duration(milliseconds: 190),
-            pageBuilder: (context, animation, secondaryAnimation) =>
-                buildProfile(context),
-            transitionsBuilder:
-                (context, animation, secondaryAnimation, child) {
-                  return FadeTransition(
-                    opacity: CurvedAnimation(
-                      parent: animation,
-                      curve: Curves.easeOutCubic,
-                      reverseCurve: Curves.easeInCubic,
-                    ),
-                    child: child,
-                  );
-                },
-          )
-        : MaterialPageRoute<void>(
-            allowSnapshotting: false,
-            builder: buildProfile,
-          );
-    await Navigator.push<void>(context, route);
+    await Navigator.push<void>(
+      context,
+      meshPageRoute<void>(builder: buildProfile),
+    );
   }
 
   Future<void> startCallFromProfile(BuildContext profileContext) async {
@@ -1806,35 +1845,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void openGroupInfo() {
     Navigator.push<void>(
       context,
-      PageRouteBuilder<void>(
-        opaque: true,
-        allowSnapshotting: false,
-        transitionDuration: const Duration(milliseconds: 210),
-        reverseTransitionDuration: const Duration(milliseconds: 170),
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            RepaintBoundary(
-              child: GroupInfoPage(
-                controller: widget.controller,
-                thread: widget.thread,
-              ),
-            ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final curved = CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          );
-          return FadeTransition(
-            opacity: curved,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0.018, 0),
-                end: Offset.zero,
-              ).animate(curved),
-              child: child,
-            ),
-          );
-        },
+      meshPageRoute<void>(
+        builder: (_) =>
+            GroupInfoPage(controller: widget.controller, thread: widget.thread),
       ),
     );
   }
@@ -2948,7 +2961,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (!widget.thread.isChannel || post.replyToMessageId.isNotEmpty) return;
     await Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => ChatPage(
           controller: widget.controller,
           thread: widget.thread,
@@ -3203,7 +3216,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> openMediaList() async {
     final messageId = await Navigator.push<String>(
       context,
-      MaterialPageRoute(builder: (_) => ChatMediaPage(thread: widget.thread)),
+      meshPageRoute<String>(
+        builder: (_) => ChatMediaPage(thread: widget.thread),
+      ),
     );
     if (!mounted || messageId == null || messageId.isEmpty) return;
     jumpToMessageById(messageId);
@@ -3212,7 +3227,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> openMeetingPoints() async {
     final messageId = await Navigator.push<String>(
       context,
-      MaterialPageRoute(
+      meshPageRoute<String>(
         builder: (_) => MeetingPointsPage(
           controller: widget.controller,
           thread: widget.thread,
@@ -3422,118 +3437,122 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     builder: (context, _) {
                       final messages = visibleMessages();
                       scheduleInitialScrollToBottom(messages.length);
-                      return ListView.builder(
-                        controller: scroll,
-                        padding: EdgeInsets.fromLTRB(12, 14, 12, 10),
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          final message = messages[index];
-                          if (isCoveredByAlbum(messages, index)) {
-                            return const SizedBox.shrink();
-                          }
-                          final album = albumFrom(messages, index);
-                          final showDate =
-                              index == 0 ||
-                              !sameDay(
-                                messages[index - 1].createdAt,
-                                message.createdAt,
-                              );
-                          return Column(
-                            children: [
-                              if (showDate) _DatePill(date: message.createdAt),
-                              if (album.length > 1)
-                                _PhotoAlbumBubble(
-                                  thread: widget.thread,
-                                  messages: album,
-                                  mine:
-                                      message.senderNode ==
-                                      widget.controller.myNodeId,
-                                  dataSaver:
-                                      widget.controller.appSettings.dataSaver,
-                                  selected: album.every(
-                                    (item) =>
-                                        selectedMessageIds.contains(item.id),
-                                  ),
-                                  onTap: selectingMessages
-                                      ? () => toggleMessageSelection(album)
-                                      : null,
-                                  onLongPress: () => selectingMessages
-                                      ? toggleMessageSelection(album)
-                                      : showMessageActions(
-                                          album.last,
-                                          selectionGroup: album,
-                                        ),
-                                  onReply: () =>
-                                      setState(() => replyTo = album.last),
-                                )
-                              else
-                                _ViewportMessageTint(
-                                  scrollController: scroll,
-                                  builder: (context, positionTint) =>
-                                      _MessageDisintegrator(
-                                        deleting: deletingMessageIds.contains(
-                                          message.id,
-                                        ),
-                                        child: _MessageBubble(
-                                          key: ValueKey(message.id),
-                                          controller: widget.controller,
-                                          thread: widget.thread,
-                                          message: message,
-                                          mine:
-                                              message.senderNode ==
-                                              widget.controller.myNodeId,
-                                          dataSaver: widget
-                                              .controller
-                                              .appSettings
-                                              .dataSaver,
-                                          selected: selectedMessageIds.contains(
+                      return NotificationListener<ScrollNotification>(
+                        onNotification: handleInitialUserScroll,
+                        child: ListView.builder(
+                          controller: scroll,
+                          padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
+                          itemCount: messages.length,
+                          itemBuilder: (context, index) {
+                            final message = messages[index];
+                            if (isCoveredByAlbum(messages, index)) {
+                              return const SizedBox.shrink();
+                            }
+                            final album = albumFrom(messages, index);
+                            final showDate =
+                                index == 0 ||
+                                !sameDay(
+                                  messages[index - 1].createdAt,
+                                  message.createdAt,
+                                );
+                            return Column(
+                              children: [
+                                if (showDate)
+                                  _DatePill(date: message.createdAt),
+                                if (album.length > 1)
+                                  _PhotoAlbumBubble(
+                                    thread: widget.thread,
+                                    messages: album,
+                                    mine:
+                                        message.senderNode ==
+                                        widget.controller.myNodeId,
+                                    dataSaver:
+                                        widget.controller.appSettings.dataSaver,
+                                    selected: album.every(
+                                      (item) =>
+                                          selectedMessageIds.contains(item.id),
+                                    ),
+                                    onTap: selectingMessages
+                                        ? () => toggleMessageSelection(album)
+                                        : null,
+                                    onLongPress: () => selectingMessages
+                                        ? toggleMessageSelection(album)
+                                        : showMessageActions(
+                                            album.last,
+                                            selectionGroup: album,
+                                          ),
+                                    onReply: () =>
+                                        setState(() => replyTo = album.last),
+                                  )
+                                else
+                                  _ViewportMessageTint(
+                                    scrollController: scroll,
+                                    builder: (context, positionTint) =>
+                                        _MessageDisintegrator(
+                                          deleting: deletingMessageIds.contains(
                                             message.id,
                                           ),
-                                          onTap: selectingMessages
-                                              ? () => toggleMessageSelection([
-                                                  message,
-                                                ])
-                                              : null,
-                                          onLongPress: () => selectingMessages
-                                              ? toggleMessageSelection([
-                                                  message,
-                                                ])
-                                              : showMessageActions(message),
-                                          onReply: () =>
-                                              widget.thread.isChannel &&
-                                                  !isChannelCommentThread
-                                              ? openChannelComments(message)
-                                              : setState(
-                                                  () => replyTo = message,
-                                                ),
-                                          onReplyQuoteTap:
-                                              message.replyToMessageId.isEmpty
-                                              ? null
-                                              : () => jumpToMessageById(
-                                                  message.replyToMessageId,
-                                                ),
-                                          highlighted:
-                                              highlightedMessageId ==
-                                              message.id,
-                                          onOpenComments:
-                                              widget.thread.isChannel &&
-                                                  !isChannelCommentThread &&
-                                                  message
-                                                      .replyToMessageId
-                                                      .isEmpty
-                                              ? () =>
-                                                    openChannelComments(message)
-                                              : null,
-                                          commentCount: commentCountFor(
-                                            message,
+                                          child: _MessageBubble(
+                                            key: ValueKey(message.id),
+                                            controller: widget.controller,
+                                            thread: widget.thread,
+                                            message: message,
+                                            mine:
+                                                message.senderNode ==
+                                                widget.controller.myNodeId,
+                                            dataSaver: widget
+                                                .controller
+                                                .appSettings
+                                                .dataSaver,
+                                            selected: selectedMessageIds
+                                                .contains(message.id),
+                                            onTap: selectingMessages
+                                                ? () => toggleMessageSelection([
+                                                    message,
+                                                  ])
+                                                : null,
+                                            onLongPress: () => selectingMessages
+                                                ? toggleMessageSelection([
+                                                    message,
+                                                  ])
+                                                : showMessageActions(message),
+                                            onReply: () =>
+                                                widget.thread.isChannel &&
+                                                    !isChannelCommentThread
+                                                ? openChannelComments(message)
+                                                : setState(
+                                                    () => replyTo = message,
+                                                  ),
+                                            onReplyQuoteTap:
+                                                message.replyToMessageId.isEmpty
+                                                ? null
+                                                : () => jumpToMessageById(
+                                                    message.replyToMessageId,
+                                                  ),
+                                            highlighted:
+                                                highlightedMessageId ==
+                                                message.id,
+                                            onOpenComments:
+                                                widget.thread.isChannel &&
+                                                    !isChannelCommentThread &&
+                                                    message
+                                                        .replyToMessageId
+                                                        .isEmpty
+                                                ? () => openChannelComments(
+                                                    message,
+                                                  )
+                                                : null,
+                                            commentCount: commentCountFor(
+                                              message,
+                                            ),
+                                            positionTint: positionTint,
                                           ),
-                                          positionTint: positionTint,
                                         ),
-                                      ),
-                                ),
-                            ],
-                          );
-                        },
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
                       );
                     },
                   ),
@@ -3620,9 +3639,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                       icon: Icons.attach_file_rounded,
                                     ),
                                     const SizedBox(width: 8),
+                                    _ComposerIconButton(
+                                      tooltip: 'Stickers',
+                                      onPressed: showStickerPanel,
+                                      icon: Icons.auto_awesome_motion_rounded,
+                                    ),
+                                    const SizedBox(width: 8),
                                   ],
                                   Expanded(
                                     child: _ComposerInputSurface(
+                                      key: composerInputKey,
                                       child: recording
                                           ? Transform.translate(
                                               offset: Offset(
@@ -3931,38 +3957,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 },
               ),
             ),
-            Positioned(
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: 24,
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onHorizontalDragStart: (_) {
-                  edgeBackDrag = 0;
-                  edgeBackHapticSent = false;
-                },
-                onHorizontalDragUpdate: (details) {
-                  edgeBackDrag = math.max(
-                    0,
-                    edgeBackDrag + (details.primaryDelta ?? 0),
-                  );
-                  if (edgeBackDrag >= 58 && !edgeBackHapticSent) {
-                    edgeBackHapticSent = true;
-                    unawaited(HapticFeedback.selectionClick());
-                  }
-                },
-                onHorizontalDragEnd: (_) {
-                  if (edgeBackDrag >= 58) Navigator.maybePop(context);
-                  edgeBackDrag = 0;
-                  edgeBackHapticSent = false;
-                },
-                onHorizontalDragCancel: () {
-                  edgeBackDrag = 0;
-                  edgeBackHapticSent = false;
-                },
-              ),
-            ),
             InAppMessageBanner(
               controller: widget.controller,
               top: MediaQuery.paddingOf(context).top + 8,
@@ -3970,7 +3964,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 if (thread == widget.thread) return;
                 Navigator.pushReplacement(
                   context,
-                  MaterialPageRoute(
+                  meshPageRoute<void>(
                     builder: (_) =>
                         ChatPage(controller: widget.controller, thread: thread),
                   ),
@@ -5403,8 +5397,101 @@ class _MessageSelectionBar extends StatelessWidget {
   }
 }
 
+class _SendFlightOverlay extends StatefulWidget {
+  const _SendFlightOverlay({
+    required this.start,
+    required this.end,
+    required this.text,
+    required this.color,
+    required this.onFinished,
+  });
+
+  final Rect start;
+  final Rect end;
+  final String text;
+  final Color color;
+  final VoidCallback onFinished;
+
+  @override
+  State<_SendFlightOverlay> createState() => _SendFlightOverlayState();
+}
+
+class _SendFlightOverlayState extends State<_SendFlightOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller;
+  late final Animation<double> curved;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 310),
+    );
+    curved = CurvedAnimation(parent: controller, curve: Curves.easeOutCubic);
+    controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed) widget.onFinished();
+    });
+    controller.forward();
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: curved,
+        builder: (context, _) {
+          final progress = curved.value;
+          final rect = Rect.lerp(widget.start, widget.end, progress)!;
+          return Positioned.fromRect(
+            rect: rect,
+            child: Opacity(
+              opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
+                  .clamp(0.0, 1.0)
+                  .toDouble(),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: widget.color.withValues(alpha: 0.24),
+                      blurRadius: 18,
+                    ),
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      widget.text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _ComposerInputSurface extends StatelessWidget {
-  const _ComposerInputSurface({required this.child});
+  const _ComposerInputSurface({super.key, required this.child});
 
   final Widget child;
 

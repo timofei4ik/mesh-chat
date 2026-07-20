@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
+import '../utils/mesh_page_route.dart';
 import '../widgets/meshpro_badge.dart';
 import 'chat_page.dart';
 
@@ -46,7 +47,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
     widget.controller.markRead(thread);
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => ChatPage(controller: widget.controller, thread: thread),
       ),
     );

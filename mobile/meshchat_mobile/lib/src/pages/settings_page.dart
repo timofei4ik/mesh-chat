@@ -5,6 +5,7 @@ import '../controllers/app_controller.dart';
 import '../models/app_settings.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_socket.dart';
+import '../utils/mesh_page_route.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/profile_avatar.dart';
 import 'bluetooth_nearby_page.dart';
@@ -18,7 +19,7 @@ class SettingsPage extends StatelessWidget {
   void openStorage(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => StorageCachePage(controller: controller),
       ),
     );
@@ -27,7 +28,7 @@ class SettingsPage extends StatelessWidget {
   void openAbout(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => AboutDiagnosticsPage(controller: controller),
       ),
     );
@@ -36,7 +37,7 @@ class SettingsPage extends StatelessWidget {
   void openConnection(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => ConnectionStatusPage(controller: controller),
       ),
     );
@@ -45,7 +46,7 @@ class SettingsPage extends StatelessWidget {
   void openActiveDevices(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => ActiveDevicesPage(controller: controller),
       ),
     );
@@ -54,7 +55,7 @@ class SettingsPage extends StatelessWidget {
   void openBlockedUsers(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => BlockedUsersPage(controller: controller),
       ),
     );
@@ -63,14 +64,14 @@ class SettingsPage extends StatelessWidget {
   void openSecurity(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => SecurityPage(controller: controller)),
+      meshPageRoute<void>(builder: (_) => SecurityPage(controller: controller)),
     );
   }
 
   void openBluetoothNearby(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => BluetoothNearbyPage(controller: controller),
       ),
     );
@@ -88,7 +89,9 @@ class SettingsPage extends StatelessWidget {
     if (!allowed || !context.mounted) return;
     await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (_) => MeshStudioPage(controller: controller)),
+      meshPageRoute<bool>(
+        builder: (_) => MeshStudioPage(controller: controller),
+      ),
     );
   }
 
@@ -104,7 +107,7 @@ class SettingsPage extends StatelessWidget {
     if (!allowed || !context.mounted) return;
     await Navigator.push<void>(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => MeshProPreferencesPage(controller: controller),
       ),
     );
@@ -1473,7 +1476,7 @@ class SecurityPage extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(
+                meshPageRoute<void>(
                   builder: (_) => ActiveDevicesPage(controller: controller),
                 ),
               ),
@@ -1492,7 +1495,7 @@ class SecurityPage extends StatelessWidget {
                   ? null
                   : () => Navigator.push(
                       context,
-                      MaterialPageRoute(
+                      meshPageRoute<void>(
                         builder: (_) =>
                             ChangePasswordPage(controller: controller),
                       ),
@@ -1512,7 +1515,7 @@ class SecurityPage extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(
+                meshPageRoute<void>(
                   builder: (_) => BlockedUsersPage(controller: controller),
                 ),
               ),

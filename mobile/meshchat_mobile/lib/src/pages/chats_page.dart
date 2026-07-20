@@ -14,6 +14,7 @@ import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
+import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
@@ -354,30 +355,8 @@ class ChatsPage extends StatelessWidget {
     controller.markRead(thread);
     Navigator.push(
       context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 300),
-        reverseTransitionDuration: const Duration(milliseconds: 280),
-        allowSnapshotting: true,
-        pageBuilder: (_, _, _) => RepaintBoundary(
-          child: ChatPage(controller: controller, thread: thread),
-        ),
-        transitionsBuilder: (_, animation, _, child) {
-          final curved = CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          );
-          return FadeTransition(
-            opacity: curved,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0.035, 0),
-                end: Offset.zero,
-              ).animate(curved),
-              child: child,
-            ),
-          );
-        },
+      meshPageRoute<void>(
+        builder: (_) => ChatPage(controller: controller, thread: thread),
       ),
     );
   }
@@ -386,7 +365,7 @@ class ChatsPage extends StatelessWidget {
     final thread = controller.threadForProfile(profile);
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (profileContext) => ProfilePage(
           profile: profile,
           controller: controller,
@@ -419,7 +398,7 @@ class ChatsPage extends StatelessWidget {
   void editOwnProfile(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => EditProfilePage(controller: controller),
       ),
     );
@@ -428,14 +407,14 @@ class ChatsPage extends StatelessWidget {
   void openSettings(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => SettingsPage(controller: controller)),
+      meshPageRoute<void>(builder: (_) => SettingsPage(controller: controller)),
     );
   }
 
   void openDiagnostics(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => DiagnosticsPage(controller: controller),
       ),
     );
@@ -444,7 +423,7 @@ class ChatsPage extends StatelessWidget {
   void openBluetoothNearby(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => BluetoothNearbyPage(controller: controller),
       ),
     );
@@ -453,7 +432,7 @@ class ChatsPage extends StatelessWidget {
   void openGlobalSearch(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) => GlobalSearchPage(controller: controller),
       ),
     );
@@ -638,7 +617,7 @@ class ChatsPage extends StatelessWidget {
   void openArchived(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
+      meshPageRoute<void>(
         builder: (_) =>
             _ArchivedChatsPage(controller: controller, parent: this),
       ),

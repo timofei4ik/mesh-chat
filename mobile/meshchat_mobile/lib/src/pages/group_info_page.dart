@@ -10,6 +10,7 @@ import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
+import '../utils/mesh_page_route.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
 import 'meeting_point_map_page.dart';
@@ -210,30 +211,14 @@ class GroupInfoPage extends StatelessWidget {
   void openProfile(BuildContext context, Profile profile) {
     Navigator.push<void>(
       context,
-      PageRouteBuilder<void>(
-        opaque: true,
-        allowSnapshotting: false,
-        transitionDuration: const Duration(milliseconds: 200),
-        reverseTransitionDuration: const Duration(milliseconds: 165),
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            RepaintBoundary(child: ProfilePage(profile: profile)),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(
-              opacity: CurvedAnimation(
-                parent: animation,
-                curve: Curves.easeOutCubic,
-                reverseCurve: Curves.easeInCubic,
-              ),
-              child: child,
-            ),
-      ),
+      meshPageRoute<void>(builder: (_) => ProfilePage(profile: profile)),
     );
   }
 
   void openMedia(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => ChatMediaPage(thread: thread)),
+      meshPageRoute<void>(builder: (_) => ChatMediaPage(thread: thread)),
     );
   }
 
@@ -272,7 +257,7 @@ class GroupInfoPage extends StatelessWidget {
         firstLocation?.longitude ?? firstMeeting?.longitude ?? 30.335100;
     final result = await Navigator.push<Object?>(
       context,
-      MaterialPageRoute(
+      meshPageRoute<Object?>(
         builder: (_) => MeetingPointMapPage(
           title: '${thread.profile.displayName} map',
           latitude: initialLat,
