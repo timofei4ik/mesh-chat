@@ -353,9 +353,11 @@ class _MeshProPreferencesPageState extends State<MeshProPreferencesPage> {
     );
     if (!mounted) return;
     setState(() => saving = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(error ?? 'MeshPro preferences saved')),
-    );
+    if (error != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error)));
+    }
     if (error == null) Navigator.pop(context);
   }
 
@@ -1437,9 +1439,6 @@ class SecurityPage extends StatelessWidget {
                     : () {
                         Clipboard.setData(
                           ClipboardData(text: controller.myNodeId),
-                        );
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Node ID copied')),
                         );
                       },
               ),

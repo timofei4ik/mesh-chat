@@ -129,9 +129,6 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
         ).showSnackBar(SnackBar(content: Text(error)));
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('MeshStudio appearance saved')),
-      );
       Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;

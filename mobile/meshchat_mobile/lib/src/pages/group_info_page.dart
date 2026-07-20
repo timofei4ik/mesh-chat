@@ -115,8 +115,7 @@ class GroupInfoPage extends StatelessWidget {
         ),
       ),
     );
-    if (!context.mounted) return;
-    if (copied == true) _showSnack(context, 'Invite copied');
+    if (!context.mounted || copied != true) return;
   }
 
   Future<void> addMember(BuildContext context) async {

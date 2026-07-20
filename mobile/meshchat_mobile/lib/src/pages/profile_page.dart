@@ -593,9 +593,6 @@ class _ProfileInfoTile extends StatelessWidget {
           onTap: copyable
               ? () {
                   Clipboard.setData(ClipboardData(text: value));
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(const SnackBar(content: Text('Copied')));
                 }
               : null,
           borderRadius: BorderRadius.circular(22),

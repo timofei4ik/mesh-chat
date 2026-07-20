@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the MeshChat deep reliability audit every day
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=mesh-reliability.service
+
+[Install]
+WantedBy=timers.target

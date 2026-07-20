@@ -101,11 +101,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String? liveLocationMessageId;
   String? highlightedMessageId;
   final deletingMessageIds = <String>{};
+  final selectedMessageIds = <String>{};
   double edgeBackDrag = 0;
   bool edgeBackHapticSent = false;
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
+
+  bool get selectingMessages => selectedMessageIds.isNotEmpty;
 
   ChatMessage? get fixedCommentRoot =>
       isChannelCommentThread ? widget.channelPost : null;
@@ -237,6 +240,32 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void didChangeMetrics() {
     super.didChangeMetrics();
     if (inputFocus.hasFocus) scheduleKeyboardScrollToBottom();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      syncRingback();
+      final target = liveLocationUntil;
+      if (target != null && DateTime.now().toUtc().isBefore(target)) {
+        startLiveLocationTimer(target);
+        unawaited(
+          sendCurrentLocationMessage(
+            expiresAt: target,
+            silent: true,
+            lowPowerLocation: true,
+          ),
+        );
+      }
+      return;
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      liveLocationTimer?.cancel();
+      liveLocationTimer = null;
+      if (recording || voicePointerDown) unawaited(cancelRecording());
+    }
   }
 
   void syncRingback() {
@@ -1930,7 +1959,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
     if (!mounted) return;
     if (error == null) setState(() {});
-    showSnack(error ?? 'Chat appearance saved');
+    if (error != null) showSnack(error);
   }
 
   Future<void> showScheduleComposer() async {
@@ -2102,7 +2131,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (error == null) {
       if (input.text.trim() == draft.text) input.clear();
       widget.controller.updateDraft(widget.thread, input.text);
-      showSnack('Message scheduled for ${_formatScheduleDate(draft.sendAt)}');
     } else {
       showSnack(error);
     }
@@ -2385,7 +2413,97 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> showMessageActions(ChatMessage message) async {
+  void startMessageSelection(Iterable<ChatMessage> messages) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      selectedMessageIds
+        ..clear()
+        ..addAll(messages.map((message) => message.id));
+    });
+  }
+
+  void toggleMessageSelection(Iterable<ChatMessage> messages) {
+    HapticFeedback.selectionClick();
+    final ids = messages.map((message) => message.id).toSet();
+    final allSelected = ids.every(selectedMessageIds.contains);
+    setState(() {
+      if (allSelected) {
+        selectedMessageIds.removeAll(ids);
+      } else {
+        selectedMessageIds.addAll(ids);
+      }
+    });
+  }
+
+  List<ChatMessage> selectedMessages() {
+    final result = visibleMessages()
+        .where((message) => selectedMessageIds.contains(message.id))
+        .toList();
+    return result..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  }
+
+  void clearMessageSelection() {
+    if (!selectingMessages) return;
+    setState(selectedMessageIds.clear);
+  }
+
+  Future<void> deleteSelectedMessages({required bool forEveryone}) async {
+    final messages = selectedMessages();
+    if (messages.isEmpty) return;
+    if (forEveryone &&
+        messages.any(
+          (message) => message.senderNode != widget.controller.myNodeId,
+        )) {
+      showSnack('Only your messages can be deleted for everyone');
+      return;
+    }
+    final ids = messages.map((message) => message.id).toSet();
+    setState(() {
+      deletingMessageIds.addAll(ids);
+      selectedMessageIds.clear();
+    });
+    await Future.delayed(const Duration(milliseconds: 540));
+    if (!mounted) return;
+    for (final message in messages) {
+      if (forEveryone) {
+        await widget.controller.deleteMessage(widget.thread, message);
+      } else {
+        await widget.controller.deleteMessageForMe(widget.thread, message);
+      }
+    }
+    if (mounted) {
+      setState(() => deletingMessageIds.removeAll(ids));
+    }
+  }
+
+  Future<void> copySelectedMessages() async {
+    final text = selectedMessages()
+        .map((message) => message.text.trim())
+        .where((text) => text.isNotEmpty)
+        .join('\n');
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) clearMessageSelection();
+  }
+
+  Future<void> saveSelectedMessages() async {
+    final messages = selectedMessages();
+    for (final message in messages) {
+      final error = await widget.controller.saveMessageToSaved(message);
+      if (!mounted) return;
+      if (error != null) {
+        showSnack(error);
+        return;
+      }
+    }
+    clearMessageSelection();
+  }
+
+  Future<void> showMessageActions(
+    ChatMessage message, {
+    List<ChatMessage>? selectionGroup,
+  }) async {
+    HapticFeedback.selectionClick();
     final mine = message.senderNode == widget.controller.myNodeId;
     final pinned = widget.thread.pinnedMessageIds.contains(message.id);
     final canDownload =
@@ -2402,134 +2520,126 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final canBlock =
         !mine && !widget.thread.isGroup && message.senderNode.isNotEmpty;
     final canTranslate = message.text.trim().isNotEmpty;
+    final canCopyText = message.text.trim().isNotEmpty;
     final blocked = widget.controller.isBlocked(message.senderNode);
     final canReplyOrComment =
         !widget.thread.isChannel ||
         widget.controller.canCommentInChannel(widget.thread);
-    final action = await showModalBottomSheet<String>(
+    final actions = <_MessageActionSpec>[
+      if (mine && message.failed)
+        const _MessageActionSpec('retry', 'Retry', Icons.refresh_rounded),
+      _MessageActionSpec(
+        'reply',
+        widget.thread.isChannel && !canReplyOrComment
+            ? 'Comments disabled'
+            : widget.thread.isChannel
+            ? 'Comment'
+            : 'Reply',
+        widget.thread.isChannel ? Icons.forum_outlined : Icons.reply_rounded,
+        enabled: canReplyOrComment,
+      ),
+      const _MessageActionSpec('forward', 'Forward', Icons.forward_rounded),
+      const _MessageActionSpec(
+        'save',
+        'Save to Saved Messages',
+        Icons.bookmark_add_outlined,
+      ),
+      if (canCopyText)
+        const _MessageActionSpec('copy', 'Copy', Icons.copy_rounded),
+      if (canCopyText)
+        const _MessageActionSpec(
+          'select_text',
+          'Select text',
+          Icons.text_fields_rounded,
+        ),
+      const _MessageActionSpec(
+        'select_messages',
+        'Select messages',
+        Icons.check_circle_outline_rounded,
+      ),
+      if (canTranslate)
+        const _MessageActionSpec(
+          'translate',
+          'Translate',
+          Icons.translate_rounded,
+          subtitle: 'MeshPro',
+        ),
+      if (canDownload)
+        const _MessageActionSpec(
+          'download',
+          'Download',
+          Icons.download_rounded,
+        ),
+      if (canSaveSticker)
+        const _MessageActionSpec(
+          'favorite_sticker',
+          'Add sticker to favorites',
+          Icons.star_border_rounded,
+        ),
+      if (canSaveSticker)
+        const _MessageActionSpec(
+          'save_sticker_pack',
+          'Add to sticker pack',
+          Icons.folder_special_outlined,
+          subtitle: 'Saved stickers',
+        ),
+      if (canEdit)
+        _MessageActionSpec(
+          'edit',
+          message.kind == ChatMessageKind.file ||
+                  message.kind == ChatMessageKind.sticker
+              ? 'Edit caption'
+              : 'Edit',
+          Icons.edit_rounded,
+        ),
+      _MessageActionSpec(
+        'pin',
+        pinned ? 'Unpin' : 'Pin',
+        pinned ? Icons.push_pin : Icons.push_pin_outlined,
+      ),
+      const _MessageActionSpec(
+        'delete_me',
+        'Delete for me',
+        Icons.delete_sweep_outlined,
+        destructive: true,
+      ),
+      if (mine)
+        const _MessageActionSpec(
+          'delete_everyone',
+          'Delete for everyone',
+          Icons.delete_forever_outlined,
+          destructive: true,
+        ),
+      if (canBlock)
+        _MessageActionSpec(
+          'block',
+          blocked ? 'Unblock user' : 'Block user',
+          blocked ? Icons.visibility_rounded : Icons.block_rounded,
+          destructive: !blocked,
+        ),
+    ];
+    final action = await showGeneralDialog<String>(
       context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.62,
-        minChildSize: 0.32,
-        maxChildSize: 0.92,
-        builder: (context, scrollController) => SafeArea(
-          child: ListView(
-            controller: scrollController,
-            padding: const EdgeInsets.only(bottom: 12),
-            children: [
-              _ReactionQuickBar(
-                reactions: widget.controller.appSettings.quickReactions,
-                onSelected: (reaction) => Navigator.pop(context, reaction),
-              ),
-              if (mine && message.failed)
-                ListTile(
-                  leading: const Icon(Icons.refresh_rounded),
-                  title: const Text('Retry'),
-                  onTap: () => Navigator.pop(context, 'retry'),
-                ),
-              ListTile(
-                leading: Icon(
-                  widget.thread.isChannel
-                      ? Icons.forum_outlined
-                      : Icons.reply_rounded,
-                ),
-                title: Text(
-                  widget.thread.isChannel && !canReplyOrComment
-                      ? 'Comments disabled'
-                      : widget.thread.isChannel
-                      ? 'Comment'
-                      : 'Reply',
-                ),
-                enabled: canReplyOrComment,
-                onTap: canReplyOrComment
-                    ? () => Navigator.pop(context, 'reply')
-                    : null,
-              ),
-              ListTile(
-                leading: const Icon(Icons.forward_rounded),
-                title: const Text('Forward'),
-                onTap: () => Navigator.pop(context, 'forward'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.bookmark_add_outlined),
-                title: const Text('Save to Saved Messages'),
-                onTap: () => Navigator.pop(context, 'save'),
-              ),
-              if (canTranslate)
-                ListTile(
-                  leading: const Icon(Icons.translate_rounded),
-                  title: const Text('Translate'),
-                  subtitle: const Text('MeshPro'),
-                  onTap: () => Navigator.pop(context, 'translate'),
-                ),
-              if (canDownload)
-                ListTile(
-                  leading: const Icon(Icons.download_rounded),
-                  title: const Text('Download'),
-                  onTap: () => Navigator.pop(context, 'download'),
-                ),
-              if (canSaveSticker)
-                ListTile(
-                  leading: const Icon(Icons.star_border_rounded),
-                  title: const Text('Add sticker to favorites'),
-                  onTap: () => Navigator.pop(context, 'favorite_sticker'),
-                ),
-              if (canSaveSticker)
-                ListTile(
-                  leading: const Icon(Icons.folder_special_outlined),
-                  title: const Text('Add to sticker pack'),
-                  subtitle: const Text('Saved stickers'),
-                  onTap: () => Navigator.pop(context, 'save_sticker_pack'),
-                ),
-              if (canEdit)
-                ListTile(
-                  leading: const Icon(Icons.edit_rounded),
-                  title: Text(
-                    message.kind == ChatMessageKind.file ||
-                            message.kind == ChatMessageKind.sticker
-                        ? 'Edit caption'
-                        : 'Edit',
-                  ),
-                  onTap: () => Navigator.pop(context, 'edit'),
-                ),
-              ListTile(
-                leading: Icon(
-                  pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                ),
-                title: Text(pinned ? 'Unpin' : 'Pin'),
-                onTap: () => Navigator.pop(context, 'pin'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_sweep_outlined),
-                title: const Text('Delete for me'),
-                textColor: Colors.redAccent,
-                iconColor: Colors.redAccent,
-                onTap: () => Navigator.pop(context, 'delete_me'),
-              ),
-              if (mine)
-                ListTile(
-                  leading: const Icon(Icons.delete_forever_outlined),
-                  title: const Text('Delete for everyone'),
-                  textColor: Colors.redAccent,
-                  iconColor: Colors.redAccent,
-                  onTap: () => Navigator.pop(context, 'delete_everyone'),
-                ),
-              if (canBlock)
-                ListTile(
-                  leading: Icon(
-                    blocked ? Icons.visibility_rounded : Icons.block_rounded,
-                  ),
-                  title: Text(blocked ? 'Unblock user' : 'Block user'),
-                  textColor: blocked ? null : Colors.redAccent,
-                  iconColor: blocked ? null : Colors.redAccent,
-                  onTap: () => Navigator.pop(context, 'block'),
-                ),
-            ],
+      barrierDismissible: true,
+      barrierLabel: 'Close message actions',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 280),
+      pageBuilder: (dialogContext, _, _) => _MessageContextOverlay(
+        reactions: widget.controller.appSettings.quickReactions,
+        actions: actions,
+        message: message,
+        mine: mine,
+        preview: _MessageBubbleBody(
+          controller: widget.controller,
+          thread: widget.thread,
+          message: message,
+          mine: mine,
+          imageBytes: _MessageBubble.imageBytesFor(
+            message,
+            dataSaver: widget.controller.appSettings.dataSaver,
           ),
+          highlighted: true,
+          commentCount: commentCountFor(message),
         ),
       ),
     );
@@ -2540,7 +2650,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         message,
       );
       if (!mounted) return;
-      showSnack(error ?? 'Retrying');
+      if (error != null) showSnack(error);
       return;
     }
     if (action == 'reply') {
@@ -2555,10 +2665,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       await showForwardDialog(message);
       return;
     }
+    if (action == 'copy') {
+      await Clipboard.setData(ClipboardData(text: message.text));
+      return;
+    }
+    if (action == 'select_text') {
+      await showMessageTextSelection(message.text);
+      return;
+    }
+    if (action == 'select_messages') {
+      startMessageSelection(selectionGroup ?? [message]);
+      return;
+    }
     if (action == 'save') {
       final error = await widget.controller.saveMessageToSaved(message);
       if (!mounted) return;
-      showSnack(error ?? 'Saved');
+      if (error != null) showSnack(error);
       return;
     }
     if (action == 'translate') {
@@ -2575,12 +2697,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         favorite: action == 'favorite_sticker',
       );
       if (!mounted) return;
-      showSnack(
-        error ??
-            (action == 'favorite_sticker'
-                ? 'Sticker added to favorites'
-                : 'Sticker added to Saved stickers'),
-      );
+      if (error != null) showSnack(error);
       return;
     }
     if (action == 'edit') {
@@ -2608,10 +2725,74 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (action == 'block') {
       await widget.controller.toggleBlocked(message.senderNode);
       if (!mounted) return;
-      showSnack(blocked ? 'User unblocked' : 'User blocked');
       return;
     }
-    await widget.controller.sendReaction(widget.thread, message, action);
+    if (action.startsWith('reaction:')) {
+      await widget.controller.sendReaction(
+        widget.thread,
+        message,
+        action.substring('reaction:'.length),
+      );
+    }
+  }
+
+  Future<void> showMessageTextSelection(String text) async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.58),
+      builder: (context) => Dialog(
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(24),
+        child: _MessageContextGlass(
+          radius: 26,
+          prominent: true,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520, maxHeight: 520),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Select text',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 14),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        text,
+                        style: const TextStyle(fontSize: 16, height: 1.35),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Close'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () async {
+                          await Clipboard.setData(ClipboardData(text: text));
+                          if (context.mounted) Navigator.pop(context);
+                        },
+                        icon: const Icon(Icons.copy_all_rounded),
+                        label: const Text('Copy all'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> showTranslationSheet(ChatMessage message) async {
@@ -2728,7 +2909,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           await Clipboard.setData(
                             ClipboardData(text: result!.text),
                           );
-                          if (mounted) showSnack('Translation copied');
                         },
                       ),
                     ),
@@ -2777,7 +2957,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
-  Future<void> showForwardDialog(ChatMessage message) async {
+  Future<void> showForwardDialog(ChatMessage message) =>
+      showForwardMessagesDialog([message]);
+
+  Future<void> showForwardMessagesDialog(List<ChatMessage> messages) async {
+    if (messages.isEmpty) return;
     final targets = widget.controller.sortedThreads.where((thread) {
       final key = thread.isGroup ? thread.groupId : thread.profile.nodeId;
       final currentKey = widget.thread.isGroup
@@ -2817,9 +3001,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       ),
     );
     if (!mounted || target == null) return;
-    final error = await widget.controller.forwardMessage(message, target);
-    if (!mounted) return;
-    showSnack(error ?? 'Forwarded');
+    for (final message in messages) {
+      final error = await widget.controller.forwardMessage(message, target);
+      if (!mounted) return;
+      if (error != null) {
+        showSnack(error);
+        return;
+      }
+    }
+    clearMessageSelection();
   }
 
   Future<void> downloadMessageFile(ChatMessage message) async {
@@ -2841,12 +3031,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       );
       if (!mounted) return;
       if (kIsWeb) {
-        showSnack('Downloaded');
         return;
       }
       if (savedPath != null && savedPath.isNotEmpty) {
         await XFile.fromData(bytes, name: filename).saveTo(savedPath);
-        showSnack('Saved');
         return;
       }
       final dir = await getTemporaryDirectory();
@@ -3074,398 +3262,517 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final headerInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        forceMaterialTransparency: true,
+    return PopScope(
+      canPop: !selectingMessages,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && selectingMessages) clearMessageSelection();
+      },
+      child: Scaffold(
         backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        shadowColor: Colors.transparent,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        centerTitle: true,
-        leadingWidth: 62,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 8),
-          child: _ChatRoundButton(
-            tooltip: 'Back',
-            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
-            onPressed: () => Navigator.maybePop(context),
+        extendBodyBehindAppBar: true,
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          forceMaterialTransparency: true,
+          backgroundColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          shadowColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: true,
+          leadingWidth: 62,
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: _ChatRoundButton(
+              tooltip: 'Back',
+              icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+              onPressed: selectingMessages
+                  ? clearMessageSelection
+                  : () => Navigator.maybePop(context),
+            ),
           ),
-        ),
-        titleSpacing: 4,
-        title: ListenableBuilder(
-          listenable: widget.controller,
-          builder: (context, _) {
-            final profile = widget.thread.profile;
-            final isSavedMessages = widget.controller.isSavedMessagesProfile(
-              profile,
-            );
-            final active = widget.controller.isTyping(widget.thread);
-            final subtitle = active
-                ? widget.controller.activityLabel(widget.thread)
-                : isChannelCommentThread
-                ? profile.displayName
-                : widget.thread.isGroup
-                ? widget.thread.isChannel
-                      ? '${widget.thread.members.length} subscribers'
-                      : '${widget.thread.members.length} members'
-                : isSavedMessages
-                ? 'private notes'
-                : profile.online
-                ? 'online'
-                : 'offline';
-            return _ChatHeaderIdentity(
-              title: isChannelCommentThread ? 'Comments' : profile.displayName,
-              subtitle: subtitle,
-              active: active || widget.thread.isGroup || profile.online,
-              onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
-            );
-          },
-        ),
-        actions: <Widget>[
-          ListenableBuilder(
+          titleSpacing: 4,
+          title: ListenableBuilder(
             listenable: widget.controller,
-            builder: (context, _) => _ChatHeaderAvatarButton(
-              profile: widget.thread.profile,
-              onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
-            ),
+            builder: (context, _) {
+              final profile = widget.thread.profile;
+              final isSavedMessages = widget.controller.isSavedMessagesProfile(
+                profile,
+              );
+              final active = widget.controller.isTyping(widget.thread);
+              final subtitle = active
+                  ? widget.controller.activityLabel(widget.thread)
+                  : isChannelCommentThread
+                  ? profile.displayName
+                  : widget.thread.isGroup
+                  ? widget.thread.isChannel
+                        ? '${widget.thread.members.length} subscribers'
+                        : '${widget.thread.members.length} members'
+                  : isSavedMessages
+                  ? 'private notes'
+                  : profile.online
+                  ? 'online'
+                  : 'offline';
+              return _ChatHeaderIdentity(
+                title: isChannelCommentThread
+                    ? 'Comments'
+                    : profile.displayName,
+                subtitle: subtitle,
+                active: active || widget.thread.isGroup || profile.online,
+                onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
+              );
+            },
           ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: _LiquidMeshBackground(
-              enabled:
-                  !widget.controller.appSettings.reducedAnimations &&
-                  widget.thread.animatedBackground,
-              themeId: widget.thread.themeId,
+          actions: <Widget>[
+            ListenableBuilder(
+              listenable: widget.controller,
+              builder: (context, _) => _ChatHeaderAvatarButton(
+                profile: widget.thread.profile,
+                onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
+              ),
             ),
-          ),
-          Column(
-            children: [
-              SizedBox(height: headerInset),
-              ListenableBuilder(
-                listenable: widget.controller,
-                builder: (context, _) => Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (unreadSummaryVisible)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
-                        child: Align(
-                          alignment: Alignment.center,
-                          child: FilledButton.tonalIcon(
-                            onPressed: aiSummarizing ? null : showUnreadSummary,
-                            icon: aiSummarizing
-                                ? const SizedBox.square(
-                                    dimension: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
+            const SizedBox(width: 8),
+          ],
+        ),
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: _LiquidMeshBackground(
+                enabled:
+                    !widget.controller.appSettings.reducedAnimations &&
+                    widget.thread.animatedBackground,
+                themeId: widget.thread.themeId,
+              ),
+            ),
+            Column(
+              children: [
+                SizedBox(height: headerInset),
+                ListenableBuilder(
+                  listenable: widget.controller,
+                  builder: (context, _) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (unreadSummaryVisible)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
+                          child: Align(
+                            alignment: Alignment.center,
+                            child: FilledButton.tonalIcon(
+                              onPressed: aiSummarizing
+                                  ? null
+                                  : showUnreadSummary,
+                              icon: aiSummarizing
+                                  ? const SizedBox.square(
+                                      dimension: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.auto_awesome_rounded,
+                                      size: 18,
                                     ),
-                                  )
-                                : const Icon(
-                                    Icons.auto_awesome_rounded,
-                                    size: 18,
-                                  ),
-                            label: Text(
-                              'Summarize ${unreadMessageIds.length} unread',
+                              label: Text(
+                                'Summarize ${unreadMessageIds.length} unread',
+                              ),
                             ),
                           ),
                         ),
+                      _PinnedBar(
+                        thread: widget.thread,
+                        onTap: openPinnedMessages,
                       ),
-                    _PinnedBar(
-                      thread: widget.thread,
-                      onTap: openPinnedMessages,
-                    ),
-                    _CallBanner(
-                      controller: widget.controller,
-                      onSummarize: showCallSummary,
-                      summaryLoading: aiCallSummarizing,
-                    ),
-                    if (widget.controller.isTyping(widget.thread))
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-                        child: _ChatGlassSurface(
-                          radius: 16,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 7,
-                            ),
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                widget.controller.activityLabel(widget.thread),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white70,
+                      _CallBanner(
+                        controller: widget.controller,
+                        onSummarize: showCallSummary,
+                        summaryLoading: aiCallSummarizing,
+                      ),
+                      if (widget.controller.isTyping(widget.thread))
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+                          child: _ChatGlassSurface(
+                            radius: 16,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 7,
+                              ),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  widget.controller.activityLabel(
+                                    widget.thread,
+                                  ),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white70,
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                child: ListenableBuilder(
-                  listenable: widget.controller,
-                  builder: (context, _) {
-                    final messages = visibleMessages();
-                    scheduleInitialScrollToBottom(messages.length);
-                    return ListView.builder(
-                      controller: scroll,
-                      padding: EdgeInsets.fromLTRB(12, 14, 12, 10),
-                      itemCount: messages.length,
-                      itemBuilder: (context, index) {
-                        final message = messages[index];
-                        if (isCoveredByAlbum(messages, index)) {
-                          return const SizedBox.shrink();
-                        }
-                        final album = albumFrom(messages, index);
-                        final showDate =
-                            index == 0 ||
-                            !sameDay(
-                              messages[index - 1].createdAt,
-                              message.createdAt,
-                            );
-                        return Column(
-                          children: [
-                            if (showDate) _DatePill(date: message.createdAt),
-                            if (album.length > 1)
-                              _PhotoAlbumBubble(
-                                thread: widget.thread,
-                                messages: album,
-                                mine:
-                                    message.senderNode ==
-                                    widget.controller.myNodeId,
-                                dataSaver:
-                                    widget.controller.appSettings.dataSaver,
-                                onLongPress: () =>
-                                    showMessageActions(album.last),
-                                onReply: () =>
-                                    setState(() => replyTo = album.last),
-                              )
-                            else
-                              _ViewportMessageTint(
-                                scrollController: scroll,
-                                builder: (context, positionTint) =>
-                                    _MessageDisintegrator(
-                                      deleting: deletingMessageIds.contains(
-                                        message.id,
-                                      ),
-                                      child: _MessageBubble(
-                                        key: ValueKey(message.id),
-                                        controller: widget.controller,
-                                        thread: widget.thread,
-                                        message: message,
-                                        mine:
-                                            message.senderNode ==
-                                            widget.controller.myNodeId,
-                                        dataSaver: widget
-                                            .controller
-                                            .appSettings
-                                            .dataSaver,
-                                        onLongPress: () =>
-                                            showMessageActions(message),
-                                        onReply: () =>
-                                            widget.thread.isChannel &&
-                                                !isChannelCommentThread
-                                            ? openChannelComments(message)
-                                            : setState(() => replyTo = message),
-                                        onReplyQuoteTap:
-                                            message.replyToMessageId.isEmpty
-                                            ? null
-                                            : () => jumpToMessageById(
-                                                message.replyToMessageId,
-                                              ),
-                                        highlighted:
-                                            highlightedMessageId == message.id,
-                                        onOpenComments:
-                                            widget.thread.isChannel &&
-                                                !isChannelCommentThread &&
-                                                message.replyToMessageId.isEmpty
-                                            ? () => openChannelComments(message)
-                                            : null,
-                                        commentCount: commentCountFor(message),
-                                        positionTint: positionTint,
-                                      ),
-                                    ),
-                              ),
-                          ],
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-              SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
-                  child: canPostToThread
-                      ? Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (replyTo != null) ...[
-                              _ReplyComposer(
-                                message: replyTo!,
-                                onCancel: () => setState(() => replyTo = null),
-                              ),
-                              const SizedBox(height: 8),
-                            ],
-                            AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 220),
-                              switchInCurve: Curves.easeOutCubic,
-                              switchOutCurve: Curves.easeInCubic,
-                              transitionBuilder: (child, animation) =>
-                                  SizeTransition(
-                                    sizeFactor: animation,
-                                    alignment: AlignmentDirectional.topStart,
-                                    child: FadeTransition(
-                                      opacity: animation,
-                                      child: child,
-                                    ),
+                Expanded(
+                  child: ListenableBuilder(
+                    listenable: widget.controller,
+                    builder: (context, _) {
+                      final messages = visibleMessages();
+                      scheduleInitialScrollToBottom(messages.length);
+                      return ListView.builder(
+                        controller: scroll,
+                        padding: EdgeInsets.fromLTRB(12, 14, 12, 10),
+                        itemCount: messages.length,
+                        itemBuilder: (context, index) {
+                          final message = messages[index];
+                          if (isCoveredByAlbum(messages, index)) {
+                            return const SizedBox.shrink();
+                          }
+                          final album = albumFrom(messages, index);
+                          final showDate =
+                              index == 0 ||
+                              !sameDay(
+                                messages[index - 1].createdAt,
+                                message.createdAt,
+                              );
+                          return Column(
+                            children: [
+                              if (showDate) _DatePill(date: message.createdAt),
+                              if (album.length > 1)
+                                _PhotoAlbumBubble(
+                                  thread: widget.thread,
+                                  messages: album,
+                                  mine:
+                                      message.senderNode ==
+                                      widget.controller.myNodeId,
+                                  dataSaver:
+                                      widget.controller.appSettings.dataSaver,
+                                  selected: album.every(
+                                    (item) =>
+                                        selectedMessageIds.contains(item.id),
                                   ),
-                              child:
-                                  aiSmartRepliesLoading ||
-                                      smartReplies.isNotEmpty
-                                  ? Padding(
-                                      key: const ValueKey(
-                                        'smart-replies-visible',
-                                      ),
-                                      padding: const EdgeInsets.only(bottom: 8),
-                                      child: _SmartRepliesBar(
-                                        loading: aiSmartRepliesLoading,
-                                        replies: smartReplies,
-                                        onSelected: useSmartReply,
-                                        onClose: () => setState(
-                                          () => smartReplies = const [],
+                                  onTap: selectingMessages
+                                      ? () => toggleMessageSelection(album)
+                                      : null,
+                                  onLongPress: () => selectingMessages
+                                      ? toggleMessageSelection(album)
+                                      : showMessageActions(
+                                          album.last,
+                                          selectionGroup: album,
+                                        ),
+                                  onReply: () =>
+                                      setState(() => replyTo = album.last),
+                                )
+                              else
+                                _ViewportMessageTint(
+                                  scrollController: scroll,
+                                  builder: (context, positionTint) =>
+                                      _MessageDisintegrator(
+                                        deleting: deletingMessageIds.contains(
+                                          message.id,
+                                        ),
+                                        child: _MessageBubble(
+                                          key: ValueKey(message.id),
+                                          controller: widget.controller,
+                                          thread: widget.thread,
+                                          message: message,
+                                          mine:
+                                              message.senderNode ==
+                                              widget.controller.myNodeId,
+                                          dataSaver: widget
+                                              .controller
+                                              .appSettings
+                                              .dataSaver,
+                                          selected: selectedMessageIds.contains(
+                                            message.id,
+                                          ),
+                                          onTap: selectingMessages
+                                              ? () => toggleMessageSelection([
+                                                  message,
+                                                ])
+                                              : null,
+                                          onLongPress: () => selectingMessages
+                                              ? toggleMessageSelection([
+                                                  message,
+                                                ])
+                                              : showMessageActions(message),
+                                          onReply: () =>
+                                              widget.thread.isChannel &&
+                                                  !isChannelCommentThread
+                                              ? openChannelComments(message)
+                                              : setState(
+                                                  () => replyTo = message,
+                                                ),
+                                          onReplyQuoteTap:
+                                              message.replyToMessageId.isEmpty
+                                              ? null
+                                              : () => jumpToMessageById(
+                                                  message.replyToMessageId,
+                                                ),
+                                          highlighted:
+                                              highlightedMessageId ==
+                                              message.id,
+                                          onOpenComments:
+                                              widget.thread.isChannel &&
+                                                  !isChannelCommentThread &&
+                                                  message
+                                                      .replyToMessageId
+                                                      .isEmpty
+                                              ? () =>
+                                                    openChannelComments(message)
+                                              : null,
+                                          commentCount: commentCountFor(
+                                            message,
+                                          ),
+                                          positionTint: positionTint,
                                         ),
                                       ),
-                                    )
-                                  : const SizedBox.shrink(
-                                      key: ValueKey('smart-replies-hidden'),
-                                    ),
+                                ),
+                            ],
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
+                    child: selectingMessages
+                        ? _MessageSelectionBar(
+                            count: selectedMessageIds.length,
+                            canDeleteForEveryone: selectedMessages().every(
+                              (message) =>
+                                  message.senderNode ==
+                                  widget.controller.myNodeId,
                             ),
-                            Row(
-                              children: [
-                                if (!recording) ...[
-                                  _ComposerIconButton(
-                                    tooltip: 'Attach',
-                                    onPressed: showAttachMenu,
-                                    icon: Icons.attach_file_rounded,
-                                  ),
-                                  const SizedBox(width: 8),
-                                ],
-                                Expanded(
-                                  child: _ComposerInputSurface(
-                                    child: recording
-                                        ? Transform.translate(
-                                            offset: Offset(
-                                              voiceCancelDrag * 0.22,
-                                              0,
-                                            ),
-                                            child: Row(
-                                              children: [
-                                                Icon(
-                                                  voiceCancelArmed
-                                                      ? Icons.delete_rounded
-                                                      : Icons.mic_rounded,
-                                                  color: voiceCancelArmed
-                                                      ? Colors.redAccent
-                                                      : Colors.lightBlueAccent,
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Expanded(
-                                                  child: Column(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    children: [
-                                                      _Waveform(
-                                                        levels: recordLevels,
-                                                      ),
-                                                      const SizedBox(height: 3),
-                                                      Text(
-                                                        voiceCancelArmed
-                                                            ? 'Release to cancel'
-                                                            : 'Release to send · slide left to cancel',
-                                                        maxLines: 1,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                        style: TextStyle(
-                                                          color:
-                                                              voiceCancelArmed
-                                                              ? Colors.redAccent
-                                                              : Colors.white54,
-                                                          fontSize: 11,
-                                                          fontWeight:
-                                                              FontWeight.w700,
+                            canCopy: selectedMessages().any(
+                              (message) => message.text.trim().isNotEmpty,
+                            ),
+                            onClose: clearMessageSelection,
+                            onForward: () =>
+                                showForwardMessagesDialog(selectedMessages()),
+                            onCopy: copySelectedMessages,
+                            onSave: saveSelectedMessages,
+                            onDeleteForMe: () =>
+                                deleteSelectedMessages(forEveryone: false),
+                            onDeleteForEveryone: () =>
+                                deleteSelectedMessages(forEveryone: true),
+                          )
+                        : canPostToThread
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (replyTo != null) ...[
+                                _ReplyComposer(
+                                  message: replyTo!,
+                                  onCancel: () =>
+                                      setState(() => replyTo = null),
+                                ),
+                                const SizedBox(height: 8),
+                              ],
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 220),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                transitionBuilder: (child, animation) =>
+                                    SizeTransition(
+                                      sizeFactor: animation,
+                                      alignment: AlignmentDirectional.topStart,
+                                      child: FadeTransition(
+                                        opacity: animation,
+                                        child: child,
+                                      ),
+                                    ),
+                                child:
+                                    aiSmartRepliesLoading ||
+                                        smartReplies.isNotEmpty
+                                    ? Padding(
+                                        key: const ValueKey(
+                                          'smart-replies-visible',
+                                        ),
+                                        padding: const EdgeInsets.only(
+                                          bottom: 8,
+                                        ),
+                                        child: _SmartRepliesBar(
+                                          loading: aiSmartRepliesLoading,
+                                          replies: smartReplies,
+                                          onSelected: useSmartReply,
+                                          onClose: () => setState(
+                                            () => smartReplies = const [],
+                                          ),
+                                        ),
+                                      )
+                                    : const SizedBox.shrink(
+                                        key: ValueKey('smart-replies-hidden'),
+                                      ),
+                              ),
+                              Row(
+                                children: [
+                                  if (!recording) ...[
+                                    _ComposerIconButton(
+                                      tooltip: 'Attach',
+                                      onPressed: showAttachMenu,
+                                      icon: Icons.attach_file_rounded,
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  Expanded(
+                                    child: _ComposerInputSurface(
+                                      child: recording
+                                          ? Transform.translate(
+                                              offset: Offset(
+                                                voiceCancelDrag * 0.22,
+                                                0,
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  Icon(
+                                                    voiceCancelArmed
+                                                        ? Icons.delete_rounded
+                                                        : Icons.mic_rounded,
+                                                    color: voiceCancelArmed
+                                                        ? Colors.redAccent
+                                                        : Colors
+                                                              .lightBlueAccent,
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        _Waveform(
+                                                          levels: recordLevels,
                                                         ),
-                                                      ),
-                                                    ],
+                                                        const SizedBox(
+                                                          height: 3,
+                                                        ),
+                                                        Text(
+                                                          voiceCancelArmed
+                                                              ? 'Release to cancel'
+                                                              : 'Release to send · slide left to cancel',
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style: TextStyle(
+                                                            color:
+                                                                voiceCancelArmed
+                                                                ? Colors
+                                                                      .redAccent
+                                                                : Colors
+                                                                      .white54,
+                                                            fontSize: 11,
+                                                            fontWeight:
+                                                                FontWeight.w700,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
                                                   ),
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  recordDuration(),
-                                                  style: const TextStyle(
-                                                    color: Colors.white70,
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    recordDuration(),
+                                                    style: const TextStyle(
+                                                      color: Colors.white70,
+                                                    ),
                                                   ),
-                                                ),
-                                              ],
-                                            ),
-                                          )
-                                        : Focus(
-                                            focusNode: inputFocus,
-                                            onKeyEvent: handleInputKey,
-                                            child: TextField(
-                                              controller: input,
-                                              minLines: 1,
-                                              maxLines: 5,
-                                              textCapitalization:
-                                                  TextCapitalization.sentences,
-                                              keyboardType:
-                                                  TextInputType.multiline,
-                                              textInputAction:
-                                                  desktopSendHotkeys
-                                                  ? TextInputAction.send
-                                                  : TextInputAction.newline,
-                                              decoration: InputDecoration(
-                                                hintText: 'Message',
-                                                isDense: true,
-                                                filled: false,
-                                                border: InputBorder.none,
-                                                suffixIcon: hasInputText
-                                                    ? IconButton(
-                                                        tooltip:
-                                                            'AI writing assistant',
-                                                        onPressed: aiRewriting
-                                                            ? null
-                                                            : showAiRewrite,
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        icon: AnimatedSwitcher(
-                                                          duration:
-                                                              const Duration(
-                                                                milliseconds:
-                                                                    180,
-                                                              ),
-                                                          child: aiRewriting
-                                                              ? const SizedBox(
-                                                                  key: ValueKey(
-                                                                    'ai-loading',
+                                                ],
+                                              ),
+                                            )
+                                          : Focus(
+                                              focusNode: inputFocus,
+                                              onKeyEvent: handleInputKey,
+                                              child: TextField(
+                                                controller: input,
+                                                minLines: 1,
+                                                maxLines: 5,
+                                                textCapitalization:
+                                                    TextCapitalization
+                                                        .sentences,
+                                                keyboardType:
+                                                    TextInputType.multiline,
+                                                textInputAction:
+                                                    desktopSendHotkeys
+                                                    ? TextInputAction.send
+                                                    : TextInputAction.newline,
+                                                decoration: InputDecoration(
+                                                  hintText: 'Message',
+                                                  isDense: true,
+                                                  filled: false,
+                                                  border: InputBorder.none,
+                                                  enabledBorder:
+                                                      InputBorder.none,
+                                                  focusedBorder:
+                                                      InputBorder.none,
+                                                  disabledBorder:
+                                                      InputBorder.none,
+                                                  errorBorder: InputBorder.none,
+                                                  focusedErrorBorder:
+                                                      InputBorder.none,
+                                                  focusColor:
+                                                      Colors.transparent,
+                                                  hoverColor:
+                                                      Colors.transparent,
+                                                  suffixIcon: hasInputText
+                                                      ? IconButton(
+                                                          tooltip:
+                                                              'AI writing assistant',
+                                                          onPressed: aiRewriting
+                                                              ? null
+                                                              : showAiRewrite,
+                                                          visualDensity:
+                                                              VisualDensity
+                                                                  .compact,
+                                                          icon: AnimatedSwitcher(
+                                                            duration:
+                                                                const Duration(
+                                                                  milliseconds:
+                                                                      180,
+                                                                ),
+                                                            child: aiRewriting
+                                                                ? const SizedBox(
+                                                                    key: ValueKey(
+                                                                      'ai-loading',
+                                                                    ),
+                                                                    width: 17,
+                                                                    height: 17,
+                                                                    child: CircularProgressIndicator(
+                                                                      strokeWidth:
+                                                                          2,
+                                                                    ),
+                                                                  )
+                                                                : const Icon(
+                                                                    Icons
+                                                                        .auto_awesome_rounded,
+                                                                    key: ValueKey(
+                                                                      'ai-ready',
+                                                                    ),
+                                                                    size: 20,
+                                                                    color: Color(
+                                                                      0xFFB28AFF,
+                                                                    ),
                                                                   ),
+                                                          ),
+                                                        )
+                                                      : IconButton(
+                                                          tooltip:
+                                                              'Smart replies',
+                                                          onPressed:
+                                                              aiSmartRepliesLoading
+                                                              ? null
+                                                              : showSmartReplies,
+                                                          visualDensity:
+                                                              VisualDensity
+                                                                  .compact,
+                                                          icon:
+                                                              aiSmartRepliesLoading
+                                                              ? const SizedBox(
                                                                   width: 17,
                                                                   height: 17,
                                                                   child: CircularProgressIndicator(
@@ -3475,231 +3782,201 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                                 )
                                                               : const Icon(
                                                                   Icons
-                                                                      .auto_awesome_rounded,
-                                                                  key: ValueKey(
-                                                                    'ai-ready',
-                                                                  ),
+                                                                      .quickreply_outlined,
                                                                   size: 20,
                                                                   color: Color(
-                                                                    0xFFB28AFF,
+                                                                    0xFF73D9FF,
                                                                   ),
                                                                 ),
                                                         ),
-                                                      )
-                                                    : IconButton(
-                                                        tooltip:
-                                                            'Smart replies',
-                                                        onPressed:
-                                                            aiSmartRepliesLoading
-                                                            ? null
-                                                            : showSmartReplies,
-                                                        visualDensity:
-                                                            VisualDensity
-                                                                .compact,
-                                                        icon:
-                                                            aiSmartRepliesLoading
-                                                            ? const SizedBox(
-                                                                width: 17,
-                                                                height: 17,
-                                                                child:
-                                                                    CircularProgressIndicator(
-                                                                      strokeWidth:
-                                                                          2,
-                                                                    ),
-                                                              )
-                                                            : const Icon(
-                                                                Icons
-                                                                    .quickreply_outlined,
-                                                                size: 20,
-                                                                color: Color(
-                                                                  0xFF73D9FF,
-                                                                ),
-                                                              ),
+                                                  suffixIconConstraints:
+                                                      const BoxConstraints(
+                                                        minWidth: 38,
+                                                        minHeight: 36,
                                                       ),
-                                                suffixIconConstraints:
-                                                    const BoxConstraints(
-                                                      minWidth: 38,
-                                                      minHeight: 36,
-                                                    ),
+                                                ),
+                                                onTap:
+                                                    scheduleKeyboardScrollToBottom,
+                                                onSubmitted: desktopSendHotkeys
+                                                    ? (_) => send()
+                                                    : null,
                                               ),
-                                              onTap:
-                                                  scheduleKeyboardScrollToBottom,
-                                              onSubmitted: desktopSendHotkeys
-                                                  ? (_) => send()
-                                                  : null,
+                                            ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  if (recording && !voicePointerDown)
+                                    _ComposerIconButton(
+                                      tooltip: 'Cancel',
+                                      onPressed: cancelRecording,
+                                      icon: Icons.close_rounded,
+                                      accent: Colors.redAccent,
+                                    )
+                                  else
+                                    AnimatedSwitcher(
+                                      duration: const Duration(
+                                        milliseconds: 180,
+                                      ),
+                                      transitionBuilder: (child, animation) =>
+                                          ScaleTransition(
+                                            scale: CurvedAnimation(
+                                              parent: animation,
+                                              curve: Curves.easeOutBack,
+                                            ),
+                                            child: FadeTransition(
+                                              opacity: animation,
+                                              child: child,
                                             ),
                                           ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                if (recording && !voicePointerDown)
-                                  _ComposerIconButton(
-                                    tooltip: 'Cancel',
-                                    onPressed: cancelRecording,
-                                    icon: Icons.close_rounded,
-                                    accent: Colors.redAccent,
-                                  )
-                                else
-                                  AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 180),
-                                    transitionBuilder: (child, animation) =>
-                                        ScaleTransition(
-                                          scale: CurvedAnimation(
-                                            parent: animation,
-                                            curve: Curves.easeOutBack,
-                                          ),
-                                          child: FadeTransition(
-                                            opacity: animation,
-                                            child: child,
-                                          ),
-                                        ),
-                                    child: hasInputText && !recording
-                                        ? _ComposerIconButton(
-                                            key: const ValueKey('send'),
-                                            tooltip: 'Send · hold to schedule',
-                                            onPressed: send,
-                                            onLongPress: showScheduleComposer,
-                                            icon: Icons.send_rounded,
-                                            accent: _chatThemeAccent(
-                                              widget.thread.themeId,
+                                      child: hasInputText && !recording
+                                          ? _ComposerIconButton(
+                                              key: const ValueKey('send'),
+                                              tooltip:
+                                                  'Send · hold to schedule',
+                                              onPressed: send,
+                                              onLongPress: showScheduleComposer,
+                                              icon: Icons.send_rounded,
+                                              accent: _chatThemeAccent(
+                                                widget.thread.themeId,
+                                              ),
+                                            )
+                                          : _VoiceHoldButton(
+                                              key: const ValueKey('mic'),
+                                              onStart: startVoiceHold,
+                                              onDragUpdate: updateVoiceHoldDrag,
+                                              onFinish: () =>
+                                                  finishVoiceHold(send: true),
+                                              onCancel: () =>
+                                                  finishVoiceHold(send: false),
                                             ),
-                                          )
-                                        : _VoiceHoldButton(
-                                            key: const ValueKey('mic'),
-                                            onStart: startVoiceHold,
-                                            onDragUpdate: updateVoiceHoldDrag,
-                                            onFinish: () =>
-                                                finishVoiceHold(send: true),
-                                            onCancel: () =>
-                                                finishVoiceHold(send: false),
-                                          ),
-                                  ),
-                              ],
-                            ),
-                          ],
-                        )
-                      : const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.campaign_outlined,
-                                color: Colors.white54,
-                              ),
-                              SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  'Only channel admins can post',
-                                  style: TextStyle(color: Colors.white60),
-                                ),
+                                    ),
+                                ],
                               ),
                             ],
+                          )
+                        : const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.campaign_outlined,
+                                  color: Colors.white54,
+                                ),
+                                SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'Only channel admins can post',
+                                    style: TextStyle(color: Colors.white60),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
+                  ),
                 ),
-              ),
-            ],
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 88,
-            child: IgnorePointer(
-              ignoring: !showJumpToBottom,
-              child: AnimatedOpacity(
-                opacity: showJumpToBottom ? 1 : 0,
-                duration: const Duration(milliseconds: 160),
-                child: Center(
-                  child: _ChatRoundButton(
-                    tooltip: 'Jump to latest',
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                    onPressed: scrollToBottom,
+              ],
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 88,
+              child: IgnorePointer(
+                ignoring: !showJumpToBottom,
+                child: AnimatedOpacity(
+                  opacity: showJumpToBottom ? 1 : 0,
+                  duration: const Duration(milliseconds: 160),
+                  child: Center(
+                    child: _ChatRoundButton(
+                      tooltip: 'Jump to latest',
+                      icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                      onPressed: scrollToBottom,
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: 92,
-            child: ListenableBuilder(
-              listenable: widget.controller,
-              builder: (context, _) {
-                final call = widget.controller.activeCall;
-                if (call == null ||
-                    call.collapsed ||
-                    call.status == CallStatus.ended) {
-                  return const SizedBox.shrink();
-                }
-                return TweenAnimationBuilder<double>(
-                  tween: Tween(begin: 1, end: 0),
-                  duration: const Duration(milliseconds: 280),
-                  curve: Curves.easeOutCubic,
-                  builder: (context, value, child) {
-                    return Opacity(
-                      opacity: 1 - value,
-                      child: Transform.translate(
-                        offset: Offset(0, 72 * value),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: _CallBottomSheet(controller: widget.controller),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 92,
+              child: ListenableBuilder(
+                listenable: widget.controller,
+                builder: (context, _) {
+                  final call = widget.controller.activeCall;
+                  if (call == null ||
+                      call.collapsed ||
+                      call.status == CallStatus.ended) {
+                    return const SizedBox.shrink();
+                  }
+                  return TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 1, end: 0),
+                    duration: const Duration(milliseconds: 280),
+                    curve: Curves.easeOutCubic,
+                    builder: (context, value, child) {
+                      return Opacity(
+                        opacity: 1 - value,
+                        child: Transform.translate(
+                          offset: Offset(0, 72 * value),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: _CallBottomSheet(controller: widget.controller),
+                  );
+                },
+              ),
+            ),
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: 24,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (_) {
+                  edgeBackDrag = 0;
+                  edgeBackHapticSent = false;
+                },
+                onHorizontalDragUpdate: (details) {
+                  edgeBackDrag = math.max(
+                    0,
+                    edgeBackDrag + (details.primaryDelta ?? 0),
+                  );
+                  if (edgeBackDrag >= 58 && !edgeBackHapticSent) {
+                    edgeBackHapticSent = true;
+                    unawaited(HapticFeedback.selectionClick());
+                  }
+                },
+                onHorizontalDragEnd: (_) {
+                  if (edgeBackDrag >= 58) Navigator.maybePop(context);
+                  edgeBackDrag = 0;
+                  edgeBackHapticSent = false;
+                },
+                onHorizontalDragCancel: () {
+                  edgeBackDrag = 0;
+                  edgeBackHapticSent = false;
+                },
+              ),
+            ),
+            InAppMessageBanner(
+              controller: widget.controller,
+              top: MediaQuery.paddingOf(context).top + 8,
+              onOpen: (thread) {
+                if (thread == widget.thread) return;
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        ChatPage(controller: widget.controller, thread: thread),
+                  ),
                 );
               },
             ),
-          ),
-          Positioned(
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: 24,
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onHorizontalDragStart: (_) {
-                edgeBackDrag = 0;
-                edgeBackHapticSent = false;
-              },
-              onHorizontalDragUpdate: (details) {
-                edgeBackDrag = math.max(
-                  0,
-                  edgeBackDrag + (details.primaryDelta ?? 0),
-                );
-                if (edgeBackDrag >= 58 && !edgeBackHapticSent) {
-                  edgeBackHapticSent = true;
-                  unawaited(HapticFeedback.selectionClick());
-                }
-              },
-              onHorizontalDragEnd: (_) {
-                if (edgeBackDrag >= 58) Navigator.maybePop(context);
-                edgeBackDrag = 0;
-                edgeBackHapticSent = false;
-              },
-              onHorizontalDragCancel: () {
-                edgeBackDrag = 0;
-                edgeBackHapticSent = false;
-              },
-            ),
-          ),
-          InAppMessageBanner(
-            controller: widget.controller,
-            top: MediaQuery.paddingOf(context).top + 8,
-            onOpen: (thread) {
-              if (thread == widget.thread) return;
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) =>
-                      ChatPage(controller: widget.controller, thread: thread),
-                ),
-              );
-            },
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -4929,6 +5206,107 @@ class _SmartRepliesBar extends StatelessWidget {
             icon: const Icon(Icons.close_rounded, size: 18),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _MessageSelectionBar extends StatelessWidget {
+  const _MessageSelectionBar({
+    required this.count,
+    required this.canDeleteForEveryone,
+    required this.canCopy,
+    required this.onClose,
+    required this.onForward,
+    required this.onCopy,
+    required this.onSave,
+    required this.onDeleteForMe,
+    required this.onDeleteForEveryone,
+  });
+
+  final int count;
+  final bool canDeleteForEveryone;
+  final bool canCopy;
+  final VoidCallback onClose;
+  final VoidCallback onForward;
+  final VoidCallback onCopy;
+  final VoidCallback onSave;
+  final VoidCallback onDeleteForMe;
+  final VoidCallback onDeleteForEveryone;
+
+  @override
+  Widget build(BuildContext context) {
+    return _MessageContextGlass(
+      radius: 28,
+      prominent: true,
+      child: SizedBox(
+        height: 62,
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: 'Cancel selection',
+              onPressed: onClose,
+              icon: const Icon(Icons.close_rounded),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              transitionBuilder: (child, animation) => ScaleTransition(
+                scale: animation,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
+              child: Text(
+                '$count',
+                key: ValueKey(count),
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                reverse: true,
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Forward selected',
+                      onPressed: onForward,
+                      icon: const Icon(Icons.forward_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy selected text',
+                      onPressed: canCopy ? onCopy : null,
+                      icon: const Icon(Icons.copy_all_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Save to Saved Messages',
+                      onPressed: onSave,
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                    ),
+                    IconButton(
+                      tooltip: 'Delete for me',
+                      onPressed: onDeleteForMe,
+                      color: Colors.redAccent,
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                    ),
+                    IconButton(
+                      tooltip: canDeleteForEveryone
+                          ? 'Delete for everyone'
+                          : 'Only your messages can be deleted for everyone',
+                      onPressed: canDeleteForEveryone
+                          ? onDeleteForEveryone
+                          : null,
+                      color: Colors.redAccent,
+                      icon: const Icon(Icons.delete_forever_outlined),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -6383,6 +6761,8 @@ class _PhotoAlbumBubble extends StatelessWidget {
     required this.dataSaver,
     required this.onLongPress,
     required this.onReply,
+    this.onTap,
+    this.selected = false,
   });
 
   final ChatThread thread;
@@ -6391,6 +6771,8 @@ class _PhotoAlbumBubble extends StatelessWidget {
   final bool dataSaver;
   final VoidCallback onLongPress;
   final VoidCallback onReply;
+  final VoidCallback? onTap;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -6401,6 +6783,7 @@ class _PhotoAlbumBubble extends StatelessWidget {
       alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onLongPress: onLongPress,
+        onTap: onTap,
         onHorizontalDragEnd: (details) {
           if ((details.primaryVelocity ?? 0) > 650) onReply();
         },
@@ -6411,6 +6794,17 @@ class _PhotoAlbumBubble extends StatelessWidget {
           decoration: BoxDecoration(
             color: _chatBubbleColor(thread.themeId, mine),
             borderRadius: _chatBubbleRadius(thread.bubbleStyle, mine),
+            border: selected
+                ? Border.all(color: const Color(0xFF75D9FF), width: 2)
+                : null,
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: const Color(0xFF5BCBFF).withValues(alpha: 0.26),
+                      blurRadius: 18,
+                    ),
+                  ]
+                : null,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -6438,9 +6832,11 @@ class _PhotoAlbumBubble extends StatelessWidget {
                         dataSaver: dataSaver,
                       );
                       return GestureDetector(
-                        onTap: bytes == null
-                            ? null
-                            : () => _showAlbumImage(context, bytes),
+                        onTap:
+                            onTap ??
+                            (bytes == null
+                                ? null
+                                : () => _showAlbumImage(context, bytes)),
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
@@ -6485,6 +6881,14 @@ class _PhotoAlbumBubble extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (selected) ...[
+                    const Icon(
+                      Icons.check_circle_rounded,
+                      size: 16,
+                      color: Color(0xFF75D9FF),
+                    ),
+                    const SizedBox(width: 5),
+                  ],
                   Text(
                     '${time.hour.toString().padLeft(2, '0')}:'
                     '${time.minute.toString().padLeft(2, '0')}',
@@ -6527,6 +6931,8 @@ class _MessageBubble extends StatefulWidget {
     required this.dataSaver,
     required this.onLongPress,
     required this.onReply,
+    this.onTap,
+    this.selected = false,
     this.onReplyQuoteTap,
     this.highlighted = false,
     this.onOpenComments,
@@ -6541,6 +6947,8 @@ class _MessageBubble extends StatefulWidget {
   final bool dataSaver;
   final VoidCallback onLongPress;
   final VoidCallback onReply;
+  final VoidCallback? onTap;
+  final bool selected;
   final VoidCallback? onReplyQuoteTap;
   final bool highlighted;
   final VoidCallback? onOpenComments;
@@ -6669,16 +7077,24 @@ class _MessageBubbleState extends State<_MessageBubble> {
               ),
             ),
             GestureDetector(
-              onHorizontalDragUpdate: _updateReplyDrag,
-              onHorizontalDragEnd: _finishReplyDrag,
-              onHorizontalDragCancel: () => setState(() {
-                replyDrag = 0;
-                replyArmed = false;
-              }),
-              onLongPress: widget.onLongPress,
-              onTap: imageBytes == null
+              onHorizontalDragUpdate: widget.selected || widget.onTap != null
                   ? null
-                  : () => _showImage(context, imageBytes, message.id),
+                  : _updateReplyDrag,
+              onHorizontalDragEnd: widget.selected || widget.onTap != null
+                  ? null
+                  : _finishReplyDrag,
+              onHorizontalDragCancel: widget.selected || widget.onTap != null
+                  ? null
+                  : () => setState(() {
+                      replyDrag = 0;
+                      replyArmed = false;
+                    }),
+              onLongPress: widget.onLongPress,
+              onTap:
+                  widget.onTap ??
+                  (imageBytes == null
+                      ? null
+                      : () => _showImage(context, imageBytes, message.id)),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 120),
                 curve: Curves.easeOutCubic,
@@ -6702,7 +7118,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     mine: mine,
                     imageBytes: imageBytes,
                     onReplyQuoteTap: widget.onReplyQuoteTap,
-                    highlighted: widget.highlighted,
+                    highlighted: widget.highlighted || widget.selected,
                     onOpenComments: widget.onOpenComments,
                     commentCount: widget.commentCount,
                     positionTint: widget.positionTint,
@@ -8679,64 +9095,360 @@ class _Waveform extends StatelessWidget {
 const _mooseReaction = '\u{1FACE}';
 const _mooseReactionAsset = 'assets/moose_reaction.png';
 
-class _ReactionQuickBar extends StatelessWidget {
-  const _ReactionQuickBar({required this.reactions, required this.onSelected});
+class _MessageActionSpec {
+  const _MessageActionSpec(
+    this.id,
+    this.label,
+    this.icon, {
+    this.subtitle,
+    this.destructive = false,
+    this.enabled = true,
+  });
+
+  final String id;
+  final String label;
+  final IconData icon;
+  final String? subtitle;
+  final bool destructive;
+  final bool enabled;
+}
+
+class _MessageContextOverlay extends StatefulWidget {
+  const _MessageContextOverlay({
+    required this.reactions,
+    required this.actions,
+    required this.message,
+    required this.mine,
+    required this.preview,
+  });
 
   final List<String> reactions;
-  final ValueChanged<String> onSelected;
+  final List<_MessageActionSpec> actions;
+  final ChatMessage message;
+  final bool mine;
+  final Widget preview;
+
+  @override
+  State<_MessageContextOverlay> createState() => _MessageContextOverlayState();
+}
+
+class _MessageContextOverlayState extends State<_MessageContextOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController animation;
+  late final Animation<double> fade;
+  late final Animation<double> scale;
+  late final Animation<Offset> reactionSlide;
+  late final Animation<Offset> menuSlide;
+
+  @override
+  void initState() {
+    super.initState();
+    animation = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+      reverseDuration: const Duration(milliseconds: 260),
+    );
+    fade = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeInOutCubic,
+      reverseCurve: Curves.easeInOutCubic,
+    );
+    scale = Tween<double>(
+      begin: 0.94,
+      end: 1,
+    ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutBack));
+    reactionSlide = Tween<Offset>(
+      begin: const Offset(0, 0.35),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic));
+    menuSlide = Tween<Offset>(
+      begin: const Offset(0, -0.12),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutQuart));
+    animation.forward();
+  }
+
+  @override
+  void dispose() {
+    animation.dispose();
+    super.dispose();
+  }
+
+  Future<void> closeWith(String value) async {
+    if (!mounted) return;
+    await animation.reverse();
+    if (mounted) Navigator.pop(context, value);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final visibleReactions = reactions.isEmpty
-        ? const ['\u2764\uFE0F', '\u{1F44C}', _mooseReaction, '\u{1F44D}']
-        : reactions.take(6).toList(growable: false);
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.88, end: 1),
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutBack,
-      builder: (context, scale, child) => Opacity(
-        opacity: scale.clamp(0.0, 1.0),
-        child: Transform.scale(scale: scale, child: child),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: const Color(0xFF182231).withValues(alpha: 0.88),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF46D9FF).withValues(alpha: 0.12),
-                    blurRadius: 24,
-                  ),
-                ],
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
+    final visibleReactions = widget.reactions.isEmpty
+        ? const [
+            '\u{1F44D}',
+            '\u{1F44C}',
+            '\u{1F628}',
+            '\u{1F389}',
+            '\u{1F622}',
+            '\u2764\uFE0F',
+            '\u{1F921}',
+          ]
+        : widget.reactions.take(7).toList(growable: false);
+    final size = MediaQuery.sizeOf(context);
+    final horizontal = size.width >= 760;
+    final contentWidth = math.min(horizontal ? 430.0 : size.width - 28, 430.0);
+    final menuHeight = math.min(
+      size.height * (horizontal ? 0.54 : 0.42),
+      430.0,
+    );
+
+    return Material(
+      type: MaterialType.transparency,
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) => Stack(
+          fit: StackFit.expand,
+          children: [
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () async {
+                await animation.reverse();
+                if (context.mounted) Navigator.pop(context);
+              },
+              child: BackdropFilter(
+                filter: ImageFilter.blur(
+                  sigmaX: 15 * fade.value,
+                  sigmaY: 15 * fade.value,
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                child: ColoredBox(
+                  color: Colors.black.withValues(alpha: 0.58 * fade.value),
+                ),
+              ),
+            ),
+            SafeArea(
+              child: Center(
+                child: SizedBox(
+                  width: contentWidth,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    child: FadeTransition(
+                      opacity: fade,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: widget.mine
+                            ? CrossAxisAlignment.end
+                            : CrossAxisAlignment.start,
+                        children: [
+                          SlideTransition(
+                            position: reactionSlide,
+                            child: _MessageContextGlass(
+                              radius: 30,
+                              prominent: true,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 7,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    for (final reaction in visibleReactions)
+                                      _ContextReactionButton(
+                                        reaction: reaction,
+                                        onTap: () =>
+                                            closeWith('reaction:$reaction'),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          ScaleTransition(
+                            scale: scale,
+                            alignment: widget.mine
+                                ? Alignment.bottomRight
+                                : Alignment.bottomLeft,
+                            child: IgnorePointer(
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: math.min(contentWidth, 350),
+                                ),
+                                child: widget.preview,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          SlideTransition(
+                            position: menuSlide,
+                            child: Align(
+                              alignment: widget.mine
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
+                              child: SizedBox(
+                                width: math.min(contentWidth, 350),
+                                child: _MessageContextGlass(
+                                  radius: 28,
+                                  prominent: true,
+                                  child: ConstrainedBox(
+                                    constraints: BoxConstraints(
+                                      maxHeight: menuHeight,
+                                    ),
+                                    child: ListView.separated(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 8,
+                                      ),
+                                      shrinkWrap: true,
+                                      itemCount: widget.actions.length,
+                                      separatorBuilder: (context, index) =>
+                                          Divider(
+                                            height: 1,
+                                            indent: 54,
+                                            color: Colors.white.withValues(
+                                              alpha: 0.075,
+                                            ),
+                                          ),
+                                      itemBuilder: (context, index) {
+                                        final action = widget.actions[index];
+                                        return _MessageContextActionTile(
+                                          action: action,
+                                          onTap: action.enabled
+                                              ? () => closeWith(action.id)
+                                              : null,
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MessageContextGlass extends StatelessWidget {
+  const _MessageContextGlass({
+    required this.child,
+    required this.radius,
+    this.prominent = false,
+  });
+
+  final Widget child;
+  final double radius;
+  final bool prominent;
+
+  @override
+  Widget build(BuildContext context) {
+    return MeshLiquidGlass(
+      radius: radius,
+      accent: const Color(0xFF8EDCFF),
+      prominent: prominent,
+      interactive: true,
+      fallbackBuilder: (context, child) => ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xEB182331),
+              borderRadius: BorderRadius.circular(radius),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.34),
+                  blurRadius: 28,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _ContextReactionButton extends StatelessWidget {
+  const _ContextReactionButton({required this.reaction, required this.onTap});
+
+  final String reaction;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkResponse(
+      radius: 24,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(7),
+        child: _ReactionIcon(reaction: reaction, size: 27),
+      ),
+    );
+  }
+}
+
+class _MessageContextActionTile extends StatelessWidget {
+  const _MessageContextActionTile({required this.action, this.onTap});
+
+  final _MessageActionSpec action;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = action.destructive
+        ? const Color(0xFFFF5D67)
+        : onTap == null
+        ? Colors.white30
+        : Colors.white;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 12),
+          child: Row(
+            children: [
+              Icon(action.icon, color: color, size: 23),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    for (final reaction in visibleReactions)
-                      InkWell(
-                        borderRadius: BorderRadius.circular(22),
-                        onTap: () => onSelected(reaction),
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: _ReactionIcon(reaction: reaction, size: 30),
+                    Text(
+                      action.label,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (action.subtitle != null)
+                      Text(
+                        action.subtitle!,
+                        style: const TextStyle(
+                          color: Color(0xFFB28AFF),
+                          fontSize: 11,
                         ),
                       ),
                   ],
                 ),
               ),
-            ),
+            ],
           ),
         ),
       ),

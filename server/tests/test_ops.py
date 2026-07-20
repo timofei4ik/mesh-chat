@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -10,6 +11,7 @@ from server import server as server_module
 from server import server_storage
 from server.ops.backup_server import create_backup
 from server.ops.healthcheck_server import collect_health
+from server.ops.reliability_audit import collect_reliability
 
 
 class ServerOperationsTests(unittest.TestCase):
@@ -207,6 +209,58 @@ class ServerOperationsTests(unittest.TestCase):
         self.assertEqual("warning", warning["status"])
         self.assertEqual(1, warning["database"]["offline_queue"]["unsupported"])
         self.assertEqual(1, warning["database"]["orphan_reactions"])
+
+    def test_reliability_audit_detects_media_and_backup_corruption(self):
+        media_path = self.root / "media" / "payload.bin"
+        media_path.parent.mkdir(parents=True)
+        payload = b"meshchat-reliable-media" * 128
+        media_path.write_bytes(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        self.relay.db.execute(
+            """
+            INSERT INTO server_files(
+                file_id,
+                sender_node,
+                receiver_node,
+                filename,
+                storage_path,
+                sha256,
+                size_bytes
+            )
+            VALUES('audit-file', 'sender', 'receiver', 'payload.bin', ?, ?, ?)
+            """,
+            (str(media_path), digest, len(payload)),
+        )
+        self.relay.db.commit()
+        backup = create_backup(
+            self.database,
+            self.backups,
+            keep=2,
+            now=datetime.now(timezone.utc),
+        )
+
+        clean = collect_reliability(self.database, self.backups)
+        self.assertEqual("ok", clean["status"])
+        self.assertEqual(1, clean["database"]["media"]["checked_files"])
+        self.assertEqual(["ok"], clean["backup"]["integrity_check"])
+
+        media_path.write_bytes(b"corrupt")
+        corrupt_media = collect_reliability(self.database, self.backups)
+        self.assertEqual("critical", corrupt_media["status"])
+        self.assertIn(
+            "file_size_mismatch",
+            {
+                item["kind"]
+                for item in corrupt_media["database"]["media"]["problems"]
+            },
+        )
+
+        media_path.write_bytes(payload)
+        backup_path = Path(backup["path"])
+        backup_path.write_bytes(backup_path.read_bytes() + b"tampered")
+        corrupt_backup = collect_reliability(self.database, self.backups)
+        self.assertEqual("critical", corrupt_backup["status"])
+        self.assertIn("backup checksum mismatch", corrupt_backup["critical"])
 
 
 if __name__ == "__main__":

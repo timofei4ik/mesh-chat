@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -18,6 +19,7 @@ class ChatCacheStore {
   static const _maxCachedWebFileHex = 220 * 1024;
   static const _maxCachedWebAvatar = 260 * 1024;
   static const _dbName = 'meshchat_cache.db';
+  static const _cacheDigestVersion = 1;
   static Database? _database;
 
   Future<void> load(
@@ -67,7 +69,7 @@ class ChatCacheStore {
 
     final db = await _db();
     final sessionKey = _key(session);
-    final batch = db.batch();
+    final prepared = <String, Map<String, Object>>{};
     for (final thread in threads) {
       var trimmed = _trimThread(thread);
       final threadKey = trimmed.storageKey;
@@ -78,16 +80,56 @@ class ChatCacheStore {
         payload = jsonEncode(trimmed.toJson());
       }
       if (payload.length > _maxSqlitePayloadChars) continue;
-      batch.insert('chat_threads', {
+      prepared[threadKey] = {
         'session_key': sessionKey,
         'thread_key': threadKey,
         'is_group': trimmed.isGroup ? 1 : 0,
         'updated_at': (trimmed.lastMessage?.createdAt ?? DateTime.now())
             .millisecondsSinceEpoch,
         'payload': payload,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      };
     }
-    await batch.commit(noResult: true);
+    await db.transaction((transaction) async {
+      final existingRows = await transaction.query(
+        'chat_threads',
+        columns: ['thread_key'],
+        where: 'session_key=?',
+        whereArgs: [sessionKey],
+      );
+      final currentKeys = prepared.keys.toSet();
+      for (final row in existingRows) {
+        final threadKey = row['thread_key']?.toString() ?? '';
+        if (threadKey.isNotEmpty && !currentKeys.contains(threadKey)) {
+          await transaction.delete(
+            'chat_threads',
+            where: 'session_key=? AND thread_key=?',
+            whereArgs: [sessionKey, threadKey],
+          );
+        }
+      }
+      for (final row in prepared.values) {
+        await transaction.insert(
+          'chat_threads',
+          row,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+    final digest = await _sqliteDigest(db, sessionKey);
+    await db.rawUpdate(
+      '''
+      UPDATE chat_sync_state
+      SET cache_digest=?, digest_version=?, thread_count=?, updated_at=?
+      WHERE session_key=?
+      ''',
+      [
+        digest,
+        _cacheDigestVersion,
+        prepared.length,
+        DateTime.now().millisecondsSinceEpoch,
+        sessionKey,
+      ],
+    );
   }
 
   Future<void> clear(Session? session) async {
@@ -95,6 +137,7 @@ class ChatCacheStore {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_key(session));
     await prefs.remove(_syncKey(session));
+    await prefs.remove(_digestKey(session));
     if (kIsWeb) return;
     final db = await _db();
     await db.transaction((transaction) async {
@@ -114,31 +157,92 @@ class ChatCacheStore {
   Future<int?> loadSyncCursor(Session session) async {
     if (kIsWeb) {
       final prefs = await SharedPreferences.getInstance();
-      return prefs.getInt(_syncKey(session));
+      final cursor = prefs.getInt(_syncKey(session));
+      final expected = prefs.getString(_digestKey(session));
+      if (cursor == null || expected == null || expected.isEmpty) return null;
+      final actual = await _webDigest(session, prefs);
+      return expected == actual ? cursor : null;
     }
     final db = await _db();
     final rows = await db.query(
       'chat_sync_state',
-      columns: ['cursor'],
+      columns: ['cursor', 'cache_digest'],
       where: 'session_key=?',
       whereArgs: [_key(session)],
       limit: 1,
     );
-    if (rows.isEmpty) return null;
+    if (rows.isEmpty ||
+        (rows.first['cache_digest']?.toString() ?? '').isEmpty) {
+      return null;
+    }
+    final expected = rows.first['cache_digest']?.toString() ?? '';
+    final actual = await _sqliteDigest(db, _key(session));
+    if (expected != actual) return null;
     return int.tryParse(rows.first['cursor']?.toString() ?? '');
+  }
+
+  Future<CacheIntegrityReport> inspectIntegrity(Session session) async {
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      final cursor = prefs.getInt(_syncKey(session));
+      final expected = prefs.getString(_digestKey(session)) ?? '';
+      if (cursor == null || expected.isEmpty) {
+        return const CacheIntegrityReport.unverified();
+      }
+      final actual = await _webDigest(session, prefs);
+      return CacheIntegrityReport(
+        verified: expected == actual,
+        hasCheckpoint: true,
+        expectedDigest: expected,
+        actualDigest: actual,
+      );
+    }
+    final db = await _db();
+    final rows = await db.query(
+      'chat_sync_state',
+      columns: ['cache_digest'],
+      where: 'session_key=?',
+      whereArgs: [_key(session)],
+      limit: 1,
+    );
+    final expected = rows.isEmpty
+        ? ''
+        : rows.first['cache_digest']?.toString() ?? '';
+    if (expected.isEmpty) return const CacheIntegrityReport.unverified();
+    final actual = await _sqliteDigest(db, _key(session));
+    return CacheIntegrityReport(
+      verified: expected == actual,
+      hasCheckpoint: true,
+      expectedDigest: expected,
+      actualDigest: actual,
+    );
   }
 
   Future<void> saveSyncCursor(Session session, int cursor) async {
     if (cursor < 0) return;
     if (kIsWeb) {
       final prefs = await SharedPreferences.getInstance();
+      final digest = await _webDigest(session, prefs);
       await prefs.setInt(_syncKey(session), cursor);
+      await prefs.setString(_digestKey(session), digest);
       return;
     }
     final db = await _db();
+    final digest = await _sqliteDigest(db, _key(session));
+    final threadCount =
+        Sqflite.firstIntValue(
+          await db.rawQuery(
+            'SELECT COUNT(*) FROM chat_threads WHERE session_key=?',
+            [_key(session)],
+          ),
+        ) ??
+        0;
     await db.insert('chat_sync_state', {
       'session_key': _key(session),
       'cursor': cursor,
+      'cache_digest': digest,
+      'digest_version': _cacheDigestVersion,
+      'thread_count': threadCount,
       'updated_at': DateTime.now().millisecondsSinceEpoch,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
@@ -245,7 +349,7 @@ class ChatCacheStore {
     final path = await appDatabasePath(_dbName);
     _database = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, _) async {
         await _createTables(db);
       },
@@ -257,9 +361,11 @@ class ChatCacheStore {
           await _createSyncStateTable(db);
           await db.delete('chat_sync_state');
         }
+        if (oldVersion < 4) await _ensureSyncStateColumns(db);
       },
       onOpen: (db) async {
         await _createSyncStateTable(db);
+        await _ensureSyncStateColumns(db);
       },
     );
     return _database!;
@@ -284,9 +390,69 @@ class ChatCacheStore {
       CREATE TABLE IF NOT EXISTS chat_sync_state(
         session_key TEXT PRIMARY KEY,
         cursor INTEGER NOT NULL,
+        cache_digest TEXT NOT NULL DEFAULT '',
+        digest_version INTEGER NOT NULL DEFAULT 0,
+        thread_count INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       )
       ''');
+  }
+
+  Future<void> _ensureSyncStateColumns(Database db) async {
+    final columns = {
+      for (final row in await db.rawQuery('PRAGMA table_info(chat_sync_state)'))
+        row['name']?.toString() ?? '',
+    };
+    if (!columns.contains('cache_digest')) {
+      await db.execute(
+        "ALTER TABLE chat_sync_state ADD COLUMN cache_digest TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!columns.contains('digest_version')) {
+      await db.execute(
+        'ALTER TABLE chat_sync_state ADD COLUMN digest_version INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (!columns.contains('thread_count')) {
+      await db.execute(
+        'ALTER TABLE chat_sync_state ADD COLUMN thread_count INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+  }
+
+  Future<String> _sqliteDigest(Database db, String sessionKey) async {
+    final rows = await db.query(
+      'chat_threads',
+      columns: ['thread_key', 'is_group', 'payload'],
+      where: 'session_key=?',
+      whereArgs: [sessionKey],
+      orderBy: 'thread_key ASC',
+    );
+    final canonical = StringBuffer('meshchat-cache-v$_cacheDigestVersion\n');
+    for (final row in rows) {
+      canonical
+        ..write(row['thread_key']?.toString() ?? '')
+        ..write('\u0000')
+        ..write(row['is_group']?.toString() ?? '0')
+        ..write('\u0000')
+        ..write(row['payload']?.toString() ?? '')
+        ..write('\n');
+    }
+    return _sha256Hex(utf8.encode(canonical.toString()));
+  }
+
+  Future<String> _webDigest(Session session, SharedPreferences prefs) async {
+    final raw = prefs.getString(_key(session)) ?? '';
+    return _sha256Hex(
+      utf8.encode('meshchat-cache-v$_cacheDigestVersion\n$raw'),
+    );
+  }
+
+  Future<String> _sha256Hex(List<int> bytes) async {
+    final digest = await Sha256().hash(bytes);
+    return digest.bytes
+        .map((value) => value.toRadixString(16).padLeft(2, '0'))
+        .join();
   }
 
   Future<void> _migrateLegacy(Session session, Database db) async {
@@ -351,6 +517,7 @@ class ChatCacheStore {
     final key = _key(session);
     try {
       await prefs.setString(key, jsonEncode(payload));
+      await _refreshWebDigestIfCheckpointed(session, prefs);
     } catch (_) {
       await prefs.remove(key);
       final minimalPayload = {
@@ -363,10 +530,22 @@ class ChatCacheStore {
       };
       try {
         await prefs.setString(key, jsonEncode(minimalPayload));
+        await _refreshWebDigestIfCheckpointed(session, prefs);
       } catch (_) {
         await prefs.remove(key);
       }
     }
+  }
+
+  Future<void> _refreshWebDigestIfCheckpointed(
+    Session session,
+    SharedPreferences prefs,
+  ) async {
+    if (prefs.getInt(_syncKey(session)) == null) return;
+    await prefs.setString(
+      _digestKey(session),
+      await _webDigest(session, prefs),
+    );
   }
 
   void _putThread(
@@ -483,6 +662,28 @@ class ChatCacheStore {
   }
 
   String _syncKey(Session session) => '${_key(session)}_sync_cursor_v3';
+
+  String _digestKey(Session session) => '${_key(session)}_cache_digest_v1';
+}
+
+class CacheIntegrityReport {
+  const CacheIntegrityReport({
+    required this.verified,
+    required this.hasCheckpoint,
+    this.expectedDigest = '',
+    this.actualDigest = '',
+  });
+
+  const CacheIntegrityReport.unverified()
+    : verified = true,
+      hasCheckpoint = false,
+      expectedDigest = '',
+      actualDigest = '';
+
+  final bool verified;
+  final bool hasCheckpoint;
+  final String expectedDigest;
+  final String actualDigest;
 }
 
 class CacheStats {

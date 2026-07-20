@@ -1364,12 +1364,23 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target_cursor, delta_client.sync["target_cursor"])
         self.assertEqual(1, delta_client.sync["event_count"])
         self.assertEqual(1, len(delta_client.delta_events))
+        event_digest = server_sync.sync_v2_delta_digest(
+            [packet["event"] for packet in delta_client.delta_events]
+        )
+        self.assertEqual(
+            event_digest,
+            delta_client.sync["event_digest_sha256"],
+        )
         self.assertEqual(
             "message_delete:delta-message-b",
             delta_client.delta_events[0]["event"]["operation_id"],
         )
         self.assertEqual(target_cursor, delta_client.sync_done["sync_cursor"])
         self.assertEqual("delta", delta_client.sync_done["sync_v2"]["mode"])
+        self.assertEqual(
+            event_digest,
+            delta_client.sync_done["sync_v2"]["event_digest_sha256"],
+        )
 
     async def test_sync_v2_delta_canary_is_negotiated_per_account(self):
         server_module.SYNC_V2_DELTA_ENABLED = False

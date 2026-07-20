@@ -124,10 +124,11 @@ available and delta-safe.
 
 1. Capture target cursor `T`.
 2. Send `server_sync_delta_begin` with source cursor, target cursor, sync ID,
-   and event count.
+   event count, and `event_digest_sha256` over the canonical event envelopes.
 3. Send ordered `server_sync_delta_event` packets. The client rejects a changed
    sync ID, non-increasing event ID, event above `T`, or malformed envelope.
-4. Send `server_sync_done` with `sync_v2.mode = delta` and cursor `T`.
+4. Send `server_sync_done` with `sync_v2.mode = delta`, cursor `T`, and the same
+   event digest. The client recalculates the digest before applying anything.
 5. Apply events in order. Persist and ACK `T` only after every handler succeeds.
 
 If the socket closes before step 5, the old cursor is retained. Reconnecting
@@ -136,6 +137,19 @@ replays the same range. Applying any event more than once must be safe.
 Live events received while a delta is in progress are buffered until the delta
 finishes, then applied in event order. A client never advances a cursor based on
 a live packet without a completed sync boundary.
+
+## Local cache integrity and repair
+
+The client stores a SHA-256 digest of the complete canonical chat cache beside
+each durable sync cursor. A cursor is usable only when the digest, digest
+version, and row count match the current cache. Each cache replacement is a
+single SQLite transaction and removes rows absent from the authoritative state.
+
+When the cache digest is absent, malformed, or mismatched, the client discards
+only the derived chat cache and its cursor. Mutation and file-transfer outboxes
+are preserved. The next connection starts at cursor zero and requests a fresh
+authoritative snapshot, preventing damaged local state from becoming a server
+mutation or silently hiding journal events.
 
 ## Cursor rules
 

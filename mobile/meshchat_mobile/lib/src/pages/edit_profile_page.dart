@@ -304,7 +304,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
         showSnack(error);
         return;
       }
-      showSnack('Profile updated');
       Navigator.pop(context);
     } catch (error) {
       if (!mounted) return;

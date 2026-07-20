@@ -4,20 +4,36 @@ The relay uses two `systemd` timers:
 
 - `mesh-backup.timer` creates a verified, compressed SQLite backup every day and keeps the latest seven copies.
 - `mesh-health.timer` checks the relay service, port, database, queue, reactions, backup age, and disk space every 15 minutes.
+- `mesh-reliability.timer` restores the newest backup and deeply verifies Sync v2 and media storage every day.
 
 Useful commands on the VPS:
 
 ```bash
 systemctl list-timers 'mesh-*' --no-pager
 systemctl start mesh-backup.service
-systemctl start mesh-health.service
-systemctl status mesh-backup.service mesh-health.service --no-pager
-journalctl -u mesh-backup.service -u mesh-health.service -n 50 --no-pager
+systemctl start mesh-health.service mesh-reliability.service
+systemctl status mesh-backup.service mesh-health.service mesh-reliability.service --no-pager
+journalctl -u mesh-backup.service -u mesh-health.service -u mesh-reliability.service -n 50 --no-pager
 cat /root/mesh_messenger/data/health.json
+cat /root/mesh_messenger/data/reliability.json
 ls -lh /root/mesh_messenger/backups/automatic
 ```
 
 Each backup has a `.sha256` checksum and JSON metadata. The backup is accepted only after SQLite reports `integrity_check=ok`.
+
+Before a release, run the deeper persistence audit. It verifies Sync v2 cursor and
+deduplication invariants, reaction uniqueness, every stored media file and pending
+chunk, then restores the newest compressed backup into a temporary database:
+
+```bash
+cd /root/mesh_messenger
+.venv/bin/python -m server.ops.reliability_audit
+.venv/bin/python -m server.ops.run_reliability_tests --rounds 3
+.venv/bin/python -m unittest discover -s server/tests -v
+```
+
+The audit exits with status `2` on any persistence or backup integrity failure,
+so it can be used as a deployment gate.
 
 ## MeshPro billing preflight
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=MeshChat deep persistence and media reliability audit
+After=mesh-backup.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/mesh_messenger
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/mesh_messenger/.venv/bin/python -m server.ops.reliability_audit
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+UMask=0077

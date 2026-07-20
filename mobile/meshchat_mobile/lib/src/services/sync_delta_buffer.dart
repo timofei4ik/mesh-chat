@@ -4,6 +4,8 @@ class SyncDeltaBatch {
     required this.sourceCursor,
     required this.targetCursor,
     required this.events,
+    required this.eventEnvelopes,
+    required this.expectedDigest,
     required this.livePackets,
   });
 
@@ -11,6 +13,8 @@ class SyncDeltaBatch {
   final int sourceCursor;
   final int targetCursor;
   final List<Map<String, dynamic>> events;
+  final List<Map<String, dynamic>> eventEnvelopes;
+  final String expectedDigest;
   final List<Map<String, dynamic>> livePackets;
 }
 
@@ -56,12 +60,14 @@ class SyncDeltaBuffer {
     final targetCursor = _readInt(packet['target_cursor']);
     final retainedFloor = _readInt(packet['retained_floor']);
     final eventCount = _readInt(packet['event_count']);
+    final eventDigest = packet['event_digest_sha256']?.toString().trim() ?? '';
     if (version != 2 ||
         syncId.isEmpty ||
         sourceCursor == null ||
         targetCursor == null ||
         retainedFloor == null ||
         eventCount == null ||
+        !_isSha256(eventDigest) ||
         sourceCursor != localCursor ||
         sourceCursor < retainedFloor ||
         targetCursor < sourceCursor ||
@@ -74,6 +80,7 @@ class SyncDeltaBuffer {
       sourceCursor: sourceCursor,
       targetCursor: targetCursor,
       expectedEvents: eventCount,
+      expectedDigest: eventDigest,
     );
   }
 
@@ -108,6 +115,7 @@ class SyncDeltaBuffer {
       throw const FormatException('unsupported delta event payload');
     }
     active.lastEventId = eventId;
+    active.eventEnvelopes.add(event);
     active.events.add(payload);
   }
 
@@ -130,11 +138,14 @@ class SyncDeltaBuffer {
       metadata['cursor'] ?? packet['sync_cursor'],
     );
     final completedCount = _readInt(metadata['event_count']);
+    final completedDigest =
+        metadata['event_digest_sha256']?.toString().trim() ?? '';
     if (metadata['version'] != 2 ||
         metadata['mode'] != 'delta' ||
         metadata['sync_id']?.toString() != active.syncId ||
         completedCursor != active.targetCursor ||
         completedCount != active.expectedEvents ||
+        completedDigest != active.expectedDigest ||
         active.events.length != active.expectedEvents ||
         (active.targetCursor == active.sourceCursor &&
             active.expectedEvents != 0) ||
@@ -149,6 +160,8 @@ class SyncDeltaBuffer {
       sourceCursor: active.sourceCursor,
       targetCursor: active.targetCursor,
       events: List.unmodifiable(active.events),
+      eventEnvelopes: List.unmodifiable(active.eventEnvelopes),
+      expectedDigest: active.expectedDigest,
       livePackets: List.unmodifiable(active.livePackets),
     );
     _active = null;
@@ -172,6 +185,9 @@ class SyncDeltaBuffer {
     if (value is num) return value.toInt();
     return int.tryParse(value?.toString() ?? '');
   }
+
+  static bool _isSha256(String value) =>
+      RegExp(r'^[0-9a-f]{64}$').hasMatch(value);
 }
 
 class _SyncDeltaSession {
@@ -180,13 +196,16 @@ class _SyncDeltaSession {
     required this.sourceCursor,
     required this.targetCursor,
     required this.expectedEvents,
+    required this.expectedDigest,
   }) : lastEventId = sourceCursor;
 
   final String syncId;
   final int sourceCursor;
   final int targetCursor;
   final int expectedEvents;
+  final String expectedDigest;
   int lastEventId;
   final List<Map<String, dynamic>> events = [];
+  final List<Map<String, dynamic>> eventEnvelopes = [];
   final List<Map<String, dynamic>> livePackets = [];
 }

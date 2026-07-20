@@ -9,6 +9,7 @@ from server import server as server_module
 from server import server_auth, server_storage, server_sync
 from server.sync_v2_shadow import (
     DELTA_SHADOW_EVENT_TYPES,
+    canonical_sync_v2_state,
     compare_sync_v2_shadow,
 )
 
@@ -828,6 +829,14 @@ class SyncV2ContractTests(unittest.TestCase):
         self.assertEqual(
             device_states["alice-phone"]["cursor"],
             device_states["alice-desktop"]["cursor"],
+        )
+        clean_install_snapshot = self.relay.build_sync_packet(
+            "alice",
+            "alice-clean-install",
+        )
+        self.assertEqual(
+            canonical_sync_v2_state(device_states["alice-phone"]["snapshot"]),
+            canonical_sync_v2_state(clean_install_snapshot),
         )
 
 

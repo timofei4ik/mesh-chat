@@ -315,11 +315,6 @@ class _ListMediaTile extends StatelessWidget {
   Future<void> _handleItemTap(BuildContext context, _MediaItem item) async {
     if (item.kind == _MediaKind.link) {
       await Clipboard.setData(ClipboardData(text: item.subtitle));
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Link copied')));
-      }
       return;
     }
     if (item.message.kind != ChatMessageKind.file ||

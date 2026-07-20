@@ -1070,7 +1070,7 @@ class AppController extends ChangeNotifier {
     recentSessions = await _store.loadRecent();
     session = await _store.load();
     if (session != null) {
-      await _cache.load(session!, profiles, threads, groups);
+      await _loadVerifiedCache(session!);
       await _loadOwnProfile(session!);
       stickerLibrary = await _stickerStore.load(session);
       await _loadStories();
@@ -2176,7 +2176,7 @@ class AppController extends ChangeNotifier {
       _clearLocalState();
       session = candidate;
       recentSessions = await _store.loadRecent();
-      await _cache.load(candidate, profiles, threads, groups);
+      await _loadVerifiedCache(candidate);
       await _loadOwnProfile(candidate);
       stickerLibrary = await _stickerStore.load(candidate);
       await _loadStories();
@@ -2215,7 +2215,7 @@ class AppController extends ChangeNotifier {
       await _store.saveRecent(candidate);
       session = candidate;
       recentSessions = await _store.loadRecent();
-      await _cache.load(candidate, profiles, threads, groups);
+      await _loadVerifiedCache(candidate);
       await _loadOwnProfile(candidate);
       stickerLibrary = await _stickerStore.load(candidate);
       await _loadStories();
@@ -2541,6 +2541,10 @@ class AppController extends ChangeNotifier {
   Future<void> _completeDeltaSync(Map<String, dynamic> packet) async {
     try {
       final batch = _syncDeltaBuffer.complete(packet);
+      final actualDigest = await _syncDeltaDigest(batch.eventEnvelopes);
+      if (actualDigest != batch.expectedDigest) {
+        throw const FormatException('delta checksum mismatch');
+      }
       _applyingSyncDelta = true;
       _livePacketsDuringDeltaApply.clear();
       for (final event in batch.events) {
@@ -2579,6 +2583,27 @@ class AppController extends ChangeNotifier {
       _livePacketsDuringDeltaApply.clear();
       _requestAuthoritativeSnapshot('delta apply failed: $syncError');
     }
+  }
+
+  Future<String> _syncDeltaDigest(List<Map<String, dynamic>> envelopes) async {
+    final canonical = jsonEncode(_canonicalSyncJson(envelopes));
+    final digest = await Sha256().hash(utf8.encode(canonical));
+    return digest.bytes
+        .map((value) => value.toRadixString(16).padLeft(2, '0'))
+        .join();
+  }
+
+  Object? _canonicalSyncJson(Object? value) {
+    if (value is Map) {
+      final keys = value.keys.map((key) => key.toString()).toList()..sort();
+      return <String, Object?>{
+        for (final key in keys) key: _canonicalSyncJson(value[key]),
+      };
+    }
+    if (value is List) {
+      return value.map(_canonicalSyncJson).toList(growable: false);
+    }
+    return value;
   }
 
   void _requestAuthoritativeSnapshot(String reason) {
@@ -8833,6 +8858,25 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _loadVerifiedCache(Session current) async {
+    try {
+      final integrity = await _cache.inspectIntegrity(current);
+      if (integrity.hasCheckpoint && !integrity.verified) {
+        addDiagnostic(
+          'sync',
+          'Local cache checksum mismatch; preserving outbox and requesting snapshot',
+        );
+        await _cache.clear(current);
+        await _syncCursorStore.clear(current);
+      }
+    } catch (error) {
+      addDiagnostic('sync', 'Local cache integrity check failed: $error');
+      await _cache.clear(current);
+      await _syncCursorStore.clear(current);
+    }
+    await _cache.load(current, profiles, threads, groups);
+  }
+
   Future<void> _loadOwnProfile(Session current) async {
     Profile? stored;
     try {
@@ -8896,6 +8940,12 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _callTicker?.cancel();
+    _softResyncTimer?.cancel();
+    _incomingPreviewTimer?.cancel();
+    _softResyncTimer = null;
+    _incomingPreviewTimer = null;
+    unawaited(CallAlertService.stopAll());
+    unawaited(_endCallMedia());
     unawaited(_proximityScreen.dispose());
     ble.removeListener(_handleBluetoothStateChanged);
     ble.dispose();

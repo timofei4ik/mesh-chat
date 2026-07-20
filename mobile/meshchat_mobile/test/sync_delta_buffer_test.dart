@@ -15,6 +15,8 @@ Map<String, dynamic> beginPacket({
   'target_cursor': target,
   'retained_floor': floor,
   'event_count': count,
+  'event_digest_sha256':
+      '0000000000000000000000000000000000000000000000000000000000000000',
 };
 
 Map<String, dynamic> eventPacket(
@@ -52,6 +54,8 @@ Map<String, dynamic> donePacket({
     'source_cursor': source,
     'cursor': target,
     'event_count': count,
+    'event_digest_sha256':
+        '0000000000000000000000000000000000000000000000000000000000000000',
   },
 };
 

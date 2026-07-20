@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -14,6 +15,16 @@ SERVER_STICKER_LIBRARY_INLINE_LIMIT = 512 * 1024
 SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE = 128 * 1024
 SYNC_V2_EVENT_PAYLOAD_LIMIT = 64 * 1024
 SYNC_V2_MAX_DELTA_EVENTS = 500
+
+
+def sync_v2_delta_digest(events):
+    canonical = json.dumps(
+        events,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 SYNC_V2_EVENT_PACKET_TYPES = frozenset(
     {
         "chat_message",
@@ -1531,6 +1542,7 @@ class ServerSyncMixin:
         if supports_sync_v2 and sync_plan["mode"] == "delta":
             sync_id = str(uuid4())
             events = sync_plan["events"]
+            event_digest = sync_v2_delta_digest(events)
             await websocket.send(
                 json.dumps(
                     {
@@ -1541,6 +1553,7 @@ class ServerSyncMixin:
                         "target_cursor": sync_plan["target_cursor"],
                         "retained_floor": sync_plan["retained_floor"],
                         "event_count": len(events),
+                        "event_digest_sha256": event_digest,
                     },
                     ensure_ascii=False,
                 )
@@ -1570,6 +1583,7 @@ class ServerSyncMixin:
                             "cursor": sync_plan["target_cursor"],
                             "retained_floor": sync_plan["retained_floor"],
                             "event_count": len(events),
+                            "event_digest_sha256": event_digest,
                         },
                     },
                     ensure_ascii=False,
