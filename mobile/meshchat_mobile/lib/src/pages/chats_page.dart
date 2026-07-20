@@ -353,6 +353,11 @@ class ChatsPage extends StatelessWidget {
 
   void openThread(BuildContext context, ChatThread thread) {
     controller.markRead(thread);
+    final host = context.findAncestorStateOfType<_ChatStackHostState>();
+    if (host != null) {
+      unawaited(host.open(thread));
+      return;
+    }
     Navigator.push(
       context,
       meshPageRoute<void>(
@@ -978,201 +983,208 @@ class ChatsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: ListenableBuilder(
-        listenable: controller,
-        builder: (context, _) {
-          if (DateTime.now().microsecondsSinceEpoch >= 0) {
-            return _HomeShell(parent: this, controller: controller);
-          }
-          final threads = controller.sortedThreads;
-          final archivedCount = controller.archivedThreads.length;
-          final status = controller.status.toLowerCase();
-          final online = status.contains('online') || status.contains('сети');
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
-                child: _HomeGlassSurface(
-                  accent: online ? Colors.greenAccent : Colors.orangeAccent,
-                  radius: 18,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 9,
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: online
-                                ? Colors.greenAccent
-                                : Colors.orangeAccent,
-                            boxShadow: [
-                              BoxShadow(
-                                color:
-                                    (online
-                                            ? Colors.greenAccent
-                                            : Colors.orangeAccent)
-                                        .withValues(alpha: 0.42),
-                                blurRadius: 10,
-                              ),
-                            ],
+      body: _ChatStackHost(
+        controller: controller,
+        home: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) {
+            if (DateTime.now().microsecondsSinceEpoch >= 0) {
+              return _HomeShell(parent: this, controller: controller);
+            }
+            final threads = controller.sortedThreads;
+            final archivedCount = controller.archivedThreads.length;
+            final status = controller.status.toLowerCase();
+            final online = status.contains('online') || status.contains('сети');
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                  child: _HomeGlassSurface(
+                    accent: online ? Colors.greenAccent : Colors.orangeAccent,
+                    radius: 18,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 9,
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: online
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent,
+                              boxShadow: [
+                                BoxShadow(
+                                  color:
+                                      (online
+                                              ? Colors.greenAccent
+                                              : Colors.orangeAccent)
+                                          .withValues(alpha: 0.42),
+                                  blurRadius: 10,
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            controller.status,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Colors.white70),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              controller.status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white70),
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          '@${controller.session?.publicUsername ?? ''}',
-                          style: const TextStyle(color: Colors.white54),
-                        ),
-                      ],
+                          const SizedBox(width: 12),
+                          Text(
+                            '@${controller.session?.publicUsername ?? ''}',
+                            style: const TextStyle(color: Colors.white54),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-              _HomeCallBanner(controller: controller),
-              _BluetoothChatsStrip(
-                controller: controller,
-                onOpen: () => openBluetoothNearby(context),
-              ),
-              Expanded(
-                child: threads.isEmpty && archivedCount == 0
-                    ? const Center(
-                        child: Text(
-                          'Find someone by @username',
-                          style: TextStyle(color: Colors.white54),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: threads.length + (archivedCount > 0 ? 1 : 0),
-                        separatorBuilder: (_, _) =>
-                            const Divider(height: 1, indent: 76),
-                        itemBuilder: (context, index) {
-                          if (archivedCount > 0 && index == 0) {
+                _HomeCallBanner(controller: controller),
+                _BluetoothChatsStrip(
+                  controller: controller,
+                  onOpen: () => openBluetoothNearby(context),
+                ),
+                Expanded(
+                  child: threads.isEmpty && archivedCount == 0
+                      ? const Center(
+                          child: Text(
+                            'Find someone by @username',
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount:
+                              threads.length + (archivedCount > 0 ? 1 : 0),
+                          separatorBuilder: (_, _) =>
+                              const Divider(height: 1, indent: 76),
+                          itemBuilder: (context, index) {
+                            if (archivedCount > 0 && index == 0) {
+                              return ListTile(
+                                leading: const Icon(Icons.archive_outlined),
+                                title: const Text('Archive'),
+                                subtitle: Text('$archivedCount chats'),
+                                onTap: () => openArchived(context),
+                              );
+                            }
+                            final threadIndex =
+                                index - (archivedCount > 0 ? 1 : 0);
+                            final thread = threads[threadIndex];
+                            final last = thread.lastMessage;
                             return ListTile(
-                              leading: const Icon(Icons.archive_outlined),
-                              title: const Text('Archive'),
-                              subtitle: Text('$archivedCount chats'),
-                              onTap: () => openArchived(context),
-                            );
-                          }
-                          final threadIndex =
-                              index - (archivedCount > 0 ? 1 : 0);
-                          final thread = threads[threadIndex];
-                          final last = thread.lastMessage;
-                          return ListTile(
-                            minTileHeight: 72,
-                            leading: Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                ProfileAvatar(profile: thread.profile),
-                                if (thread.isGroup)
-                                  const Positioned(
-                                    right: -2,
-                                    bottom: -2,
-                                    child: CircleAvatar(
-                                      radius: 9,
-                                      backgroundColor: Color(0xFF20242B),
-                                      child: Icon(Icons.group, size: 12),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            title: Row(
-                              children: [
-                                if (thread.pinned) ...[
-                                  const Icon(Icons.push_pin, size: 14),
-                                  const SizedBox(width: 4),
-                                ],
-                                Expanded(
-                                  child: MeshProProfileName(
-                                    profile: thread.profile,
-                                  ),
-                                ),
-                                if (last != null)
-                                  Text(
-                                    _time(last.createdAt),
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.white38,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            subtitle: Text(
-                              thread.draft.isNotEmpty
-                                  ? 'Draft: ${thread.draft}'
-                                  : _previewText(
-                                      last,
-                                      thread.profile.publicUsername,
-                                    ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Colors.white54),
-                            ),
-                            trailing: thread.unread > 0
-                                ? Container(
-                                    constraints: const BoxConstraints(
-                                      minWidth: 22,
-                                      minHeight: 22,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 7,
-                                      vertical: 3,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      thread.unread > 99
-                                          ? '99+'
-                                          : '${thread.unread}',
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.white,
+                              minTileHeight: 72,
+                              leading: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  ProfileAvatar(profile: thread.profile),
+                                  if (thread.isGroup)
+                                    const Positioned(
+                                      right: -2,
+                                      bottom: -2,
+                                      child: CircleAvatar(
+                                        radius: 9,
+                                        backgroundColor: Color(0xFF20242B),
+                                        child: Icon(Icons.group, size: 12),
                                       ),
                                     ),
-                                  )
-                                : thread.muted
-                                ? const Icon(
-                                    Icons.notifications_off_outlined,
-                                    size: 18,
-                                    color: Colors.white38,
-                                  )
-                                : thread.isGroup
-                                ? null
-                                : thread.profile.online
-                                ? const Icon(
-                                    Icons.circle,
-                                    size: 10,
-                                    color: Colors.greenAccent,
-                                  )
-                                : null,
-                            onTap: () => openThread(context, thread),
-                            onLongPress: () => showThreadMenu(context, thread),
-                          );
-                        },
-                      ),
-              ),
-            ],
-          );
-        },
+                                ],
+                              ),
+                              title: Row(
+                                children: [
+                                  if (thread.pinned) ...[
+                                    const Icon(Icons.push_pin, size: 14),
+                                    const SizedBox(width: 4),
+                                  ],
+                                  Expanded(
+                                    child: MeshProProfileName(
+                                      profile: thread.profile,
+                                    ),
+                                  ),
+                                  if (last != null)
+                                    Text(
+                                      _time(last.createdAt),
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.white38,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              subtitle: Text(
+                                thread.draft.isNotEmpty
+                                    ? 'Draft: ${thread.draft}'
+                                    : _previewText(
+                                        last,
+                                        thread.profile.publicUsername,
+                                      ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white54),
+                              ),
+                              trailing: thread.unread > 0
+                                  ? Container(
+                                      constraints: const BoxConstraints(
+                                        minWidth: 22,
+                                        minHeight: 22,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        thread.unread > 99
+                                            ? '99+'
+                                            : '${thread.unread}',
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    )
+                                  : thread.muted
+                                  ? const Icon(
+                                      Icons.notifications_off_outlined,
+                                      size: 18,
+                                      color: Colors.white38,
+                                    )
+                                  : thread.isGroup
+                                  ? null
+                                  : thread.profile.online
+                                  ? const Icon(
+                                      Icons.circle,
+                                      size: 10,
+                                      color: Colors.greenAccent,
+                                    )
+                                  : null,
+                              onTap: () => openThread(context, thread),
+                              onLongPress: () =>
+                                  showThreadMenu(context, thread),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
       floatingActionButton: const SizedBox.shrink(),
     );
@@ -1224,6 +1236,136 @@ class ChatsPage extends StatelessWidget {
         lower.endsWith('.gif') ||
         lower.endsWith('.webp') ||
         lower.endsWith('.bmp');
+  }
+}
+
+class _ChatStackHost extends StatefulWidget {
+  const _ChatStackHost({required this.controller, required this.home});
+
+  final AppController controller;
+  final Widget home;
+
+  @override
+  State<_ChatStackHost> createState() => _ChatStackHostState();
+}
+
+class _ChatStackHostState extends State<_ChatStackHost>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController transition = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 300),
+    reverseDuration: const Duration(milliseconds: 260),
+  );
+  ChatThread? activeThread;
+  bool opening = false;
+  bool dragging = false;
+
+  Future<void> open(ChatThread thread) async {
+    if (activeThread != null || opening) return;
+    opening = true;
+    transition.value = 0;
+    setState(() => activeThread = thread);
+
+    // Give the chat one complete layout frame while it is still outside the
+    // viewport. The transition then moves already-built layers only.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || activeThread != thread) return;
+    await transition.animateTo(1, curve: Curves.easeOutCubic);
+    if (mounted) setState(() => opening = false);
+  }
+
+  Future<void> close() async {
+    if (activeThread == null) return;
+    opening = false;
+    await transition.animateBack(0, curve: Curves.easeOutCubic);
+    if (!mounted) return;
+    setState(() => activeThread = null);
+  }
+
+  void startBackDrag(DragStartDetails details) {
+    if (activeThread == null || opening) return;
+    dragging = true;
+    HapticFeedback.selectionClick();
+  }
+
+  void updateBackDrag(DragUpdateDetails details, double width) {
+    if (!dragging || width <= 0) return;
+    transition.value = (transition.value - details.delta.dx / width).clamp(
+      0.0,
+      1.0,
+    );
+  }
+
+  Future<void> endBackDrag(DragEndDetails details) async {
+    if (!dragging) return;
+    dragging = false;
+    final velocity = details.primaryVelocity ?? 0;
+    if (transition.value < 0.72 || velocity > 520) {
+      await close();
+    } else {
+      await transition.animateTo(1, curve: Curves.easeOutCubic);
+    }
+  }
+
+  @override
+  void dispose() {
+    transition.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final thread = activeThread;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        return AnimatedBuilder(
+          animation: transition,
+          builder: (context, _) {
+            final value = transition.value;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                TickerMode(
+                  enabled: thread == null,
+                  child: RepaintBoundary(child: widget.home),
+                ),
+                if (thread != null)
+                  Transform.translate(
+                    offset: Offset(width * (1 - value), 0),
+                    child: RepaintBoundary(
+                      child: ChatPage(
+                        key: ValueKey('active-chat-${thread.storageKey}'),
+                        controller: widget.controller,
+                        thread: thread,
+                        onBack: close,
+                      ),
+                    ),
+                  ),
+                if (thread != null && !opening)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 28,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onHorizontalDragStart: startBackDrag,
+                      onHorizontalDragUpdate: (details) =>
+                          updateBackDrag(details, width),
+                      onHorizontalDragEnd: endBackDrag,
+                      onHorizontalDragCancel: () {
+                        dragging = false;
+                        transition.animateTo(1, curve: Curves.easeOutCubic);
+                      },
+                    ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 }
 

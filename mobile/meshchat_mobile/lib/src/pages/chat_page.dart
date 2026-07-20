@@ -59,11 +59,13 @@ class ChatPage extends StatefulWidget {
     required this.controller,
     required this.thread,
     this.channelPost,
+    this.onBack,
   });
 
   final AppController controller;
   final ChatThread thread;
   final ChatMessage? channelPost;
+  final Future<void> Function()? onBack;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -3280,9 +3282,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final headerInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
     return PopScope(
-      canPop: !selectingMessages,
+      canPop: widget.onBack == null && !selectingMessages,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && selectingMessages) clearMessageSelection();
+        if (didPop) return;
+        if (selectingMessages) {
+          clearMessageSelection();
+        } else {
+          unawaited(widget.onBack?.call());
+        }
       },
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -3304,7 +3311,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
               onPressed: selectingMessages
                   ? clearMessageSelection
-                  : () => Navigator.maybePop(context),
+                  : () {
+                      final onBack = widget.onBack;
+                      if (onBack != null) {
+                        unawaited(onBack());
+                      } else {
+                        Navigator.maybePop(context);
+                      }
+                    },
             ),
           ),
           titleSpacing: 4,
