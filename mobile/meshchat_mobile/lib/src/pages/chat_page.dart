@@ -1759,6 +1759,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           ? null
           : () => unawaited(startCallFromProfile(context)),
       onMedia: openMediaList,
+      onAppearance: () => unawaited(showChatAppearance()),
     );
     final usesPlatformViewGlass =
         !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;

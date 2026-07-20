@@ -3778,28 +3778,9 @@ class _InlineSettingsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final session = controller.session;
     return ListView(
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 98),
       children: [
-        _HomeGlassSurface(
-          accent: Colors.lightBlueAccent,
-          radius: 24,
-          child: ListTile(
-            contentPadding: const EdgeInsets.fromLTRB(18, 12, 18, 12),
-            leading: const Icon(Icons.account_circle_outlined),
-            title: Text(session?.login ?? 'Account'),
-            subtitle: Text(
-              session?.publicUsername.isNotEmpty == true
-                  ? '@${session!.publicUsername}'
-                  : controller.status,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            onTap: onProfile,
-          ),
-        ),
-        const SizedBox(height: 10),
         _MeshProSettingsCard(controller: controller),
         const SizedBox(height: 10),
         _InlineActionTile(

@@ -22,6 +22,7 @@ class ProfilePage extends StatelessWidget {
     this.onMessage,
     this.onCall,
     this.onMedia,
+    this.onAppearance,
   });
 
   final Profile profile;
@@ -30,6 +31,7 @@ class ProfilePage extends StatelessWidget {
   final VoidCallback? onMessage;
   final VoidCallback? onCall;
   final VoidCallback? onMedia;
+  final VoidCallback? onAppearance;
 
   @override
   Widget build(BuildContext context) {
@@ -72,6 +74,7 @@ class ProfilePage extends StatelessWidget {
                 blocked: blocked,
                 onMessage: onMessage,
                 onCall: isSavedMessages ? null : onCall,
+                onAppearance: currentThread == null ? null : onAppearance,
                 onMute: currentThread == null || currentController == null
                     ? null
                     : () => currentController.toggleThreadMute(currentThread),
@@ -414,6 +417,7 @@ class _ProfileActions extends StatelessWidget {
     required this.blocked,
     required this.onMessage,
     required this.onCall,
+    required this.onAppearance,
     required this.onMute,
   });
 
@@ -421,6 +425,7 @@ class _ProfileActions extends StatelessWidget {
   final bool blocked;
   final VoidCallback? onMessage;
   final VoidCallback? onCall;
+  final VoidCallback? onAppearance;
   final VoidCallback? onMute;
 
   @override
@@ -438,6 +443,12 @@ class _ProfileActions extends StatelessWidget {
             icon: Icons.call_outlined,
             label: 'Call',
             onTap: onCall,
+          ),
+        if (onAppearance != null)
+          _ProfileActionButton(
+            icon: Icons.palette_outlined,
+            label: 'Appearance',
+            onTap: onAppearance,
           ),
         _ProfileActionButton(
           icon: muted || blocked
