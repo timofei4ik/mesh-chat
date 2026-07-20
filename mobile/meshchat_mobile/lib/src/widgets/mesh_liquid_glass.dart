@@ -3,6 +3,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../services/platform_capabilities.dart';
+import '../utils/mesh_page_route.dart';
 
 typedef MeshGlassFallbackBuilder =
     Widget Function(BuildContext context, Widget child);
@@ -66,6 +67,37 @@ class MeshLiquidGlass extends StatelessWidget {
       return fallbackBuilder?.call(context, child) ?? child;
     }
 
+    return ValueListenableBuilder<bool>(
+      valueListenable: MeshRouteTransition.active,
+      builder: (context, transitioning, _) {
+        if (transitioning) return _staticTransitionSurface(context);
+        return _nativeGlass(context);
+      },
+    );
+  }
+
+  Widget _staticTransitionSurface(BuildContext context) {
+    final baseAlpha = selected
+        ? 0.22
+        : prominent
+        ? 0.18
+        : dim
+        ? 0.08
+        : 0.12;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: ColoredBox(
+        color: Color.lerp(
+          const Color(0xFF111A29).withValues(alpha: 0.86),
+          accent.withValues(alpha: baseAlpha),
+          0.24,
+        )!,
+        child: child,
+      ),
+    );
+  }
+
+  Widget _nativeGlass(BuildContext context) {
     final tintStrength = selected
         ? 0.16
         : prominent
