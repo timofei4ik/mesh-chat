@@ -7,6 +7,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -4177,14 +4178,40 @@ class _CallBottomSheet extends StatelessWidget {
             _CallStatusStrip(controller: controller),
             if (call.remoteScreenSharing) ...[
               const SizedBox(height: 14),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: ColoredBox(
-                  color: const Color(0xFF07111E),
-                  child: SizedBox(
-                    height: 180,
-                    width: double.infinity,
-                    child: controller.buildRemoteCallScreen(),
+              GestureDetector(
+                onTap: () => _openRemoteScreenFullscreen(context),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: ColoredBox(
+                    color: const Color(0xFF07111E),
+                    child: SizedBox(
+                      height: 180,
+                      width: double.infinity,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          controller.buildRemoteCallScreen(),
+                          Positioned(
+                            top: 8,
+                            right: 8,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Padding(
+                                padding: EdgeInsets.all(8),
+                                child: Icon(
+                                  Icons.fullscreen_rounded,
+                                  size: 21,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -4285,6 +4312,22 @@ class _CallBottomSheet extends StatelessWidget {
     final error = await controller.toggleCallScreenShare();
     if (error == null || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  void _openRemoteScreenFullscreen(BuildContext context) {
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: true,
+        transitionDuration: const Duration(milliseconds: 240),
+        reverseTransitionDuration: const Duration(milliseconds: 200),
+        pageBuilder: (_, _, _) =>
+            _FullscreenRemoteScreen(controller: controller),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+          child: child,
+        ),
+      ),
+    );
   }
 
   void _showAudioDevicePicker(BuildContext context, {required bool input}) {
@@ -4392,6 +4435,53 @@ class _CallBottomSheet extends StatelessWidget {
           },
         );
       },
+    );
+  }
+}
+
+class _FullscreenRemoteScreen extends StatelessWidget {
+  const _FullscreenRemoteScreen({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Center(
+              child: InteractiveViewer(
+                minScale: 1,
+                maxScale: 5,
+                boundaryMargin: const EdgeInsets.all(80),
+                child: SizedBox.expand(
+                  child: ColoredBox(
+                    color: Colors.black,
+                    child: controller.buildRemoteCallScreen(),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 10,
+              left: 10,
+              child: MeshLiquidGlass(
+                accent: Colors.white70,
+                radius: 999,
+                interactive: true,
+                child: IconButton(
+                  tooltip: 'Close full screen',
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close_fullscreen_rounded),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -7474,12 +7564,118 @@ class _MessageTextContent extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(text),
+        _LinkifiedSelectableText(text: text),
         if (suggestion != null) ...[
           const SizedBox(height: 8),
           _ContextActionCard(suggestion: suggestion),
         ],
       ],
+    );
+  }
+}
+
+class _LinkifiedSelectableText extends StatefulWidget {
+  const _LinkifiedSelectableText({required this.text});
+
+  final String text;
+
+  @override
+  State<_LinkifiedSelectableText> createState() =>
+      _LinkifiedSelectableTextState();
+}
+
+class _LinkifiedSelectableTextState extends State<_LinkifiedSelectableText> {
+  static final _linkPattern = RegExp(
+    r'(?:(?:https?://|www\.)[^\s<>]+|(?:mailto:|tel:)[^\s<>]+)',
+    caseSensitive: false,
+  );
+  final recognizers = <TapGestureRecognizer>[];
+  late List<InlineSpan> spans;
+
+  @override
+  void initState() {
+    super.initState();
+    spans = _linkifiedSpans();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LinkifiedSelectableText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text == widget.text) return;
+    _disposeRecognizers();
+    spans = _linkifiedSpans();
+  }
+
+  @override
+  void dispose() {
+    _disposeRecognizers();
+    super.dispose();
+  }
+
+  void _disposeRecognizers() {
+    for (final recognizer in recognizers) {
+      recognizer.dispose();
+    }
+    recognizers.clear();
+  }
+
+  List<InlineSpan> _linkifiedSpans() {
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final match in _linkPattern.allMatches(widget.text)) {
+      if (match.start > cursor) {
+        spans.add(TextSpan(text: widget.text.substring(cursor, match.start)));
+      }
+      var label = match.group(0)!;
+      var suffix = '';
+      while (label.isNotEmpty && '.,!?;:)'.contains(label[label.length - 1])) {
+        suffix = label[label.length - 1] + suffix;
+        label = label.substring(0, label.length - 1);
+      }
+      final target = label.toLowerCase().startsWith('www.')
+          ? 'https://$label'
+          : label;
+      final recognizer = TapGestureRecognizer()
+        ..onTap = () => _openLink(target);
+      recognizers.add(recognizer);
+      spans.add(
+        TextSpan(
+          text: label,
+          style: const TextStyle(
+            color: Color(0xFF74D8FF),
+            decoration: TextDecoration.underline,
+            decorationColor: Color(0x8874D8FF),
+          ),
+          recognizer: recognizer,
+        ),
+      );
+      if (suffix.isNotEmpty) spans.add(TextSpan(text: suffix));
+      cursor = match.end;
+    }
+    if (cursor < widget.text.length) {
+      spans.add(TextSpan(text: widget.text.substring(cursor)));
+    }
+    return spans;
+  }
+
+  Future<void> _openLink(String value) async {
+    final uri = Uri.tryParse(value);
+    if (uri == null) return;
+    var opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened) {
+      opened = await launchUrl(uri, mode: LaunchMode.platformDefault);
+    }
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not open link')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SelectableText.rich(
+      TextSpan(style: DefaultTextStyle.of(context).style, children: spans),
     );
   }
 }
@@ -8604,9 +8800,11 @@ class _MessageStatusLabelState extends State<_MessageStatusLabel>
 
   void _syncClock() {
     if (widget.message.pending && !widget.message.failed) {
-      clock.repeat();
+      if (!clock.isAnimating) {
+        clock.repeat(period: const Duration(milliseconds: 1400));
+      }
     } else {
-      clock.stop();
+      if (clock.isAnimating) clock.stop(canceled: false);
     }
   }
 
@@ -8681,8 +8879,9 @@ class _SendingClockPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
     canvas.drawCircle(center, radius, paint);
-    final minuteAngle = progress * math.pi * 2 - math.pi / 2;
-    final hourAngle = progress * math.pi - math.pi / 2;
+    // Both hands finish exactly where they started, so repeat() has no seam.
+    final minuteAngle = progress * math.pi * 4 - math.pi / 2;
+    final hourAngle = progress * math.pi * 2 - math.pi / 2;
     canvas.drawLine(
       center,
       center + Offset(math.cos(hourAngle), math.sin(hourAngle)) * radius * 0.46,
@@ -8742,7 +8941,7 @@ class _FileCaption extends StatelessWidget {
     if (caption.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 7),
-      child: Text(caption),
+      child: _LinkifiedSelectableText(text: caption),
     );
   }
 }

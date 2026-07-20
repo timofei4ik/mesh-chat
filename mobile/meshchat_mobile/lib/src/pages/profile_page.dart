@@ -284,6 +284,7 @@ class _ProfileHeroState extends State<_ProfileHero>
                         child: ProfileEffectBackground(
                           profile: profile,
                           enabled: profile.meshProBadge == true,
+                          highRefreshRate: true,
                         ),
                       ),
                       Positioned(

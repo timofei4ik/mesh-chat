@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../models/profile.dart';
+import '../utils/animated_avatar_crop.dart';
 import 'mesh_frame_clock.dart';
 
 class ProfileAvatar extends StatelessWidget {
@@ -27,6 +28,7 @@ class ProfileAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final image = _avatarImage(profile.avatarData);
+    final crop = AnimatedAvatarCrop.tryParse(profile.avatarData);
     final decoration = profile.effectiveAvatarDecoration;
     final decorated =
         decoration != Profile.defaultAvatarDecoration && radius >= 16;
@@ -60,11 +62,10 @@ class ProfileAvatar extends StatelessWidget {
                           ),
                         ),
                       )
-                    : Image(
+                    : _AvatarImage(
                         image: image,
-                        fit: BoxFit.cover,
-                        gaplessPlayback: true,
-                        filterQuality: FilterQuality.medium,
+                        diameter: avatarRadius * 2,
+                        crop: crop,
                       ),
               ),
             ),
@@ -76,6 +77,7 @@ class ProfileAvatar extends StatelessWidget {
                 child: _AnimatedAvatarDecoration(
                   style: decoration,
                   animate: animateDecoration ?? radius >= 40,
+                  highRefreshRate: radius >= 40,
                 ),
               ),
             ),
@@ -121,11 +123,53 @@ class ProfileAvatar extends StatelessWidget {
   }
 }
 
+class _AvatarImage extends StatelessWidget {
+  const _AvatarImage({
+    required this.image,
+    required this.diameter,
+    required this.crop,
+  });
+
+  final ImageProvider image;
+  final double diameter;
+  final AnimatedAvatarCrop? crop;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = SizedBox(
+      width: diameter,
+      height: diameter,
+      child: Image(
+        image: image,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.medium,
+      ),
+    );
+    final value = crop;
+    if (value == null) return content;
+    final ratio = diameter / animatedAvatarCropViewport;
+    return Transform.translate(
+      offset: Offset(value.translateX * ratio, value.translateY * ratio),
+      child: Transform.scale(
+        scale: value.scale,
+        alignment: Alignment.topLeft,
+        child: content,
+      ),
+    );
+  }
+}
+
 class _AnimatedAvatarDecoration extends StatefulWidget {
-  const _AnimatedAvatarDecoration({required this.style, required this.animate});
+  const _AnimatedAvatarDecoration({
+    required this.style,
+    required this.animate,
+    required this.highRefreshRate,
+  });
 
   final String style;
   final bool animate;
+  final bool highRefreshRate;
 
   @override
   State<_AnimatedAvatarDecoration> createState() =>
@@ -146,7 +190,9 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
     WidgetsBinding.instance.addObserver(this);
     controller = MeshFrameClock(
       duration: const Duration(seconds: 9),
-      frameInterval: const Duration(milliseconds: 50),
+      frameInterval: widget.highRefreshRate
+          ? const Duration(milliseconds: 16)
+          : const Duration(milliseconds: 50),
       value: 0.17,
     );
     activationTimer = Timer(const Duration(milliseconds: 280), () {
@@ -201,20 +247,18 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
     if (!widget.animate) {
       return IgnorePointer(
         child: CustomPaint(
-          painter: _AvatarDecorationPainter(
-            style: widget.style,
-            progress: 0.17,
-          ),
+          painter: _AvatarDecorationPainter(widget.style, 0.17),
         ),
       );
     }
     return IgnorePointer(
-      child: AnimatedBuilder(
-        animation: controller,
-        builder: (context, child) => CustomPaint(
-          painter: _AvatarDecorationPainter(
+      child: RepaintBoundary(
+        child: CustomPaint(
+          isComplex: true,
+          willChange: true,
+          painter: _AvatarDecorationPainter.animated(
             style: widget.style,
-            progress: controller.value,
+            animation: controller,
           ),
         ),
       ),
@@ -223,10 +267,22 @@ class _AnimatedAvatarDecorationState extends State<_AnimatedAvatarDecoration>
 }
 
 class _AvatarDecorationPainter extends CustomPainter {
-  const _AvatarDecorationPainter({required this.style, required this.progress});
+  const _AvatarDecorationPainter(this.style, this._progress)
+    : animation = null,
+      super();
+
+  _AvatarDecorationPainter.animated({
+    required this.style,
+    required MeshFrameClock animation,
+  }) : animation = animation,
+       _progress = 0,
+       super(repaint: animation);
 
   final String style;
-  final double progress;
+  final MeshFrameClock? animation;
+  final double _progress;
+
+  double get progress => animation?.value ?? _progress;
 
   static const tau = math.pi * 2;
 
@@ -313,14 +369,15 @@ class _AvatarDecorationPainter extends CustomPainter {
     }
     for (var i = 0; i < 4; i++) {
       final phase = (progress + i * 0.23) % 1;
+      final life = math.sin(math.pi * phase).clamp(0.0, 1.0);
       final x = center.dx + math.sin(i * 2.3) * radius * 0.72;
       final y = center.dy + radius * 0.92 - phase * size * 0.19;
       final point = Offset(x, y);
-      _glow(canvas, point, size * 0.022, const Color(0xFFFF8A50), 0.2);
+      _glow(canvas, point, size * 0.022, const Color(0xFFFF8A50), 0.2 * life);
       canvas.drawCircle(
         point,
         size * 0.009 * (1 - phase * 0.4),
-        Paint()..color = const Color(0xFFFFC06A).withValues(alpha: 1 - phase),
+        Paint()..color = const Color(0xFFFFC06A).withValues(alpha: life),
       );
     }
   }
@@ -347,7 +404,7 @@ class _AvatarDecorationPainter extends CustomPainter {
       const [Color(0xFFFF9CC9), Color(0xFF9D73E8), Color(0xFF6EC5E9)],
       0.5,
     );
-    final motePhase = (progress * 1.6) % 1;
+    final motePhase = (1 - math.cos(tau * progress)) * 0.5;
     final mote = center + Offset(radius * 0.82, -radius * (0.2 + motePhase));
     _glow(canvas, mote, size * 0.025, const Color(0xFFFFC1E8), 0.22);
   }

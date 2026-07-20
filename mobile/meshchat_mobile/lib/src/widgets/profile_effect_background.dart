@@ -17,10 +17,12 @@ class ProfileEffectBackground extends StatefulWidget {
     super.key,
     required this.profile,
     this.enabled = true,
+    this.highRefreshRate = false,
   });
 
   final Profile profile;
   final bool enabled;
+  final bool highRefreshRate;
 
   @override
   State<ProfileEffectBackground> createState() =>
@@ -30,8 +32,6 @@ class ProfileEffectBackground extends StatefulWidget {
 class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
     with WidgetsBindingObserver {
   late final MeshFrameClock controller;
-  int seed = 4;
-  double _lastAnimationValue = 0;
   bool appActive = true;
   bool tickerModeActive = true;
 
@@ -43,18 +43,13 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
     WidgetsBinding.instance.addObserver(this);
     controller = MeshFrameClock(
       duration: const Duration(milliseconds: 13500),
-      frameInterval: const Duration(milliseconds: 66),
+      frameInterval: widget.highRefreshRate
+          ? const Duration(milliseconds: 16)
+          : const Duration(milliseconds: 66),
     );
-    controller.addListener(_trackAnimationCycle);
     Future<void>.delayed(const Duration(milliseconds: 320), () {
       if (mounted && canAnimate) controller.repeat();
     });
-  }
-
-  void _trackAnimationCycle() {
-    final value = controller.value;
-    if (value < _lastAnimationValue) seed += 3;
-    _lastAnimationValue = value;
   }
 
   @override
@@ -89,7 +84,6 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    controller.removeListener(_trackAnimationCycle);
     controller.dispose();
     super.dispose();
   }
@@ -98,39 +92,33 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   Widget build(BuildContext context) {
     return IgnorePointer(
       child: RepaintBoundary(
-        child: AnimatedBuilder(
-          animation: controller,
-          builder: (context, _) {
-            final phase = math.min(2, (controller.value * 3).floor());
-            return ShaderMask(
-              blendMode: BlendMode.dstIn,
-              shaderCallback: (bounds) => const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.white,
-                  Colors.white,
-                  Colors.transparent,
-                ],
-                stops: [0, 0.18, 0.88, 1],
-              ).createShader(bounds),
-              child: CustomPaint(
-                isComplex: true,
-                willChange: controller.isAnimating,
-                painter: _ProfileEffectPainter(
-                  t: controller.value,
-                  seed: seed + phase,
-                  background: widget.profile.effectiveProfileBanner,
-                  effect: widget.enabled
-                      ? widget.profile.effectiveProfileEffect
-                      : 'none',
-                  blinkShape: widget.profile.effectiveProfileBlinkShape,
-                  accent: Color(widget.profile.effectiveProfileAccent),
-                ),
-              ),
-            );
-          },
+        child: ShaderMask(
+          blendMode: BlendMode.dstIn,
+          shaderCallback: (bounds) => const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.transparent,
+              Colors.white,
+              Colors.white,
+              Colors.transparent,
+            ],
+            stops: [0, 0.18, 0.88, 1],
+          ).createShader(bounds),
+          child: CustomPaint(
+            isComplex: true,
+            willChange: widget.enabled,
+            painter: _ProfileEffectPainter(
+              animation: controller,
+              seed: 4,
+              background: widget.profile.effectiveProfileBanner,
+              effect: widget.enabled
+                  ? widget.profile.effectiveProfileEffect
+                  : 'none',
+              blinkShape: widget.profile.effectiveProfileBlinkShape,
+              accent: Color(widget.profile.effectiveProfileAccent),
+            ),
+          ),
         ),
       ),
     );
@@ -138,21 +126,23 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
 }
 
 class _ProfileEffectPainter extends CustomPainter {
-  const _ProfileEffectPainter({
-    required this.t,
+  _ProfileEffectPainter({
+    required this.animation,
     required this.seed,
     required this.background,
     required this.effect,
     required this.blinkShape,
     required this.accent,
-  });
+  }) : super(repaint: animation);
 
-  final double t;
+  final MeshFrameClock animation;
   final int seed;
   final String background;
   final String effect;
   final String blinkShape;
   final Color accent;
+
+  double get t => animation.value;
 
   static const violet = Color(0xFFA56BFF);
   static const cyan = Color(0xFF3BD6FF);
@@ -560,7 +550,7 @@ class _ProfileEffectPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ProfileEffectPainter oldDelegate) {
-    return oldDelegate.t != t ||
+    return oldDelegate.animation != animation ||
         oldDelegate.seed != seed ||
         oldDelegate.background != background ||
         oldDelegate.effect != effect ||

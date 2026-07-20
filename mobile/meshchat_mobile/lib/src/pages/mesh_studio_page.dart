@@ -282,6 +282,7 @@ class _StudioPreview extends StatelessWidget {
                   child: ProfileEffectBackground(
                     profile: profile,
                     enabled: true,
+                    highRefreshRate: true,
                   ),
                 ),
                 Column(

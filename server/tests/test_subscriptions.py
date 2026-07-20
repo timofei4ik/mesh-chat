@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -307,6 +308,18 @@ class SubscriptionTests(unittest.TestCase):
         profile = self.relay.get_profile_by_node("subscriber-node")
         self.assertEqual("✨", profile["emoji_status"])
         self.assertTrue(profile["avatar_data"].startswith("data:image/gif"))
+
+        oversized_avatar = base64.b64encode(
+            b"x" * (server_storage.ANIMATED_AVATAR_MAX_BYTES + 1)
+        ).decode("ascii")
+        ok, reason = self.relay.save_account_profile(
+            "subscriber",
+            "subscriber-node",
+            "Subscriber",
+            avatar_data=f"data:image/gif;base64,{oversized_avatar}",
+        )
+        self.assertFalse(ok)
+        self.assertEqual("animated avatar is too large", reason)
 
     def test_scheduled_message_dispatches_and_recurring_item_survives(self):
         self.relay.grant_subscription("subscriber", days=7)

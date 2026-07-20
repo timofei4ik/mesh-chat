@@ -268,7 +268,8 @@ class AppController extends ChangeNotifier {
   static const maxMobileFileBytes = 64 * 1024 * 1024;
   static const maxBluetoothFileBytes = 512 * 1024;
   static const _bluetoothFileChunkHexSize = 8 * 1024;
-  static const _maxProfilePacketBytes = 900 * 1024;
+  // A 4 MB animated avatar grows by roughly one third when encoded as base64.
+  static const _maxProfilePacketBytes = 6 * 1024 * 1024;
 
   final SessionStore _store = SessionStore();
   final AppSettingsStore _settingsStore = AppSettingsStore();
@@ -2934,6 +2935,12 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Duration _profileUpdateResponseTimeout(int packetBytes) {
+    const mib = 1024 * 1024;
+    final payloadMib = (packetBytes / mib).ceil().clamp(1, 6);
+    return Duration(seconds: 15 + payloadMib * 15);
+  }
+
   Future<String?> updateProfile({
     required String displayName,
     required String publicUsername,
@@ -3001,6 +3008,7 @@ class AppController extends ChangeNotifier {
     if (packetBytes > _maxProfilePacketBytes) {
       return 'Профиль слишком большой. Уменьши аватарку или удали её.';
     }
+    final responseTimeout = _profileUpdateResponseTimeout(packetBytes);
 
     _profileUpdateCompleter = Completer<String?>();
     try {
@@ -3010,7 +3018,7 @@ class AppController extends ChangeNotifier {
       return 'Не удалось отправить профиль: $error';
     }
     var result = await _profileUpdateCompleter!.future.timeout(
-      const Duration(seconds: 10),
+      responseTimeout,
       onTimeout: () => 'Сервер не ответил',
     );
     _profileUpdateCompleter = null;
@@ -3033,7 +3041,7 @@ class AppController extends ChangeNotifier {
         return 'Could not send the compatible profile update: $error';
       }
       result = await _profileUpdateCompleter!.future.timeout(
-        const Duration(seconds: 10),
+        responseTimeout,
         onTimeout: () => 'Server did not answer the compatible profile update',
       );
       _profileUpdateCompleter = null;

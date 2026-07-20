@@ -8,6 +8,7 @@ import 'package:flutter/rendering.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/profile.dart';
+import '../utils/animated_avatar_crop.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/profile_avatar.dart';
@@ -223,7 +224,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (file == null || bytes == null) return;
     if (!mounted) return;
     final extension = file.extension?.trim().toLowerCase() ?? '';
-    if (extension == 'gif') {
+    final isAnimated = extension == 'gif';
+    if (isAnimated) {
       final allowed = await requireMeshPro(
         context,
         widget.controller,
@@ -232,33 +234,35 @@ class _EditProfilePageState extends State<EditProfilePage> {
         description: 'Use a GIF avatar that follows your MeshChat account.',
       );
       if (!allowed || !mounted) return;
-      if (bytes.length > 600 * 1024) {
-        showSnack('Animated avatar must be up to 600 KB');
-        return;
-      }
-      setState(() {
-        avatarData = 'data:image/gif;base64,${base64Encode(bytes)}';
-      });
-      return;
+      if (bytes.length > animatedAvatarMaxBytes) return;
     }
-    final maxSourceBytes = kIsWeb ? 2 * 1024 * 1024 : 6 * 1024 * 1024;
+    final maxSourceBytes = isAnimated
+        ? animatedAvatarMaxBytes
+        : (kIsWeb ? 2 * 1024 * 1024 : 6 * 1024 * 1024);
     if (bytes.length > maxSourceBytes) {
-      if (!mounted) return;
-      showSnack('Avatar image is too large');
       return;
     }
     if (!mounted) return;
-    final cropped = await showDialog<Uint8List>(
+    final selection = await showDialog<_AvatarCropSelection>(
       context: context,
       builder: (_) => _AvatarCropDialog(bytes: bytes),
     );
-    if (cropped == null) return;
-    final avatarBytes = await makeAvatarBytes(cropped);
-    if (!mounted) return;
-    if (avatarBytes.length > 96 * 1024) {
-      showSnack('Avatar is too large after compression');
+    if (selection == null) return;
+    if (isAnimated) {
+      if (!mounted) return;
+      setState(() {
+        avatarData = encodeAnimatedAvatarData(
+          bytes,
+          scale: selection.scale,
+          translateX: selection.translateX,
+          translateY: selection.translateY,
+        );
+      });
       return;
     }
+    final avatarBytes = await makeAvatarBytes(selection.previewBytes);
+    if (!mounted) return;
+    if (avatarBytes.length > 96 * 1024) return;
     setState(() {
       avatarData = 'data:image/png;base64,${base64Encode(avatarBytes)}';
     });
@@ -401,6 +405,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         widget.controller,
                         'profile_effect',
                       ),
+                      highRefreshRate: true,
                     ),
                   ),
                   Padding(
@@ -928,6 +933,20 @@ class _EditProfilePageState extends State<EditProfilePage> {
   }
 }
 
+class _AvatarCropSelection {
+  const _AvatarCropSelection({
+    required this.previewBytes,
+    required this.scale,
+    required this.translateX,
+    required this.translateY,
+  });
+
+  final Uint8List previewBytes;
+  final double scale;
+  final double translateX;
+  final double translateY;
+}
+
 class _AvatarCropDialog extends StatefulWidget {
   const _AvatarCropDialog({required this.bytes});
 
@@ -956,7 +975,16 @@ class _AvatarCropDialogState extends State<_AvatarCropDialog> {
   }
 
   void _applyZoom() {
-    transform.value = Matrix4.diagonal3Values(zoom, zoom, 1);
+    final previous = transform.value;
+    final previousScale = previous.getMaxScaleOnAxis();
+    final previousX = previous.storage[12];
+    final previousY = previous.storage[13];
+    const center = 130.0;
+    final focalX = (center - previousX) / previousScale;
+    final focalY = (center - previousY) / previousScale;
+    transform.value = Matrix4.identity()
+      ..translateByDouble(center - focalX * zoom, center - focalY * zoom, 0, 1)
+      ..scaleByDouble(zoom, zoom, 1, 1);
   }
 
   Future<void> save() async {
@@ -973,7 +1001,16 @@ class _AvatarCropDialogState extends State<_AvatarCropDialog> {
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       image.dispose();
       if (!mounted || data == null) return;
-      Navigator.pop(context, data.buffer.asUint8List());
+      final matrix = transform.value;
+      Navigator.pop(
+        context,
+        _AvatarCropSelection(
+          previewBytes: data.buffer.asUint8List(),
+          scale: matrix.getMaxScaleOnAxis(),
+          translateX: matrix.storage[12],
+          translateY: matrix.storage[13],
+        ),
+      );
     } finally {
       if (mounted) setState(() => exporting = false);
     }
@@ -1017,12 +1054,12 @@ class _AvatarCropDialogState extends State<_AvatarCropDialog> {
                               height: 260,
                               child: InteractiveViewer(
                                 transformationController: transform,
-                                minScale: 0.75,
+                                minScale: 1,
                                 maxScale: 4,
-                                boundaryMargin: const EdgeInsets.all(140),
+                                boundaryMargin: EdgeInsets.zero,
                                 child: SizedBox(
-                                  width: 320,
-                                  height: 320,
+                                  width: 260,
+                                  height: 260,
                                   child: Image.memory(
                                     widget.bytes,
                                     fit: BoxFit.cover,
@@ -1064,7 +1101,7 @@ class _AvatarCropDialogState extends State<_AvatarCropDialog> {
                       const Icon(Icons.zoom_out_rounded),
                       Expanded(
                         child: Slider(
-                          min: 0.85,
+                          min: 1,
                           max: 2.6,
                           value: zoom,
                           onChanged: (value) {

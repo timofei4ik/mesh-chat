@@ -355,27 +355,26 @@ class ChatsPage extends StatelessWidget {
     Navigator.push(
       context,
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 330),
-        reverseTransitionDuration: const Duration(milliseconds: 230),
-        pageBuilder: (_, _, _) =>
-            ChatPage(controller: controller, thread: thread),
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 280),
+        allowSnapshotting: true,
+        pageBuilder: (_, _, _) => RepaintBoundary(
+          child: ChatPage(controller: controller, thread: thread),
+        ),
         transitionsBuilder: (_, animation, _, child) {
           final curved = CurvedAnimation(
             parent: animation,
-            curve: Curves.easeInOutCubic,
-            reverseCurve: Curves.easeInOutCubic,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
           );
           return FadeTransition(
             opacity: curved,
             child: SlideTransition(
               position: Tween<Offset>(
-                begin: const Offset(0.03, 0.035),
+                begin: const Offset(0.035, 0),
                 end: Offset.zero,
               ).animate(curved),
-              child: ScaleTransition(
-                scale: Tween<double>(begin: 0.965, end: 1).animate(curved),
-                child: child,
-              ),
+              child: child,
             ),
           );
         },

@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -32,6 +34,7 @@ FILE_TRANSFER_MAX_BYTES = 96 * 1024 * 1024
 FILE_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024
 FILE_TRANSFER_MAX_CHUNKS = 4096
 FILE_TRANSFER_STALE_DAYS = 7
+ANIMATED_AVATAR_MAX_BYTES = 4 * 1024 * 1024
 PROFILE_BLINK_SHAPE_ALIASES = {
     "auto": "auto",
     "dot": "dot",
@@ -2330,12 +2333,21 @@ class ServerStorageMixin:
             ):
                 return False, "meshpro_required"
 
-        avatar_value = str(avatar_data or "").strip().lower()
+        avatar_raw = str(avatar_data or "").strip()
+        avatar_value = avatar_raw.lower()
         if (
             avatar_value.startswith("data:image/gif")
             and not self.subscription_feature_enabled(login, "animated_avatar")
         ):
             return False, "meshpro_required"
+        if avatar_value.startswith("data:image/gif"):
+            try:
+                encoded_avatar = avatar_raw.split(",", 1)[1]
+                avatar_bytes = base64.b64decode(encoded_avatar, validate=True)
+            except (IndexError, ValueError, binascii.Error):
+                return False, "invalid animated avatar"
+            if len(avatar_bytes) > ANIMATED_AVATAR_MAX_BYTES:
+                return False, "animated avatar is too large"
 
         if public_username is not None:
 
