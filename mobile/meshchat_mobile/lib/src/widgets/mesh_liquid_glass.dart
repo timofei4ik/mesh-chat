@@ -86,13 +86,43 @@ class MeshLiquidGlass extends StatelessWidget {
         : 0.12;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
-      child: ColoredBox(
-        color: Color.lerp(
-          const Color(0xFF111A29).withValues(alpha: 0.86),
-          accent.withValues(alpha: baseAlpha),
-          0.24,
-        )!,
-        child: child,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(radius),
+          color: const Color(0xFF111A29).withValues(alpha: 0.78),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[
+              Colors.white.withValues(alpha: prominent ? 0.14 : 0.10),
+              accent.withValues(alpha: baseAlpha * 0.48),
+              const Color(0xFF111A29).withValues(alpha: 0.54),
+            ],
+            stops: const <double>[0, 0.46, 1],
+          ),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: selected ? 0.24 : 0.17),
+          ),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: accent.withValues(alpha: baseAlpha * 0.22),
+              blurRadius: prominent ? 18 : 12,
+            ),
+          ],
+        ),
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: <Widget>[
+            Positioned(
+              left: radius * 0.42,
+              right: radius * 0.42,
+              top: 0,
+              height: 1,
+              child: ColoredBox(color: Colors.white.withValues(alpha: 0.22)),
+            ),
+            child,
+          ],
+        ),
       ),
     );
   }
