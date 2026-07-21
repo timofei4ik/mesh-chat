@@ -5565,20 +5565,36 @@ class _SendFlightOverlay extends StatefulWidget {
 class _SendFlightOverlayState extends State<_SendFlightOverlay>
     with SingleTickerProviderStateMixin {
   late final AnimationController controller;
-  late final Animation<double> curved;
+  late final Animation<double> position;
+  late final Animation<double> opacity;
 
   @override
   void initState() {
     super.initState();
     controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 310),
+      duration: const Duration(milliseconds: 340),
     );
-    curved = CurvedAnimation(parent: controller, curve: Curves.easeOutCubic);
+    position = CurvedAnimation(
+      parent: controller,
+      curve: const Cubic(0.22, 0.72, 0.18, 1),
+    );
+    opacity = TweenSequence<double>([
+      TweenSequenceItem(tween: ConstantTween(1.0), weight: 72),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.0,
+          end: 0.0,
+        ).chain(CurveTween(curve: Curves.easeInOutCubic)),
+        weight: 28,
+      ),
+    ]).animate(controller);
     controller.addStatusListener((status) {
       if (status == AnimationStatus.completed) widget.onFinished();
     });
-    controller.forward();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) controller.forward();
+    });
   }
 
   @override
@@ -5592,40 +5608,31 @@ class _SendFlightOverlayState extends State<_SendFlightOverlay>
     return IgnorePointer(
       child: Stack(
         children: [
-          AnimatedBuilder(
-            animation: curved,
-            child: RepaintBoundary(
-              child: SizedBox.fromSize(
-                size: widget.start.size,
-                child: CustomPaint(
-                  painter: _SendFlightPainter(
-                    text: widget.text,
-                    color: widget.color,
-                    textDirection: Directionality.of(context),
+          Positioned.fromRect(
+            rect: widget.start,
+            child: AnimatedBuilder(
+              animation: controller,
+              child: RepaintBoundary(
+                child: SizedBox.fromSize(
+                  size: widget.start.size,
+                  child: CustomPaint(
+                    painter: _SendFlightPainter(
+                      text: widget.text,
+                      color: widget.color,
+                      textDirection: Directionality.of(context),
+                    ),
                   ),
                 ),
               ),
+              builder: (context, child) => Transform.translate(
+                offset: Offset.lerp(
+                  Offset.zero,
+                  widget.end.topLeft - widget.start.topLeft,
+                  position.value,
+                )!,
+                child: Opacity(opacity: opacity.value, child: child),
+              ),
             ),
-            builder: (context, child) {
-              final progress = curved.value;
-              final offset = Offset.lerp(
-                Offset.zero,
-                widget.end.topLeft - widget.start.topLeft,
-                progress,
-              )!;
-              return Positioned.fromRect(
-                rect: widget.start,
-                child: Transform.translate(
-                  offset: offset,
-                  child: Opacity(
-                    opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
-                        .clamp(0.0, 1.0)
-                        .toDouble(),
-                    child: child,
-                  ),
-                ),
-              );
-            },
           ),
         ],
       ),
