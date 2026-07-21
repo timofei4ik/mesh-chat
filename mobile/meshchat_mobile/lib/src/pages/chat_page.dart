@@ -1720,7 +1720,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (didInitialScrollToBottom || messageCount == 0) return;
     didInitialScrollToBottom = true;
     initialScrollInterrupted = false;
-    var ticks = 0;
     void settle() {
       if (!mounted || initialScrollInterrupted) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1730,14 +1729,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     settle();
     initialScrollSettleTimer?.cancel();
-    initialScrollSettleTimer = Timer.periodic(
-      const Duration(milliseconds: 140),
-      (timer) {
-        ticks++;
-        settle();
-        if (ticks >= 12 || initialScrollInterrupted) timer.cancel();
-      },
-    );
+    // One delayed correction is enough for late image/layout metrics. Repeated
+    // jumps during the route animation made an otherwise cheap slide stutter.
+    initialScrollSettleTimer = Timer(const Duration(milliseconds: 64), settle);
   }
 
   bool handleInitialUserScroll(ScrollNotification notification) {
@@ -1785,10 +1779,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final origin = overlayBox.globalToLocal(
       inputBox.localToGlobal(Offset.zero),
     );
-    final start = origin & inputBox.size;
     final targetWidth = (72.0 + text.length * 7.0)
         .clamp(88.0, 250.0)
         .toDouble();
+    final flightHeight = math.min(44.0, inputBox.size.height);
+    final start = Rect.fromLTWH(
+      origin.dx + inputBox.size.width - targetWidth,
+      origin.dy + (inputBox.size.height - flightHeight) / 2,
+      targetWidth,
+      flightHeight,
+    );
     final media = MediaQuery.of(context);
     final end = Rect.fromLTWH(
       media.size.width - targetWidth - 14,
@@ -7331,11 +7331,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
         opacity: value.clamp(0.0, 1.0),
         child: Transform.translate(
           offset: Offset((mine ? 18 : -18) * (1 - value), 8 * (1 - value)),
-          child: Transform.scale(
-            scale: 0.98 + value * 0.02,
-            alignment: mine ? Alignment.bottomRight : Alignment.bottomLeft,
-            child: child,
-          ),
+          child: child,
         ),
       ),
       child: Align(
@@ -7658,7 +7654,11 @@ class _MessageBubbleBody extends StatelessWidget {
                       createdAt: message.createdAt,
                     ),
                     const SizedBox(height: 2),
-                    Align(alignment: Alignment.bottomRight, child: metadata),
+                    Align(
+                      alignment: Alignment.bottomRight,
+                      widthFactor: 1,
+                      child: metadata,
+                    ),
                   ],
                 )
               else
