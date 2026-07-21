@@ -60,12 +60,14 @@ class ChatPage extends StatefulWidget {
     required this.thread,
     this.channelPost,
     this.onBack,
+    this.onReady,
   });
 
   final AppController controller;
   final ChatThread thread;
   final ChatMessage? channelPost;
   final Future<void> Function()? onBack;
+  final VoidCallback? onReady;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -86,6 +88,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool recording = false;
   bool voicePointerDown = false;
   bool didInitialScrollToBottom = false;
+  bool didReportReady = false;
   Timer? initialScrollSettleTimer;
   bool initialScrollInterrupted = false;
   bool showJumpToBottom = false;
@@ -1724,21 +1727,49 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   void scheduleInitialScrollToBottom(int messageCount) {
-    if (didInitialScrollToBottom || messageCount == 0) return;
+    if (didInitialScrollToBottom) return;
     didInitialScrollToBottom = true;
     initialScrollInterrupted = false;
-    void settle() {
-      if (!mounted || initialScrollInterrupted) return;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !initialScrollInterrupted) jumpToBottom();
-      });
+    initialScrollSettleTimer?.cancel();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(prepareInitialViewport(messageCount));
+    });
+  }
+
+  Future<void> prepareInitialViewport(int messageCount) async {
+    if (messageCount == 0) {
+      reportReady();
+      return;
     }
 
-    settle();
-    initialScrollSettleTimer?.cancel();
-    // One delayed correction is enough for late image/layout metrics. Repeated
-    // jumps during the route animation made an otherwise cheap slide stutter.
-    initialScrollSettleTimer = Timer(const Duration(milliseconds: 64), settle);
+    double? previousExtent;
+    var stableFrames = 0;
+    // The chat is still positioned outside the viewport while this runs. Wait
+    // for the real list geometry instead of guessing with a timer, then freeze
+    // the correctly positioned frame for the route animation.
+    for (var frame = 0; frame < 8 && stableFrames < 2; frame++) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || initialScrollInterrupted || !scroll.hasClients) return;
+
+      final extent = scroll.position.maxScrollExtent;
+      scroll.jumpTo(extent);
+      if (previousExtent != null && (extent - previousExtent).abs() < 0.5) {
+        stableFrames++;
+      } else {
+        stableFrames = 0;
+      }
+      previousExtent = extent;
+    }
+    if (!mounted || initialScrollInterrupted) return;
+    if (scroll.hasClients) scroll.jumpTo(scroll.position.maxScrollExtent);
+    await WidgetsBinding.instance.endOfFrame;
+    reportReady();
+  }
+
+  void reportReady() {
+    if (!mounted || didReportReady) return;
+    didReportReady = true;
+    widget.onReady?.call();
   }
 
   bool handleInitialUserScroll(ScrollNotification notification) {

@@ -4,7 +4,6 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
@@ -355,16 +354,13 @@ class ChatsPage extends StatelessWidget {
   void openThread(BuildContext context, ChatThread thread) {
     controller.markRead(thread);
     final host = context.findAncestorStateOfType<_ChatStackHostState>();
-    final useNativeIosRoute =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
-    if (host != null && !useNativeIosRoute) {
+    if (host != null) {
       unawaited(host.open(thread));
       return;
     }
     Navigator.push(
       context,
       meshPageRoute<void>(
-        snapshotContent: true,
         builder: (_) => ChatPage(controller: controller, thread: thread),
       ),
     );
@@ -1261,6 +1257,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     reverseDuration: const Duration(milliseconds: 200),
   );
   ChatThread? activeThread;
+  final SnapshotController chatSnapshot = SnapshotController();
+  Completer<void>? chatReady;
   bool opening = false;
   bool dragging = false;
 
@@ -1269,18 +1267,30 @@ class _ChatStackHostState extends State<_ChatStackHost>
     opening = true;
     MeshRouteTransition.active.value = true;
     transition.value = 0;
+    chatSnapshot.allowSnapshotting = false;
+    chatReady = Completer<void>();
     setState(() => activeThread = thread);
 
     try {
-      // Prepare layout and raster work before the already-built chat layer
-      // starts moving into view.
+      await chatReady!.future.timeout(
+        const Duration(milliseconds: 320),
+        onTimeout: () {},
+      );
       await WidgetsBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 36));
+      chatSnapshot.allowSnapshotting = true;
+      chatSnapshot.clear();
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || activeThread != thread) return;
       await transition.animateTo(1, curve: Curves.easeOutQuart);
-      if (mounted) setState(() => opening = false);
+      if (mounted) {
+        chatSnapshot.allowSnapshotting = false;
+        setState(() => opening = false);
+      }
     } finally {
+      if (mounted && transition.value < 1) {
+        chatSnapshot.allowSnapshotting = false;
+        opening = false;
+      }
       MeshRouteTransition.active.value = false;
     }
   }
@@ -1290,8 +1300,15 @@ class _ChatStackHostState extends State<_ChatStackHost>
     opening = false;
     MeshRouteTransition.active.value = true;
     try {
+      if (!chatSnapshot.allowSnapshotting) {
+        chatSnapshot.allowSnapshotting = true;
+        chatSnapshot.clear();
+        await WidgetsBinding.instance.endOfFrame;
+      }
       await transition.animateBack(0, curve: Curves.easeOutQuart);
       if (!mounted) return;
+      chatSnapshot.allowSnapshotting = false;
+      chatReady = null;
       setState(() => activeThread = null);
     } finally {
       MeshRouteTransition.active.value = false;
@@ -1302,6 +1319,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     if (activeThread == null || opening) return;
     dragging = true;
     MeshRouteTransition.active.value = true;
+    chatSnapshot.allowSnapshotting = true;
+    chatSnapshot.clear();
     HapticFeedback.selectionClick();
   }
 
@@ -1321,12 +1340,14 @@ class _ChatStackHostState extends State<_ChatStackHost>
       await close();
     } else {
       await transition.animateTo(1, curve: Curves.easeOutQuart);
+      chatSnapshot.allowSnapshotting = false;
       MeshRouteTransition.active.value = false;
     }
   }
 
   @override
   void dispose() {
+    chatSnapshot.dispose();
     transition.dispose();
     super.dispose();
   }
@@ -1339,12 +1360,20 @@ class _ChatStackHostState extends State<_ChatStackHost>
         final width = constraints.maxWidth;
         final chatLayer = thread == null
             ? null
-            : RepaintBoundary(
-                child: ChatPage(
-                  key: ValueKey('active-chat-${thread.storageKey}'),
-                  controller: widget.controller,
-                  thread: thread,
-                  onBack: close,
+            : SnapshotWidget(
+                controller: chatSnapshot,
+                mode: SnapshotMode.forced,
+                child: RepaintBoundary(
+                  child: ChatPage(
+                    key: ValueKey('active-chat-${thread.storageKey}'),
+                    controller: widget.controller,
+                    thread: thread,
+                    onBack: close,
+                    onReady: () {
+                      final ready = chatReady;
+                      if (ready != null && !ready.isCompleted) ready.complete();
+                    },
+                  ),
                 ),
               );
         return Stack(
@@ -1355,12 +1384,15 @@ class _ChatStackHostState extends State<_ChatStackHost>
               child: RepaintBoundary(child: widget.home),
             ),
             if (chatLayer != null)
-              AnimatedBuilder(
-                animation: transition,
-                child: chatLayer,
-                builder: (context, child) => Transform.translate(
-                  offset: Offset(width * (1 - transition.value), 0),
-                  child: child,
+              IgnorePointer(
+                ignoring: opening,
+                child: AnimatedBuilder(
+                  animation: transition,
+                  child: chatLayer,
+                  builder: (context, child) => Transform.translate(
+                    offset: Offset(width * (1 - transition.value), 0),
+                    child: child,
+                  ),
                 ),
               ),
             if (thread != null && !opening)
@@ -1380,9 +1412,10 @@ class _ChatStackHostState extends State<_ChatStackHost>
                     unawaited(
                       transition
                           .animateTo(1, curve: Curves.easeOutQuart)
-                          .whenComplete(
-                            () => MeshRouteTransition.active.value = false,
-                          ),
+                          .whenComplete(() {
+                            chatSnapshot.allowSnapshotting = false;
+                            MeshRouteTransition.active.value = false;
+                          }),
                     );
                   },
                 ),

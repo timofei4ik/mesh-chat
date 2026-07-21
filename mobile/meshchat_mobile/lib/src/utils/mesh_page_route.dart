@@ -12,7 +12,6 @@ class MeshRouteTransition {
 Route<T> meshPageRoute<T>({
   required WidgetBuilder builder,
   RouteSettings? settings,
-  bool snapshotContent = false,
 }) {
   final mobile =
       !kIsWeb &&
@@ -20,12 +19,9 @@ Route<T> meshPageRoute<T>({
           defaultTargetPlatform == TargetPlatform.android);
   if (mobile) {
     return _MeshCupertinoPageRoute<T>(
-      builder: (context) {
-        final page = _MeshRoutePerformanceGate(child: builder(context));
-        return snapshotContent ? _MeshTransitionSnapshot(child: page) : page;
-      },
+      builder: (context) => _MeshRoutePerformanceGate(child: builder(context)),
       settings: settings,
-      allowSnapshotting: !snapshotContent,
+      allowSnapshotting: true,
     );
   }
 
@@ -33,10 +29,8 @@ Route<T> meshPageRoute<T>({
     settings: settings,
     transitionDuration: const Duration(milliseconds: 210),
     reverseTransitionDuration: const Duration(milliseconds: 180),
-    pageBuilder: (context, animation, secondaryAnimation) {
-      final page = _MeshRoutePerformanceGate(child: builder(context));
-      return snapshotContent ? _MeshTransitionSnapshot(child: page) : page;
-    },
+    pageBuilder: (context, animation, secondaryAnimation) =>
+        _MeshRoutePerformanceGate(child: builder(context)),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
       final offset =
           Tween<Offset>(
@@ -52,69 +46,6 @@ Route<T> meshPageRoute<T>({
       return SlideTransition(position: offset, child: child);
     },
   );
-}
-
-class _MeshTransitionSnapshot extends StatefulWidget {
-  const _MeshTransitionSnapshot({required this.child});
-
-  final Widget child;
-
-  @override
-  State<_MeshTransitionSnapshot> createState() =>
-      _MeshTransitionSnapshotState();
-}
-
-class _MeshTransitionSnapshotState extends State<_MeshTransitionSnapshot> {
-  final SnapshotController snapshot = SnapshotController();
-  Animation<double>? primary;
-  Animation<double>? secondary;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final route = ModalRoute.of(context);
-    final nextPrimary = route?.animation;
-    final nextSecondary = route?.secondaryAnimation;
-    if (identical(primary, nextPrimary) &&
-        identical(secondary, nextSecondary)) {
-      return;
-    }
-    primary?.removeStatusListener(handleAnimationStatus);
-    secondary?.removeStatusListener(handleAnimationStatus);
-    primary = nextPrimary;
-    secondary = nextSecondary;
-    primary?.addStatusListener(handleAnimationStatus);
-    secondary?.addStatusListener(handleAnimationStatus);
-    syncSnapshot();
-  }
-
-  void handleAnimationStatus(AnimationStatus _) => syncSnapshot();
-
-  void syncSnapshot() {
-    final shouldSnapshot =
-        primary?.status != AnimationStatus.completed ||
-        secondary?.status != AnimationStatus.dismissed;
-    if (snapshot.allowSnapshotting == shouldSnapshot) return;
-    snapshot.allowSnapshotting = shouldSnapshot;
-    if (shouldSnapshot) snapshot.clear();
-  }
-
-  @override
-  void dispose() {
-    primary?.removeStatusListener(handleAnimationStatus);
-    secondary?.removeStatusListener(handleAnimationStatus);
-    snapshot.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SnapshotWidget(
-      controller: snapshot,
-      mode: SnapshotMode.forced,
-      child: widget.child,
-    );
-  }
 }
 
 class _MeshRoutePerformanceGate extends StatelessWidget {
