@@ -364,6 +364,7 @@ class ChatsPage extends StatelessWidget {
     Navigator.push(
       context,
       meshPageRoute<void>(
+        snapshotContent: true,
         builder: (_) => ChatPage(controller: controller, thread: thread),
       ),
     );
