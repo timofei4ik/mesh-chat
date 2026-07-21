@@ -104,9 +104,9 @@ class MeshLiquidGlass extends StatelessWidget {
           borderRadius: BorderRadius.circular(radius),
           color: const Color(
             0xFF172231,
-          ).withValues(alpha: prominent ? 0.88 : 0.80),
+          ).withValues(alpha: prominent ? 0.66 : 0.58),
           border: Border.all(
-            color: Colors.white.withValues(alpha: selected ? 0.24 : 0.17),
+            color: Colors.white.withValues(alpha: selected ? 0.22 : 0.13),
           ),
           boxShadow: <BoxShadow>[
             BoxShadow(
@@ -123,7 +123,7 @@ class MeshLiquidGlass extends StatelessWidget {
               right: radius * 0.42,
               top: 0,
               height: 1,
-              child: ColoredBox(color: Colors.white.withValues(alpha: 0.22)),
+              child: ColoredBox(color: Colors.white.withValues(alpha: 0.16)),
             ),
             child,
           ],

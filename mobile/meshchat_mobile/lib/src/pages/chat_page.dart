@@ -7455,6 +7455,11 @@ class _MessageBubbleBody extends StatelessWidget {
     final bubbleColor = verticalShade >= 0
         ? Color.lerp(baseBubbleColor, Colors.black, verticalShade)!
         : Color.lerp(baseBubbleColor, Colors.white, -verticalShade)!;
+    final inlineMetadata =
+        message.kind == ChatMessageKind.text &&
+        meetingPoint == null &&
+        sharedLocation == null;
+    final metadata = _MessageMetadata(message: message, mine: mine, time: time);
     if (message.kind == ChatMessageKind.sticker) {
       return Column(
         crossAxisAlignment: mine
@@ -7615,30 +7620,44 @@ class _MessageBubbleBody extends StatelessWidget {
                 _ReplyQuote(text: message.replyToText, onTap: onReplyQuoteTap),
                 const SizedBox(height: 6),
               ],
-              message.kind == ChatMessageKind.sticker
-                  ? _StickerMessagePreview(
-                      message: message,
-                      imageBytes: imageBytes,
-                    )
-                  : message.kind == ChatMessageKind.file
-                  ? _FilePreview(
-                      message: message,
-                      imageBytes: imageBytes,
-                      controller: controller,
-                    )
-                  : meetingPoint == null
-                  ? sharedLocation == null
-                        ? _MessageTextContent(
-                            text: groupPresentation.text,
-                            createdAt: message.createdAt,
-                          )
-                        : _SharedLocationPreview(location: sharedLocation)
-                  : _MeetingPointPreview(
-                      controller: controller,
-                      thread: thread,
-                      message: message,
-                      point: meetingPoint,
+              if (inlineMetadata)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Flexible(
+                      child: _MessageTextContent(
+                        text: groupPresentation.text,
+                        createdAt: message.createdAt,
+                      ),
                     ),
+                    const SizedBox(width: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 1),
+                      child: metadata,
+                    ),
+                  ],
+                )
+              else
+                message.kind == ChatMessageKind.sticker
+                    ? _StickerMessagePreview(
+                        message: message,
+                        imageBytes: imageBytes,
+                      )
+                    : message.kind == ChatMessageKind.file
+                    ? _FilePreview(
+                        message: message,
+                        imageBytes: imageBytes,
+                        controller: controller,
+                      )
+                    : meetingPoint == null
+                    ? _SharedLocationPreview(location: sharedLocation!)
+                    : _MeetingPointPreview(
+                        controller: controller,
+                        thread: thread,
+                        message: message,
+                        point: meetingPoint,
+                      ),
               if ((message.kind == ChatMessageKind.file ||
                       message.kind == ChatMessageKind.sticker) &&
                   message.pending &&
@@ -7656,35 +7675,14 @@ class _MessageBubbleBody extends StatelessWidget {
                   ),
                 ),
               ],
-              const SizedBox(height: 3),
-              Align(
-                alignment: Alignment.centerRight,
-                widthFactor: 1,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '${time.hour.toString().padLeft(2, '0')}:'
-                      '${time.minute.toString().padLeft(2, '0')}',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: Colors.white60,
-                      ),
-                    ),
-                    if (message.edited) ...[
-                      const SizedBox(width: 5),
-                      const Text(
-                        'edited',
-                        style: TextStyle(fontSize: 10, color: Colors.white54),
-                      ),
-                    ],
-                    if (mine) ...[
-                      const SizedBox(width: 5),
-                      _MessageStatusLabel(message: message),
-                    ],
-                  ],
+              if (!inlineMetadata) ...[
+                const SizedBox(height: 3),
+                Align(
+                  alignment: Alignment.centerRight,
+                  widthFactor: 1,
+                  child: metadata,
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -7719,6 +7717,43 @@ class _MessageBubbleBody extends StatelessWidget {
             onTap: onOpenComments!,
             alignRight: mine,
           ),
+        ],
+      ],
+    );
+  }
+}
+
+class _MessageMetadata extends StatelessWidget {
+  const _MessageMetadata({
+    required this.message,
+    required this.mine,
+    required this.time,
+  });
+
+  final ChatMessage message;
+  final bool mine;
+  final DateTime time;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '${time.hour.toString().padLeft(2, '0')}:'
+          '${time.minute.toString().padLeft(2, '0')}',
+          style: const TextStyle(fontSize: 10, color: Colors.white60),
+        ),
+        if (message.edited) ...[
+          const SizedBox(width: 5),
+          const Text(
+            'edited',
+            style: TextStyle(fontSize: 10, color: Colors.white54),
+          ),
+        ],
+        if (mine) ...[
+          const SizedBox(width: 5),
+          _MessageStatusLabel(message: message),
         ],
       ],
     );
