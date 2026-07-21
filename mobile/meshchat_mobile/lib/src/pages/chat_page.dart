@@ -376,13 +376,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     final keepComposerFocused =
         inputFocus.hasFocus || MediaQuery.viewInsetsOf(context).bottom > 0;
+    if (keepComposerFocused && !inputFocus.hasFocus) {
+      inputFocus.requestFocus();
+    }
     playSendFlight(text.trim());
     input.clear();
-    if (keepComposerFocused) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) inputFocus.requestFocus();
-      });
-    }
     widget.controller.updateDraft(widget.thread, '');
     final quote = fixedCommentRoot ?? replyTo;
     setState(() {
@@ -3732,150 +3730,190 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                         key: ValueKey('smart-replies-hidden'),
                                       ),
                               ),
-                              Row(
-                                children: [
-                                  if (!recording) ...[
-                                    _ComposerIconButton(
-                                      tooltip: 'Attach',
-                                      onPressed: showAttachMenu,
-                                      icon: Icons.attach_file_rounded,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _ComposerIconButton(
-                                      tooltip: 'Stickers',
-                                      onPressed: showStickerPanel,
-                                      icon: Icons.auto_awesome_motion_rounded,
-                                    ),
-                                    const SizedBox(width: 8),
-                                  ],
-                                  Expanded(
-                                    child: _ComposerInputSurface(
-                                      key: composerInputKey,
-                                      child: recording
-                                          ? Transform.translate(
-                                              offset: Offset(
-                                                voiceCancelDrag * 0.22,
-                                                0,
-                                              ),
-                                              child: Row(
-                                                children: [
-                                                  Icon(
-                                                    voiceCancelArmed
-                                                        ? Icons.delete_rounded
-                                                        : Icons.mic_rounded,
-                                                    color: voiceCancelArmed
-                                                        ? Colors.redAccent
-                                                        : Colors
-                                                              .lightBlueAccent,
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Expanded(
-                                                    child: Column(
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
-                                                      children: [
-                                                        _Waveform(
-                                                          levels: recordLevels,
-                                                        ),
-                                                        const SizedBox(
-                                                          height: 3,
-                                                        ),
-                                                        Text(
-                                                          voiceCancelArmed
-                                                              ? 'Release to cancel'
-                                                              : 'Release to send · slide left to cancel',
-                                                          maxLines: 1,
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          style: TextStyle(
-                                                            color:
-                                                                voiceCancelArmed
-                                                                ? Colors
-                                                                      .redAccent
-                                                                : Colors
-                                                                      .white54,
-                                                            fontSize: 11,
-                                                            fontWeight:
-                                                                FontWeight.w700,
+                              TextFieldTapRegion(
+                                child: Row(
+                                  children: [
+                                    if (!recording) ...[
+                                      _ComposerIconButton(
+                                        tooltip: 'Attach',
+                                        onPressed: showAttachMenu,
+                                        icon: Icons.attach_file_rounded,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _ComposerIconButton(
+                                        tooltip: 'Stickers',
+                                        onPressed: showStickerPanel,
+                                        icon: Icons.auto_awesome_motion_rounded,
+                                      ),
+                                      const SizedBox(width: 8),
+                                    ],
+                                    Expanded(
+                                      child: _ComposerInputSurface(
+                                        key: composerInputKey,
+                                        child: recording
+                                            ? Transform.translate(
+                                                offset: Offset(
+                                                  voiceCancelDrag * 0.22,
+                                                  0,
+                                                ),
+                                                child: Row(
+                                                  children: [
+                                                    Icon(
+                                                      voiceCancelArmed
+                                                          ? Icons.delete_rounded
+                                                          : Icons.mic_rounded,
+                                                      color: voiceCancelArmed
+                                                          ? Colors.redAccent
+                                                          : Colors
+                                                                .lightBlueAccent,
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Expanded(
+                                                      child: Column(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        children: [
+                                                          _Waveform(
+                                                            levels:
+                                                                recordLevels,
                                                           ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Text(
-                                                    recordDuration(),
-                                                    style: const TextStyle(
-                                                      color: Colors.white70,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            )
-                                          : Focus(
-                                              onKeyEvent: handleInputKey,
-                                              child: TextField(
-                                                controller: input,
-                                                focusNode: inputFocus,
-                                                minLines: 1,
-                                                maxLines: 5,
-                                                textAlignVertical:
-                                                    TextAlignVertical.center,
-                                                textCapitalization:
-                                                    TextCapitalization
-                                                        .sentences,
-                                                keyboardType:
-                                                    TextInputType.multiline,
-                                                textInputAction:
-                                                    desktopSendHotkeys
-                                                    ? TextInputAction.send
-                                                    : TextInputAction.newline,
-                                                decoration: InputDecoration(
-                                                  hintText: 'Message',
-                                                  isDense: true,
-                                                  contentPadding:
-                                                      const EdgeInsets.symmetric(
-                                                        vertical: 8,
+                                                          const SizedBox(
+                                                            height: 3,
+                                                          ),
+                                                          Text(
+                                                            voiceCancelArmed
+                                                                ? 'Release to cancel'
+                                                                : 'Release to send · slide left to cancel',
+                                                            maxLines: 1,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                            style: TextStyle(
+                                                              color:
+                                                                  voiceCancelArmed
+                                                                  ? Colors
+                                                                        .redAccent
+                                                                  : Colors
+                                                                        .white54,
+                                                              fontSize: 11,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w700,
+                                                            ),
+                                                          ),
+                                                        ],
                                                       ),
-                                                  filled: false,
-                                                  border: InputBorder.none,
-                                                  enabledBorder:
-                                                      InputBorder.none,
-                                                  focusedBorder:
-                                                      InputBorder.none,
-                                                  disabledBorder:
-                                                      InputBorder.none,
-                                                  errorBorder: InputBorder.none,
-                                                  focusedErrorBorder:
-                                                      InputBorder.none,
-                                                  focusColor:
-                                                      Colors.transparent,
-                                                  hoverColor:
-                                                      Colors.transparent,
-                                                  suffixIcon: hasInputText
-                                                      ? IconButton(
-                                                          tooltip:
-                                                              'AI writing assistant',
-                                                          onPressed: aiRewriting
-                                                              ? null
-                                                              : showAiRewrite,
-                                                          visualDensity:
-                                                              VisualDensity
-                                                                  .compact,
-                                                          icon: AnimatedSwitcher(
-                                                            duration:
-                                                                const Duration(
-                                                                  milliseconds:
-                                                                      180,
-                                                                ),
-                                                            child: aiRewriting
-                                                                ? const SizedBox(
-                                                                    key: ValueKey(
-                                                                      'ai-loading',
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Text(
+                                                      recordDuration(),
+                                                      style: const TextStyle(
+                                                        color: Colors.white70,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              )
+                                            : Focus(
+                                                onKeyEvent: handleInputKey,
+                                                child: TextField(
+                                                  controller: input,
+                                                  focusNode: inputFocus,
+                                                  minLines: 1,
+                                                  maxLines: 5,
+                                                  textAlignVertical:
+                                                      TextAlignVertical.center,
+                                                  textCapitalization:
+                                                      TextCapitalization
+                                                          .sentences,
+                                                  keyboardType:
+                                                      TextInputType.multiline,
+                                                  textInputAction:
+                                                      desktopSendHotkeys
+                                                      ? TextInputAction.send
+                                                      : TextInputAction.newline,
+                                                  decoration: InputDecoration(
+                                                    hintText: 'Message',
+                                                    isDense: true,
+                                                    contentPadding:
+                                                        const EdgeInsets.symmetric(
+                                                          vertical: 8,
+                                                        ),
+                                                    filled: false,
+                                                    border: InputBorder.none,
+                                                    enabledBorder:
+                                                        InputBorder.none,
+                                                    focusedBorder:
+                                                        InputBorder.none,
+                                                    disabledBorder:
+                                                        InputBorder.none,
+                                                    errorBorder:
+                                                        InputBorder.none,
+                                                    focusedErrorBorder:
+                                                        InputBorder.none,
+                                                    focusColor:
+                                                        Colors.transparent,
+                                                    hoverColor:
+                                                        Colors.transparent,
+                                                    suffixIcon: hasInputText
+                                                        ? IconButton(
+                                                            tooltip:
+                                                                'AI writing assistant',
+                                                            onPressed:
+                                                                aiRewriting
+                                                                ? null
+                                                                : showAiRewrite,
+                                                            visualDensity:
+                                                                VisualDensity
+                                                                    .compact,
+                                                            icon: AnimatedSwitcher(
+                                                              duration:
+                                                                  const Duration(
+                                                                    milliseconds:
+                                                                        180,
+                                                                  ),
+                                                              child: aiRewriting
+                                                                  ? const SizedBox(
+                                                                      key: ValueKey(
+                                                                        'ai-loading',
+                                                                      ),
+                                                                      width: 17,
+                                                                      height:
+                                                                          17,
+                                                                      child: CircularProgressIndicator(
+                                                                        strokeWidth:
+                                                                            2,
+                                                                      ),
+                                                                    )
+                                                                  : const Icon(
+                                                                      Icons
+                                                                          .auto_awesome_rounded,
+                                                                      key: ValueKey(
+                                                                        'ai-ready',
+                                                                      ),
+                                                                      size: 20,
+                                                                      color: Color(
+                                                                        0xFFB28AFF,
+                                                                      ),
                                                                     ),
+                                                            ),
+                                                          )
+                                                        : IconButton(
+                                                            tooltip:
+                                                                'Smart replies',
+                                                            onPressed:
+                                                                aiSmartRepliesLoading
+                                                                ? null
+                                                                : showSmartReplies,
+                                                            visualDensity:
+                                                                VisualDensity
+                                                                    .compact,
+                                                            icon:
+                                                                aiSmartRepliesLoading
+                                                                ? const SizedBox(
                                                                     width: 17,
                                                                     height: 17,
                                                                     child: CircularProgressIndicator(
@@ -3885,114 +3923,87 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                                   )
                                                                 : const Icon(
                                                                     Icons
-                                                                        .auto_awesome_rounded,
-                                                                    key: ValueKey(
-                                                                      'ai-ready',
-                                                                    ),
+                                                                        .quickreply_outlined,
                                                                     size: 20,
                                                                     color: Color(
-                                                                      0xFFB28AFF,
+                                                                      0xFF73D9FF,
                                                                     ),
                                                                   ),
                                                           ),
-                                                        )
-                                                      : IconButton(
-                                                          tooltip:
-                                                              'Smart replies',
-                                                          onPressed:
-                                                              aiSmartRepliesLoading
-                                                              ? null
-                                                              : showSmartReplies,
-                                                          visualDensity:
-                                                              VisualDensity
-                                                                  .compact,
-                                                          icon:
-                                                              aiSmartRepliesLoading
-                                                              ? const SizedBox(
-                                                                  width: 17,
-                                                                  height: 17,
-                                                                  child: CircularProgressIndicator(
-                                                                    strokeWidth:
-                                                                        2,
-                                                                  ),
-                                                                )
-                                                              : const Icon(
-                                                                  Icons
-                                                                      .quickreply_outlined,
-                                                                  size: 20,
-                                                                  color: Color(
-                                                                    0xFF73D9FF,
-                                                                  ),
-                                                                ),
+                                                    suffixIconConstraints:
+                                                        const BoxConstraints(
+                                                          minWidth: 38,
+                                                          minHeight: 36,
                                                         ),
-                                                  suffixIconConstraints:
-                                                      const BoxConstraints(
-                                                        minWidth: 38,
-                                                        minHeight: 36,
-                                                      ),
+                                                  ),
+                                                  onTap: () {
+                                                    if (isNearBottom()) {
+                                                      followLatestMessages =
+                                                          true;
+                                                      scheduleKeyboardScrollToBottom();
+                                                    }
+                                                  },
+                                                  onTapOutside: (_) =>
+                                                      inputFocus.unfocus(),
+                                                  onSubmitted:
+                                                      desktopSendHotkeys
+                                                      ? (_) => send()
+                                                      : null,
                                                 ),
-                                                onTap: () {
-                                                  if (isNearBottom()) {
-                                                    followLatestMessages = true;
-                                                    scheduleKeyboardScrollToBottom();
-                                                  }
-                                                },
-                                                onTapOutside: (_) =>
-                                                    inputFocus.unfocus(),
-                                                onSubmitted: desktopSendHotkeys
-                                                    ? (_) => send()
-                                                    : null,
                                               ),
-                                            ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  if (recording && !voicePointerDown)
-                                    _ComposerIconButton(
-                                      tooltip: 'Cancel',
-                                      onPressed: cancelRecording,
-                                      icon: Icons.close_rounded,
-                                      accent: Colors.redAccent,
-                                    )
-                                  else
-                                    AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 180,
                                       ),
-                                      transitionBuilder: (child, animation) =>
-                                          ScaleTransition(
-                                            scale: CurvedAnimation(
-                                              parent: animation,
-                                              curve: Curves.easeOutBack,
-                                            ),
-                                            child: FadeTransition(
-                                              opacity: animation,
-                                              child: child,
-                                            ),
-                                          ),
-                                      child: hasInputText && !recording
-                                          ? _ComposerIconButton(
-                                              key: const ValueKey('send'),
-                                              tooltip:
-                                                  'Send · hold to schedule',
-                                              onPressed: send,
-                                              onLongPress: showScheduleComposer,
-                                              icon: Icons.send_rounded,
-                                              accent: _chatThemeAccent(
-                                                widget.thread.themeId,
-                                              ),
-                                            )
-                                          : _VoiceHoldButton(
-                                              key: const ValueKey('mic'),
-                                              onStart: startVoiceHold,
-                                              onDragUpdate: updateVoiceHoldDrag,
-                                              onFinish: () =>
-                                                  finishVoiceHold(send: true),
-                                              onCancel: () =>
-                                                  finishVoiceHold(send: false),
-                                            ),
                                     ),
-                                ],
+                                    const SizedBox(width: 8),
+                                    if (recording && !voicePointerDown)
+                                      _ComposerIconButton(
+                                        tooltip: 'Cancel',
+                                        onPressed: cancelRecording,
+                                        icon: Icons.close_rounded,
+                                        accent: Colors.redAccent,
+                                      )
+                                    else
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        transitionBuilder: (child, animation) =>
+                                            ScaleTransition(
+                                              scale: CurvedAnimation(
+                                                parent: animation,
+                                                curve: Curves.easeOutBack,
+                                              ),
+                                              child: FadeTransition(
+                                                opacity: animation,
+                                                child: child,
+                                              ),
+                                            ),
+                                        child: hasInputText && !recording
+                                            ? _ComposerIconButton(
+                                                key: const ValueKey('send'),
+                                                tooltip:
+                                                    'Send · hold to schedule',
+                                                onPressed: send,
+                                                onLongPress:
+                                                    showScheduleComposer,
+                                                icon: Icons.send_rounded,
+                                                accent: _chatThemeAccent(
+                                                  widget.thread.themeId,
+                                                ),
+                                              )
+                                            : _VoiceHoldButton(
+                                                key: const ValueKey('mic'),
+                                                onStart: startVoiceHold,
+                                                onDragUpdate:
+                                                    updateVoiceHoldDrag,
+                                                onFinish: () =>
+                                                    finishVoiceHold(send: true),
+                                                onCancel: () => finishVoiceHold(
+                                                  send: false,
+                                                ),
+                                              ),
+                                      ),
+                                  ],
+                                ),
                               ),
                             ],
                           )
@@ -5583,7 +5594,19 @@ class _SendFlightOverlayState extends State<_SendFlightOverlay>
         children: [
           AnimatedBuilder(
             animation: curved,
-            builder: (context, _) {
+            child: RepaintBoundary(
+              child: SizedBox.fromSize(
+                size: widget.start.size,
+                child: CustomPaint(
+                  painter: _SendFlightPainter(
+                    text: widget.text,
+                    color: widget.color,
+                    textDirection: Directionality.of(context),
+                  ),
+                ),
+              ),
+            ),
+            builder: (context, child) {
               final progress = curved.value;
               final offset = Offset.lerp(
                 Offset.zero,
@@ -5598,38 +5621,7 @@ class _SendFlightOverlayState extends State<_SendFlightOverlay>
                     opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
                         .clamp(0.0, 1.0)
                         .toDouble(),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: widget.color,
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: widget.color.withValues(alpha: 0.24),
-                            blurRadius: 18,
-                          ),
-                        ],
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            widget.text,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textScaler: TextScaler.noScaling,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
-                              height: 1,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: child,
                   ),
                 ),
               );
@@ -5638,6 +5630,58 @@ class _SendFlightOverlayState extends State<_SendFlightOverlay>
         ],
       ),
     );
+  }
+}
+
+class _SendFlightPainter extends CustomPainter {
+  const _SendFlightPainter({
+    required this.text,
+    required this.color,
+    required this.textDirection,
+  });
+
+  final String text;
+  final Color color;
+  final TextDirection textDirection;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final radius = Radius.circular(math.min(16, size.height / 2));
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, radius),
+      Paint()
+        ..color = color.withValues(alpha: 0.24)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, radius),
+      Paint()..color = color,
+    );
+
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          height: 1,
+          fontWeight: FontWeight.w400,
+        ),
+      ),
+      textDirection: textDirection,
+      textScaler: TextScaler.noScaling,
+      maxLines: 1,
+      ellipsis: '…',
+    )..layout(maxWidth: math.max(0, size.width - 24));
+    painter.paint(canvas, Offset(12, (size.height - painter.height) / 2));
+  }
+
+  @override
+  bool shouldRepaint(covariant _SendFlightPainter oldDelegate) {
+    return oldDelegate.text != text ||
+        oldDelegate.color != color ||
+        oldDelegate.textDirection != textDirection;
   }
 }
 
