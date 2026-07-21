@@ -111,6 +111,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final deletingMessageIds = <String>{};
   final selectedMessageIds = <String>{};
   final messageTintRefresh = ValueNotifier<int>(0);
+  final messageListRefresh = ValueNotifier<int>(0);
+  bool messageListScrolling = false;
+  bool pendingMessageListRefresh = false;
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
@@ -217,6 +220,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
     });
     scroll.addListener(handleScroll);
+    widget.controller.addListener(syncMessageList);
     widget.controller.markRead(widget.thread);
     widget.controller.setActiveThread(widget.thread);
     widget.controller.addListener(syncRingback);
@@ -232,6 +236,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     liveLocationTimer?.cancel();
     unawaited(deleteLastLiveLocationMessage());
     widget.controller.removeListener(syncRingback);
+    widget.controller.removeListener(syncMessageList);
     unawaited(incomingCallAlert.dispose());
     unawaited(stopRingback());
     widget.controller.setActiveThread(null);
@@ -240,6 +245,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     scroll.removeListener(handleScroll);
     scroll.dispose();
     messageTintRefresh.dispose();
+    messageListRefresh.dispose();
     recorder.dispose();
     ringbackPlayer?.dispose();
     super.dispose();
@@ -1724,15 +1730,32 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   bool handleInitialUserScroll(ScrollNotification notification) {
+    if (notification is ScrollStartNotification) {
+      messageListScrolling = true;
+    }
     if (notification is UserScrollNotification &&
         notification.direction != ScrollDirection.idle) {
       initialScrollInterrupted = true;
       initialScrollSettleTimer?.cancel();
     }
     if (notification is ScrollEndNotification) {
+      messageListScrolling = false;
       messageTintRefresh.value++;
+      if (pendingMessageListRefresh) {
+        pendingMessageListRefresh = false;
+        messageListRefresh.value++;
+      }
     }
     return false;
+  }
+
+  void syncMessageList() {
+    if (!mounted) return;
+    if (messageListScrolling) {
+      pendingMessageListRefresh = true;
+      return;
+    }
+    messageListRefresh.value++;
   }
 
   void playSendFlight(String text) {
@@ -3451,9 +3474,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   ),
                 ),
                 Expanded(
-                  child: ListenableBuilder(
-                    listenable: widget.controller,
-                    builder: (context, _) {
+                  child: ValueListenableBuilder<int>(
+                    valueListenable: messageListRefresh,
+                    builder: (context, _, _) {
                       final messages = visibleMessages();
                       scheduleInitialScrollToBottom(messages.length);
                       return NotificationListener<ScrollNotification>(
@@ -4132,6 +4155,7 @@ class _CallBottomSheet extends StatelessWidget {
         : const Color(0xFF7D8CFF);
 
     return MeshLiquidGlass(
+      forceFlutterSurface: true,
       radius: 34,
       accent: accent,
       prominent: true,
@@ -4482,6 +4506,7 @@ class _FullscreenRemoteScreen extends StatelessWidget {
               top: 10,
               left: 10,
               child: MeshLiquidGlass(
+                forceFlutterSurface: true,
                 accent: Colors.white70,
                 radius: 999,
                 interactive: true,
@@ -4937,6 +4962,7 @@ class _ChatHeaderIdentity extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 310),
       child: MeshLiquidGlass(
+        forceFlutterSurface: true,
         radius: 23,
         accent: const Color(0xFF72D7FF),
         interactive: true,
@@ -5013,6 +5039,7 @@ class _ChatHeaderAvatarButton extends StatelessWidget {
     return Tooltip(
       message: 'Open profile',
       child: MeshLiquidGlass(
+        forceFlutterSurface: true,
         radius: 999,
         accent: const Color(0xFFB463FF),
         interactive: true,
@@ -5112,6 +5139,7 @@ class _ChatRoundButton extends StatelessWidget {
       child: Tooltip(
         message: tooltip,
         child: MeshLiquidGlass(
+          forceFlutterSurface: true,
           radius: 999,
           accent: Colors.lightBlueAccent,
           prominent: true,
@@ -5543,6 +5571,7 @@ class _ComposerInputSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MeshLiquidGlass(
+      forceFlutterSurface: true,
       radius: 22,
       accent: const Color(0xFF72D7FF),
       interactive: true,
@@ -5584,6 +5613,7 @@ class _ComposerIconButton extends StatelessWidget {
     return Tooltip(
       message: tooltip,
       child: MeshLiquidGlass(
+        forceFlutterSurface: true,
         radius: 999,
         accent: accent,
         interactive: true,
@@ -5682,6 +5712,7 @@ class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
           duration: const Duration(milliseconds: 120),
           scale: pressed ? 1.08 : 1,
           child: MeshLiquidGlass(
+            forceFlutterSurface: true,
             radius: 999,
             accent: pressed ? Colors.redAccent : Colors.lightBlueAccent,
             interactive: true,
@@ -6592,6 +6623,7 @@ class _ChatGlassSurface extends StatelessWidget {
 
     if (!useNativeGlass) return fallback(context, child);
     return MeshLiquidGlass(
+      forceFlutterSurface: true,
       radius: radius,
       accent: Colors.lightBlueAccent,
       fallbackBuilder: fallback,
@@ -6696,6 +6728,7 @@ class _GlassCallSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MeshLiquidGlass(
+      forceFlutterSurface: true,
       radius: 22,
       accent: accent,
       prominent: true,
@@ -9693,6 +9726,7 @@ class _MessageContextGlass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MeshLiquidGlass(
+      forceFlutterSurface: true,
       radius: radius,
       accent: const Color(0xFF8EDCFF),
       prominent: prominent,

@@ -47,6 +47,7 @@ class MeshLiquidGlass extends StatelessWidget {
     this.dim = false,
     this.prominent = false,
     this.interactive = true,
+    this.forceFlutterSurface = false,
     this.fallbackBuilder,
   });
 
@@ -59,6 +60,7 @@ class MeshLiquidGlass extends StatelessWidget {
   final bool dim;
   final bool prominent;
   final bool interactive;
+  final bool forceFlutterSurface;
   final MeshGlassFallbackBuilder? fallbackBuilder;
 
   @override
@@ -67,10 +69,21 @@ class MeshLiquidGlass extends StatelessWidget {
       return fallbackBuilder?.call(context, child) ?? child;
     }
 
+    // A UIKit platform view composed over a fast scrolling Flutter texture
+    // forces both renderers to synchronize every frame. Chat screens use a
+    // matching Flutter surface so scrolling and interactive routes stay on a
+    // single GPU composition path; static iOS screens retain native glass.
+    if (forceFlutterSurface) {
+      return _staticTransitionSurface(context);
+    }
+
     return ValueListenableBuilder<bool>(
       valueListenable: MeshRouteTransition.active,
       builder: (context, transitioning, _) {
-        if (transitioning) return _staticTransitionSurface(context);
+        if (transitioning) {
+          return fallbackBuilder?.call(context, child) ??
+              _staticTransitionSurface(context);
+        }
         return _nativeGlass(context);
       },
     );
@@ -89,17 +102,9 @@ class MeshLiquidGlass extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(radius),
-          color: const Color(0xFF111A29).withValues(alpha: 0.78),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: <Color>[
-              Colors.white.withValues(alpha: prominent ? 0.14 : 0.10),
-              accent.withValues(alpha: baseAlpha * 0.48),
-              const Color(0xFF111A29).withValues(alpha: 0.54),
-            ],
-            stops: const <double>[0, 0.46, 1],
-          ),
+          color: const Color(
+            0xFF172231,
+          ).withValues(alpha: prominent ? 0.88 : 0.80),
           border: Border.all(
             color: Colors.white.withValues(alpha: selected ? 0.24 : 0.17),
           ),
