@@ -9,7 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/rendering.dart' show ScrollCacheExtent, ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
@@ -3455,6 +3455,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         onNotification: handleInitialUserScroll,
                         child: ListView.builder(
                           controller: scroll,
+                          scrollCacheExtent: const ScrollCacheExtent.pixels(
+                            640,
+                          ),
                           padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
                           itemCount: messages.length,
                           itemBuilder: (context, index) {
@@ -5035,7 +5038,7 @@ class _ChatHeaderAvatarButton extends StatelessWidget {
   }
 }
 
-class _ViewportMessageTint extends StatelessWidget {
+class _ViewportMessageTint extends StatefulWidget {
   const _ViewportMessageTint({
     required this.scrollController,
     required this.builder,
@@ -5045,21 +5048,54 @@ class _ViewportMessageTint extends StatelessWidget {
   final Widget Function(BuildContext context, double position) builder;
 
   @override
+  State<_ViewportMessageTint> createState() => _ViewportMessageTintState();
+}
+
+class _ViewportMessageTintState extends State<_ViewportMessageTint> {
+  Timer? settleTimer;
+  double position = 0.55;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.scrollController.addListener(onScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) => refreshPosition());
+  }
+
+  @override
+  void didUpdateWidget(covariant _ViewportMessageTint oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.scrollController == widget.scrollController) return;
+    oldWidget.scrollController.removeListener(onScroll);
+    widget.scrollController.addListener(onScroll);
+  }
+
+  void onScroll() {
+    settleTimer?.cancel();
+    settleTimer = Timer(const Duration(milliseconds: 96), refreshPosition);
+  }
+
+  void refreshPosition() {
+    if (!mounted) return;
+    final renderObject = context.findRenderObject();
+    final viewportHeight = MediaQuery.sizeOf(context).height;
+    if (renderObject is! RenderBox || !renderObject.hasSize) return;
+    final next = (renderObject.localToGlobal(Offset.zero).dy / viewportHeight)
+        .clamp(0.0, 1.0);
+    if ((next - position).abs() < 0.015) return;
+    setState(() => position = next);
+  }
+
+  @override
+  void dispose() {
+    settleTimer?.cancel();
+    widget.scrollController.removeListener(onScroll);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: scrollController,
-      builder: (context, _) {
-        final renderObject = context.findRenderObject();
-        final viewportHeight = MediaQuery.sizeOf(context).height;
-        var position = 0.55;
-        if (renderObject is RenderBox && renderObject.hasSize) {
-          position =
-              (renderObject.localToGlobal(Offset.zero).dy / viewportHeight)
-                  .clamp(0.0, 1.0);
-        }
-        return builder(context, position);
-      },
-    );
+    return widget.builder(context, position);
   }
 }
 
@@ -7183,13 +7219,20 @@ class _MessageBubbleState extends State<_MessageBubble> {
   double replyDrag = 0;
   bool replyArmed = false;
   bool appeared = false;
+  late final bool animateAppearance;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() => appeared = true);
-    });
+    animateAppearance =
+        DateTime.now().difference(widget.message.createdAt).abs() <
+        const Duration(seconds: 4);
+    appeared = !animateAppearance;
+    if (animateAppearance) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => appeared = true);
+      });
+    }
   }
 
   void _updateReplyDrag(DragUpdateDetails details) {
@@ -7223,8 +7266,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
 
     return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: appeared ? 1 : 0),
-      duration: const Duration(milliseconds: 260),
+      tween: Tween(begin: animateAppearance ? 0 : 1, end: appeared ? 1 : 0),
+      duration: animateAppearance
+          ? const Duration(milliseconds: 260)
+          : Duration.zero,
       curve: Curves.easeOutCubic,
       builder: (context, value, child) => Opacity(
         opacity: value.clamp(0.0, 1.0),

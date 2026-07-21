@@ -1269,6 +1269,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     // Give the chat one complete layout frame while it is still outside the
     // viewport. The transition then moves already-built layers only.
     await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 56));
+    await WidgetsBinding.instance.endOfFrame;
     if (!mounted || activeThread != thread) return;
     await transition.animateTo(1, curve: Curves.easeOutCubic);
     if (mounted) setState(() => opening = false);
