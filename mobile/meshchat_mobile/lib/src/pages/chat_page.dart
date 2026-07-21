@@ -114,6 +114,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final messageListRefresh = ValueNotifier<int>(0);
   bool messageListScrolling = false;
   bool pendingMessageListRefresh = false;
+  bool followLatestMessages = true;
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
@@ -199,7 +200,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     input.text = widget.thread.draft;
     hasInputText = input.text.trim().isNotEmpty;
     inputFocus.addListener(() {
-      if (inputFocus.hasFocus) scheduleKeyboardScrollToBottom();
+      if (inputFocus.hasFocus && isNearBottom()) {
+        followLatestMessages = true;
+        scheduleKeyboardScrollToBottom();
+      }
     });
     input.addListener(() {
       final hasText = input.text.trim().isNotEmpty;
@@ -254,7 +258,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   @override
   void didChangeMetrics() {
     super.didChangeMetrics();
-    if (inputFocus.hasFocus) scheduleKeyboardScrollToBottom();
+    if (inputFocus.hasFocus && followLatestMessages) {
+      scheduleKeyboardScrollToBottom();
+    }
   }
 
   @override
@@ -1680,6 +1686,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   void scrollToBottom() {
     if (!scroll.hasClients) return;
+    followLatestMessages = true;
     scroll.animateTo(
       scroll.position.maxScrollExtent,
       duration: const Duration(milliseconds: 180),
@@ -1689,20 +1696,24 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   void jumpToBottom() {
     if (!scroll.hasClients) return;
+    followLatestMessages = true;
     scroll.jumpTo(scroll.position.maxScrollExtent);
     handleScroll();
   }
 
+  bool isNearBottom([double threshold = 110]) {
+    if (!scroll.hasClients) return true;
+    return scroll.position.maxScrollExtent - scroll.offset <= threshold;
+  }
+
   void scheduleKeyboardScrollToBottom() {
     void settleScroll() {
-      if (!mounted || !scroll.hasClients) return;
+      if (!mounted || !scroll.hasClients || !followLatestMessages) return;
       jumpToBottom();
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) => settleScroll());
-    Future<void>.delayed(const Duration(milliseconds: 120), settleScroll);
-    Future<void>.delayed(const Duration(milliseconds: 280), settleScroll);
-    Future<void>.delayed(const Duration(milliseconds: 480), settleScroll);
+    Future<void>.delayed(const Duration(milliseconds: 180), settleScroll);
   }
 
   void scheduleInitialScrollToBottom(int messageCount) {
@@ -1737,9 +1748,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         notification.direction != ScrollDirection.idle) {
       initialScrollInterrupted = true;
       initialScrollSettleTimer?.cancel();
+      followLatestMessages = isNearBottom();
+    }
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      followLatestMessages = isNearBottom();
     }
     if (notification is ScrollEndNotification) {
       messageListScrolling = false;
+      followLatestMessages = isNearBottom();
       messageTintRefresh.value++;
       if (pendingMessageListRefresh) {
         pendingMessageListRefresh = false;
@@ -1795,6 +1812,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void handleScroll() {
     if (!scroll.hasClients) return;
     final hiddenBelow = scroll.position.maxScrollExtent - scroll.offset;
+    if (!messageListScrolling) {
+      followLatestMessages = hiddenBelow <= 110;
+    }
     final shouldShow = hiddenBelow > 180;
     if (shouldShow == showJumpToBottom) return;
     setState(() => showJumpToBottom = shouldShow);
@@ -3483,6 +3503,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         onNotification: handleInitialUserScroll,
                         child: ListView.builder(
                           controller: scroll,
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
                           padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
                           itemCount: messages.length,
                           itemBuilder: (context, index) {
@@ -3762,6 +3784,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                 controller: input,
                                                 minLines: 1,
                                                 maxLines: 5,
+                                                textAlignVertical:
+                                                    TextAlignVertical.center,
                                                 textCapitalization:
                                                     TextCapitalization
                                                         .sentences,
@@ -3774,6 +3798,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                 decoration: InputDecoration(
                                                   hintText: 'Message',
                                                   isDense: true,
+                                                  contentPadding:
+                                                      const EdgeInsets.symmetric(
+                                                        vertical: 8,
+                                                      ),
                                                   filled: false,
                                                   border: InputBorder.none,
                                                   enabledBorder:
@@ -3865,8 +3893,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                         minHeight: 36,
                                                       ),
                                                 ),
-                                                onTap:
-                                                    scheduleKeyboardScrollToBottom,
+                                                onTap: () {
+                                                  if (isNearBottom()) {
+                                                    followLatestMessages = true;
+                                                    scheduleKeyboardScrollToBottom();
+                                                  }
+                                                },
+                                                onTapOutside: (_) =>
+                                                    inputFocus.unfocus(),
                                                 onSubmitted: desktopSendHotkeys
                                                     ? (_) => send()
                                                     : null,
@@ -5134,43 +5168,33 @@ class _ChatRoundButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 7),
-      child: Tooltip(
-        message: tooltip,
-        child: MeshLiquidGlass(
-          forceFlutterSurface: true,
-          radius: 999,
-          accent: Colors.lightBlueAccent,
-          prominent: true,
-          interactive: true,
-          fallbackBuilder: (context, child) => ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-              child: Material(
-                color: Colors.white.withValues(alpha: 0.10),
-                shape: CircleBorder(
-                  side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
-                ),
-                child: child,
+    return Tooltip(
+      message: tooltip,
+      child: MeshLiquidGlass(
+        forceFlutterSurface: true,
+        radius: 999,
+        accent: Colors.lightBlueAccent,
+        prominent: true,
+        interactive: true,
+        fallbackBuilder: (context, child) => ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Material(
+              color: Colors.white.withValues(alpha: 0.10),
+              shape: CircleBorder(
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
               ),
+              child: child,
             ),
           ),
-          child: Material(
-            color: Colors.transparent,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.055),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-              ),
-              child: InkWell(
-                onTap: onPressed,
-                customBorder: const CircleBorder(),
-                child: SizedBox(width: 42, height: 42, child: icon),
-              ),
-            ),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onPressed,
+            customBorder: const CircleBorder(),
+            child: SizedBox(width: 42, height: 42, child: icon),
           ),
         ),
       ),
@@ -5517,47 +5541,51 @@ class _SendFlightOverlayState extends State<_SendFlightOverlay>
   @override
   Widget build(BuildContext context) {
     return IgnorePointer(
-      child: AnimatedBuilder(
-        animation: curved,
-        builder: (context, _) {
-          final progress = curved.value;
-          final rect = Rect.lerp(widget.start, widget.end, progress)!;
-          return Positioned.fromRect(
-            rect: rect,
-            child: Opacity(
-              opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
-                  .clamp(0.0, 1.0)
-                  .toDouble(),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: widget.color,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: widget.color.withValues(alpha: 0.24),
-                      blurRadius: 18,
+      child: Stack(
+        children: [
+          AnimatedBuilder(
+            animation: curved,
+            builder: (context, _) {
+              final progress = curved.value;
+              final rect = Rect.lerp(widget.start, widget.end, progress)!;
+              return Positioned.fromRect(
+                rect: rect,
+                child: Opacity(
+                  opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
+                      .clamp(0.0, 1.0)
+                      .toDouble(),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: widget.color,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: widget.color.withValues(alpha: 0.24),
+                          blurRadius: 18,
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      widget.text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          widget.text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ),
-          );
-        },
+              );
+            },
+          ),
+        ],
       ),
     );
   }
@@ -5584,8 +5612,8 @@ class _ComposerInputSurface extends StatelessWidget {
         child: child,
       ),
       child: Container(
-        constraints: const BoxConstraints(minHeight: 44),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        constraints: const BoxConstraints(minHeight: 40),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
         child: child,
       ),
     );
@@ -7621,21 +7649,16 @@ class _MessageBubbleBody extends StatelessWidget {
                 const SizedBox(height: 6),
               ],
               if (inlineMetadata)
-                Row(
+                Column(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Flexible(
-                      child: _MessageTextContent(
-                        text: groupPresentation.text,
-                        createdAt: message.createdAt,
-                      ),
+                    _MessageTextContent(
+                      text: groupPresentation.text,
+                      createdAt: message.createdAt,
                     ),
-                    const SizedBox(width: 8),
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 1),
-                      child: metadata,
-                    ),
+                    const SizedBox(height: 2),
+                    Align(alignment: Alignment.bottomRight, child: metadata),
                   ],
                 )
               else
