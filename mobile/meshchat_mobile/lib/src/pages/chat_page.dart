@@ -9,7 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent, ScrollDirection;
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
@@ -110,6 +110,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String? highlightedMessageId;
   final deletingMessageIds = <String>{};
   final selectedMessageIds = <String>{};
+  final messageTintRefresh = ValueNotifier<int>(0);
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
@@ -238,6 +239,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     input.dispose();
     scroll.removeListener(handleScroll);
     scroll.dispose();
+    messageTintRefresh.dispose();
     recorder.dispose();
     ringbackPlayer?.dispose();
     super.dispose();
@@ -1726,6 +1728,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         notification.direction != ScrollDirection.idle) {
       initialScrollInterrupted = true;
       initialScrollSettleTimer?.cancel();
+    }
+    if (notification is ScrollEndNotification) {
+      messageTintRefresh.value++;
     }
     return false;
   }
@@ -3455,9 +3460,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         onNotification: handleInitialUserScroll,
                         child: ListView.builder(
                           controller: scroll,
-                          scrollCacheExtent: const ScrollCacheExtent.pixels(
-                            640,
-                          ),
                           padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
                           itemCount: messages.length,
                           itemBuilder: (context, index) {
@@ -3503,7 +3505,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                   )
                                 else
                                   _ViewportMessageTint(
-                                    scrollController: scroll,
+                                    refreshListenable: messageTintRefresh,
                                     builder: (context, positionTint) =>
                                         _MessageDisintegrator(
                                           deleting: deletingMessageIds.contains(
@@ -5040,11 +5042,11 @@ class _ChatHeaderAvatarButton extends StatelessWidget {
 
 class _ViewportMessageTint extends StatefulWidget {
   const _ViewportMessageTint({
-    required this.scrollController,
+    required this.refreshListenable,
     required this.builder,
   });
 
-  final ScrollController scrollController;
+  final Listenable refreshListenable;
   final Widget Function(BuildContext context, double position) builder;
 
   @override
@@ -5052,27 +5054,21 @@ class _ViewportMessageTint extends StatefulWidget {
 }
 
 class _ViewportMessageTintState extends State<_ViewportMessageTint> {
-  Timer? settleTimer;
   double position = 0.55;
 
   @override
   void initState() {
     super.initState();
-    widget.scrollController.addListener(onScroll);
+    widget.refreshListenable.addListener(refreshPosition);
     WidgetsBinding.instance.addPostFrameCallback((_) => refreshPosition());
   }
 
   @override
   void didUpdateWidget(covariant _ViewportMessageTint oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.scrollController == widget.scrollController) return;
-    oldWidget.scrollController.removeListener(onScroll);
-    widget.scrollController.addListener(onScroll);
-  }
-
-  void onScroll() {
-    settleTimer?.cancel();
-    settleTimer = Timer(const Duration(milliseconds: 96), refreshPosition);
+    if (oldWidget.refreshListenable == widget.refreshListenable) return;
+    oldWidget.refreshListenable.removeListener(refreshPosition);
+    widget.refreshListenable.addListener(refreshPosition);
   }
 
   void refreshPosition() {
@@ -5088,8 +5084,7 @@ class _ViewportMessageTintState extends State<_ViewportMessageTint> {
 
   @override
   void dispose() {
-    settleTimer?.cancel();
-    widget.scrollController.removeListener(onScroll);
+    widget.refreshListenable.removeListener(refreshPosition);
     super.dispose();
   }
 

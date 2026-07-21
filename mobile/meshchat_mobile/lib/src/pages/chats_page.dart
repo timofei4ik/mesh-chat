@@ -1253,8 +1253,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     with SingleTickerProviderStateMixin {
   late final AnimationController transition = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 300),
-    reverseDuration: const Duration(milliseconds: 260),
+    duration: const Duration(milliseconds: 230),
+    reverseDuration: const Duration(milliseconds: 200),
   );
   ChatThread? activeThread;
   bool opening = false;
@@ -1263,30 +1263,41 @@ class _ChatStackHostState extends State<_ChatStackHost>
   Future<void> open(ChatThread thread) async {
     if (activeThread != null || opening) return;
     opening = true;
+    MeshRouteTransition.active.value = true;
     transition.value = 0;
     setState(() => activeThread = thread);
 
-    // Give the chat one complete layout frame while it is still outside the
-    // viewport. The transition then moves already-built layers only.
-    await WidgetsBinding.instance.endOfFrame;
-    await Future<void>.delayed(const Duration(milliseconds: 56));
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted || activeThread != thread) return;
-    await transition.animateTo(1, curve: Curves.easeOutCubic);
-    if (mounted) setState(() => opening = false);
+    try {
+      // Prepare layout and raster work before the already-built chat layer
+      // starts moving into view.
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 36));
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || activeThread != thread) return;
+      await transition.animateTo(1, curve: Curves.easeOutQuart);
+      if (mounted) setState(() => opening = false);
+    } finally {
+      MeshRouteTransition.active.value = false;
+    }
   }
 
   Future<void> close() async {
     if (activeThread == null) return;
     opening = false;
-    await transition.animateBack(0, curve: Curves.easeOutCubic);
-    if (!mounted) return;
-    setState(() => activeThread = null);
+    MeshRouteTransition.active.value = true;
+    try {
+      await transition.animateBack(0, curve: Curves.easeOutQuart);
+      if (!mounted) return;
+      setState(() => activeThread = null);
+    } finally {
+      MeshRouteTransition.active.value = false;
+    }
   }
 
   void startBackDrag(DragStartDetails details) {
     if (activeThread == null || opening) return;
     dragging = true;
+    MeshRouteTransition.active.value = true;
     HapticFeedback.selectionClick();
   }
 
@@ -1305,7 +1316,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     if (transition.value < 0.72 || velocity > 520) {
       await close();
     } else {
-      await transition.animateTo(1, curve: Curves.easeOutCubic);
+      await transition.animateTo(1, curve: Curves.easeOutQuart);
+      MeshRouteTransition.active.value = false;
     }
   }
 
@@ -1321,50 +1333,57 @@ class _ChatStackHostState extends State<_ChatStackHost>
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        return AnimatedBuilder(
-          animation: transition,
-          builder: (context, _) {
-            final value = transition.value;
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                TickerMode(
-                  enabled: thread == null,
-                  child: RepaintBoundary(child: widget.home),
+        final chatLayer = thread == null
+            ? null
+            : RepaintBoundary(
+                child: ChatPage(
+                  key: ValueKey('active-chat-${thread.storageKey}'),
+                  controller: widget.controller,
+                  thread: thread,
+                  onBack: close,
                 ),
-                if (thread != null)
-                  Transform.translate(
-                    offset: Offset(width * (1 - value), 0),
-                    child: RepaintBoundary(
-                      child: ChatPage(
-                        key: ValueKey('active-chat-${thread.storageKey}'),
-                        controller: widget.controller,
-                        thread: thread,
-                        onBack: close,
-                      ),
-                    ),
-                  ),
-                if (thread != null && !opening)
-                  Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: 28,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.translucent,
-                      onHorizontalDragStart: startBackDrag,
-                      onHorizontalDragUpdate: (details) =>
-                          updateBackDrag(details, width),
-                      onHorizontalDragEnd: endBackDrag,
-                      onHorizontalDragCancel: () {
-                        dragging = false;
-                        transition.animateTo(1, curve: Curves.easeOutCubic);
-                      },
-                    ),
-                  ),
-              ],
-            );
-          },
+              );
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            TickerMode(
+              enabled: thread == null,
+              child: RepaintBoundary(child: widget.home),
+            ),
+            if (chatLayer != null)
+              AnimatedBuilder(
+                animation: transition,
+                child: chatLayer,
+                builder: (context, child) => Transform.translate(
+                  offset: Offset(width * (1 - transition.value), 0),
+                  child: child,
+                ),
+              ),
+            if (thread != null && !opening)
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: 28,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: startBackDrag,
+                  onHorizontalDragUpdate: (details) =>
+                      updateBackDrag(details, width),
+                  onHorizontalDragEnd: endBackDrag,
+                  onHorizontalDragCancel: () {
+                    dragging = false;
+                    unawaited(
+                      transition
+                          .animateTo(1, curve: Curves.easeOutQuart)
+                          .whenComplete(
+                            () => MeshRouteTransition.active.value = false,
+                          ),
+                    );
+                  },
+                ),
+              ),
+          ],
         );
       },
     );
