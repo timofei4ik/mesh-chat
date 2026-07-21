@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -1569,6 +1570,7 @@ class ServerSyncMixin:
                         ensure_ascii=False,
                     )
                 )
+                await asyncio.sleep(0)
             await websocket.send(
                 json.dumps(
                     {
@@ -1683,6 +1685,7 @@ class ServerSyncMixin:
                         ensure_ascii=False
                     )
                 )
+                await asyncio.sleep(0)
 
         total_files = len(
             file_payloads
@@ -1722,6 +1725,7 @@ class ServerSyncMixin:
                                 ensure_ascii=False,
                             )
                         )
+                        await asyncio.sleep(0)
                 continue
 
             total_chunks = max(
@@ -1752,6 +1756,7 @@ class ServerSyncMixin:
                         ensure_ascii=False,
                     )
                 )
+                await asyncio.sleep(0)
 
         await websocket.send(
             json.dumps(

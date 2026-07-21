@@ -166,6 +166,35 @@ class MeshRelayServer(
     ):
 
         node_id = None
+        account_sync_task = None
+
+        async def start_account_sync(sync_operation):
+            nonlocal account_sync_task
+
+            if account_sync_task is not None and not account_sync_task.done():
+                account_sync_task.cancel()
+                await asyncio.gather(
+                    account_sync_task,
+                    return_exceptions=True,
+                )
+
+            account_sync_task = asyncio.create_task(
+                sync_operation,
+                name=f"account-sync:{node_id or 'pending'}",
+            )
+
+            def report_sync_failure(task):
+                if task.cancelled():
+                    return
+                error = task.exception()
+                if error is not None:
+                    print(f"Account sync failed for {node_id}: {error!r}")
+
+            account_sync_task.add_done_callback(report_sync_failure)
+            # Let the sync task publish its opening packet before unrelated
+            # live packets. The handler then remains free to receive client
+            # mutations while large media chunks continue in the background.
+            await asyncio.sleep(0)
 
         try:
 
@@ -528,34 +557,56 @@ class MeshRelayServer(
                     )
 
                     if login:
-
-                        await self.send_account_sync(
-                            websocket,
-                            login.strip().lower(),
-                            node_id,
-                            bool(
-                                packet.get(
-                                    "supports_sticker_library_chunks",
-                                    False
-                                )
-                            ),
-                            bool(packet.get("supports_sync_v2", False)),
-                            bool(packet.get("supports_sync_v2_delta", False))
-                            and delta_enabled,
-                            packet.get("sync_cursor", 0),
-                        )
-
-                    await self.send_user_list()
-                    await self.flush_offline_packets(
-                        node_id,
-                        websocket,
-                        bool(
+                        sync_login = login.strip().lower()
+                        sync_node_id = node_id
+                        sync_sticker_chunks = bool(
                             packet.get(
-                                "supports_offline_packet_ack",
-                                False
+                                "supports_sticker_library_chunks",
+                                False,
                             )
                         )
-                    )
+                        sync_v2 = bool(packet.get("supports_sync_v2", False))
+                        sync_v2_delta = bool(
+                            packet.get("supports_sync_v2_delta", False)
+                        ) and delta_enabled
+                        sync_cursor = packet.get("sync_cursor", 0)
+                        sync_offline_ack = bool(
+                            packet.get(
+                                "supports_offline_packet_ack",
+                                False,
+                            )
+                        )
+
+                        async def send_initial_account_state():
+                            await self.send_account_sync(
+                                websocket,
+                                sync_login,
+                                sync_node_id,
+                                sync_sticker_chunks,
+                                sync_v2,
+                                sync_v2_delta,
+                                sync_cursor,
+                            )
+                            await self.send_user_list()
+                            await self.flush_offline_packets(
+                                sync_node_id,
+                                websocket,
+                                sync_offline_ack,
+                            )
+
+                        await start_account_sync(send_initial_account_state())
+                    else:
+                        await self.send_user_list()
+                        await self.flush_offline_packets(
+                            node_id,
+                            websocket,
+                            bool(
+                                packet.get(
+                                    "supports_offline_packet_ack",
+                                    False
+                                )
+                            )
+                        )
 
                     continue
 
@@ -650,14 +701,16 @@ class MeshRelayServer(
                     )
                     capabilities = self.client_capabilities.get(node_id, {})
                     if login:
-                        await self.send_account_sync(
-                            websocket,
-                            login,
-                            node_id,
-                            capabilities.get("sticker_library_chunks") is True,
-                            capabilities.get("sync_v2") is True,
-                            False,
-                            0,
+                        await start_account_sync(
+                            self.send_account_sync(
+                                websocket,
+                                login,
+                                node_id,
+                                capabilities.get("sticker_library_chunks") is True,
+                                capabilities.get("sync_v2") is True,
+                                False,
+                                0,
+                            )
                         )
                     continue
 
@@ -1651,6 +1704,14 @@ class MeshRelayServer(
                 )
 
         finally:
+
+            if account_sync_task is not None:
+                if not account_sync_task.done():
+                    account_sync_task.cancel()
+                await asyncio.gather(
+                    account_sync_task,
+                    return_exceptions=True,
+                )
 
             if (
                 node_id

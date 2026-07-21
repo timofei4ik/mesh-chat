@@ -80,11 +80,22 @@ class MeshLiquidGlass extends StatelessWidget {
     return ValueListenableBuilder<bool>(
       valueListenable: MeshRouteTransition.active,
       builder: (context, transitioning, _) {
-        if (transitioning) {
-          return fallbackBuilder?.call(context, child) ??
-              _staticTransitionSurface(context);
-        }
-        return _nativeGlass(context);
+        final surface = transitioning
+            ? fallbackBuilder?.call(context, child) ??
+                  _staticTransitionSurface(context)
+            : _nativeGlass(context);
+        return AnimatedSwitcher(
+          duration: const Duration(milliseconds: 170),
+          reverseDuration: const Duration(milliseconds: 140),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (surface, animation) =>
+              FadeTransition(opacity: animation, child: surface),
+          child: KeyedSubtree(
+            key: ValueKey<bool>(transitioning),
+            child: surface,
+          ),
+        );
       },
     );
   }
