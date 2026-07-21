@@ -1253,8 +1253,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     with SingleTickerProviderStateMixin {
   late final AnimationController transition = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 230),
-    reverseDuration: const Duration(milliseconds: 200),
+    duration: const Duration(milliseconds: 285),
+    reverseDuration: const Duration(milliseconds: 255),
   );
   ChatThread? activeThread;
   final SnapshotController chatSnapshot = SnapshotController();
@@ -1281,7 +1281,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
       chatSnapshot.clear();
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || activeThread != thread) return;
-      await transition.animateTo(1, curve: Curves.easeOutQuart);
+      await transition.animateTo(1, curve: Curves.easeInOutCubic);
       if (mounted) {
         chatSnapshot.allowSnapshotting = false;
         setState(() => opening = false);
@@ -1305,7 +1305,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
         chatSnapshot.clear();
         await WidgetsBinding.instance.endOfFrame;
       }
-      await transition.animateBack(0, curve: Curves.easeOutQuart);
+      await transition.animateBack(0, curve: Curves.easeInOutCubic);
       if (!mounted) return;
       chatSnapshot.allowSnapshotting = false;
       chatReady = null;
@@ -1339,7 +1339,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
     if (transition.value < 0.72 || velocity > 520) {
       await close();
     } else {
-      await transition.animateTo(1, curve: Curves.easeOutQuart);
+      await transition.animateTo(1, curve: Curves.easeInOutCubic);
       chatSnapshot.allowSnapshotting = false;
       MeshRouteTransition.active.value = false;
     }
@@ -1363,16 +1363,21 @@ class _ChatStackHostState extends State<_ChatStackHost>
             : SnapshotWidget(
                 controller: chatSnapshot,
                 mode: SnapshotMode.forced,
-                child: RepaintBoundary(
-                  child: ChatPage(
-                    key: ValueKey('active-chat-${thread.storageKey}'),
-                    controller: widget.controller,
-                    thread: thread,
-                    onBack: close,
-                    onReady: () {
-                      final ready = chatReady;
-                      if (ready != null && !ready.isCompleted) ready.complete();
-                    },
+                child: TickerMode(
+                  enabled: !opening,
+                  child: RepaintBoundary(
+                    child: ChatPage(
+                      key: ValueKey('active-chat-${thread.storageKey}'),
+                      controller: widget.controller,
+                      thread: thread,
+                      onBack: close,
+                      onReady: () {
+                        final ready = chatReady;
+                        if (ready != null && !ready.isCompleted) {
+                          ready.complete();
+                        }
+                      },
+                    ),
                   ),
                 ),
               );
@@ -1411,7 +1416,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
                     dragging = false;
                     unawaited(
                       transition
-                          .animateTo(1, curve: Curves.easeOutQuart)
+                          .animateTo(1, curve: Curves.easeInOutCubic)
                           .whenComplete(() {
                             chatSnapshot.allowSnapshotting = false;
                             MeshRouteTransition.active.value = false;

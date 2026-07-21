@@ -80,22 +80,13 @@ class MeshLiquidGlass extends StatelessWidget {
     return ValueListenableBuilder<bool>(
       valueListenable: MeshRouteTransition.active,
       builder: (context, transitioning, _) {
-        final surface = transitioning
+        // Do not cross-fade a UIKit platform view during a route transition.
+        // Keeping both renderers alive forces an expensive texture sync on
+        // every iOS frame and makes an otherwise cheap slide visibly stutter.
+        return transitioning
             ? fallbackBuilder?.call(context, child) ??
                   _staticTransitionSurface(context)
             : _nativeGlass(context);
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 170),
-          reverseDuration: const Duration(milliseconds: 140),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (surface, animation) =>
-              FadeTransition(opacity: animation, child: surface),
-          child: KeyedSubtree(
-            key: ValueKey<bool>(transitioning),
-            child: surface,
-          ),
-        );
       },
     );
   }
