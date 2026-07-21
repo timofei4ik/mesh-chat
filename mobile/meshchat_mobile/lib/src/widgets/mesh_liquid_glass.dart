@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -84,10 +86,60 @@ class MeshLiquidGlass extends StatelessWidget {
         // Keeping both renderers alive forces an expensive texture sync on
         // every iOS frame and makes an otherwise cheap slide visibly stutter.
         return transitioning
-            ? fallbackBuilder?.call(context, child) ??
-                  _staticTransitionSurface(context)
-            : _nativeGlass(context);
+            ? _routeTransitionSurface(context)
+            : _revealedNativeGlass(context);
       },
+    );
+  }
+
+  Widget _routeTransitionSurface(BuildContext context) {
+    final tintAlpha = selected
+        ? 0.19
+        : prominent
+        ? 0.15
+        : dim
+        ? 0.055
+        : 0.09;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 11, sigmaY: 11),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            color: const Color(0xFF172231).withValues(alpha: 0.32),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: selected ? 0.24 : 0.15),
+            ),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: accent.withValues(alpha: tintAlpha),
+                blurRadius: prominent ? 19 : 14,
+              ),
+            ],
+          ),
+          child: Stack(
+            fit: StackFit.passthrough,
+            children: <Widget>[
+              Positioned(
+                left: radius * 0.35,
+                right: radius * 0.35,
+                top: 0,
+                height: 1,
+                child: ColoredBox(color: Colors.white.withValues(alpha: 0.22)),
+              ),
+              child,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _revealedNativeGlass(BuildContext context) {
+    return _MeshNativeGlassReveal(
+      fallback: _routeTransitionSurface(context),
+      child: _nativeGlass(context),
     );
   }
 
@@ -169,6 +221,59 @@ class MeshLiquidGlass extends StatelessWidget {
           child,
         ],
       ),
+    );
+  }
+}
+
+class _MeshNativeGlassReveal extends StatefulWidget {
+  const _MeshNativeGlassReveal({required this.fallback, required this.child});
+
+  final Widget fallback;
+  final Widget child;
+
+  @override
+  State<_MeshNativeGlassReveal> createState() => _MeshNativeGlassRevealState();
+}
+
+class _MeshNativeGlassRevealState extends State<_MeshNativeGlassReveal>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 150),
+  )..forward();
+  late final Animation<double> opacity = CurvedAnimation(
+    parent: controller,
+    curve: Curves.easeOutCubic,
+  );
+  bool complete = false;
+
+  @override
+  void initState() {
+    super.initState();
+    controller.addStatusListener(handleStatus);
+  }
+
+  void handleStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    setState(() => complete = true);
+  }
+
+  @override
+  void dispose() {
+    controller.removeStatusListener(handleStatus);
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (complete) return widget.child;
+    return Stack(
+      fit: StackFit.passthrough,
+      children: <Widget>[
+        widget.fallback,
+        FadeTransition(opacity: opacity, child: widget.child),
+      ],
     );
   }
 }
