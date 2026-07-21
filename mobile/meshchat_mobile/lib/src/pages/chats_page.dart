@@ -1265,7 +1265,6 @@ class _ChatStackHostState extends State<_ChatStackHost>
   Future<void> open(ChatThread thread) async {
     if (activeThread != null || opening) return;
     opening = true;
-    MeshRouteTransition.active.value = true;
     transition.value = 0;
     chatSnapshot.allowSnapshotting = false;
     chatReady = Completer<void>();
@@ -1291,34 +1290,27 @@ class _ChatStackHostState extends State<_ChatStackHost>
         chatSnapshot.allowSnapshotting = false;
         opening = false;
       }
-      MeshRouteTransition.active.value = false;
     }
   }
 
   Future<void> close() async {
     if (activeThread == null) return;
     opening = false;
-    MeshRouteTransition.active.value = true;
-    try {
-      if (!chatSnapshot.allowSnapshotting) {
-        chatSnapshot.allowSnapshotting = true;
-        chatSnapshot.clear();
-        await WidgetsBinding.instance.endOfFrame;
-      }
-      await transition.animateBack(0, curve: Curves.easeInOutCubic);
-      if (!mounted) return;
-      chatSnapshot.allowSnapshotting = false;
-      chatReady = null;
-      setState(() => activeThread = null);
-    } finally {
-      MeshRouteTransition.active.value = false;
+    if (!chatSnapshot.allowSnapshotting) {
+      chatSnapshot.allowSnapshotting = true;
+      chatSnapshot.clear();
+      await WidgetsBinding.instance.endOfFrame;
     }
+    await transition.animateBack(0, curve: Curves.easeInOutCubic);
+    if (!mounted) return;
+    chatSnapshot.allowSnapshotting = false;
+    chatReady = null;
+    setState(() => activeThread = null);
   }
 
   void startBackDrag(DragStartDetails details) {
     if (activeThread == null || opening) return;
     dragging = true;
-    MeshRouteTransition.active.value = true;
     chatSnapshot.allowSnapshotting = true;
     chatSnapshot.clear();
     HapticFeedback.selectionClick();
@@ -1341,7 +1333,6 @@ class _ChatStackHostState extends State<_ChatStackHost>
     } else {
       await transition.animateTo(1, curve: Curves.easeInOutCubic);
       chatSnapshot.allowSnapshotting = false;
-      MeshRouteTransition.active.value = false;
     }
   }
 
@@ -1419,7 +1410,6 @@ class _ChatStackHostState extends State<_ChatStackHost>
                           .animateTo(1, curve: Curves.easeInOutCubic)
                           .whenComplete(() {
                             chatSnapshot.allowSnapshotting = false;
-                            MeshRouteTransition.active.value = false;
                           }),
                     );
                   },
