@@ -371,8 +371,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       showSnack(channelWriteBlockedMessage);
       return;
     }
+    final keepComposerFocused =
+        inputFocus.hasFocus || MediaQuery.viewInsetsOf(context).bottom > 0;
     playSendFlight(text.trim());
     input.clear();
+    if (keepComposerFocused) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) inputFocus.requestFocus();
+      });
+    }
     widget.controller.updateDraft(widget.thread, '');
     final quote = fixedCommentRoot ?? replyTo;
     setState(() {
@@ -1792,9 +1799,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final media = MediaQuery.of(context);
     final end = Rect.fromLTWH(
       media.size.width - targetWidth - 14,
-      math.max(media.padding.top + 76, start.top - 104),
+      math.max(media.padding.top + 76, start.top - flightHeight - 12),
       targetWidth,
-      math.min(48, start.height),
+      flightHeight,
     );
     late OverlayEntry entry;
     entry = OverlayEntry(
@@ -3778,10 +3785,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                               ),
                                             )
                                           : Focus(
-                                              focusNode: inputFocus,
                                               onKeyEvent: handleInputKey,
                                               child: TextField(
                                                 controller: input,
+                                                focusNode: inputFocus,
                                                 minLines: 1,
                                                 maxLines: 5,
                                                 textAlignVertical:
@@ -5547,36 +5554,48 @@ class _SendFlightOverlayState extends State<_SendFlightOverlay>
             animation: curved,
             builder: (context, _) {
               final progress = curved.value;
-              final rect = Rect.lerp(widget.start, widget.end, progress)!;
+              final offset = Offset.lerp(
+                Offset.zero,
+                widget.end.topLeft - widget.start.topLeft,
+                progress,
+              )!;
               return Positioned.fromRect(
-                rect: rect,
-                child: Opacity(
-                  opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
-                      .clamp(0.0, 1.0)
-                      .toDouble(),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: widget.color,
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: widget.color.withValues(alpha: 0.24),
-                          blurRadius: 18,
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
+                rect: widget.start,
+                child: Transform.translate(
+                  offset: offset,
+                  child: Opacity(
+                    opacity: (1 - math.max(0, (progress - 0.82) / 0.18))
+                        .clamp(0.0, 1.0)
+                        .toDouble(),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: widget.color,
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: widget.color.withValues(alpha: 0.24),
+                            blurRadius: 18,
+                          ),
+                        ],
                       ),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          widget.text,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            widget.text,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textScaler: TextScaler.noScaling,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              height: 1,
+                            ),
+                          ),
                         ),
                       ),
                     ),

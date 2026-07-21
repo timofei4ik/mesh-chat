@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
@@ -354,7 +355,9 @@ class ChatsPage extends StatelessWidget {
   void openThread(BuildContext context, ChatThread thread) {
     controller.markRead(thread);
     final host = context.findAncestorStateOfType<_ChatStackHostState>();
-    if (host != null) {
+    final useNativeIosRoute =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+    if (host != null && !useNativeIosRoute) {
       unawaited(host.open(thread));
       return;
     }
