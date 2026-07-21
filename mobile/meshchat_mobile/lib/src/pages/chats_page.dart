@@ -1263,41 +1263,30 @@ class _ChatStackHostState extends State<_ChatStackHost>
   Future<void> open(ChatThread thread) async {
     if (activeThread != null || opening) return;
     opening = true;
-    MeshRouteTransition.active.value = true;
     transition.value = 0;
     setState(() => activeThread = thread);
 
-    try {
-      // Prepare layout and raster work before the already-built chat layer
-      // starts moving into view.
-      await WidgetsBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 36));
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted || activeThread != thread) return;
-      await transition.animateTo(1, curve: Curves.easeOutQuart);
-      if (mounted) setState(() => opening = false);
-    } finally {
-      MeshRouteTransition.active.value = false;
-    }
+    // Prepare layout and raster work before the already-built chat layer
+    // starts moving into view. Native Liquid Glass remains mounted throughout.
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 36));
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || activeThread != thread) return;
+    await transition.animateTo(1, curve: Curves.easeOutQuart);
+    if (mounted) setState(() => opening = false);
   }
 
   Future<void> close() async {
     if (activeThread == null) return;
     opening = false;
-    MeshRouteTransition.active.value = true;
-    try {
-      await transition.animateBack(0, curve: Curves.easeOutQuart);
-      if (!mounted) return;
-      setState(() => activeThread = null);
-    } finally {
-      MeshRouteTransition.active.value = false;
-    }
+    await transition.animateBack(0, curve: Curves.easeOutQuart);
+    if (!mounted) return;
+    setState(() => activeThread = null);
   }
 
   void startBackDrag(DragStartDetails details) {
     if (activeThread == null || opening) return;
     dragging = true;
-    MeshRouteTransition.active.value = true;
     HapticFeedback.selectionClick();
   }
 
@@ -1317,7 +1306,6 @@ class _ChatStackHostState extends State<_ChatStackHost>
       await close();
     } else {
       await transition.animateTo(1, curve: Curves.easeOutQuart);
-      MeshRouteTransition.active.value = false;
     }
   }
 
@@ -1374,11 +1362,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
                   onHorizontalDragCancel: () {
                     dragging = false;
                     unawaited(
-                      transition
-                          .animateTo(1, curve: Curves.easeOutQuart)
-                          .whenComplete(
-                            () => MeshRouteTransition.active.value = false,
-                          ),
+                      transition.animateTo(1, curve: Curves.easeOutQuart),
                     );
                   },
                 ),
