@@ -2,6 +2,8 @@ import hashlib
 import json
 import re
 import secrets
+import shutil
+from pathlib import Path
 
 try:
     from server.config import PASSWORD_ITERATIONS
@@ -39,7 +41,9 @@ class ServerAuthMixin:
         avatar_data=None,
         encryption_public_key=None,
         allow_registration=True,
-        reactivate_device=False
+        reactivate_device=False,
+        email=None,
+        email_verified=False,
     ):
 
         login = (
@@ -116,9 +120,15 @@ class ServerAuthMixin:
                     about,
                     avatar_data,
                     encryption_public_key,
+                    email,
+                    email_verified_at,
                     last_login
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                VALUES(
+                    ?,?,?,?,?,?,?,?,?,?,
+                    CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    CURRENT_TIMESTAMP
+                )
                 """,
                 (
                     login,
@@ -129,7 +139,9 @@ class ServerAuthMixin:
                     public_username,
                     about,
                     avatar_data,
-                    encryption_public_key
+                    encryption_public_key,
+                    self.normalize_email(email) if email_verified else "",
+                    bool(email_verified),
                 )
             )
 
@@ -209,6 +221,209 @@ class ServerAuthMixin:
         ).fetchone()
 
         return str(row[0] or "") if row else ""
+
+    def delete_account(self, login, password):
+        normalized_login = str(login or "").strip().lower()
+        if not normalized_login or not self.verify_account_password(
+            normalized_login,
+            password,
+        ):
+            return False, "bad login or password"
+
+        nodes = [
+            row[0]
+            for row in self.db.execute(
+                "SELECT node_id FROM account_devices WHERE login=?",
+                (normalized_login,),
+            ).fetchall()
+            if row[0]
+        ]
+        account_node = self.db.execute(
+            "SELECT node_id FROM accounts WHERE login=?",
+            (normalized_login,),
+        ).fetchone()
+        if account_node and account_node[0] and account_node[0] not in nodes:
+            nodes.append(account_node[0])
+
+        stored_paths = [
+            row[0]
+            for row in self.db.execute(
+                """
+                SELECT storage_path FROM server_files
+                WHERE sender_login=? OR receiver_login=?
+                UNION
+                SELECT storage_path FROM file_transfer_sessions
+                WHERE account_login=?
+                """,
+                (normalized_login, normalized_login, normalized_login),
+            ).fetchall()
+            if row[0]
+        ]
+        transfer_ids = [
+            row[0]
+            for row in self.db.execute(
+                "SELECT transfer_id FROM file_transfer_sessions WHERE account_login=?",
+                (normalized_login,),
+            ).fetchall()
+        ]
+
+        owned_group_ids = []
+        if nodes:
+            placeholders = ",".join("?" for _ in nodes)
+            owned_group_ids = [
+                row[0]
+                for row in self.db.execute(
+                    f"SELECT group_id FROM server_groups WHERE owner_node IN ({placeholders})",
+                    nodes,
+                ).fetchall()
+            ]
+
+        with self.db:
+            for group_id in owned_group_ids:
+                self.db.execute(
+                    "DELETE FROM server_group_keys WHERE group_id=?",
+                    (group_id,),
+                )
+                self.db.execute(
+                    "DELETE FROM server_group_messages WHERE group_id=?",
+                    (group_id,),
+                )
+                self.db.execute(
+                    "DELETE FROM server_files WHERE group_id=?",
+                    (group_id,),
+                )
+                self.db.execute(
+                    "DELETE FROM server_group_members WHERE group_id=?",
+                    (group_id,),
+                )
+                self.db.execute(
+                    "DELETE FROM server_groups WHERE group_id=?",
+                    (group_id,),
+                )
+
+            for table, column in (
+                ("sync_events", "account_login"),
+                ("sync_event_state", "account_login"),
+                ("sync_cursors", "account_login"),
+                ("processed_mutations", "account_login"),
+                ("account_devices", "login"),
+                ("email_auth_challenges", "login"),
+                ("account_email_trusted_devices", "login"),
+                ("account_subscriptions", "login"),
+                ("subscription_events", "login"),
+                ("subscription_orders", "login"),
+                ("boosty_telegram_links", "login"),
+                ("vpn_peers", "login"),
+                ("service_sessions", "login"),
+                ("meshpro_usage", "login"),
+                ("ai_voice_transcriptions", "login"),
+                ("ai_image_ocr", "login"),
+                ("web_push_subscriptions", "login"),
+                ("file_transfer_sessions", "account_login"),
+                ("file_transfer_chunks", "account_login"),
+                ("server_sticker_libraries", "login"),
+                ("android_push_tokens", "login"),
+                ("account_chat_preferences", "login"),
+                ("account_meshpro_preferences", "login"),
+                ("scheduled_messages", "owner_login"),
+            ):
+                self.db.execute(
+                    f"DELETE FROM {table} WHERE {column}=?",
+                    (normalized_login,),
+                )
+
+            self.db.execute(
+                "DELETE FROM direct_messages WHERE sender_login=? OR receiver_login=?",
+                (normalized_login, normalized_login),
+            )
+            self.db.execute(
+                "DELETE FROM server_files WHERE sender_login=? OR receiver_login=?",
+                (normalized_login, normalized_login),
+            )
+            self.db.execute(
+                "DELETE FROM server_group_messages WHERE sender_login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM server_group_members WHERE login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM server_group_keys WHERE member_login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM server_chat_deletes WHERE owner_login=? OR peer_login=?",
+                (normalized_login, normalized_login),
+            )
+            self.db.execute(
+                "DELETE FROM server_reactions WHERE reactor_login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM server_pins WHERE pinner_login=?",
+                (normalized_login,),
+            )
+            story_ids = [
+                row[0]
+                for row in self.db.execute(
+                    "SELECT story_id FROM server_stories WHERE owner_login=?",
+                    (normalized_login,),
+                ).fetchall()
+            ]
+            for story_id in story_ids:
+                self.db.execute(
+                    "DELETE FROM server_story_reactions WHERE story_id=?",
+                    (story_id,),
+                )
+                self.db.execute(
+                    "DELETE FROM server_story_views WHERE story_id=?",
+                    (story_id,),
+                )
+            self.db.execute(
+                "DELETE FROM server_stories WHERE owner_login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM server_story_reactions WHERE reactor_login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM server_story_views WHERE viewer_login=?",
+                (normalized_login,),
+            )
+            if nodes:
+                placeholders = ",".join("?" for _ in nodes)
+                self.db.execute(
+                    f"DELETE FROM offline_packets WHERE destination_node IN ({placeholders})",
+                    nodes,
+                )
+            self.db.execute(
+                "UPDATE boosty_activation_codes SET redeemed_login='' WHERE redeemed_login=?",
+                (normalized_login,),
+            )
+            self.db.execute(
+                "DELETE FROM accounts WHERE login=?",
+                (normalized_login,),
+            )
+        for value in stored_paths:
+            try:
+                Path(value).unlink(missing_ok=True)
+            except OSError:
+                pass
+        if hasattr(self, "_file_transfer_pending_path"):
+            for transfer_id in transfer_ids:
+                try:
+                    shutil.rmtree(
+                        self._file_transfer_pending_path(
+                            normalized_login,
+                            transfer_id,
+                        ),
+                        ignore_errors=True,
+                    )
+                except OSError:
+                    pass
+        return True, "ok"
 
     def change_account_password(
         self,

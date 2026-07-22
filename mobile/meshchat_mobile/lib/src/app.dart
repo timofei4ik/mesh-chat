@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'controllers/app_controller.dart';
 import 'pages/chats_page.dart';
+import 'pages/email_binding_page.dart';
 import 'pages/login_page.dart';
 import 'services/platform_capabilities.dart';
 import 'widgets/mesh_liquid_glass.dart';
@@ -64,6 +65,9 @@ class _MeshChatAppState extends State<MeshChatApp> {
                 }
                 if (!controller.hasSession) {
                   return LoginPage(controller: controller);
+                }
+                if (controller.emailBindingRequired) {
+                  return EmailBindingPage(controller: controller);
                 }
                 return ChatsPage(controller: controller);
               },

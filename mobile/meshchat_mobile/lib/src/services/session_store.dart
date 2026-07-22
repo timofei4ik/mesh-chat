@@ -24,6 +24,7 @@ class SessionStore {
       password: password,
       publicUsername: prefs.getString('public_username') ?? login,
       nodeId: nodeId,
+      email: prefs.getString('email') ?? '',
       identityRecovery: prefs.getString('identity_recovery') ?? '',
     );
   }
@@ -62,6 +63,7 @@ class SessionStore {
     required String login,
     required String password,
     required String publicUsername,
+    String email = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final normalizedServerUrl = _normalizeServerUrl(serverUrl);
@@ -79,6 +81,7 @@ class SessionStore {
       password: password,
       publicUsername: publicUsername,
       nodeId: nodeId,
+      email: email.trim().toLowerCase(),
     );
 
     await saveCurrent(session);
@@ -94,6 +97,7 @@ class SessionStore {
     await prefs.setString('password', session.password);
     await prefs.setString('public_username', session.publicUsername);
     await prefs.setString('node_id', session.nodeId);
+    await prefs.setString('email', session.email);
     await prefs.setString('identity_recovery', session.identityRecovery);
     await prefs.setString(
       _nodeKey(session.serverUrl, session.login),
@@ -144,6 +148,7 @@ class SessionStore {
     await prefs.remove('password');
     await prefs.remove('public_username');
     await prefs.remove('identity_recovery');
+    await prefs.remove('email');
   }
 
   Future<void> updatePublicUsername(String publicUsername) async {
@@ -198,6 +203,7 @@ class SessionStore {
       'password': session.password,
       'public_username': session.publicUsername,
       'node_id': session.nodeId,
+      'email': session.email,
       'identity_recovery': session.identityRecovery,
     };
   }
@@ -220,6 +226,7 @@ class SessionStore {
       password: password,
       publicUsername: json['public_username']?.toString() ?? login,
       nodeId: nodeId,
+      email: json['email']?.toString() ?? '',
       identityRecovery: json['identity_recovery']?.toString() ?? '',
     );
   }

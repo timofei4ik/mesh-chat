@@ -310,6 +310,9 @@ class AppController extends ChangeNotifier {
   String status = 'Offline';
   DateTime? lastSyncAt;
   String? error;
+  bool emailBindingRequired = false;
+  String pendingEmailChallengeId = '';
+  String pendingEmailMasked = '';
   Completer<Profile?>? _lookupCompleter;
   Completer<MeshProSubscription>? _meshProCompleter;
   final Map<String, Completer<AiRewriteResult>> _aiRewriteCompleters = {};
@@ -331,6 +334,8 @@ class AppController extends ChangeNotifier {
   final Map<String, Completer<String?>> _activeDeviceActionCompleters = {};
   final Map<String, Completer<String?>> _meshProPreferenceCompleters = {};
   final Map<String, Completer<String?>> _passwordChangeCompleters = {};
+  final Map<String, Completer<String?>> _accountDeleteCompleters = {};
+  Completer<Map<String, dynamic>>? _emailVerificationCompleter;
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
   Timer? _callTicker;
@@ -2147,6 +2152,9 @@ class AppController extends ChangeNotifier {
     required String login,
     required String password,
     required String publicUsername,
+    String email = '',
+    String emailChallengeId = '',
+    String emailCode = '',
   }) async {
     busy = true;
     error = null;
@@ -2162,16 +2170,32 @@ class AppController extends ChangeNotifier {
           '@',
           '',
         ),
+        email: email.trim().toLowerCase(),
       );
       await _initializeCryptoForSession(candidate);
-      final checkError = await _socket.check(candidate, _crypto.publicKey);
-      if (checkError != null) {
-        error = checkError;
-        await _store.clear();
-        await _store.removeRecent(candidate);
+      final diagnostics = await _socket.diagnose(
+        candidate,
+        _crypto.publicKey,
+        emailChallengeId: emailChallengeId,
+        emailCode: emailCode,
+      );
+      if (!diagnostics.ok) {
+        error = diagnostics.message;
+        pendingEmailChallengeId =
+            diagnostics.data['challenge_id']?.toString() ?? '';
+        pendingEmailMasked = diagnostics.data['masked_email']?.toString() ?? '';
+        final verificationPending =
+            diagnostics.code == 'email_verification_required';
+        if (!verificationPending) {
+          await _store.clear();
+          await _store.removeRecent(candidate);
+        }
         recentSessions = await _store.loadRecent();
         return false;
       }
+      pendingEmailChallengeId = '';
+      pendingEmailMasked = '';
+      emailBindingRequired = diagnostics.data['email_binding_required'] == true;
       candidate = await _adoptServerIdentityRecovery(candidate);
       await _socket.close();
       _clearLocalState();
@@ -2204,11 +2228,17 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       await _initializeCryptoForSession(candidate);
-      final checkError = await _socket.check(candidate, _crypto.publicKey);
-      if (checkError != null) {
-        error = checkError;
+      final diagnostics = await _socket.diagnose(candidate, _crypto.publicKey);
+      if (!diagnostics.ok) {
+        error = diagnostics.message;
+        pendingEmailChallengeId =
+            diagnostics.data['challenge_id']?.toString() ?? '';
+        pendingEmailMasked = diagnostics.data['masked_email']?.toString() ?? '';
         return false;
       }
+      pendingEmailChallengeId = '';
+      pendingEmailMasked = '';
+      emailBindingRequired = diagnostics.data['email_binding_required'] == true;
       candidate = await _adoptServerIdentityRecovery(candidate);
       await _socket.close();
       _clearLocalState();
@@ -2374,6 +2404,7 @@ class AppController extends ChangeNotifier {
         _applyingSyncDelta = false;
         _livePacketsDuringDeltaApply.clear();
         _applyMeshProSubscription(packet['subscription']);
+        emailBindingRequired = packet['email_binding_required'] == true;
         await _reconcileServerGroupIds(packet['account_group_ids']);
         if (!MeshSocket.isProtocolCompatible(packet)) {
           status = MeshSocket.protocolError(packet);
@@ -2439,6 +2470,22 @@ class AppController extends ChangeNotifier {
         _handleProfileUpdateResult(packet);
       case 'account_password_change_result':
         _handlePasswordChangeResult(packet);
+      case 'account_delete_result':
+        final requestId = packet['request_id']?.toString() ?? '';
+        final completer = _accountDeleteCompleters.remove(requestId);
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(
+            packet['ok'] == true
+                ? null
+                : packet['message']?.toString() ?? 'Account deletion failed',
+          );
+        }
+      case 'email_verification_result':
+        final completer = _emailVerificationCompleter;
+        _emailVerificationCompleter = null;
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(Map<String, dynamic>.from(packet));
+        }
       case 'subscription_status_result':
         _applyMeshProSubscription(packet['subscription']);
       case 'ai_text_rewrite_result':
@@ -8683,6 +8730,71 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<Map<String, dynamic>> requestEmailBinding(String email) async {
+    if (session == null || !_socket.isConnected) {
+      return const {'ok': false, 'message': 'Connect to the server first'};
+    }
+    final completer = Completer<Map<String, dynamic>>();
+    _emailVerificationCompleter = completer;
+    _socket.send({
+      'type': 'email_verification_request',
+      'source_node': myNodeId,
+      'email': email.trim().toLowerCase(),
+      'protocol_version': MeshSocket.protocolVersion,
+    });
+    return completer.future.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () {
+        _emailVerificationCompleter = null;
+        return const {
+          'ok': false,
+          'message': 'The server did not confirm email delivery',
+        };
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> confirmEmailBinding({
+    required String challengeId,
+    required String code,
+    required String email,
+  }) async {
+    if (session == null || !_socket.isConnected) {
+      return const {'ok': false, 'message': 'Connect to the server first'};
+    }
+    final completer = Completer<Map<String, dynamic>>();
+    _emailVerificationCompleter = completer;
+    _socket.send({
+      'type': 'email_verification_confirm',
+      'source_node': myNodeId,
+      'challenge_id': challengeId,
+      'code': code.trim(),
+      'protocol_version': MeshSocket.protocolVersion,
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () {
+        _emailVerificationCompleter = null;
+        return const {
+          'ok': false,
+          'message': 'The server did not confirm the code',
+        };
+      },
+    );
+    if (result['ok'] == true && result['complete'] == true) {
+      emailBindingRequired = false;
+      final current = session;
+      if (current != null) {
+        final updated = current.copyWith(email: email.trim().toLowerCase());
+        session = updated;
+        await _store.saveCurrent(updated);
+        await _store.saveRecent(updated);
+      }
+      notifyListeners();
+    }
+    return result;
+  }
+
   Future<String?> changePassword(String newPassword) async {
     final current = session;
     if (current == null || !_socket.isConnected) {
@@ -8731,6 +8843,47 @@ class AppController extends ChangeNotifier {
     recentSessions = await _store.loadRecent();
     await _socket.close();
     await _connect();
+    notifyListeners();
+    return null;
+  }
+
+  Future<String?> deleteAccount(String password) async {
+    final current = session;
+    if (current == null || !_socket.isConnected) {
+      return 'Connect to the server first';
+    }
+    if (password.isEmpty) return 'Enter your password';
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _accountDeleteCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'account_delete_request',
+      'request_id': requestId,
+      'source_node': myNodeId,
+      'password': password,
+      'protocol_version': MeshSocket.protocolVersion,
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () {
+        _accountDeleteCompleters.remove(requestId);
+        return 'The server did not confirm account deletion';
+      },
+    );
+    if (result != null) return result;
+
+    await ble.stop();
+    await _socket.close();
+    await _cache.clear(current);
+    await _ownProfileStore.remove(current);
+    await _syncCursorStore.clear(current);
+    await _store.removeRecent(current);
+    await _store.clear();
+    session = null;
+    recentSessions = await _store.loadRecent();
+    emailBindingRequired = false;
+    _clearLocalState();
+    status = 'Account deleted';
     notifyListeners();
     return null;
   }
@@ -8794,6 +8947,9 @@ class AppController extends ChangeNotifier {
     await _socket.close();
     await _store.clear();
     session = null;
+    emailBindingRequired = false;
+    pendingEmailChallengeId = '';
+    pendingEmailMasked = '';
     _clearLocalState();
     status = 'Offline';
     notifyListeners();

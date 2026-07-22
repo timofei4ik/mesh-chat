@@ -251,6 +251,41 @@ AI_MAX_AUDIO_BYTES = max(
     int(os.environ.get("MESH_AI_MAX_AUDIO_BYTES", str(8 * 1024 * 1024))),
 )
 
+SMTP_HOST = os.environ.get("MESH_SMTP_HOST", "").strip()
+SMTP_PORT = int(os.environ.get("MESH_SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("MESH_SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.environ.get("MESH_SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.environ.get("MESH_SMTP_FROM_EMAIL", SMTP_USERNAME).strip()
+SMTP_USE_TLS = os.environ.get("MESH_SMTP_USE_TLS", "1").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+SMTP_USE_SSL = os.environ.get("MESH_SMTP_USE_SSL", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+EMAIL_2FA_SECRET = os.environ.get(
+    "MESH_EMAIL_2FA_SECRET",
+    os.environ.get("MESH_SERVER_TOKEN", ""),
+).strip()
+
+# Keep installed clients on the legacy handshake during the staged rollout.
+# Set this to 0 after the supported client versions all advertise email 2FA.
+EMAIL_2FA_LEGACY_CLIENTS_ALLOWED = os.environ.get(
+    "MESH_EMAIL_2FA_LEGACY_CLIENTS_ALLOWED",
+    "1",
+).strip().lower() in {"1", "true", "yes", "on"}
+EMAIL_2FA_CODE_TTL_SECONDS = max(
+    120,
+    int(os.environ.get("MESH_EMAIL_2FA_CODE_TTL_SECONDS", "600")),
+)
+EMAIL_2FA_RESEND_SECONDS = max(
+    30,
+    int(os.environ.get("MESH_EMAIL_2FA_RESEND_SECONDS", "60")),
+)
+EMAIL_2FA_MAX_ATTEMPTS = max(
+    3,
+    int(os.environ.get("MESH_EMAIL_2FA_MAX_ATTEMPTS", "6")),
+)
+
 WIREGUARD_ENABLED = os.environ.get(
     "MESH_WG_ENABLED",
     ""

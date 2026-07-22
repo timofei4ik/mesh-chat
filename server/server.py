@@ -86,11 +86,13 @@ try:
         SERVER_TOKEN,
         REQUIRE_LOGIN,
         MESHPRIVACY_MIN_APP_VERSION,
+        EMAIL_2FA_LEGACY_CLIENTS_ALLOWED,
         SYNC_V2_DELTA_ENABLED,
         SYNC_V2_DELTA_TEST_ACCOUNTS,
     )
     from server.server_storage import ServerStorageMixin
     from server.server_auth import ServerAuthMixin
+    from server.server_email_auth import ServerEmailAuthMixin
     from server.server_ai import ServerAiMixin
     from server.server_sync import ServerSyncMixin
     from server.server_push import ServerPushMixin
@@ -107,11 +109,13 @@ except ModuleNotFoundError:
         SERVER_TOKEN,
         REQUIRE_LOGIN,
         MESHPRIVACY_MIN_APP_VERSION,
+        EMAIL_2FA_LEGACY_CLIENTS_ALLOWED,
         SYNC_V2_DELTA_ENABLED,
         SYNC_V2_DELTA_TEST_ACCOUNTS,
     )
     from server_storage import ServerStorageMixin
     from server_auth import ServerAuthMixin
+    from server_email_auth import ServerEmailAuthMixin
     from server_ai import ServerAiMixin
     from server_sync import ServerSyncMixin
     from server_push import ServerPushMixin
@@ -126,6 +130,7 @@ except ModuleNotFoundError:
 class MeshRelayServer(
     ServerStorageMixin,
     ServerAuthMixin,
+    ServerEmailAuthMixin,
     ServerAiMixin,
     ServerSyncMixin,
     ServerPushMixin,
@@ -135,6 +140,155 @@ class MeshRelayServer(
     ServerSchedulerMixin,
     ServerSubscriptionMixin
 ):
+
+    async def send_server_error(self, websocket, code, message, **details):
+        await websocket.send(
+            json.dumps(
+                {
+                    "type": "server_error",
+                    "code": code,
+                    "message": message,
+                    **details,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    async def issue_email_challenge_async(
+        self,
+        login,
+        node_id,
+        email,
+        purpose,
+    ):
+        challenge, code, reason = self.create_email_challenge(
+            login,
+            node_id,
+            email,
+            purpose,
+        )
+        if not challenge:
+            return None, reason
+        try:
+            await asyncio.to_thread(
+                self.send_email_verification_code,
+                email,
+                code,
+                purpose,
+            )
+        except Exception as error:
+            self.discard_email_challenge(challenge["challenge_id"])
+            print(f"Email delivery failed for {login}: {error!r}")
+            return None, "email_delivery_unavailable"
+        return challenge, "ok"
+
+    async def authorize_email_2fa(self, packet, login, password, node_id):
+        if str(packet.get("service") or "").strip():
+            return True, None, ""
+
+        supports_email_2fa = bool(packet.get("supports_email_2fa", False))
+        normalized_login = str(login or "").strip().lower()
+        if not normalized_login or not password:
+            return False, {
+                "code": "authentication_failed",
+                "message": "missing login or password",
+            }, ""
+
+        account_exists = self.account_exists(normalized_login)
+        if account_exists and not self.verify_account_password(
+            normalized_login,
+            password,
+        ):
+            return False, {
+                "code": "authentication_failed",
+                "message": "bad login or password",
+            }, ""
+
+        if not supports_email_2fa and EMAIL_2FA_LEGACY_CLIENTS_ALLOWED:
+            return True, None, ""
+
+        verified_email = self.account_email(normalized_login)
+        if account_exists and not verified_email:
+            # Legacy accounts are allowed through once, but the new client
+            # blocks the application behind the mandatory binding screen.
+            return True, None, ""
+        if account_exists and self.is_email_device_trusted(
+            normalized_login,
+            node_id,
+        ):
+            return True, None, verified_email
+        if account_exists and verified_email and not supports_email_2fa:
+            return False, {
+                "code": "email_2fa_update_required",
+                "message": "Update MeshChat to verify this device by email",
+            }, ""
+        if not account_exists and not supports_email_2fa:
+            return False, {
+                "code": "email_2fa_update_required",
+                "message": "Update MeshChat to create an account with email verification",
+            }, ""
+
+        purpose = "login" if account_exists else "registration"
+        target_email = verified_email or self.normalize_email(packet.get("email"))
+        if not target_email:
+            return False, {
+                "code": "email_required",
+                "message": "Email is required to create a MeshChat account",
+            }, ""
+        if not account_exists:
+            email_owner = self.db.execute(
+                "SELECT login FROM accounts WHERE lower(email)=? AND email_verified_at IS NOT NULL",
+                (target_email,),
+            ).fetchone()
+            if email_owner:
+                return False, {
+                    "code": "email_already_used",
+                    "message": "This email is already linked to another account",
+                }, ""
+
+        challenge_id = str(packet.get("email_challenge_id") or "").strip()
+        code = str(packet.get("email_code") or "").strip()
+        if challenge_id and code:
+            ok, reason, challenge_email = self.verify_email_challenge(
+                challenge_id,
+                normalized_login,
+                node_id,
+                code,
+                purpose,
+            )
+            if not ok:
+                return False, {
+                    "code": reason,
+                    "message": "The email verification code is invalid or expired",
+                }, ""
+            if account_exists:
+                self.trust_email_device(normalized_login, node_id)
+            return True, None, challenge_email
+
+        challenge, reason = await self.issue_email_challenge_async(
+            normalized_login,
+            node_id,
+            target_email,
+            purpose,
+        )
+        if not challenge:
+            retry_after = 0
+            if str(reason).startswith("retry_after:"):
+                retry_after = int(str(reason).split(":", 1)[1] or 0)
+            return False, {
+                "code": reason.split(":", 1)[0],
+                "message": (
+                    "Wait before requesting another code"
+                    if retry_after
+                    else "Could not send the verification email"
+                ),
+                "retry_after": retry_after,
+            }, ""
+        return False, {
+            "code": "email_verification_required",
+            "message": "Enter the code sent to your email",
+            **challenge,
+        }, ""
 
     def sync_v2_delta_enabled_for(self, login):
         normalized_login = str(login or "").strip().lower()
@@ -375,6 +529,27 @@ class MeshRelayServer(
                         or service
                     ):
 
+                        email_ok, email_error, verified_email = (
+                            await self.authorize_email_2fa(
+                                packet,
+                                login,
+                                password,
+                                node_id,
+                            )
+                        )
+                        if not email_ok:
+                            await self.send_server_error(
+                                websocket,
+                                email_error.pop("code"),
+                                email_error.pop("message"),
+                                **email_error,
+                            )
+                            await websocket.close(
+                                code=1008,
+                                reason="email verification required",
+                            )
+                            return
+
                         ok, reason = self.authenticate_account(
                             login,
                             password,
@@ -386,23 +561,18 @@ class MeshRelayServer(
                             packet.get("avatar_data"),
                             packet.get("encryption_public_key"),
                             bool(packet.get("register_if_missing", True)),
-                            bool(packet.get("reactivate_device", False))
+                            bool(packet.get("reactivate_device", False)),
+                            verified_email,
+                            bool(verified_email) and not self.account_exists(login),
                         )
 
                         if not ok:
 
-                            if service:
-
-                                await websocket.send(
-                                    json.dumps(
-                                        {
-                                            "type": "server_error",
-                                            "code": "authentication_failed",
-                                            "message": reason
-                                        },
-                                        ensure_ascii=False
-                                    )
-                                )
+                            await self.send_server_error(
+                                websocket,
+                                "authentication_failed",
+                                reason,
+                            )
 
                             print(
                                 f"Client rejected: {reason}"
@@ -414,6 +584,9 @@ class MeshRelayServer(
                             )
 
                             return
+
+                        if verified_email:
+                            self.trust_email_device(login, node_id)
 
                         if service and not auth_check:
 
@@ -435,6 +608,10 @@ class MeshRelayServer(
                                 if login
                                 else ""
                             ),
+                            "email_binding_required": (
+                                self.email_binding_required(login) if login else False
+                            ),
+                            "email": self.mask_email(self.account_email(login)),
                             **version_payload()
                         },
                                 ensure_ascii=False
@@ -533,6 +710,7 @@ class MeshRelayServer(
                             "mutation_ack": True,
                             "file_transfer_v2": True,
                             "account_live_fanout": True,
+                            "email_2fa": True,
                         },
                         **version_payload()
                     }
@@ -550,6 +728,12 @@ class MeshRelayServer(
                             self.get_account_encryption_recovery(
                                 normalized_login
                             )
+                        )
+                        welcome["email_binding_required"] = (
+                            self.email_binding_required(normalized_login)
+                        )
+                        welcome["email"] = self.mask_email(
+                            self.account_email(normalized_login)
                         )
 
                     await websocket.send(
@@ -672,6 +856,140 @@ class MeshRelayServer(
                         )
                     )
 
+                    continue
+
+                if packet.get("type") == "email_verification_request":
+                    login = self.client_logins.get(node_id, "")
+                    if not login:
+                        await self.send_server_error(
+                            websocket,
+                            "authentication_failed",
+                            "Account session is unavailable",
+                        )
+                        continue
+                    if self.account_email(login):
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "email_verification_result",
+                                    "ok": True,
+                                    "complete": True,
+                                    "email": self.mask_email(
+                                        self.account_email(login)
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                        continue
+                    email = self.normalize_email(packet.get("email"))
+                    challenge, reason = await self.issue_email_challenge_async(
+                        login,
+                        node_id,
+                        email,
+                        "binding",
+                    )
+                    response = {
+                        "type": "email_verification_result",
+                        "ok": bool(challenge),
+                        "complete": False,
+                    }
+                    if challenge:
+                        response.update(challenge)
+                    else:
+                        response.update(
+                            {
+                                "code": str(reason).split(":", 1)[0],
+                                "message": "Could not send the verification email",
+                            }
+                        )
+                    await websocket.send(json.dumps(response, ensure_ascii=False))
+                    continue
+
+                if packet.get("type") == "email_verification_confirm":
+                    login = self.client_logins.get(node_id, "")
+                    ok, reason, email = self.verify_email_challenge(
+                        packet.get("challenge_id"),
+                        login,
+                        node_id,
+                        packet.get("code"),
+                        "binding",
+                    )
+                    if ok:
+                        ok, reason = self.bind_account_email(
+                            login,
+                            email,
+                            node_id,
+                        )
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "email_verification_result",
+                                "ok": ok,
+                                "complete": ok,
+                                "code": reason,
+                                "message": (
+                                    "Email linked"
+                                    if ok
+                                    else "The verification code is invalid or expired"
+                                ),
+                                "email": self.mask_email(email) if ok else "",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    continue
+
+                if packet.get("type") == "account_delete_request":
+                    delete_login = self.client_logins.get(node_id, "")
+                    request_id = packet.get("request_id")
+                    ok, reason = self.delete_account(
+                        delete_login,
+                        packet.get("password"),
+                    )
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "account_delete_result",
+                                "request_id": request_id,
+                                "ok": ok,
+                                "code": reason,
+                                "message": (
+                                    "Account deleted"
+                                    if ok
+                                    else "Password is incorrect"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    if ok:
+                        await self.send_user_list()
+                        account_sockets = [
+                            client_socket
+                            for client_node, client_socket in self.clients.items()
+                            if self.client_logins.get(client_node) == delete_login
+                        ]
+                        service_sockets = [
+                            client_socket
+                            for client_node, client_socket in self.service_clients.items()
+                            if self.service_logins.get(client_node) == delete_login
+                        ]
+                        await asyncio.sleep(0.05)
+                        await asyncio.gather(
+                            *(
+                                client_socket.close(
+                                    code=1000,
+                                    reason="account deleted",
+                                )
+                                for client_socket in {
+                                    *account_sockets,
+                                    *service_sockets,
+                                }
+                            ),
+                            return_exceptions=True,
+                        )
+                        return
                     continue
 
                 if packet.get("type") == "offline_packet_ack":

@@ -188,6 +188,8 @@ class ServerStorageMixin:
                 profile_glow INTEGER NOT NULL DEFAULT 0,
                 profile_accent INTEGER NOT NULL DEFAULT 4282557941,
                 emoji_status TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                email_verified_at DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_login DATETIME
             )
@@ -393,6 +395,16 @@ class ServerStorageMixin:
                 "ALTER TABLE accounts ADD COLUMN emoji_status TEXT DEFAULT ''"
             )
 
+        if "email" not in account_columns:
+            conn.execute(
+                "ALTER TABLE accounts ADD COLUMN email TEXT DEFAULT ''"
+            )
+
+        if "email_verified_at" not in account_columns:
+            conn.execute(
+                "ALTER TABLE accounts ADD COLUMN email_verified_at DATETIME"
+            )
+
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_public_username
@@ -414,6 +426,52 @@ class ServerStorageMixin:
                 online INTEGER NOT NULL DEFAULT 0,
                 revoked INTEGER NOT NULL DEFAULT 0,
                 last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(login, node_id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_verified_email
+            ON accounts(lower(email))
+            WHERE email IS NOT NULL
+              AND email != ''
+              AND email_verified_at IS NOT NULL
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_auth_challenges(
+                challenge_id TEXT PRIMARY KEY,
+                login TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                code_salt TEXT NOT NULL,
+                code_hash TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL,
+                consumed_at DATETIME
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_auth_challenges_login
+            ON email_auth_challenges(login, created_at)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_email_trusted_devices(
+                login TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(login, node_id)
             )
             """

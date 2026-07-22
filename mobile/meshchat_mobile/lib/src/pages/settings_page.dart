@@ -1415,6 +1415,80 @@ class SecurityPage extends StatelessWidget {
 
   final AppController controller;
 
+  Future<void> _confirmAccountDeletion(BuildContext context) async {
+    final passwordController = TextEditingController();
+    String? validationError;
+    var busy = false;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Delete account permanently?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Messages, files, stories, devices and profile data will be removed from the server. Groups and channels you own will also be deleted. This cannot be undone.',
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: passwordController,
+                autofocus: true,
+                obscureText: true,
+                enabled: !busy,
+                autofillHints: const [AutofillHints.password],
+                decoration: InputDecoration(
+                  labelText: 'Current password',
+                  prefixIcon: const Icon(Icons.lock_outline),
+                  errorText: validationError,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setDialogState(() {
+                        busy = true;
+                        validationError = null;
+                      });
+                      final error = await controller.deleteAccount(
+                        passwordController.text,
+                      );
+                      if (!dialogContext.mounted) return;
+                      if (error != null) {
+                        setDialogState(() {
+                          busy = false;
+                          validationError = error;
+                        });
+                        return;
+                      }
+                      Navigator.pop(dialogContext);
+                    },
+              icon: busy
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.delete_forever_outlined),
+              label: const Text('Delete permanently'),
+            ),
+          ],
+        ),
+      ),
+    );
+    passwordController.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = controller.session;
@@ -1456,6 +1530,18 @@ class SecurityPage extends StatelessWidget {
                 session?.publicUsername.isNotEmpty == true
                     ? '@${session!.publicUsername}'
                     : 'Not set',
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.mark_email_read_outlined),
+              title: const Text('Two-factor email'),
+              subtitle: Text(
+                session?.email.isNotEmpty == true
+                    ? session!.email
+                    : 'Verified on the server',
               ),
             ),
           ),
@@ -1529,6 +1615,23 @@ class SecurityPage extends StatelessWidget {
               subtitle: Text(
                 'Text and media are encrypted before sending. Keep your account password private.',
               ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(
+                Icons.delete_forever_outlined,
+                color: Colors.redAccent,
+              ),
+              title: const Text(
+                'Delete account',
+                style: TextStyle(color: Colors.redAccent),
+              ),
+              subtitle: const Text('Permanently remove server data'),
+              onTap: session == null
+                  ? null
+                  : () => _confirmAccountDeletion(context),
             ),
           ),
         ],

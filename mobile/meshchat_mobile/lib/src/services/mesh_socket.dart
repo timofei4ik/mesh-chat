@@ -15,7 +15,7 @@ typedef StatusHandler = void Function(String status);
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '1.0.24';
+  static const appVersion = '1.0.57';
 
   MeshSocket({
     MutationOutboxStore? outboxStore,
@@ -217,8 +217,10 @@ class MeshSocket {
 
   Future<ConnectionDiagnostics> diagnose(
     Session session,
-    String publicKey,
-  ) async {
+    String publicKey, {
+    String emailChallengeId = '',
+    String emailCode = '',
+  }) async {
     _lastIdentityRecovery = '';
     final channel = WebSocketChannel.connect(Uri.parse(session.serverUrl));
     final startedAt = DateTime.now();
@@ -226,8 +228,13 @@ class MeshSocket {
       await channel.ready.timeout(const Duration(seconds: 10));
       channel.sink.add(
         jsonEncode({
-          ..._helloPacket(session, publicKey, null),
-          'node_id': 'login-check-${session.login}',
+          ..._helloPacket(
+            session,
+            publicKey,
+            null,
+            emailChallengeId: emailChallengeId,
+            emailCode: emailCode,
+          ),
           'auth_check': true,
         }),
       );
@@ -248,6 +255,8 @@ class MeshSocket {
           latency: latency,
           serverVersion: packet['server_version']?.toString() ?? 'unknown',
           serverProtocolRange: serverProtocolRange(packet),
+          code: packet['code']?.toString() ?? '',
+          data: packet,
         );
       }
       if (packet['type'] != 'server_welcome') {
@@ -273,6 +282,7 @@ class MeshSocket {
         latency: latency,
         serverVersion: packet['server_version']?.toString() ?? 'unknown',
         serverProtocolRange: serverProtocolRange(packet),
+        data: packet,
       );
     } catch (error) {
       return ConnectionDiagnostics(
@@ -806,6 +816,8 @@ class MeshSocket {
     Profile? profile, {
     String deviceName = '',
     bool reactivateDevice = false,
+    String emailChallengeId = '',
+    String emailCode = '',
   }) {
     final displayName = profile?.displayName.trim().isNotEmpty == true
         ? profile!.displayName
@@ -817,6 +829,10 @@ class MeshSocket {
       'server_token': session.serverToken,
       'login': session.login,
       'password': session.password,
+      'email': session.email,
+      'supports_email_2fa': true,
+      if (emailChallengeId.isNotEmpty) 'email_challenge_id': emailChallengeId,
+      if (emailCode.isNotEmpty) 'email_code': emailCode,
       'display_name': displayName,
       'public_username': session.publicUsername,
       'about': profile?.about,
@@ -934,6 +950,8 @@ class ConnectionDiagnostics {
     required this.latency,
     this.serverVersion = 'unknown',
     this.serverProtocolRange = '?',
+    this.code = '',
+    this.data = const <String, dynamic>{},
   });
 
   final bool ok;
@@ -941,4 +959,6 @@ class ConnectionDiagnostics {
   final Duration latency;
   final String serverVersion;
   final String serverProtocolRange;
+  final String code;
+  final Map<String, dynamic> data;
 }

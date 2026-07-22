@@ -24,6 +24,7 @@ class _LoginPageState extends State<LoginPage> {
   final tokenController = TextEditingController();
   final loginController = TextEditingController();
   final usernameController = TextEditingController();
+  final emailController = TextEditingController();
   final passwordController = TextEditingController();
   bool obscurePassword = true;
 
@@ -33,6 +34,7 @@ class _LoginPageState extends State<LoginPage> {
     tokenController.dispose();
     loginController.dispose();
     usernameController.dispose();
+    emailController.dispose();
     passwordController.dispose();
     super.dispose();
   }
@@ -57,7 +59,29 @@ class _LoginPageState extends State<LoginPage> {
       publicUsername: usernameController.text.trim().isEmpty
           ? login
           : usernameController.text,
+      email: emailController.text,
     );
+    if (!success &&
+        mounted &&
+        widget.controller.pendingEmailChallengeId.isNotEmpty) {
+      final code = await _showEmailCodeDialog(
+        widget.controller.pendingEmailMasked,
+      );
+      if (code == null || !mounted) return;
+      final verified = await widget.controller.login(
+        serverUrl: serverController.text,
+        token: tokenController.text,
+        login: login,
+        password: password,
+        publicUsername: usernameController.text.trim().isEmpty
+            ? login
+            : usernameController.text,
+        email: emailController.text,
+        emailChallengeId: widget.controller.pendingEmailChallengeId,
+        emailCode: code,
+      );
+      if (verified || !mounted) return;
+    }
     if (!success && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -70,6 +94,25 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> quickLogin(Session session) async {
     final success = await widget.controller.quickLogin(session);
+    if (!success &&
+        mounted &&
+        widget.controller.pendingEmailChallengeId.isNotEmpty) {
+      final code = await _showEmailCodeDialog(
+        widget.controller.pendingEmailMasked,
+      );
+      if (code == null || !mounted) return;
+      final verified = await widget.controller.login(
+        serverUrl: session.serverUrl,
+        token: session.serverToken,
+        login: session.login,
+        password: session.password,
+        publicUsername: session.publicUsername,
+        email: session.email,
+        emailChallengeId: widget.controller.pendingEmailChallengeId,
+        emailCode: code,
+      );
+      if (verified || !mounted) return;
+    }
     if (!success && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -86,6 +129,57 @@ class _LoginPageState extends State<LoginPage> {
     loginController.text = session.login;
     usernameController.text = session.publicUsername;
     passwordController.text = session.password;
+    emailController.text = session.email;
+  }
+
+  Future<String?> _showEmailCodeDialog(String maskedEmail) async {
+    final codeController = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Check your email'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Enter the 6-digit code sent to $maskedEmail.'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: codeController,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (value) {
+                if (value.trim().length == 6) {
+                  Navigator.pop(context, value.trim());
+                }
+              },
+              decoration: const InputDecoration(
+                labelText: 'Verification code',
+                prefixIcon: Icon(Icons.password_outlined),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = codeController.text.trim();
+              if (value.length == 6) Navigator.pop(context, value);
+            },
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+    codeController.dispose();
+    return result;
   }
 
   @override
@@ -159,6 +253,19 @@ class _LoginPageState extends State<LoginPage> {
                         decoration: const InputDecoration(
                           labelText: '@username',
                           prefixIcon: Icon(Icons.alternate_email),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.next,
+                        autofillHints: const [AutofillHints.email],
+                        decoration: const InputDecoration(
+                          labelText: 'Email',
+                          helperText:
+                              'Required for new accounts and new-device verification',
+                          prefixIcon: Icon(Icons.mail_outline),
                         ),
                       ),
                       const SizedBox(height: 12),
