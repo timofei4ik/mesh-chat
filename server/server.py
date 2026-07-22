@@ -542,6 +542,10 @@ class MeshRelayServer(
                             normalized_login,
                             "meshpro"
                         )
+                        welcome["account_group_ids"] = self.account_group_ids(
+                            normalized_login,
+                            node_id,
+                        )
                         welcome["encryption_recovery"] = (
                             self.get_account_encryption_recovery(
                                 normalized_login

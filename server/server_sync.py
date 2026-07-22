@@ -409,6 +409,23 @@ class ServerSyncMixin:
             result[key] = localized
         return result
 
+    def account_group_ids(self, login, node_id):
+        """Return the authoritative group membership set for an account."""
+        normalized_login = str(login or "").strip().lower()
+        normalized_node = str(node_id or "").strip()
+        if not normalized_login and not normalized_node:
+            return []
+        rows = self.db.execute(
+            """
+            SELECT DISTINCT group_id
+            FROM server_group_members
+            WHERE login=? OR node_id=?
+            ORDER BY group_id
+            """,
+            (normalized_login, normalized_node),
+        ).fetchall()
+        return [str(row[0]).strip() for row in rows if str(row[0]).strip()]
+
     def normalize_sync_v2_event_for_recipient(
         self,
         event,

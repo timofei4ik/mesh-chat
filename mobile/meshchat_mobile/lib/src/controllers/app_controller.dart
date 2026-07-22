@@ -2374,6 +2374,7 @@ class AppController extends ChangeNotifier {
         _applyingSyncDelta = false;
         _livePacketsDuringDeltaApply.clear();
         _applyMeshProSubscription(packet['subscription']);
+        await _reconcileServerGroupIds(packet['account_group_ids']);
         if (!MeshSocket.isProtocolCompatible(packet)) {
           status = MeshSocket.protocolError(packet);
         } else {
@@ -2621,6 +2622,32 @@ class AppController extends ChangeNotifier {
       });
     }
     notifyListeners();
+  }
+
+  Future<void> _reconcileServerGroupIds(dynamic rawGroupIds) async {
+    if (rawGroupIds is! List || session == null) return;
+    final serverGroupIds = rawGroupIds
+        .map((value) => value.toString().trim())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    final localGroupIds = groups.keys
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    final hiddenServerGroups = appSettings.deletedGroupIds
+        .where(serverGroupIds.contains)
+        .toList(growable: false);
+    if (setEquals(serverGroupIds, localGroupIds) &&
+        hiddenServerGroups.isEmpty) {
+      return;
+    }
+
+    for (final groupId in hiddenServerGroups) {
+      await _forgetDeletedGroup(groupId);
+    }
+    _requestAuthoritativeSnapshot(
+      'server group membership differs from local cache',
+    );
   }
 
   Future<void> _handleBluetoothPacket(Map<String, dynamic> packet) async {

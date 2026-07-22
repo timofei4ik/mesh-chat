@@ -72,6 +72,32 @@ class SyncV2ContractTests(unittest.TestCase):
             [login],
         )
 
+    def test_account_group_ids_follow_account_membership(self):
+        self.register_device("alice", "alice-phone")
+        self.register_device("alice", "alice-desktop")
+        self.register_device("bob", "bob-phone")
+        self.relay.save_history_packet(
+            {
+                "type": "group_update",
+                "packet_id": "group-update:shared",
+                "operation_id": "group_update:shared",
+                "group_id": "shared-group",
+                "group_name": "Shared",
+                "owner_node": "bob-phone",
+                "members": ["bob-phone", "alice-desktop"],
+                "admins": [],
+            }
+        )
+
+        self.assertEqual(
+            self.relay.account_group_ids("alice", "alice-phone"),
+            ["shared-group"],
+        )
+        self.assertEqual(
+            self.relay.account_group_ids("alice", "alice-desktop"),
+            ["shared-group"],
+        )
+
     def direct_mutation(self, message_id="atomic-message"):
         operation_id = f"chat_message:{message_id}"
         return (
