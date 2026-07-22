@@ -211,7 +211,10 @@ class GroupInfoPage extends StatelessWidget {
   void openProfile(BuildContext context, Profile profile) {
     Navigator.push<void>(
       context,
-      meshPageRoute<void>(builder: (_) => ProfilePage(profile: profile)),
+      meshPageRoute<void>(
+        builder: (_) => ProfilePage(profile: profile),
+        preserveLiquidGlass: true,
+      ),
     );
   }
 

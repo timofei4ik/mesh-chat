@@ -1913,7 +1913,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
     await Navigator.push<void>(
       context,
-      meshPageRoute<void>(builder: buildProfile),
+      meshPageRoute<void>(builder: buildProfile, preserveLiquidGlass: true),
     );
   }
 
@@ -1932,6 +1932,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     Navigator.push<void>(
       context,
       meshPageRoute<void>(
+        preserveLiquidGlass: true,
         builder: (_) =>
             GroupInfoPage(controller: widget.controller, thread: widget.thread),
       ),

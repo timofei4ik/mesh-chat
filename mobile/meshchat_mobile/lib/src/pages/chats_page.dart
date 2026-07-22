@@ -371,6 +371,7 @@ class ChatsPage extends StatelessWidget {
     Navigator.push(
       context,
       meshPageRoute<void>(
+        preserveLiquidGlass: true,
         builder: (profileContext) => ProfilePage(
           profile: profile,
           controller: controller,
@@ -404,6 +405,7 @@ class ChatsPage extends StatelessWidget {
     Navigator.push(
       context,
       meshPageRoute<void>(
+        preserveLiquidGlass: true,
         builder: (_) => EditProfilePage(controller: controller),
       ),
     );

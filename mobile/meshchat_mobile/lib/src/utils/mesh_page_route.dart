@@ -12,6 +12,7 @@ class MeshRouteTransition {
 Route<T> meshPageRoute<T>({
   required WidgetBuilder builder,
   RouteSettings? settings,
+  bool preserveLiquidGlass = false,
 }) {
   final mobile =
       !kIsWeb &&
@@ -22,6 +23,7 @@ Route<T> meshPageRoute<T>({
       builder: (context) => _MeshRoutePerformanceGate(child: builder(context)),
       settings: settings,
       allowSnapshotting: true,
+      preserveLiquidGlass: preserveLiquidGlass,
     );
   }
 
@@ -80,13 +82,17 @@ class _MeshCupertinoPageRoute<T> extends CupertinoPageRoute<T> {
     required super.builder,
     super.settings,
     super.allowSnapshotting,
+    required this.preserveLiquidGlass,
   });
+
+  final bool preserveLiquidGlass;
 
   AnimationStatusListener? _statusListener;
 
   @override
   void install() {
     super.install();
+    if (preserveLiquidGlass) return;
     _statusListener = (status) {
       MeshRouteTransition.active.value =
           status == AnimationStatus.forward ||
@@ -97,7 +103,7 @@ class _MeshCupertinoPageRoute<T> extends CupertinoPageRoute<T> {
 
   @override
   TickerFuture didPush() {
-    MeshRouteTransition.active.value = true;
+    if (!preserveLiquidGlass) MeshRouteTransition.active.value = true;
     return super.didPush();
   }
 
@@ -105,7 +111,7 @@ class _MeshCupertinoPageRoute<T> extends CupertinoPageRoute<T> {
   void dispose() {
     final listener = _statusListener;
     if (listener != null) animation?.removeStatusListener(listener);
-    if (MeshRouteTransition.active.value) {
+    if (!preserveLiquidGlass && MeshRouteTransition.active.value) {
       MeshRouteTransition.active.value = false;
     }
     super.dispose();
