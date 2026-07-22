@@ -3086,15 +3086,20 @@ class AppController extends ChangeNotifier {
       final groupId = data['group_id']?.toString() ?? '';
       if (groupId.isEmpty) continue;
       syncedGroupIds.add(groupId);
-      final incomingMembers = _stringList(data['members']);
-      final includesMe = incomingMembers.contains(myNodeId);
+      final rawMembers = _stringList(data['members']);
+      final incomingMembers = _normalizedGroupMembers(rawMembers);
+      final includesMe = rawMembers.any(_isOwnAccountNode);
+      final incomingOwner = _normalizedGroupOwner(
+        data['owner_node']?.toString() ?? '',
+        incomingMembers,
+      );
       if (appSettings.deletedGroupIds.contains(groupId)) {
         if (!includesMe) continue;
         await _forgetDeletedGroup(groupId);
       }
       if (!appSettings.allowGroupInvites &&
           !groups.containsKey(groupId) &&
-          data['owner_node']?.toString() != myNodeId &&
+          incomingOwner != myNodeId &&
           !includesMe) {
         continue;
       }
@@ -3102,7 +3107,7 @@ class AppController extends ChangeNotifier {
         groupId: groupId,
         groupName: data['group_name']?.toString() ?? 'Группа',
         members: incomingMembers,
-        ownerNode: data['owner_node']?.toString() ?? '',
+        ownerNode: incomingOwner,
         admins: _stringList(data['admins']),
         isChannel: data['is_channel'] == true,
         commentsEnabled: data.containsKey('comments_enabled')
@@ -3242,6 +3247,7 @@ class AppController extends ChangeNotifier {
         normalized.length == group.members.length &&
         normalized.every(group.members.contains);
     final normalizedAdmins = group.admins
+        .map(_normalizeOwnAccountNode)
         .where((admin) => normalized.contains(admin))
         .toSet()
         .toList();
@@ -3264,16 +3270,42 @@ class AppController extends ChangeNotifier {
   }
 
   String _normalizedGroupOwner(String ownerNode, List<String> members) {
-    final owner = ownerNode.trim();
+    final owner = _normalizeOwnAccountNode(ownerNode);
     if (owner.isEmpty) return '';
     if (owner == myNodeId) return myNodeId;
     if (_isLegacyGroupOwnerPlaceholder(owner)) return '';
     return owner;
   }
 
+  bool _isOwnAccountNode(String nodeId) {
+    final candidateNode = nodeId.trim();
+    final current = session;
+    if (candidateNode.isEmpty || current == null) return false;
+    if (candidateNode == current.nodeId) return true;
+
+    final own = profiles[current.nodeId];
+    if (own?.nodeAliases.contains(candidateNode) == true) return true;
+
+    final login = current.login.trim().toLowerCase();
+    if (login.isEmpty) return false;
+    for (final profile in profiles.values) {
+      if (profile.accountLogin.trim().toLowerCase() != login) continue;
+      if (profile.nodeId == candidateNode ||
+          profile.nodeAliases.contains(candidateNode)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String _normalizeOwnAccountNode(String nodeId) {
+    final candidateNode = nodeId.trim();
+    return _isOwnAccountNode(candidateNode) ? myNodeId : candidateNode;
+  }
+
   bool _isLegacyGroupOwnerPlaceholder(String nodeId) {
     final value = nodeId.trim();
-    if (value.isEmpty || value == myNodeId) return false;
+    if (value.isEmpty || _isOwnAccountNode(value)) return false;
     final uuidLike = RegExp(
       r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
     ).hasMatch(value);
@@ -3284,7 +3316,7 @@ class AppController extends ChangeNotifier {
     final result = <String>{
       ...members
           .where((id) => id.trim().isNotEmpty)
-          .map((id) => id.trim())
+          .map(_normalizeOwnAccountNode)
           .where((id) => !_isLegacyGroupOwnerPlaceholder(id)),
     }.toList();
     result.sort();
@@ -3326,6 +3358,7 @@ class AppController extends ChangeNotifier {
     }
     final adminBase = hasIncomingMembers ? normalizedMembers : ownerBaseMembers;
     final normalizedAdmins = admins
+        .map(_normalizeOwnAccountNode)
         .where((admin) => adminBase.contains(admin))
         .toSet()
         .toList();
@@ -3664,21 +3697,26 @@ class AppController extends ChangeNotifier {
   Future<void> _receiveGroupUpdate(Map<String, dynamic> packet) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
-    final incomingMembers = _stringList(packet['members']);
-    final includesMe = incomingMembers.contains(myNodeId);
+    final rawMembers = _stringList(packet['members']);
+    final incomingMembers = _normalizedGroupMembers(rawMembers);
+    final includesMe = rawMembers.any(_isOwnAccountNode);
+    final incomingOwner = _normalizedGroupOwner(
+      packet['owner_node']?.toString() ?? '',
+      incomingMembers,
+    );
     if (appSettings.deletedGroupIds.contains(groupId)) {
       if (!includesMe) return;
       await _forgetDeletedGroup(groupId);
     }
     if (!appSettings.allowGroupInvites &&
         !groups.containsKey(groupId) &&
-        packet['owner_node']?.toString() != myNodeId &&
+        incomingOwner != myNodeId &&
         !includesMe) {
       return;
     }
     if (groups.containsKey(groupId) &&
         incomingMembers.isNotEmpty &&
-        !incomingMembers.contains(myNodeId)) {
+        !includesMe) {
       await _rememberDeletedGroup(groupId);
       groups.remove(groupId);
       _groupKeys.remove(groupId);
@@ -3693,7 +3731,7 @@ class AppController extends ChangeNotifier {
       groupId: groupId,
       groupName: packet['group_name']?.toString() ?? 'Группа',
       members: incomingMembers,
-      ownerNode: packet['owner_node']?.toString() ?? '',
+      ownerNode: incomingOwner,
       admins: _stringList(packet['admins']),
       isChannel: packet['is_channel'] == true,
       commentsEnabled: packet.containsKey('comments_enabled')
@@ -5151,7 +5189,18 @@ class AppController extends ChangeNotifier {
         packet['leaver_node']?.toString() ??
         packet['source_node']?.toString() ??
         '';
-    if (groupId.isEmpty || leaver.isEmpty || leaver == myNodeId) return;
+    if (groupId.isEmpty || leaver.isEmpty) return;
+    if (_isOwnAccountNode(leaver)) {
+      await _rememberDeletedGroup(groupId);
+      groups.remove(groupId);
+      _groupKeys.remove(groupId);
+      _groupKeyHistory.remove(groupId);
+      typingUntil.remove(groupId);
+      activityKinds.remove(groupId);
+      await _rewriteCache();
+      notifyListeners();
+      return;
+    }
     final group = groups[groupId];
     if (group == null || !group.members.contains(leaver)) return;
     group.members.removeWhere((member) => member == leaver);
@@ -5165,7 +5214,7 @@ class AppController extends ChangeNotifier {
   bool _ownsGroup(ChatThread thread) {
     if (!thread.isGroup) return false;
     final owner = thread.ownerNode.trim();
-    return owner == myNodeId;
+    return _isOwnAccountNode(owner);
   }
 
   Future<void> _applyThreadDeletePacket(Map<String, dynamic> packet) async {

@@ -164,6 +164,96 @@ class SyncV2ContractTests(unittest.TestCase):
             self.assertTrue(self.relay.sync_v2_delta_enabled_for("Alice"))
             self.assertFalse(self.relay.sync_v2_delta_enabled_for("bob"))
 
+    def test_group_identity_is_localized_for_each_account_device(self):
+        self.register_device("alice", "alice-phone")
+        self.register_device("alice", "alice-desktop")
+        self.register_device("bob", "bob-phone")
+        self.relay.save_group_members(
+            "group-a",
+            "Shared group",
+            ["alice-desktop", "bob-phone"],
+            owner_node="alice-desktop",
+            admins=["alice-desktop"],
+        )
+
+        for own_node, sibling_node in (
+            ("alice-phone", "alice-desktop"),
+            ("alice-desktop", "alice-phone"),
+        ):
+            snapshot = self.relay.build_sync_packet("alice", own_node)
+            self.assertEqual(1, len(snapshot["groups"]))
+            snapshot_group = snapshot["groups"][0]
+            self.assertEqual("group-a", snapshot_group["group_id"])
+            self.assertEqual(own_node, snapshot_group["owner_node"])
+            self.assertIn(own_node, snapshot_group["members"])
+            self.assertNotIn(sibling_node, snapshot_group["members"])
+            self.assertEqual([], snapshot_group["admins"])
+
+        packet = {
+            "type": "group_update",
+            "packet_id": "group-update-from-desktop",
+            "operation_id": "group_update:group-a:desktop",
+            "source_node": "alice-desktop",
+            "destination_node": "bob-phone",
+            "group_id": "group-a",
+            "group_name": "Shared group",
+            "owner_node": "alice-desktop",
+            "members": ["alice-desktop", "bob-phone"],
+            "admins": ["alice-desktop"],
+        }
+
+        localized = self.relay.normalize_group_packet_for_recipient(
+            packet,
+            "alice",
+            "alice-phone",
+        )
+
+        self.assertEqual("alice-phone", localized["owner_node"])
+        self.assertEqual(
+            ["alice-phone", "bob-phone"],
+            localized["members"],
+        )
+        self.assertEqual(["alice-phone"], localized["admins"])
+        self.assertEqual("alice-desktop", localized["source_node"])
+
+        self.record_message_event("alice", "before-group-update")
+        source_cursor = self.relay.sync_v2_cursor("alice")
+        self.relay.record_sync_v2_event(packet, ["alice"])
+        websocket = CapturingWebSocket()
+        asyncio.run(
+            self.relay.send_account_sync(
+                websocket,
+                "alice",
+                "alice-phone",
+                supports_sync_v2=True,
+                supports_sync_v2_delta=True,
+                requested_sync_cursor=source_cursor,
+            )
+        )
+
+        delta_begin = websocket.sent[0]
+        delta_event = websocket.sent[1]["event"]
+        delta_payload = delta_event["payload"]
+        self.assertEqual("alice-phone", delta_payload["owner_node"])
+        self.assertIn("alice-phone", delta_payload["members"])
+        self.assertNotIn("alice-desktop", delta_payload["members"])
+        self.assertEqual(
+            server_sync.sync_v2_delta_digest([delta_event]),
+            delta_begin["event_digest_sha256"],
+        )
+
+        live_socket = CapturingWebSocket()
+        self.relay.clients["alice-phone"] = live_socket
+        asyncio.run(
+            self.relay.route_packet(
+                {**packet, "destination_node": "alice-desktop"}
+            )
+        )
+        live_payload = live_socket.sent[-1]
+        self.assertEqual("alice-phone", live_payload["owner_node"])
+        self.assertIn("alice-phone", live_payload["members"])
+        self.assertNotIn("alice-desktop", live_payload["members"])
+
     def test_cursor_ack_is_per_device_monotonic_and_rejects_future(self):
         self.record_message_event("alice", "message-a")
         self.record_message_event("alice", "message-b")

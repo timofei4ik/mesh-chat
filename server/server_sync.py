@@ -367,6 +367,68 @@ class ServerSyncMixin:
             separators=(",", ":")
         )
 
+    def normalize_group_packet_for_recipient(
+        self,
+        packet,
+        recipient_login,
+        recipient_node,
+    ):
+        """Localize this account's group identity to the receiving device."""
+        if not isinstance(packet, dict) or not packet.get("group_id"):
+            return packet
+
+        normalized_login = str(recipient_login or "").strip().lower()
+        normalized_node = str(recipient_node or "").strip()
+        if not normalized_login or not normalized_node:
+            return packet
+
+        def localize(value):
+            node_value = str(value or "").strip()
+            if not node_value:
+                return ""
+            value_login = str(
+                self.get_login_by_node(node_value) or ""
+            ).strip().lower()
+            if value_login == normalized_login:
+                return normalized_node
+            return node_value
+
+        result = dict(packet)
+        for key in ("owner_node", "leaver_node"):
+            if key in result:
+                result[key] = localize(result.get(key))
+        for key in ("members", "admins"):
+            values = result.get(key)
+            if not isinstance(values, list):
+                continue
+            localized = []
+            for value in values:
+                node_value = localize(value)
+                if node_value and node_value not in localized:
+                    localized.append(node_value)
+            result[key] = localized
+        return result
+
+    def normalize_sync_v2_event_for_recipient(
+        self,
+        event,
+        recipient_login,
+        recipient_node,
+    ):
+        if not isinstance(event, dict):
+            return event
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return event
+        normalized_payload = self.normalize_group_packet_for_recipient(
+            payload,
+            recipient_login,
+            recipient_node,
+        )
+        if normalized_payload is payload:
+            return event
+        return {**event, "payload": normalized_payload}
+
     def record_sync_v2_event(self, packet, account_logins):
         packet_type = str(packet.get("type") or "").strip()
         if packet_type not in SYNC_V2_EVENT_PACKET_TYPES:
@@ -1542,7 +1604,14 @@ class ServerSyncMixin:
 
         if supports_sync_v2 and sync_plan["mode"] == "delta":
             sync_id = str(uuid4())
-            events = sync_plan["events"]
+            events = [
+                self.normalize_sync_v2_event_for_recipient(
+                    event,
+                    login,
+                    node_id,
+                )
+                for event in sync_plan["events"]
+            ]
             event_digest = sync_v2_delta_digest(events)
             await websocket.send(
                 json.dumps(

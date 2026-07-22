@@ -1917,6 +1917,11 @@ class MeshRelayServer(
                         "destination_node": target_node,
                         "original_destination_node": destination_node,
                     }
+                routed_packet = self.normalize_group_packet_for_recipient(
+                    routed_packet,
+                    destination_login,
+                    target_node,
+                )
                 await target_socket.send(
                     json.dumps(routed_packet, ensure_ascii=False)
                 )
@@ -2012,13 +2017,18 @@ class MeshRelayServer(
             target_socket = self.clients.get(target_node)
             if not target_socket:
                 continue
+            mirrored_packet = self.normalize_group_packet_for_recipient(
+                {
+                    **packet,
+                    "account_mirror": True,
+                    "original_destination_node": original_destination,
+                },
+                source_login,
+                target_node,
+            )
             await target_socket.send(
                 json.dumps(
-                    {
-                        **packet,
-                        "account_mirror": True,
-                        "original_destination_node": original_destination,
-                    },
+                    mirrored_packet,
                     ensure_ascii=False,
                 )
             )
