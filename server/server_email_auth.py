@@ -4,6 +4,7 @@ import re
 import secrets
 import smtplib
 from email.message import EmailMessage
+from email.utils import formataddr, formatdate, make_msgid
 
 try:
     from server.config import (
@@ -12,6 +13,7 @@ try:
         EMAIL_2FA_RESEND_SECONDS,
         EMAIL_2FA_SECRET,
         SMTP_FROM_EMAIL,
+        SMTP_FROM_NAME,
         SMTP_HOST,
         SMTP_PASSWORD,
         SMTP_PORT,
@@ -26,6 +28,7 @@ except ModuleNotFoundError:
         EMAIL_2FA_RESEND_SECONDS,
         EMAIL_2FA_SECRET,
         SMTP_FROM_EMAIL,
+        SMTP_FROM_NAME,
         SMTP_HOST,
         SMTP_PASSWORD,
         SMTP_PORT,
@@ -269,8 +272,14 @@ class ServerEmailAuthMixin:
             raise RuntimeError("SMTP is not configured")
         message = EmailMessage()
         message["Subject"] = "MeshChat verification code"
-        message["From"] = SMTP_FROM_EMAIL
+        message["From"] = formataddr(
+            (SMTP_FROM_NAME or "MeshChat", SMTP_FROM_EMAIL)
+        )
         message["To"] = email
+        message["Date"] = formatdate(localtime=False)
+        message["Message-ID"] = make_msgid(
+            domain=SMTP_FROM_EMAIL.rsplit("@", 1)[-1]
+        )
         action = "finish registration" if purpose == "registration" else "confirm this device"
         if purpose == "binding":
             action = "bind this email to your MeshChat account"

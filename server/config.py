@@ -256,6 +256,7 @@ SMTP_PORT = int(os.environ.get("MESH_SMTP_PORT", "587"))
 SMTP_USERNAME = os.environ.get("MESH_SMTP_USERNAME", "").strip()
 SMTP_PASSWORD = os.environ.get("MESH_SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.environ.get("MESH_SMTP_FROM_EMAIL", SMTP_USERNAME).strip()
+SMTP_FROM_NAME = os.environ.get("MESH_SMTP_FROM_NAME", "MeshChat").strip()
 SMTP_USE_TLS = os.environ.get("MESH_SMTP_USE_TLS", "1").strip().lower() in {
     "1", "true", "yes", "on"
 }
