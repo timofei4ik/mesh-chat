@@ -21,6 +21,20 @@ DB_PATH = Path(
     )
 )
 
+DATABASE_URL = os.environ.get(
+    "MESH_DATABASE_URL",
+    "",
+).strip()
+
+DATABASE_BACKEND = os.environ.get(
+    "MESH_DATABASE_BACKEND",
+    "sqlite",
+).strip().lower()
+if DATABASE_BACKEND not in {"sqlite", "postgres"}:
+    raise RuntimeError(
+        "MESH_DATABASE_BACKEND must be 'sqlite' or 'postgres'"
+    )
+
 SYNC_V2_DELTA_ENABLED = os.environ.get(
     "MESH_SYNC_V2_DELTA_ENABLED",
     "0",

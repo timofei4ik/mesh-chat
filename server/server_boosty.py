@@ -265,24 +265,11 @@ class ServerBoostyMixin:
         telegram_user_id = int(sender["id"])
         private_chat_id = int(chat["id"])
         username = str(sender.get("username") or "")[:64]
-        with self.db:
-            self.db.execute(
-                """
-                INSERT INTO boosty_key_recipients(
-                    telegram_user_id,
-                    private_chat_id,
-                    telegram_username,
-                    status,
-                    next_key_at,
-                    updated_at
-                )
-                VALUES(?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(telegram_user_id) DO UPDATE SET
-                    private_chat_id=excluded.private_chat_id,
-                    telegram_username=excluded.telegram_username,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (telegram_user_id, private_chat_id, username),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.upsert_boosty_recipient(
+                telegram_user_id,
+                private_chat_id,
+                username,
             )
 
     async def _boosty_handle_callback(self, callback):
@@ -437,17 +424,10 @@ class ServerBoostyMixin:
                 "Не удалось проверить Boosty. Попробуйте чуть позже.",
             )
             return
-        with self.db:
-            self.db.execute(
-                """
-                UPDATE boosty_key_recipients
-                SET status=?,
-                    last_membership_check_at=CURRENT_TIMESTAMP,
-                    last_error='',
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE telegram_user_id=?
-                """,
-                ("active" if active else "inactive", telegram_user_id),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.update_boosty_membership(
+                telegram_user_id,
+                "active" if active else "inactive",
             )
         if not active:
             await self._boosty_send_message(
@@ -478,42 +458,17 @@ class ServerBoostyMixin:
         if wait_seconds > 0:
             return None, wait_seconds
         code, code_hash = self._boosty_generate_code()
-        interval_modifier = (
-            f"+{max(1, int(BOOSTY_KEY_ISSUE_INTERVAL_DAYS))} days"
-        )
-        with self.db:
-            self.db.execute(
-                """
-                INSERT INTO boosty_activation_codes(
-                    code_hash,
-                    telegram_user_id,
-                    telegram_username,
-                    duration_days,
-                    issue_kind,
-                    expires_at
-                )
-                VALUES(?, ?, ?, ?, 'subscriber', ?)
-                """,
-                (
-                    code_hash,
-                    telegram_user_id,
-                    str(telegram_username or "")[:64],
-                    max(1, int(BOOSTY_KEY_DURATION_DAYS)),
-                    BOOSTY_KEY_NEVER_EXPIRES_AT,
-                ),
-            )
-            self.db.execute(
-                """
-                UPDATE boosty_key_recipients
-                SET status='active',
-                    last_membership_check_at=CURRENT_TIMESTAMP,
-                    last_key_issued_at=CURRENT_TIMESTAMP,
-                    next_key_at=DATETIME('now', ?),
-                    last_error='',
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE telegram_user_id=?
-                """,
-                (interval_modifier, telegram_user_id),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.issue_boosty_subscriber_code(
+                {
+                    "code_hash": code_hash,
+                    "telegram_user_id": telegram_user_id,
+                    "telegram_username": telegram_username,
+                    "duration_days": max(1, int(BOOSTY_KEY_DURATION_DAYS)),
+                    "issue_kind": "subscriber",
+                    "expires_at": BOOSTY_KEY_NEVER_EXPIRES_AT,
+                },
+                BOOSTY_KEY_ISSUE_INTERVAL_DAYS,
             )
         return code, 0
 
@@ -530,27 +485,16 @@ class ServerBoostyMixin:
             min(3660, int(duration_days or BOOSTY_KEY_DURATION_DAYS)),
         )
         normalized_kind = str(issue_kind or "gift")[:24]
-        with self.db:
-            self.db.execute(
-                """
-                INSERT INTO boosty_activation_codes(
-                    code_hash,
-                    telegram_user_id,
-                    telegram_username,
-                    duration_days,
-                    issue_kind,
-                    expires_at
-                )
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    code_hash,
-                    int(telegram_user_id),
-                    str(telegram_username or "")[:64],
-                    duration_days,
-                    normalized_kind,
-                    BOOSTY_KEY_NEVER_EXPIRES_AT,
-                ),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.create_boosty_code(
+                {
+                    "code_hash": code_hash,
+                    "telegram_user_id": int(telegram_user_id),
+                    "telegram_username": telegram_username,
+                    "duration_days": duration_days,
+                    "issue_kind": normalized_kind,
+                    "expires_at": BOOSTY_KEY_NEVER_EXPIRES_AT,
+                }
             )
         return code
 
@@ -567,26 +511,10 @@ class ServerBoostyMixin:
         return code, self._boosty_code_hash(code)
 
     def _boosty_key_wait_seconds(self, telegram_user_id):
-        row = self.db.execute(
-            """
-            SELECT CASE
-                WHEN next_key_at IS NULL
-                  OR next_key_at <= CURRENT_TIMESTAMP
-                THEN 0
-                ELSE MAX(
-                    1,
-                    CAST(
-                        (JULIANDAY(next_key_at) - JULIANDAY('now')) * 86400
-                        AS INTEGER
-                    )
-                )
-            END
-            FROM boosty_key_recipients
-            WHERE telegram_user_id=?
-            """,
-            (int(telegram_user_id),),
-        ).fetchone()
-        return max(0, int(row[0] or 0)) if row else 0
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.subscriptions.boosty_key_wait_seconds(
+                int(telegram_user_id)
+            )
 
     def _boosty_format_wait(self, seconds):
         seconds = max(0, int(seconds or 0))
@@ -632,34 +560,18 @@ class ServerBoostyMixin:
             raise BoostyActivationError("invalid_credentials")
 
         code_hash = self._boosty_code_hash(code)
-        row = self.db.execute(
-            """
-            SELECT telegram_user_id, duration_days, issue_kind
-            FROM boosty_activation_codes
-            WHERE code_hash=?
-              AND consumed_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
-            """,
-            (code_hash,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.subscriptions.active_boosty_code(code_hash)
         if not row:
             raise BoostyActivationError("invalid_or_expired_code")
         telegram_user_id = int(row[0])
         duration_days = max(1, min(3660, int(row[1] or 30)))
         issue_kind = str(row[2] or "legacy")
-        with self.db:
-            consumed = self.db.execute(
-                """
-                UPDATE boosty_activation_codes
-                SET consumed_at=CURRENT_TIMESTAMP,
-                    redeemed_login=?
-                WHERE code_hash=?
-                  AND consumed_at IS NULL
-                  AND expires_at > CURRENT_TIMESTAMP
-                """,
-                (normalized_login, code_hash),
-            )
-            if consumed.rowcount != 1:
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            if not unit_of_work.subscriptions.consume_boosty_code(
+                code_hash,
+                normalized_login,
+            ):
                 raise BoostyActivationError("invalid_or_expired_code")
 
         subscription = self.grant_subscription(
@@ -697,13 +609,8 @@ class ServerBoostyMixin:
                 "issued": 0,
                 "errors": 0,
             }
-        rows = self.db.execute(
-            """
-            SELECT telegram_user_id, private_chat_id, telegram_username
-            FROM boosty_key_recipients
-            ORDER BY COALESCE(last_membership_check_at, created_at)
-            """
-        ).fetchall()
+        with self.unit_of_work_factory() as unit_of_work:
+            rows = unit_of_work.subscriptions.boosty_recipients()
         stats = {
             "checked": 0,
             "active": 0,
@@ -719,36 +626,17 @@ class ServerBoostyMixin:
                 )
             except BoostyTelegramError as error:
                 stats["errors"] += 1
-                with self.db:
-                    self.db.execute(
-                        """
-                        UPDATE boosty_key_recipients
-                        SET last_membership_check_at=CURRENT_TIMESTAMP,
-                            last_error=?,
-                            updated_at=CURRENT_TIMESTAMP
-                        WHERE telegram_user_id=?
-                        """,
-                        (
-                            self._boosty_safe_error(error)[:180],
-                            telegram_user_id,
-                        ),
+                with self.unit_of_work_factory(write=True) as unit_of_work:
+                    unit_of_work.subscriptions.update_boosty_membership(
+                        telegram_user_id,
+                        error=self._boosty_safe_error(error),
                     )
                 continue
 
-            with self.db:
-                self.db.execute(
-                    """
-                    UPDATE boosty_key_recipients
-                    SET status=?,
-                        last_membership_check_at=CURRENT_TIMESTAMP,
-                        last_error='',
-                        updated_at=CURRENT_TIMESTAMP
-                    WHERE telegram_user_id=?
-                    """,
-                    (
-                        "active" if active else "inactive",
-                        telegram_user_id,
-                    ),
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.subscriptions.update_boosty_membership(
+                    telegram_user_id,
+                    "active" if active else "inactive",
                 )
 
             if not active:
@@ -790,32 +678,12 @@ class ServerBoostyMixin:
         error,
     ):
         code_hash = self._boosty_code_hash(code)
-        with self.db:
-            deleted = self.db.execute(
-                """
-                DELETE FROM boosty_activation_codes
-                WHERE code_hash=?
-                  AND telegram_user_id=?
-                  AND issue_kind='subscriber'
-                  AND consumed_at IS NULL
-                """,
-                (code_hash, int(telegram_user_id)),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.revert_boosty_subscriber_code(
+                code_hash,
+                int(telegram_user_id),
+                self._boosty_safe_error(error),
             )
-            if deleted.rowcount:
-                self.db.execute(
-                    """
-                    UPDATE boosty_key_recipients
-                    SET last_key_issued_at=NULL,
-                        next_key_at=CURRENT_TIMESTAMP,
-                        last_error=?,
-                        updated_at=CURRENT_TIMESTAMP
-                    WHERE telegram_user_id=?
-                    """,
-                    (
-                        self._boosty_safe_error(error)[:180],
-                        int(telegram_user_id),
-                    ),
-                )
 
     async def _boosty_user_is_member(self, telegram_user_id):
         member = await self._boosty_get_chat_member(
@@ -915,14 +783,8 @@ class ServerBoostyMixin:
         return data.get("result")
 
     def _boosty_cleanup_codes(self):
-        self.db.execute(
-            """
-            DELETE FROM boosty_activation_codes
-            WHERE (expires_at <= CURRENT_TIMESTAMP AND consumed_at IS NULL)
-               OR consumed_at < DATETIME('now', '-400 days')
-            """
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.cleanup_boosty_codes()
 
     def _boosty_code_hash(self, code):
         normalized = re.sub(r"[^A-Z0-9]", "", str(code or "").upper())

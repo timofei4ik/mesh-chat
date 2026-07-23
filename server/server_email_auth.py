@@ -59,98 +59,60 @@ class ServerEmailAuthMixin:
         return f"{visible}{'*' * max(2, len(local) - len(visible))}@{domain}"
 
     def account_email(self, login):
-        row = self.db.execute(
-            """
-            SELECT COALESCE(email, ''), email_verified_at
-            FROM accounts
-            WHERE login=?
-            """,
-            (str(login or "").strip().lower(),),
-        ).fetchone()
-        if not row or not row[1]:
-            return ""
-        return self.normalize_email(row[0])
+        with self.unit_of_work_factory() as unit_of_work:
+            return self.normalize_email(
+                unit_of_work.identity.verified_email(login)
+            )
 
     def account_exists(self, login):
-        return self.db.execute(
-            "SELECT 1 FROM accounts WHERE login=?",
-            (str(login or "").strip().lower(),),
-        ).fetchone() is not None
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.identity.account_exists(login)
 
     def email_binding_required(self, login):
         return self.account_exists(login) and not self.account_email(login)
 
     def verify_account_password(self, login, password):
-        row = self.db.execute(
-            "SELECT password_salt, password_hash FROM accounts WHERE login=?",
-            (str(login or "").strip().lower(),),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.identity.credentials(login)
         if not row:
             return False
         candidate = self.hash_password(str(password or ""), row[0])
         return secrets.compare_digest(candidate, row[1])
 
     def is_email_device_trusted(self, login, node_id):
-        row = self.db.execute(
-            """
-            SELECT 1
-            FROM account_email_trusted_devices
-            WHERE login=? AND node_id=?
-            """,
-            (
-                str(login or "").strip().lower(),
-                str(node_id or "").strip(),
-            ),
-        ).fetchone()
-        return row is not None
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.identity.is_email_device_trusted(
+                login,
+                node_id,
+            )
 
     def trust_email_device(self, login, node_id):
         normalized_login = str(login or "").strip().lower()
         normalized_node = str(node_id or "").strip()
         if not normalized_login or not normalized_node:
             return
-        self.db.execute(
-            """
-            INSERT INTO account_email_trusted_devices(login, node_id, verified_at)
-            VALUES(?,?,CURRENT_TIMESTAMP)
-            ON CONFLICT(login, node_id) DO UPDATE SET
-                verified_at=CURRENT_TIMESTAMP
-            """,
-            (normalized_login, normalized_node),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.trust_email_device(
+                normalized_login,
+                normalized_node,
+            )
 
     def bind_account_email(self, login, email, node_id):
         normalized_login = str(login or "").strip().lower()
         normalized_email = self.normalize_email(email)
         if not normalized_login or not normalized_email:
             return False, "invalid_email"
-        owner = self.db.execute(
-            """
-            SELECT login FROM accounts
-            WHERE lower(email)=? AND email_verified_at IS NOT NULL AND login!=?
-            """,
-            (normalized_email, normalized_login),
-        ).fetchone()
-        if owner:
-            return False, "email_already_used"
-        with self.db:
-            self.db.execute(
-                """
-                UPDATE accounts
-                SET email=?, email_verified_at=CURRENT_TIMESTAMP
-                WHERE login=?
-                """,
-                (normalized_email, normalized_login),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            owner = unit_of_work.identity.email_owner(
+                normalized_email,
+                normalized_login,
             )
-            self.db.execute(
-                """
-                INSERT INTO account_email_trusted_devices(login, node_id, verified_at)
-                VALUES(?,?,CURRENT_TIMESTAMP)
-                ON CONFLICT(login, node_id) DO UPDATE SET
-                    verified_at=CURRENT_TIMESTAMP
-                """,
-                (normalized_login, str(node_id or "").strip()),
+            if owner:
+                return False, "email_already_used"
+            unit_of_work.identity.bind_email(
+                normalized_login,
+                normalized_email,
+                node_id,
             )
         return True, "ok"
 
@@ -167,40 +129,40 @@ class ServerEmailAuthMixin:
         normalized_email = self.normalize_email(email)
         if not normalized_login or not normalized_node or not normalized_email:
             return None, None, "invalid_email"
-        recent = self.db.execute(
-            """
-            SELECT CAST(strftime('%s','now') - strftime('%s', created_at) AS INTEGER)
-            FROM email_auth_challenges
-            WHERE login=? AND node_id=? AND purpose=? AND consumed_at IS NULL
-            ORDER BY created_at DESC LIMIT 1
-            """,
-            (normalized_login, normalized_node, purpose),
-        ).fetchone()
-        if recent and recent[0] is not None and recent[0] < EMAIL_2FA_RESEND_SECONDS:
-            return None, None, f"retry_after:{EMAIL_2FA_RESEND_SECONDS - recent[0]}"
+        with self.unit_of_work_factory() as unit_of_work:
+            recent_age = unit_of_work.identity.latest_email_challenge_age(
+                normalized_login,
+                normalized_node,
+                purpose,
+            )
+        if (
+            recent_age is not None
+            and recent_age < EMAIL_2FA_RESEND_SECONDS
+        ):
+            return (
+                None,
+                None,
+                f"retry_after:{EMAIL_2FA_RESEND_SECONDS - recent_age}",
+            )
         challenge_id = secrets.token_urlsafe(24)
         code = f"{secrets.randbelow(1_000_000):06d}"
         salt = secrets.token_hex(16)
         code_hash = self._email_code_hash(challenge_id, salt, code)
-        self.db.execute(
-            """
-            INSERT INTO email_auth_challenges(
-                challenge_id, login, node_id, email, purpose,
-                code_salt, code_hash, expires_at
-            ) VALUES(?,?,?,?,?,?,?,datetime('now', ?))
-            """,
-            (
-                challenge_id,
-                normalized_login,
-                normalized_node,
-                normalized_email,
-                purpose,
-                salt,
-                code_hash,
-                f"+{EMAIL_2FA_CODE_TTL_SECONDS} seconds",
-            ),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.create_email_challenge(
+                {
+                    "challenge_id": challenge_id,
+                    "login": normalized_login,
+                    "node_id": normalized_node,
+                    "email": normalized_email,
+                    "purpose": purpose,
+                    "code_salt": salt,
+                    "code_hash": code_hash,
+                    "expires_delta": (
+                        f"+{EMAIL_2FA_CODE_TTL_SECONDS} seconds"
+                    ),
+                }
+            )
         return {
             "challenge_id": challenge_id,
             "masked_email": self.mask_email(normalized_email),
@@ -210,11 +172,8 @@ class ServerEmailAuthMixin:
         }, code, "ok"
 
     def discard_email_challenge(self, challenge_id):
-        self.db.execute(
-            "DELETE FROM email_auth_challenges WHERE challenge_id=?",
-            (str(challenge_id or "").strip(),),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.discard_email_challenge(challenge_id)
 
     def issue_email_challenge(self, login, node_id, email, purpose):
         challenge, code, reason = self.create_email_challenge(
@@ -234,38 +193,37 @@ class ServerEmailAuthMixin:
         return challenge, "ok"
 
     def verify_email_challenge(self, challenge_id, login, node_id, code, purpose):
-        row = self.db.execute(
-            """
-            SELECT login, node_id, email, code_salt, code_hash, attempts,
-                   expires_at > CURRENT_TIMESTAMP, consumed_at
-            FROM email_auth_challenges
-            WHERE challenge_id=? AND purpose=?
-            """,
-            (str(challenge_id or "").strip(), purpose),
-        ).fetchone()
-        if not row:
+        with self.unit_of_work_factory() as unit_of_work:
+            challenge = unit_of_work.identity.email_challenge(
+                challenge_id,
+                purpose,
+            )
+        if not challenge:
             return False, "invalid_code", ""
-        if row[7] is not None or not row[6]:
+        if not challenge["active"]:
             return False, "code_expired", ""
-        if row[0] != str(login or "").strip().lower() or row[1] != str(node_id or "").strip():
+        if (
+            challenge["login"] != str(login or "").strip().lower()
+            or challenge["node_id"] != str(node_id or "").strip()
+        ):
             return False, "invalid_code", ""
-        attempts = int(row[5] or 0)
+        attempts = challenge["attempts"]
         if attempts >= EMAIL_2FA_MAX_ATTEMPTS:
             return False, "too_many_attempts", ""
-        expected = self._email_code_hash(challenge_id, row[3], str(code or "").strip())
-        if not secrets.compare_digest(expected, row[4]):
-            self.db.execute(
-                "UPDATE email_auth_challenges SET attempts=attempts+1 WHERE challenge_id=?",
-                (challenge_id,),
-            )
-            self.db.commit()
-            return False, "invalid_code", ""
-        self.db.execute(
-            "UPDATE email_auth_challenges SET consumed_at=CURRENT_TIMESTAMP WHERE challenge_id=?",
-            (challenge_id,),
+        expected = self._email_code_hash(
+            challenge_id,
+            challenge["code_salt"],
+            str(code or "").strip(),
         )
-        self.db.commit()
-        return True, "ok", row[2]
+        if not secrets.compare_digest(expected, challenge["code_hash"]):
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.identity.increment_email_challenge_attempts(
+                    challenge_id
+                )
+            return False, "invalid_code", ""
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.consume_email_challenge(challenge_id)
+        return True, "ok", challenge["email"]
 
     def send_email_verification_code(self, email, code, purpose):
         if not SMTP_HOST or not SMTP_FROM_EMAIL:

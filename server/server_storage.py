@@ -9,9 +9,23 @@ import sqlite3
 from contextlib import contextmanager
 
 try:
-    from server.config import DB_PATH
+    from server.config import DATABASE_BACKEND, DATABASE_URL, DB_PATH
+    from server.persistence import (
+        PostgresCompatibilityConnection,
+        PostgresUnitOfWorkFactory,
+        SQLiteUnitOfWorkFactory,
+        apply_postgres_migrations,
+        connect_postgres,
+    )
 except ModuleNotFoundError:
-    from config import DB_PATH
+    from config import DATABASE_BACKEND, DATABASE_URL, DB_PATH
+    from persistence import (
+        PostgresCompatibilityConnection,
+        PostgresUnitOfWorkFactory,
+        SQLiteUnitOfWorkFactory,
+        apply_postgres_migrations,
+        connect_postgres,
+    )
 
 
 OFFLINE_QUEUE_PACKET_TYPES = frozenset(
@@ -110,6 +124,15 @@ class ServerStorageMixin:
                 "atomic storage transaction requires a clean connection"
             )
 
+        if isinstance(self.db, PostgresCompatibilityConnection):
+            self._storage_transaction_depth = 1
+            try:
+                with self.db.transaction():
+                    yield
+            finally:
+                self._storage_transaction_depth = 0
+            return
+
         self.db.execute("BEGIN IMMEDIATE")
         self._storage_transaction_depth = 1
         try:
@@ -146,6 +169,8 @@ class ServerStorageMixin:
         return bool(value) and len(value) <= 12 and not self._looks_like_node_id(value)
 
     def open_db(self):
+        if DATABASE_BACKEND == "postgres":
+            return self.open_postgres_db()
 
         DB_PATH.parent.mkdir(
             parents=True,
@@ -1453,7 +1478,36 @@ class ServerStorageMixin:
                 )
             )
 
+        self.unit_of_work_factory = SQLiteUnitOfWorkFactory(
+            conn,
+            self.atomic_storage_transaction,
+        )
         return conn
+
+    def open_postgres_db(self):
+        if not DATABASE_URL:
+            raise RuntimeError(
+                "MESH_DATABASE_URL is required when "
+                "MESH_DATABASE_BACKEND=postgres"
+            )
+        raw_connection = connect_postgres(DATABASE_URL)
+        apply_postgres_migrations(raw_connection)
+        connection = PostgresCompatibilityConnection(raw_connection)
+        housekeeping = self.run_storage_housekeeping(connection)
+        removed_total = sum(housekeeping.values())
+        if removed_total:
+            print(
+                "PostgreSQL storage housekeeping:",
+                ", ".join(
+                    f"{name}={count}"
+                    for name, count in housekeeping.items()
+                    if count
+                ),
+            )
+        self.unit_of_work_factory = PostgresUnitOfWorkFactory(
+            connection,
+        )
+        return connection
 
     def meshpro_usage_count(self, login, feature_id, period_key):
         row = self.db.execute(
@@ -2036,36 +2090,17 @@ class ServerStorageMixin:
         if not login or not node_id:
             return
 
-        self.db.execute(
-            """
-            INSERT INTO account_devices(
-                login,
-                node_id,
-                display_name,
-                device_name,
-                app_version,
-                online,
-                last_seen
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.save_account_device(
+                {
+                    "login": login,
+                    "node_id": node_id,
+                    "display_name": display_name,
+                    "device_name": device_name,
+                    "app_version": app_version,
+                    "online": online,
+                }
             )
-            VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
-            ON CONFLICT(login, node_id) DO UPDATE SET
-                display_name=COALESCE(excluded.display_name, display_name),
-                device_name=COALESCE(excluded.device_name, device_name),
-                app_version=COALESCE(excluded.app_version, app_version),
-                online=excluded.online,
-                last_seen=CURRENT_TIMESTAMP
-            """,
-            (
-                login,
-                node_id,
-                display_name,
-                device_name,
-                app_version,
-                1 if online else 0
-            )
-        )
-
-        self.db.commit()
 
     def set_account_device_online(
         self,
@@ -2082,100 +2117,38 @@ class ServerStorageMixin:
         if not login or not node_id:
             return
 
-        self.db.execute(
-            """
-            UPDATE account_devices
-            SET online=?,
-                last_seen=CURRENT_TIMESTAMP
-            WHERE login=?
-              AND node_id=?
-            """,
-            (
-                1 if online else 0,
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.set_account_device_online(
                 login,
-                node_id
+                node_id,
+                online,
             )
-        )
-
-        self.db.commit()
 
     def get_account_devices(
         self,
         login
     ):
-
-        login = (
-            login
-            or ""
-        ).strip().lower()
-
-        if not login:
-            return []
-
-        cursor = self.db.cursor()
-        cursor.execute(
-            """
-            SELECT node_id,
-                   display_name,
-                   COALESCE(custom_name, device_name, display_name),
-                   app_version,
-                   online,
-                   revoked,
-                   last_seen
-            FROM account_devices
-            WHERE login=?
-            ORDER BY online DESC,
-                     last_seen DESC
-            """,
-            (
-                login,
-            )
-        )
-
-        return [
-            {
-                "node_id": row[0],
-                "display_name": row[1],
-                "device_name": row[2] or "",
-                "app_version": row[3],
-                "online": bool(row[4]) and not bool(row[5]),
-                "revoked": bool(row[5]),
-                "last_seen": row[6]
-            }
-            for row in cursor.fetchall()
-        ]
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.identity.get_account_devices(login)
 
     def is_account_device_revoked(self, login, node_id):
         login = str(login or "").strip().lower()
         node_id = str(node_id or "").strip()
         if not login or not node_id:
             return False
-        row = self.db.execute(
-            """
-            SELECT revoked
-            FROM account_devices
-            WHERE login=? AND node_id=?
-            LIMIT 1
-            """,
-            (login, node_id),
-        ).fetchone()
-        return bool(row and row[0])
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.identity.is_account_device_revoked(
+                login,
+                node_id,
+            )
 
     def reactivate_account_device(self, login, node_id):
         login = str(login or "").strip().lower()
         node_id = str(node_id or "").strip()
         if not login or not node_id:
             return
-        self.db.execute(
-            """
-            UPDATE account_devices
-            SET revoked=0,
-                last_seen=CURRENT_TIMESTAMP
-            WHERE login=? AND node_id=?
-            """,
-            (login, node_id),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.reactivate_account_device(login, node_id)
 
     def update_account_device(
         self,
@@ -2189,28 +2162,19 @@ class ServerStorageMixin:
         action = str(action or "").strip().lower()
         if not login or not target_node:
             return False, "invalid_device"
-        row = self.db.execute(
-            """
-            SELECT 1
-            FROM account_devices
-            WHERE login=? AND node_id=?
-            LIMIT 1
-            """,
-            (login, target_node),
-        ).fetchone()
-        if not row:
+        with self.unit_of_work_factory() as unit_of_work:
+            device_exists = unit_of_work.identity.account_device_exists(
+                login,
+                target_node,
+            )
+        if not device_exists:
             return False, "device_not_found"
         if action == "revoke":
-            self.db.execute(
-                """
-                UPDATE account_devices
-                SET revoked=1,
-                    online=0,
-                    last_seen=CURRENT_TIMESTAMP
-                WHERE login=? AND node_id=?
-                """,
-                (login, target_node),
-            )
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.identity.revoke_account_device(
+                    login,
+                    target_node,
+                )
             self.delete_android_push_token(node_id=target_node)
             self.delete_web_push_subscription(node_id=target_node)
         elif action == "rename":
@@ -2224,18 +2188,14 @@ class ServerStorageMixin:
                 " ",
                 str(custom_name or "").strip(),
             )[:48].strip()
-            self.db.execute(
-                """
-                UPDATE account_devices
-                SET custom_name=?,
-                    last_seen=CURRENT_TIMESTAMP
-                WHERE login=? AND node_id=?
-                """,
-                (normalized_name or None, login, target_node),
-            )
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.identity.rename_account_device(
+                    login,
+                    target_node,
+                    normalized_name,
+                )
         else:
             return False, "unsupported_action"
-        self._commit_storage()
         return True, "ok"
 
     def get_account_node_ids(
@@ -2261,26 +2221,8 @@ class ServerStorageMixin:
         if not login:
             return []
 
-        cursor = self.db.cursor()
-        cursor.execute(
-            """
-            SELECT node_id
-            FROM account_devices
-            WHERE login=?
-              AND online=1
-              AND revoked=0
-            ORDER BY last_seen DESC
-            """,
-            (
-                login,
-            )
-        )
-
-        return [
-            row[0]
-            for row in cursor.fetchall()
-            if row[0]
-        ]
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.identity.online_account_nodes(login)
 
     def save_account_profile(
         self,
@@ -2414,67 +2356,43 @@ class ServerStorageMixin:
                 or ""
             ).strip().lower().lstrip("@")
 
-            cursor = self.db.cursor()
-            cursor.execute(
-                """
-                SELECT login
-                FROM accounts
-                WHERE public_username=?
-                AND login!=?
-                """,
-                (
-                    public_username,
-                    login
+            with self.unit_of_work_factory() as unit_of_work:
+                username_owner = (
+                    unit_of_work.identity.public_username_owner(
+                        public_username,
+                        login,
+                    )
                 )
-            )
 
-            if cursor.fetchone():
+            if username_owner:
                 print(
                     f"Username update rejected, already taken: {public_username}"
                 )
                 return False, "username is already taken"
 
-        self.db.execute(
-            """
-            UPDATE accounts
-            SET node_id=?,
-                display_name=COALESCE(?, display_name),
-                public_username=COALESCE(?, public_username),
-                about=COALESCE(?, about),
-                avatar_data=COALESCE(?, avatar_data),
-                encryption_public_key=COALESCE(
-                    ?,
-                    encryption_public_key
-                ),
-                profile_background=COALESCE(?, profile_background),
-                profile_effect=COALESCE(?, profile_effect),
-                profile_blink_shape=COALESCE(?, profile_blink_shape),
-                avatar_decoration=COALESCE(?, avatar_decoration),
-                profile_glow=COALESCE(?, profile_glow),
-                profile_accent=COALESCE(?, profile_accent),
-                emoji_status=COALESCE(?, emoji_status),
-                last_login=CURRENT_TIMESTAMP
-            WHERE login=?
-            """,
-            (
-                node_id,
-                display_name,
-                public_username,
-                about,
-                avatar_data,
-                encryption_public_key,
-                profile_background,
-                profile_effect,
-                profile_blink_shape,
-                avatar_decoration,
-                int(profile_glow) if profile_glow is not None else None,
-                profile_accent,
-                emoji_status,
-                login
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.update_profile(
+                login,
+                {
+                    "node_id": node_id,
+                    "display_name": display_name,
+                    "public_username": public_username,
+                    "about": about,
+                    "avatar_data": avatar_data,
+                    "encryption_public_key": encryption_public_key,
+                    "profile_background": profile_background,
+                    "profile_effect": profile_effect,
+                    "profile_blink_shape": profile_blink_shape,
+                    "avatar_decoration": avatar_decoration,
+                    "profile_glow": (
+                        int(profile_glow)
+                        if profile_glow is not None
+                        else None
+                    ),
+                    "profile_accent": profile_accent,
+                    "emoji_status": emoji_status,
+                },
             )
-        )
-
-        self.db.commit()
         return True, "ok"
 
     def find_account_by_public_username(
@@ -2490,63 +2408,33 @@ class ServerStorageMixin:
         if not username:
             return None
 
-        cursor = self.db.cursor()
-        cursor.execute(
-            """
-            SELECT a.login,
-                   COALESCE(d.node_id, a.node_id) AS node_id,
-                   a.display_name,
-                   a.public_username,
-                   a.about,
-                   a.avatar_data,
-                   a.encryption_public_key,
-                   COALESCE(a.profile_background, 'mesh'),
-                   COALESCE(a.profile_effect, 'stars'),
-                   COALESCE(a.profile_blink_shape, 'auto'),
-                   COALESCE(a.avatar_decoration, 'none'),
-                   COALESCE(a.profile_glow, 0),
-                   COALESCE(a.profile_accent, 4282557941)
-            FROM accounts a
-            LEFT JOIN account_devices d
-              ON d.login=a.login
-             AND d.node_id=(
-                SELECT d2.node_id
-                FROM account_devices d2
-                WHERE d2.login=a.login
-                ORDER BY d2.online DESC,
-                         d2.last_seen DESC
-                LIMIT 1
-             )
-            WHERE a.public_username=?
-            """,
-            (
-                username,
+        with self.unit_of_work_factory() as unit_of_work:
+            profile = unit_of_work.identity.profile_by_public_username(
+                username
             )
-        )
 
-        row = cursor.fetchone()
-
-        if not row:
+        if not profile:
             return None
 
         premium_fields = self._meshpro_public_profile_fields(
-            row[0],
-            row[7],
-            row[8],
-            row[9],
-            row[10],
-            row[11],
-            row[12]
+            profile["login"],
+            profile["profile_background"],
+            profile["profile_effect"],
+            profile["profile_blink_shape"],
+            profile["avatar_decoration"],
+            profile["profile_glow"],
+            profile["profile_accent"],
+            profile["emoji_status"],
         )
 
         return {
-            "login": row[0],
-            "node_id": row[1],
-            "display_name": row[2],
-            "public_username": row[3],
-            "about": row[4],
-            "avatar_data": row[5],
-            "encryption_public_key": row[6],
+            "login": profile["login"],
+            "node_id": profile["node_id"],
+            "display_name": profile["display_name"],
+            "public_username": profile["public_username"],
+            "about": profile["about"],
+            "avatar_data": profile["avatar_data"],
+            "encryption_public_key": profile["encryption_public_key"],
             **premium_fields
         }
 
@@ -2558,7 +2446,8 @@ class ServerStorageMixin:
         profile_blink_shape="auto",
         avatar_decoration="none",
         profile_glow=False,
-        profile_accent=4282557941
+        profile_accent=4282557941,
+        emoji_status=""
     ):
         status_getter = getattr(self, "subscription_status", None)
         if not callable(status_getter):
@@ -2584,11 +2473,7 @@ class ServerStorageMixin:
         except (TypeError, ValueError):
             accent = 4282557941
         accent = 0xFF000000 | (accent & 0x00FFFFFF)
-        emoji_row = self.db.execute(
-            "SELECT COALESCE(emoji_status, '') FROM accounts WHERE login=?",
-            (login,)
-        ).fetchone()
-        emoji_status = str(emoji_row[0] or "").strip() if emoji_row else ""
+        emoji_status = str(emoji_status or "").strip()
 
         return {
             "meshpro_badge": bool(features.get("premium_badge")),
@@ -2841,41 +2726,8 @@ class ServerStorageMixin:
         node_id
     ):
 
-        cursor = self.db.cursor()
-
-        cursor.execute(
-            """
-            SELECT login
-            FROM accounts
-            WHERE node_id=?
-            """,
-            (
-                node_id,
-            )
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-            return row[0]
-
-        cursor.execute(
-            """
-            SELECT login
-            FROM account_devices
-            WHERE node_id=?
-            """,
-            (
-                node_id,
-            )
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-            return row[0]
-
-        return None
+        with self.unit_of_work_factory() as unit_of_work:
+            return unit_of_work.identity.login_by_node(node_id)
 
     def _node_identity(
         self,
@@ -2929,59 +2781,31 @@ class ServerStorageMixin:
         node_id
     ):
 
-        cursor = self.db.cursor()
+        with self.unit_of_work_factory() as unit_of_work:
+            profile = unit_of_work.identity.profile_by_node(node_id)
 
-        cursor.execute(
-            """
-            SELECT a.login,
-                   ? AS node_id,
-                   a.display_name,
-                   a.public_username,
-                   a.about,
-                   a.avatar_data,
-                   a.encryption_public_key,
-                   COALESCE(a.profile_background, 'mesh'),
-                   COALESCE(a.profile_effect, 'stars'),
-                   COALESCE(a.profile_blink_shape, 'auto'),
-                   COALESCE(a.avatar_decoration, 'none'),
-                   COALESCE(a.profile_glow, 0),
-                   COALESCE(a.profile_accent, 4282557941)
-            FROM accounts a
-            LEFT JOIN account_devices d
-              ON d.login=a.login
-            WHERE a.node_id=? OR d.node_id=?
-            LIMIT 1
-            """,
-            (
-                node_id,
-                node_id,
-                node_id,
-            )
-        )
-
-        row = cursor.fetchone()
-
-        if not row:
+        if not profile:
             return {}
 
         premium_fields = self._meshpro_public_profile_fields(
-            row[0],
-            row[7],
-            row[8],
-            row[9],
-            row[10],
-            row[11],
-            row[12]
+            profile["login"],
+            profile["profile_background"],
+            profile["profile_effect"],
+            profile["profile_blink_shape"],
+            profile["avatar_decoration"],
+            profile["profile_glow"],
+            profile["profile_accent"],
+            profile["emoji_status"],
         )
 
         return {
-            "login": row[0],
-            "node_id": row[1],
-            "display_name": row[2],
-            "public_username": row[3],
-            "about": row[4],
-            "avatar_data": row[5],
-            "encryption_public_key": row[6],
+            "login": profile["login"],
+            "node_id": profile["node_id"],
+            "display_name": profile["display_name"],
+            "public_username": profile["public_username"],
+            "about": profile["about"],
+            "avatar_data": profile["avatar_data"],
+            "encryption_public_key": profile["encryption_public_key"],
             **premium_fields
         }
 

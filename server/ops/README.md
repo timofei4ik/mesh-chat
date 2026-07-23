@@ -21,6 +21,11 @@ ls -lh /root/mesh_messenger/backups/automatic
 
 Each backup has a `.sha256` checksum and JSON metadata. The backup is accepted only after SQLite reports `integrity_check=ok`.
 
+For the PostgreSQL migration rehearsal and maintenance-window cutover, use
+`python -m server.ops.sqlite_to_postgres` followed by
+`python -m server.ops.postgres_cutover_check`. The exact procedure and rollback
+boundary are documented in `server/POSTGRES_MIGRATION.md`.
+
 Before a release, run the deeper persistence audit. It verifies Sync v2 cursor and
 deduplication invariants, reaction uniqueness, every stored media file and pending
 chunk, then restores the newest compressed backup into a temporary database:

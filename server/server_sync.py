@@ -1048,7 +1048,8 @@ class ServerSyncMixin:
                       OR member_node=?
                   )
                 ORDER BY created_at,
-                         rowid
+                         key_id,
+                         member_node
                 """,
                 (
                     group["group_id"],

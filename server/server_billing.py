@@ -125,11 +125,11 @@ class ServerBillingMixin:
         if normalized_product != "meshpro" or normalized_plan != "monthly":
             raise BillingError("unknown subscription plan")
 
-        account = self.db.execute(
-            "SELECT 1 FROM accounts WHERE login=?",
-            (normalized_login,),
-        ).fetchone()
-        if not account:
+        with self.unit_of_work_factory() as unit_of_work:
+            account_exists = unit_of_work.identity.account_exists(
+                normalized_login
+            )
+        if not account_exists:
             raise BillingError("account does not exist")
 
         if not self.billing_configured:
@@ -162,22 +162,15 @@ class ServerBillingMixin:
                 normalized_plan,
             )
 
-        reusable = self.db.execute(
-            """
-            SELECT order_id
-            FROM subscription_orders
-            WHERE login=?
-              AND product=?
-              AND plan_code=?
-              AND provider='yookassa'
-              AND status='pending'
-              AND confirmation_url != ''
-              AND created_at > DATETIME('now', '-30 minutes')
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (normalized_login, normalized_product, normalized_plan),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            reusable = unit_of_work.billing.reusable_order(
+                normalized_login,
+                normalized_product,
+                normalized_plan,
+                "yookassa",
+                ("pending",),
+                30,
+            )
         if reusable:
             return self._checkout_result(reusable[0])
 
@@ -193,49 +186,27 @@ class ServerBillingMixin:
             ]
         )
         checkout_key = hashlib.sha256(request_seed.encode("utf-8")).hexdigest()
-        row = self.db.execute(
-            """
-            SELECT order_id,
-                   provider_payment_id,
-                   status,
-                   confirmation_url
-            FROM subscription_orders
-            WHERE checkout_key=?
-            """,
-            (checkout_key,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.order_by_checkout_key(checkout_key)
         if row and row[1] and row[3]:
             return self._checkout_result(row[0])
 
         order_id = row[0] if row else str(uuid.uuid4())
         if not row:
-            self.db.execute(
-                """
-                INSERT INTO subscription_orders(
-                    order_id,
-                    checkout_key,
-                    login,
-                    product,
-                    plan_code,
-                    duration_days,
-                    amount_value,
-                    currency,
-                    provider,
-                    status
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.create_order(
+                    {
+                        "order_id": order_id,
+                        "checkout_key": checkout_key,
+                        "login": normalized_login,
+                        "product": normalized_product,
+                        "plan_code": normalized_plan,
+                        "duration_days": duration_days,
+                        "amount_value": amount_value,
+                        "provider": "yookassa",
+                        "status": "creating",
+                    }
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, 'RUB', 'yookassa', 'creating')
-                """,
-                (
-                    order_id,
-                    checkout_key,
-                    normalized_login,
-                    normalized_product,
-                    normalized_plan,
-                    duration_days,
-                    amount_value,
-                ),
-            )
-            self.db.commit()
 
         payment_payload = {
             "amount": {"value": amount_value, "currency": "RUB"},
@@ -261,15 +232,8 @@ class ServerBillingMixin:
                 checkout_key,
             )
         except Exception:
-            self.db.execute(
-                """
-                UPDATE subscription_orders
-                SET status='checkout_error', updated_at=CURRENT_TIMESTAMP
-                WHERE order_id=?
-                """,
-                (order_id,),
-            )
-            self.db.commit()
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.set_checkout_error(order_id)
             raise
 
         payment_id = str(payment.get("id") or "").strip()
@@ -285,23 +249,13 @@ class ServerBillingMixin:
             confirmation_url = YOOKASSA_RETURN_URL
         if not payment_id or not confirmation_url:
             raise BillingError("YooKassa did not return a confirmation URL")
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET provider_payment_id=?,
-                status=?,
-                confirmation_url=?,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE order_id=?
-            """,
-            (
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.set_provider_checkout(
+                order_id,
                 payment_id,
                 str(payment.get("status") or "pending"),
                 confirmation_url,
-                order_id,
-            ),
-        )
-        self.db.commit()
+            )
         if succeeded:
             self._apply_verified_payment(payment, "payment.succeeded")
         return self._checkout_result(order_id)
@@ -315,23 +269,16 @@ class ServerBillingMixin:
         product,
         plan_code,
     ):
-        reusable = self.db.execute(
-            """
-            SELECT order_id
-            FROM subscription_orders
-            WHERE login=?
-              AND product=?
-              AND plan_code=?
-              AND provider='lava'
-              AND buyer_email=?
-              AND status IN ('creating', 'NEW', 'IN_PROGRESS', 'pending')
-              AND confirmation_url != ''
-              AND created_at > DATETIME('now', '-30 minutes')
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (login, product, plan_code, buyer_email),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            reusable = unit_of_work.billing.reusable_order(
+                login,
+                product,
+                plan_code,
+                "lava",
+                ("creating", "NEW", "IN_PROGRESS", "pending"),
+                30,
+                buyer_email=buyer_email,
+            )
         if reusable:
             return self._checkout_result(reusable[0])
 
@@ -351,53 +298,30 @@ class ServerBillingMixin:
         checkout_key = hashlib.sha256(
             request_seed.encode("utf-8")
         ).hexdigest()
-        row = self.db.execute(
-            """
-            SELECT order_id, provider_payment_id, confirmation_url
-            FROM subscription_orders
-            WHERE checkout_key=?
-            """,
-            (checkout_key,),
-        ).fetchone()
-        if row and row[1] and row[2]:
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.order_by_checkout_key(checkout_key)
+        if row and row[1] and row[3]:
             return self._checkout_result(row[0])
 
         order_id = row[0] if row else str(uuid.uuid4())
         if not row:
-            self.db.execute(
-                """
-                INSERT INTO subscription_orders(
-                    order_id,
-                    checkout_key,
-                    login,
-                    product,
-                    plan_code,
-                    duration_days,
-                    amount_value,
-                    currency,
-                    provider,
-                    status,
-                    buyer_email,
-                    provider_product_id,
-                    provider_offer_id
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.create_order(
+                    {
+                        "order_id": order_id,
+                        "checkout_key": checkout_key,
+                        "login": login,
+                        "product": product,
+                        "plan_code": plan_code,
+                        "duration_days": duration_days,
+                        "amount_value": amount_value,
+                        "provider": "lava",
+                        "status": "creating",
+                        "buyer_email": buyer_email,
+                        "provider_product_id": LAVA_PRODUCT_ID,
+                        "provider_offer_id": LAVA_OFFER_ID,
+                    }
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, 'RUB', 'lava', 'creating',
-                       ?, ?, ?)
-                """,
-                (
-                    order_id,
-                    checkout_key,
-                    login,
-                    product,
-                    plan_code,
-                    duration_days,
-                    amount_value,
-                    buyer_email,
-                    LAVA_PRODUCT_ID,
-                    LAVA_OFFER_ID,
-                ),
-            )
-            self.db.commit()
 
         invoice_payload = {
             "email": buyer_email,
@@ -432,34 +356,17 @@ class ServerBillingMixin:
                 if str(amount_total.get("currency") or "").upper() != "RUB":
                     raise BillingError("Lava invoice currency mismatch")
         except Exception:
-            self.db.execute(
-                """
-                UPDATE subscription_orders
-                SET status='checkout_error', updated_at=CURRENT_TIMESTAMP
-                WHERE order_id=?
-                """,
-                (order_id,),
-            )
-            self.db.commit()
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.set_checkout_error(order_id)
             raise
 
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET provider_payment_id=?,
-                status=?,
-                confirmation_url=?,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE order_id=?
-            """,
-            (
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.set_provider_checkout(
+                order_id,
                 invoice_id,
                 str(invoice.get("status") or "NEW"),
                 payment_url,
-                order_id,
-            ),
-        )
-        self.db.commit()
+            )
         return self._checkout_result(order_id)
 
     def create_manual_subscription_order(self, login):
@@ -471,101 +378,72 @@ class ServerBillingMixin:
         normalized_login = (login or "").strip().lower()
         if not normalized_login or len(normalized_login) > 64:
             raise BillingError("invalid login")
-        account = self.db.execute(
-            "SELECT 1 FROM accounts WHERE login=?",
-            (normalized_login,),
-        ).fetchone()
-        if not account:
+        with self.unit_of_work_factory() as unit_of_work:
+            account_exists = unit_of_work.identity.account_exists(
+                normalized_login
+            )
+        if not account_exists:
             raise BillingError("account does not exist")
 
-        reusable = self.db.execute(
-            """
-            SELECT order_id
-            FROM subscription_orders
-            WHERE login=?
-              AND product='meshpro'
-              AND plan_code='monthly'
-              AND provider='sber_manual'
-              AND status IN ('pending', 'customer_reported')
-              AND created_at > DATETIME('now', '-12 hours')
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (normalized_login,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            reusable = unit_of_work.billing.reusable_order(
+                normalized_login,
+                "meshpro",
+                "monthly",
+                "sber_manual",
+                ("pending", "customer_reported"),
+                12 * 60,
+            )
         if reusable:
             return self._manual_order_result(reusable[0])
 
         order_id = str(uuid.uuid4())
         checkout_key = secrets.token_urlsafe(32)
-        self.db.execute(
-            """
-            INSERT INTO subscription_orders(
-                order_id,
-                checkout_key,
-                login,
-                product,
-                plan_code,
-                duration_days,
-                amount_value,
-                currency,
-                provider,
-                status,
-                confirmation_url
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.create_order(
+                {
+                    "order_id": order_id,
+                    "checkout_key": checkout_key,
+                    "login": normalized_login,
+                    "product": "meshpro",
+                    "plan_code": "monthly",
+                    "duration_days": max(1, int(MESHPRO_MONTHLY_DAYS)),
+                    "amount_value": self._monthly_price(),
+                    "provider": "sber_manual",
+                    "status": "pending",
+                    "confirmation_url": self._validated_sber_payment_url(),
+                }
             )
-            VALUES(?, ?, ?, 'meshpro', 'monthly', ?, ?, 'RUB',
-                   'sber_manual', 'pending', ?)
-            """,
-            (
-                order_id,
-                checkout_key,
-                normalized_login,
-                max(1, int(MESHPRO_MONTHLY_DAYS)),
-                self._monthly_price(),
-                self._validated_sber_payment_url(),
-            ),
-        )
-        self.db.commit()
         return self._manual_order_result(order_id)
 
     def manual_order_status(self, order_id, checkout_key):
-        row = self.db.execute(
-            """
-            SELECT status
-            FROM subscription_orders
-            WHERE order_id=?
-              AND checkout_key=?
-              AND provider='sber_manual'
-            """,
-            ((order_id or "").strip(), (checkout_key or "").strip()),
-        ).fetchone()
+        normalized_order_id = (order_id or "").strip()
+        normalized_key = (checkout_key or "").strip()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.manual_status(
+                normalized_order_id,
+                normalized_key,
+            )
         if not row:
             raise BillingError("order not found")
         return {"status": row[0]}
 
     def mark_manual_order_submitted(self, order_id, checkout_key):
-        row = self.db.execute(
-            """
-            SELECT status
-            FROM subscription_orders
-            WHERE order_id=?
-              AND checkout_key=?
-              AND provider='sber_manual'
-            """,
-            ((order_id or "").strip(), (checkout_key or "").strip()),
-        ).fetchone()
+        normalized_order_id = (order_id or "").strip()
+        normalized_key = (checkout_key or "").strip()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.manual_status(
+                normalized_order_id,
+                normalized_key,
+            )
         if not row:
             raise BillingError("order not found")
         if row[0] == "pending":
-            self.db.execute(
-                """
-                UPDATE subscription_orders
-                SET status='customer_reported', updated_at=CURRENT_TIMESTAMP
-                WHERE order_id=? AND checkout_key=?
-                """,
-                ((order_id or "").strip(), (checkout_key or "").strip()),
-            )
-            self.db.commit()
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.mark_manual_submitted(
+                    normalized_order_id,
+                    normalized_key,
+                )
         return self.manual_order_status(order_id, checkout_key)
 
     def list_manual_subscription_orders(self, status="awaiting", limit=50):
@@ -581,31 +459,8 @@ class ServerBillingMixin:
         if normalized_status not in statuses:
             raise BillingError("unknown order status")
         selected = statuses[normalized_status]
-        where_status = ""
-        parameters = []
-        if selected:
-            placeholders = ",".join("?" for _ in selected)
-            where_status = f"AND status IN ({placeholders})"
-            parameters.extend(selected)
-        parameters.append(max(1, min(int(limit), 200)))
-        rows = self.db.execute(
-            f"""
-            SELECT order_id,
-                   login,
-                   status,
-                   amount_value,
-                   currency,
-                   duration_days,
-                   created_at,
-                   paid_at
-            FROM subscription_orders
-            WHERE provider='sber_manual'
-              {where_status}
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            parameters,
-        ).fetchall()
+        with self.unit_of_work_factory() as unit_of_work:
+            rows = unit_of_work.billing.list_manual_orders(selected, limit)
         return [
             {
                 "order_id": row[0],
@@ -623,14 +478,10 @@ class ServerBillingMixin:
 
     def approve_manual_subscription_order(self, order_id):
         normalized_order_id = self._resolve_manual_order_id(order_id)
-        row = self.db.execute(
-            """
-            SELECT login, product, plan_code, duration_days, status
-            FROM subscription_orders
-            WHERE order_id=? AND provider='sber_manual'
-            """,
-            (normalized_order_id,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.manual_approval_row(
+                normalized_order_id
+            )
         if not row:
             raise BillingError("manual order not found")
         if row[4] == "rejected":
@@ -645,17 +496,12 @@ class ServerBillingMixin:
             provider_subscription_id=normalized_order_id,
             provider_event_id=f"sber_manual:approved:{normalized_order_id}",
         )
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET status='succeeded',
-                paid_at=COALESCE(paid_at, CURRENT_TIMESTAMP),
-                updated_at=CURRENT_TIMESTAMP
-            WHERE order_id=?
-            """,
-            (normalized_order_id,),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.set_order_status(
+                normalized_order_id,
+                "succeeded",
+                paid=True,
+            )
         return {
             "order": self._manual_order_admin_result(normalized_order_id),
             "subscription": subscription,
@@ -663,45 +509,24 @@ class ServerBillingMixin:
 
     def reject_manual_subscription_order(self, order_id):
         normalized_order_id = self._resolve_manual_order_id(order_id)
-        row = self.db.execute(
-            """
-            SELECT status
-            FROM subscription_orders
-            WHERE order_id=? AND provider='sber_manual'
-            """,
-            (normalized_order_id,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.manual_approval_row(
+                normalized_order_id
+            )
         if not row:
             raise BillingError("manual order not found")
-        if row[0] == "succeeded":
+        if row[4] == "succeeded":
             raise BillingError("approved order cannot be rejected")
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET status='rejected', updated_at=CURRENT_TIMESTAMP
-            WHERE order_id=?
-            """,
-            (normalized_order_id,),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.set_order_status(
+                normalized_order_id,
+                "rejected",
+            )
         return self._manual_order_admin_result(normalized_order_id)
 
     def _manual_order_result(self, order_id):
-        row = self.db.execute(
-            """
-            SELECT order_id,
-                   checkout_key,
-                   login,
-                   status,
-                   confirmation_url,
-                   amount_value,
-                   currency,
-                   duration_days
-            FROM subscription_orders
-            WHERE order_id=? AND provider='sber_manual'
-            """,
-            (order_id,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.manual_result(order_id)
         if not row:
             raise BillingError("manual order not found")
         return {
@@ -718,21 +543,8 @@ class ServerBillingMixin:
         }
 
     def _manual_order_admin_result(self, order_id):
-        orders = self.db.execute(
-            """
-            SELECT order_id,
-                   login,
-                   status,
-                   amount_value,
-                   currency,
-                   duration_days,
-                   created_at,
-                   paid_at
-            FROM subscription_orders
-            WHERE order_id=? AND provider='sber_manual'
-            """,
-            (order_id,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            orders = unit_of_work.billing.manual_admin_result(order_id)
         if not orders:
             raise BillingError("manual order not found")
         return {
@@ -760,19 +572,11 @@ class ServerBillingMixin:
                 character not in "0123456789abcdef" for character in prefix
             ):
                 raise BillingError("invalid payment reference")
-            rows = self.db.execute(
-                """
-                SELECT order_id
-                FROM subscription_orders
-                WHERE provider='sber_manual'
-                  AND REPLACE(LOWER(order_id), '-', '') LIKE ?
-                LIMIT 2
-                """,
-                (f"{prefix}%",),
-            ).fetchall()
-            if len(rows) != 1:
+            with self.unit_of_work_factory() as unit_of_work:
+                order_ids = unit_of_work.billing.manual_ids_by_prefix(prefix)
+            if len(order_ids) != 1:
                 raise BillingError("manual order reference is not unique")
-            return rows[0][0]
+            return order_ids[0]
         return value
 
     def _checkout_page_url(self, login=""):
@@ -852,15 +656,11 @@ class ServerBillingMixin:
                 provider_subscription_id=subscription_id,
                 provider_event_id=event_id,
             )
-            self.db.execute(
-                """
-                UPDATE subscription_orders
-                SET status='cancelled', updated_at=CURRENT_TIMESTAMP
-                WHERE order_id=?
-                """,
-                (order[0],),
-            )
-            self.db.commit()
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.set_order_status(
+                    order[0],
+                    "cancelled",
+                )
             return {"accepted": True, "subscription": status}
 
         invoice = await self._lava_request(
@@ -888,17 +688,12 @@ class ServerBillingMixin:
                 provider_subscription_id=order[10],
                 provider_event_id=event_id,
             )
-            self.db.execute(
-                """
-                UPDATE subscription_orders
-                SET status=?,
-                    paid_at=COALESCE(paid_at, CURRENT_TIMESTAMP),
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE order_id=?
-                """,
-                ("active" if recurring else "succeeded", order[0]),
-            )
-            self.db.commit()
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.billing.set_order_status(
+                    order[0],
+                    "active" if recurring else "succeeded",
+                    paid=True,
+                )
             return {"accepted": True, "subscription": subscription}
 
         self.record_subscription_event_once(
@@ -913,43 +708,22 @@ class ServerBillingMixin:
             },
             event_id,
         )
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET status=?, updated_at=CURRENT_TIMESTAMP
-            WHERE order_id=?
-            """,
-            ("renewal_failed" if recurring else "failed", order[0]),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.set_order_status(
+                order[0],
+                "renewal_failed" if recurring else "failed",
+            )
         return {"accepted": True, "failed": True, "recurring": recurring}
 
     def _lava_order_for_notification(self, contract_id, parent_contract_id):
         candidates = [contract_id]
         if parent_contract_id:
             candidates.append(parent_contract_id)
-        placeholders = ",".join("?" for _ in candidates)
-        row = self.db.execute(
-            f"""
-            SELECT order_id,
-                   login,
-                   product,
-                   plan_code,
-                   duration_days,
-                   amount_value,
-                   currency,
-                   buyer_email,
-                   provider_product_id,
-                   provider_offer_id,
-                   provider_payment_id
-            FROM subscription_orders
-            WHERE provider='lava'
-              AND provider_payment_id IN ({placeholders})
-            ORDER BY CASE WHEN provider_payment_id=? THEN 0 ELSE 1 END
-            LIMIT 1
-            """,
-            (*candidates, parent_contract_id or contract_id),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.lava_notification_order(
+                tuple(candidates),
+                parent_contract_id or contract_id,
+            )
         if not row:
             raise BillingError("Lava payment does not belong to a local order")
         if parent_contract_id and row[10] != parent_contract_id:
@@ -1074,38 +848,19 @@ class ServerBillingMixin:
 
         if payment.get("status") != "canceled":
             raise BillingError("payment is not canceled")
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET status='canceled', updated_at=CURRENT_TIMESTAMP
-            WHERE provider='yookassa' AND provider_payment_id=?
-            """,
-            (payment_id,),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.cancel_yookassa_payment(payment_id)
         return {"accepted": True, "canceled": True}
 
     def _apply_verified_payment(self, payment, event):
         payment_id = str(payment.get("id") or "").strip()
         metadata = payment.get("metadata") or {}
         order_id = str(metadata.get("mesh_order_id") or "").strip()
-        row = self.db.execute(
-            """
-            SELECT order_id,
-                   login,
-                   product,
-                   plan_code,
-                   duration_days,
-                   amount_value,
-                   currency
-            FROM subscription_orders
-            WHERE provider='yookassa'
-              AND (provider_payment_id=? OR order_id=?)
-            ORDER BY CASE WHEN provider_payment_id=? THEN 0 ELSE 1 END
-            LIMIT 1
-            """,
-            (payment_id, order_id, payment_id),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.yookassa_payment_order(
+                payment_id,
+                order_id,
+            )
         if not row:
             raise BillingError("payment does not belong to a local order")
         if order_id != row[0]:
@@ -1136,37 +891,17 @@ class ServerBillingMixin:
         payment_method_id = ""
         if payment_method.get("saved") is True:
             payment_method_id = str(payment_method.get("id") or "").strip()
-        self.db.execute(
-            """
-            UPDATE subscription_orders
-            SET provider_payment_id=?,
-                status='succeeded',
-                payment_method_id=?,
-                paid_at=COALESCE(paid_at, CURRENT_TIMESTAMP),
-                updated_at=CURRENT_TIMESTAMP
-            WHERE order_id=?
-            """,
-            (payment_id, payment_method_id, row[0]),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.billing.mark_yookassa_succeeded(
+                row[0],
+                payment_id,
+                payment_method_id,
+            )
         return status
 
     def _checkout_result(self, order_id):
-        row = self.db.execute(
-            """
-            SELECT order_id,
-                   status,
-                   confirmation_url,
-                   amount_value,
-                   currency,
-                   duration_days,
-                   provider,
-                   buyer_email
-            FROM subscription_orders
-            WHERE order_id=?
-            """,
-            (order_id,),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.billing.checkout_result(order_id)
         if not row:
             raise BillingError("checkout order not found")
         return {

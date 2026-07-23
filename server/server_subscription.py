@@ -1,5 +1,4 @@
 import hashlib
-import json
 import secrets
 from datetime import datetime, timezone
 
@@ -81,20 +80,11 @@ class ServerSubscriptionMixin:
         if normalized_product == MESHPRO_PRODUCT:
             self._merge_legacy_meshpro_subscription(normalized_login)
         offer = self.subscription_offer(normalized_product)
-        row = self.db.execute(
-            """
-            SELECT plan_code,
-                   status,
-                   current_period_start,
-                   current_period_end,
-                   cancel_at_period_end,
-                   provider,
-                   updated_at
-            FROM account_subscriptions
-            WHERE login=? AND product=?
-            """,
-            (normalized_login, normalized_product),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.subscriptions.subscription(
+                normalized_login,
+                normalized_product,
+            )
 
         if not row:
             status = {
@@ -185,11 +175,11 @@ class ServerSubscriptionMixin:
         normalized_login = (login or "").strip().lower()
         if not normalized_login:
             raise ValueError("login is required")
-        account = self.db.execute(
-            "SELECT 1 FROM accounts WHERE login=?",
-            (normalized_login,),
-        ).fetchone()
-        if not account:
+        with self.unit_of_work_factory() as unit_of_work:
+            account_exists = unit_of_work.identity.account_exists(
+                normalized_login
+            )
+        if not account_exists:
             raise ValueError("account does not exist")
 
         normalized_product = self.normalize_subscription_product(product)
@@ -198,85 +188,37 @@ class ServerSubscriptionMixin:
         normalized_plan = (plan_code or "monthly").strip().lower()
         normalized_provider = (provider or "manual").strip().lower()
         duration_days = max(1, int(days))
-        period_modifier = f"+{duration_days} days"
-
         normalized_event_id = (provider_event_id or "").strip()
-        if normalized_event_id:
-            duplicate = self.db.execute(
-                """
-                SELECT 1
-                FROM subscription_events
-                WHERE provider_event_id=?
-                """,
-                (normalized_event_id,),
-            ).fetchone()
-            if duplicate:
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            if (
+                normalized_event_id
+                and unit_of_work.subscriptions.provider_event_exists(
+                    normalized_event_id
+                )
+            ):
                 return self.subscription_status(
                     normalized_login,
                     normalized_product,
                 )
-
-        self.db.execute(
-            """
-            INSERT INTO account_subscriptions(
-                login,
-                product,
-                plan_code,
-                status,
-                current_period_start,
-                current_period_end,
-                cancel_at_period_end,
-                provider,
-                provider_subscription_id,
-                updated_at
-            )
-            VALUES(
-                ?, ?, ?, 'active', CURRENT_TIMESTAMP,
-                DATETIME('now', ?), 0, ?, ?, CURRENT_TIMESTAMP
-            )
-            ON CONFLICT(login, product) DO UPDATE SET
-                plan_code=excluded.plan_code,
-                status='active',
-                current_period_start=CASE
-                    WHEN account_subscriptions.current_period_end > CURRENT_TIMESTAMP
-                    THEN account_subscriptions.current_period_start
-                    ELSE CURRENT_TIMESTAMP
-                END,
-                current_period_end=DATETIME(
-                    CASE
-                        WHEN account_subscriptions.current_period_end > CURRENT_TIMESTAMP
-                        THEN account_subscriptions.current_period_end
-                        ELSE CURRENT_TIMESTAMP
-                    END,
-                    ?
-                ),
-                cancel_at_period_end=0,
-                provider=excluded.provider,
-                provider_subscription_id=excluded.provider_subscription_id,
-                updated_at=CURRENT_TIMESTAMP
-            """,
-            (
+            unit_of_work.subscriptions.grant(
                 normalized_login,
                 normalized_product,
                 normalized_plan,
-                period_modifier,
+                duration_days,
                 normalized_provider,
                 provider_subscription_id or "",
-                period_modifier,
-            ),
-        )
-        self._record_subscription_event(
-            normalized_login,
-            normalized_product,
-            "granted",
-            {
-                "plan_code": normalized_plan,
-                "days": duration_days,
-                "provider": normalized_provider,
-            },
-            provider_event_id=normalized_event_id,
-        )
-        self.db.commit()
+            )
+            unit_of_work.subscriptions.record_event(
+                normalized_login,
+                normalized_product,
+                "granted",
+                {
+                    "plan_code": normalized_plan,
+                    "days": duration_days,
+                    "provider": normalized_provider,
+                },
+                normalized_event_id,
+            )
         return self.subscription_status(normalized_login, normalized_product)
 
     def revoke_subscription(self, login, product=MESHPRO_PRODUCT):
@@ -287,24 +229,14 @@ class ServerSubscriptionMixin:
             if normalized_product == MESHPRO_PRODUCT
             else (normalized_product,)
         )
-        placeholders = ",".join("?" for _ in products)
-        self.db.execute(
-            f"""
-            UPDATE account_subscriptions
-            SET status='revoked',
-                current_period_end=CURRENT_TIMESTAMP,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE login=? AND product IN ({placeholders})
-            """,
-            (normalized_login, *products),
-        )
-        self._record_subscription_event(
-            normalized_login,
-            normalized_product,
-            "revoked",
-            {},
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.revoke(normalized_login, products)
+            unit_of_work.subscriptions.record_event(
+                normalized_login,
+                normalized_product,
+                "revoked",
+                {},
+            )
         failures = []
         if hasattr(self, "revoke_wireguard_peers"):
             failures = self.revoke_wireguard_peers(
@@ -334,22 +266,20 @@ class ServerSubscriptionMixin:
             raise ValueError("login and provider are required")
         if not normalized_subscription_id:
             raise ValueError("provider subscription id is required")
-        if not self.db.execute(
-            "SELECT 1 FROM accounts WHERE login=?",
-            (normalized_login,),
-        ).fetchone():
+        with self.unit_of_work_factory() as unit_of_work:
+            account_exists = unit_of_work.identity.account_exists(
+                normalized_login
+            )
+        if not account_exists:
             raise ValueError("account does not exist")
 
-        existing = self.db.execute(
-            """
-            SELECT provider, status, current_period_end
-            FROM account_subscriptions
-            WHERE login=? AND product=?
-            """,
-            (normalized_login, normalized_product),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            existing = unit_of_work.subscriptions.subscription(
+                normalized_login,
+                normalized_product,
+            )
         if existing:
-            existing_end = self._parse_subscription_time(existing[2])
+            existing_end = self._parse_subscription_time(existing[3])
             existing_active = (
                 existing[1] in SUBSCRIPTION_ACTIVE_STATUSES
                 and (
@@ -359,7 +289,7 @@ class ServerSubscriptionMixin:
             )
             if (
                 existing_active
-                and (existing[0] or "").strip().lower()
+                and (existing[5] or "").strip().lower()
                 not in {"", normalized_provider}
             ):
                 return self.subscription_status(
@@ -367,45 +297,14 @@ class ServerSubscriptionMixin:
                     normalized_product,
                 )
 
-        lease_modifier = f"+{max(1, int(lease_hours))} hours"
-        self.db.execute(
-            """
-            INSERT INTO account_subscriptions(
-                login,
-                product,
-                plan_code,
-                status,
-                current_period_start,
-                current_period_end,
-                cancel_at_period_end,
-                provider,
-                provider_subscription_id,
-                updated_at
-            )
-            VALUES(
-                ?, ?, 'meshpro', 'active', CURRENT_TIMESTAMP,
-                DATETIME('now', ?), 0, ?, ?, CURRENT_TIMESTAMP
-            )
-            ON CONFLICT(login, product) DO UPDATE SET
-                plan_code='meshpro',
-                status='active',
-                current_period_start=CURRENT_TIMESTAMP,
-                current_period_end=DATETIME('now', ?),
-                cancel_at_period_end=0,
-                provider=excluded.provider,
-                provider_subscription_id=excluded.provider_subscription_id,
-                updated_at=CURRENT_TIMESTAMP
-            """,
-            (
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.set_provider_lease(
                 normalized_login,
                 normalized_product,
-                lease_modifier,
                 normalized_provider,
                 normalized_subscription_id,
-                lease_modifier,
-            ),
-        )
-        self.db.commit()
+                lease_hours,
+            )
         return self.subscription_status(normalized_login, normalized_product)
 
     def revoke_provider_subscription_lease(
@@ -421,36 +320,25 @@ class ServerSubscriptionMixin:
             provider_subscription_id or ""
         ).strip()
         normalized_product = self.normalize_subscription_product(product)
-        cursor = self.db.execute(
-            """
-            UPDATE account_subscriptions
-            SET status='revoked',
-                current_period_end=CURRENT_TIMESTAMP,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE login=?
-              AND product=?
-              AND provider=?
-              AND provider_subscription_id=?
-            """,
-            (
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            changed = unit_of_work.subscriptions.revoke_provider_lease(
                 normalized_login,
                 normalized_product,
                 normalized_provider,
                 normalized_subscription_id,
-            ),
-        )
-        changed = cursor.rowcount > 0
-        if changed:
-            self._record_subscription_event(
-                normalized_login,
-                normalized_product,
-                "provider_revoked",
-                {
-                    "provider": normalized_provider,
-                    "provider_subscription_id": normalized_subscription_id,
-                },
             )
-        self.db.commit()
+            if changed:
+                unit_of_work.subscriptions.record_event(
+                    normalized_login,
+                    normalized_product,
+                    "provider_revoked",
+                    {
+                        "provider": normalized_provider,
+                        "provider_subscription_id": (
+                            normalized_subscription_id
+                        ),
+                    },
+                )
         failures = []
         if changed and hasattr(self, "revoke_wireguard_peers"):
             failures = self.revoke_wireguard_peers(
@@ -474,24 +362,18 @@ class ServerSubscriptionMixin:
         normalized_event_id = (provider_event_id or "").strip()
         if not normalized_event_id:
             raise ValueError("provider event id is required")
-        duplicate = self.db.execute(
-            """
-            SELECT 1
-            FROM subscription_events
-            WHERE provider_event_id=?
-            """,
-            (normalized_event_id,),
-        ).fetchone()
-        if duplicate:
-            return False
-        self._record_subscription_event(
-            (login or "").strip().lower(),
-            self.normalize_subscription_product(product),
-            event_type,
-            payload,
-            provider_event_id=normalized_event_id,
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            if unit_of_work.subscriptions.provider_event_exists(
+                normalized_event_id
+            ):
+                return False
+            unit_of_work.subscriptions.record_event(
+                (login or "").strip().lower(),
+                self.normalize_subscription_product(product),
+                event_type,
+                payload,
+                normalized_event_id,
+            )
         return True
 
     def mark_subscription_cancel_at_period_end(
@@ -505,66 +387,41 @@ class ServerSubscriptionMixin:
         normalized_login = (login or "").strip().lower()
         normalized_product = self.normalize_subscription_product(product)
         normalized_event_id = (provider_event_id or "").strip()
-        if normalized_event_id:
-            duplicate = self.db.execute(
-                """
-                SELECT 1
-                FROM subscription_events
-                WHERE provider_event_id=?
-                """,
-                (normalized_event_id,),
-            ).fetchone()
-            if duplicate:
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            if (
+                normalized_event_id
+                and unit_of_work.subscriptions.provider_event_exists(
+                    normalized_event_id
+                )
+            ):
                 return self.subscription_status(
                     normalized_login,
                     normalized_product,
                 )
-
-        row = self.db.execute(
-            """
-            SELECT 1
-            FROM account_subscriptions
-            WHERE login=? AND product=?
-            """,
-            (normalized_login, normalized_product),
-        ).fetchone()
-        if not row:
-            raise ValueError("subscription does not exist")
-
-        self.db.execute(
-            """
-            UPDATE account_subscriptions
-            SET cancel_at_period_end=1,
-                provider=CASE WHEN ? != '' THEN ? ELSE provider END,
-                provider_subscription_id=CASE
-                    WHEN ? != '' THEN ?
-                    ELSE provider_subscription_id
-                END,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE login=? AND product=?
-            """,
-            (
-                (provider or "").strip().lower(),
-                (provider or "").strip().lower(),
-                (provider_subscription_id or "").strip(),
-                (provider_subscription_id or "").strip(),
+            normalized_provider = (provider or "").strip().lower()
+            normalized_subscription_id = (
+                provider_subscription_id or ""
+            ).strip()
+            changed = (
+                unit_of_work.subscriptions.mark_cancel_at_period_end(
+                    normalized_login,
+                    normalized_product,
+                    normalized_provider,
+                    normalized_subscription_id,
+                )
+            )
+            if not changed:
+                raise ValueError("subscription does not exist")
+            unit_of_work.subscriptions.record_event(
                 normalized_login,
                 normalized_product,
-            ),
-        )
-        self._record_subscription_event(
-            normalized_login,
-            normalized_product,
-            "cancel_at_period_end",
-            {
-                "provider": (provider or "").strip().lower(),
-                "provider_subscription_id": (
-                    provider_subscription_id or ""
-                ).strip(),
-            },
-            provider_event_id=normalized_event_id,
-        )
-        self.db.commit()
+                "cancel_at_period_end",
+                {
+                    "provider": normalized_provider,
+                    "provider_subscription_id": normalized_subscription_id,
+                },
+                normalized_event_id,
+            )
         return self.subscription_status(normalized_login, normalized_product)
 
     def create_service_session(self, login, service, device_id):
@@ -574,43 +431,24 @@ class ServerSubscriptionMixin:
             raise ValueError("login and service are required")
 
         token = secrets.token_urlsafe(32)
-        self.db.execute(
-            """
-            INSERT INTO service_sessions(
-                token_hash,
-                login,
-                service,
-                device_id,
-                expires_at,
-                last_used_at
-            )
-            VALUES(?, ?, ?, ?, DATETIME('now', ?), CURRENT_TIMESTAMP)
-            """,
-            (
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.create_service_session(
                 self._hash_service_token(token),
                 normalized_login,
                 normalized_service,
                 (device_id or "").strip(),
-                f"+{SERVICE_SESSION_MAX_AGE_DAYS} days",
-            ),
-        )
-        self.db.commit()
+                SERVICE_SESSION_MAX_AGE_DAYS,
+            )
         return token
 
     def authenticate_service_session(self, token, service, device_id=None):
         token_hash = self._hash_service_token(token or "")
         normalized_service = (service or "").strip().lower()
-        row = self.db.execute(
-            """
-            SELECT login, device_id
-            FROM service_sessions
-            WHERE token_hash=?
-              AND service=?
-              AND revoked_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
-            """,
-            (token_hash, normalized_service),
-        ).fetchone()
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.subscriptions.service_session(
+                token_hash,
+                normalized_service,
+            )
         if not row:
             return None
 
@@ -619,30 +457,16 @@ class ServerSubscriptionMixin:
         if expected_device and expected_device != actual_device:
             return None
 
-        self.db.execute(
-            """
-            UPDATE service_sessions
-            SET last_used_at=CURRENT_TIMESTAMP
-            WHERE token_hash=?
-            """,
-            (token_hash,),
-        )
-        self.db.commit()
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.touch_service_session(token_hash)
         return row[0]
 
     def revoke_service_session(self, token, service):
-        self.db.execute(
-            """
-            UPDATE service_sessions
-            SET revoked_at=CURRENT_TIMESTAMP
-            WHERE token_hash=? AND service=?
-            """,
-            (
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.revoke_service_session(
                 self._hash_service_token(token or ""),
                 (service or "").strip().lower(),
-            ),
-        )
-        self.db.commit()
+            )
 
     def vpn_config_for(self, login, device_id):
         status = self.subscription_status(login, MESHPRO_PRODUCT)
@@ -667,39 +491,28 @@ class ServerSubscriptionMixin:
     def _merge_legacy_meshpro_subscription(self, login):
         if not login:
             return
-        rows = self.db.execute(
-            """
-            SELECT product,
-                   plan_code,
-                   status,
-                   current_period_start,
-                   current_period_end,
-                   cancel_at_period_end,
-                   provider,
-                   provider_customer_id,
-                   provider_subscription_id,
-                   updated_at
-            FROM account_subscriptions
-            WHERE login=? AND product IN ('meshpro', 'meshprivacy')
-            """,
-            (login,),
-        ).fetchall()
+        with self.unit_of_work_factory() as unit_of_work:
+            rows = unit_of_work.subscriptions.subscriptions(
+                login,
+                (MESHPRO_PRODUCT, "meshprivacy"),
+            )
         legacy = next((row for row in rows if row[0] == "meshprivacy"), None)
         canonical = next((row for row in rows if row[0] == MESHPRO_PRODUCT), None)
         if legacy is None:
             return
 
         if canonical is None:
-            self.db.execute(
-                """
-                UPDATE account_subscriptions
-                SET product=?, updated_at=CURRENT_TIMESTAMP
-                WHERE login=? AND product='meshprivacy'
-                """,
-                (MESHPRO_PRODUCT, login),
-            )
-            self._canonicalize_meshpro_history(login)
-            self.db.commit()
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.subscriptions.rename_product(
+                    login,
+                    "meshprivacy",
+                    MESHPRO_PRODUCT,
+                )
+                unit_of_work.subscriptions.canonicalize_history(
+                    login,
+                    "meshprivacy",
+                    MESHPRO_PRODUCT,
+                )
             return
 
         now = datetime.now(timezone.utc)
@@ -717,38 +530,33 @@ class ServerSubscriptionMixin:
                 canonical_end is not None and legacy_end > canonical_end
             )
         if legacy_wins:
-            self.db.execute(
-                """
-                UPDATE account_subscriptions
-                SET plan_code=?,
-                    status=?,
-                    current_period_start=?,
-                    current_period_end=?,
-                    cancel_at_period_end=?,
-                    provider=?,
-                    provider_customer_id=?,
-                    provider_subscription_id=?,
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE login=? AND product=?
-                """,
-                (*legacy[1:9], login, MESHPRO_PRODUCT),
+            winning_values = legacy[1:9]
+        else:
+            winning_values = None
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            if winning_values is not None:
+                unit_of_work.subscriptions.replace_subscription(
+                    login,
+                    MESHPRO_PRODUCT,
+                    winning_values,
+                )
+            unit_of_work.subscriptions.delete_subscription(
+                login,
+                "meshprivacy",
             )
-        self.db.execute(
-            "DELETE FROM account_subscriptions WHERE login=? AND product='meshprivacy'",
-            (login,),
-        )
-        self._canonicalize_meshpro_history(login)
-        self.db.commit()
+            unit_of_work.subscriptions.canonicalize_history(
+                login,
+                "meshprivacy",
+                MESHPRO_PRODUCT,
+            )
 
     def _canonicalize_meshpro_history(self, login):
-        self.db.execute(
-            "UPDATE subscription_events SET product=? WHERE login=? AND product='meshprivacy'",
-            (MESHPRO_PRODUCT, login),
-        )
-        self.db.execute(
-            "UPDATE subscription_orders SET product=? WHERE login=? AND product='meshprivacy'",
-            (MESHPRO_PRODUCT, login),
-        )
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.canonicalize_history(
+                login,
+                "meshprivacy",
+                MESHPRO_PRODUCT,
+            )
 
     def _record_subscription_event(
         self,
@@ -758,25 +566,14 @@ class ServerSubscriptionMixin:
         payload,
         provider_event_id="",
     ):
-        self.db.execute(
-            """
-            INSERT INTO subscription_events(
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.record_event(
                 login,
                 product,
                 event_type,
+                payload,
                 provider_event_id,
-                payload_json
             )
-            VALUES(?, ?, ?, ?, ?)
-            """,
-            (
-                login,
-                product,
-                event_type,
-                provider_event_id or None,
-                json.dumps(payload, ensure_ascii=False),
-            ),
-        )
 
     def _hash_service_token(self, token):
         return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
