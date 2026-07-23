@@ -298,6 +298,7 @@ async def handle_server_hello(
             "file_transfer_v2": True,
             "account_live_fanout": True,
             "email_2fa": True,
+            "call_ice_servers": True,
         },
         **version_payload(),
     }

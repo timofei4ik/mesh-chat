@@ -1,0 +1,39 @@
+# MeshChat coturn baseline. Replace the placeholders during deployment.
+listening-port=3478
+tls-listening-port=5349
+fingerprint
+use-auth-secret
+static-auth-secret=REPLACE_WITH_RANDOM_SHARED_SECRET
+realm=meshchat-losa.ru
+server-name=meshchat-losa.ru
+
+# Keep relay allocation predictable for firewall rules.
+min-port=49160
+max-port=49260
+
+# A relay should never reach private/local destinations.
+no-multicast-peers
+no-loopback-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.0.2.0-192.0.2.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=198.51.100.0-198.51.100.255
+denied-peer-ip=203.0.113.0-203.0.113.255
+denied-peer-ip=240.0.0.0-255.255.255.255
+
+stale-nonce=600
+no-cli
+no-tcp-relay
+simple-log
+log-file=/var/log/turnserver/turnserver.log
+
+# Add these when the TURN TLS certificate is provisioned:
+# cert=/etc/letsencrypt/live/meshchat-losa.ru/fullchain.pem
+# pkey=/etc/letsencrypt/live/meshchat-losa.ru/privkey.pem

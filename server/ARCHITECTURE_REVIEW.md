@@ -350,6 +350,11 @@ distributed monolith with harder failure modes.
 2. Split the Python server into explicit modules without changing deployment.
 3. Migrate SQLite to PostgreSQL.
 4. Extract calls and configure coturn.
+
+Call signaling now has an explicit domain boundary in `server_calls.py`.
+The relay can issue short-lived coturn REST credentials and old clients retain
+their STUN fallback. Production coturn provisioning and cross-network relay
+verification remain deployment steps; see `CALLS.md`.
 5. Extract background workers.
 6. Separate media upload and processing.
 7. Decide from metrics whether Chat/Sync needs physical separation.

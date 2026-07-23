@@ -23,6 +23,7 @@ try:
         register_subscription_commands,
     )
     from server.server_commands_sync import register_sync_control_commands
+    from server.server_calls import register_call_commands
 except ModuleNotFoundError:
     from server_command_bus import (
         ConnectionContext,
@@ -40,6 +41,7 @@ except ModuleNotFoundError:
         register_subscription_commands,
     )
     from server_commands_sync import register_sync_control_commands
+    from server_calls import register_call_commands
 
 
 def build_command_registry():
@@ -49,6 +51,7 @@ def build_command_registry():
     register_identity_commands(registry)
     register_automation_commands(registry)
     register_ai_commands(registry)
+    register_call_commands(registry)
     return registry
 
 

@@ -33,9 +33,20 @@ class CallService {
   bool _speakerEnabled = true;
   bool _hdAudio = false;
   bool _enhancedNoiseSuppression = false;
+  List<Map<String, dynamic>> _iceServers = const [
+    {'urls': 'stun:stun.l.google.com:19302'},
+    {'urls': 'stun:stun1.l.google.com:19302'},
+  ];
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
   void Function()? onRemoteScreenChanged;
   void Function()? onLocalScreenEnded;
+
+  void setIceServers(List<Map<String, dynamic>> servers) {
+    if (servers.isEmpty) return;
+    _iceServers = servers
+        .map((server) => Map<String, dynamic>.from(server))
+        .toList(growable: false);
+  }
 
   Future<List<CallAudioDevice>> audioInputs() async {
     return _devicesOfKind('audioinput');
@@ -200,10 +211,7 @@ class CallService {
   }) async {
     await _resetCurrentConnectionOnly();
     final peerConnection = await createPeerConnection({
-      'iceServers': [
-        {'urls': 'stun:stun.l.google.com:19302'},
-        {'urls': 'stun:stun1.l.google.com:19302'},
-      ],
+      'iceServers': _iceServers,
       'sdpSemantics': 'unified-plan',
     });
     peerConnection.onIceCandidate = (candidate) {

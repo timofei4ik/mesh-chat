@@ -3,11 +3,13 @@ import json
 import websockets
 
 try:
+    from server.server_calls import is_call_signal_packet, route_call_signal
     from server.server_protocol import (
         ACCOUNT_LIVE_FANOUT_PACKET_TYPES,
         version_payload,
     )
 except ModuleNotFoundError:
+    from server_calls import is_call_signal_packet, route_call_signal
     from server_protocol import (
         ACCOUNT_LIVE_FANOUT_PACKET_TYPES,
         version_payload,
@@ -130,7 +132,7 @@ class ServerTransportMixin:
         if str(destination_node).strip().upper() == "SERVER":
             return
 
-        is_call_packet = str(packet.get("type") or "").startswith("call_")
+        is_call_packet = is_call_signal_packet(packet)
         if not is_call_packet:
             destination_login = str(
                 self.get_login_by_node(destination_node) or ""
@@ -172,35 +174,7 @@ class ServerTransportMixin:
             await self.send_web_push_for_packet(destination_node, packet)
             return
 
-        websocket = self.clients.get(destination_node)
-        if websocket:
-            await websocket.send(json.dumps(packet, ensure_ascii=False))
-
-        source_node = packet.get("source_node") or ""
-        login = self.get_login_by_node(destination_node)
-        if login:
-            delivered = False
-            for node_id in self.get_online_account_nodes(login):
-                if node_id == source_node or node_id == destination_node:
-                    continue
-                websocket = self.clients.get(node_id)
-                if not websocket:
-                    continue
-                await websocket.send(
-                    json.dumps(
-                        {
-                            **packet,
-                            "destination_node": node_id,
-                            "original_destination_node": destination_node,
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-                delivered = True
-            if delivered:
-                return
-
-        await self.send_web_push_for_packet(destination_node, packet)
+        await route_call_signal(self, packet)
 
     async def mirror_packet_to_source_account_devices(self, packet):
         if str(packet.get("type") or "") not in ACCOUNT_LIVE_FANOUT_PACKET_TYPES:

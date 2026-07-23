@@ -379,7 +379,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (keepComposerFocused && !inputFocus.hasFocus) {
       inputFocus.requestFocus();
     }
-    playSendFlight(text.trim());
     input.clear();
     widget.controller.updateDraft(widget.thread, '');
     final quote = fixedCommentRoot ?? replyTo;
@@ -7426,14 +7425,18 @@ class _MessageBubbleState extends State<_MessageBubble> {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: animateAppearance ? 0 : 1, end: appeared ? 1 : 0),
       duration: animateAppearance
-          ? const Duration(milliseconds: 260)
+          ? const Duration(milliseconds: 220)
           : Duration.zero,
-      curve: Curves.easeOutCubic,
+      curve: Curves.easeOutQuart,
       builder: (context, value, child) => Opacity(
         opacity: value.clamp(0.0, 1.0),
         child: Transform.translate(
-          offset: Offset((mine ? 18 : -18) * (1 - value), 8 * (1 - value)),
-          child: child,
+          offset: Offset((mine ? 10 : -10) * (1 - value), 12 * (1 - value)),
+          child: Transform.scale(
+            alignment: mine ? Alignment.bottomRight : Alignment.bottomLeft,
+            scale: 0.94 + value * 0.06,
+            child: child,
+          ),
         ),
       ),
       child: Align(

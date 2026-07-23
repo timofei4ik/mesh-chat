@@ -16,6 +16,7 @@ from server import (
     server_commands_push,
     server_commands_subscriptions,
     server_commands_sync,
+    server_calls,
     server_connection,
     server_email_auth,
     server_mutations,
@@ -89,6 +90,7 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
             server_commands_push,
             server_commands_subscriptions,
             server_commands_sync,
+            server_calls,
             server_connection,
             server_mutations,
             server_protocol,
@@ -157,7 +159,7 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
         commands = server_commands.build_command_registry()
         controls = server_commands.build_control_command_registry()
 
-        self.assertEqual(27, len(commands.packet_types))
+        self.assertEqual(35, len(commands.packet_types))
         self.assertEqual(8, len(controls.packet_types))
         self.assertLess(
             len(inspect.getsource(server_commands).splitlines()),

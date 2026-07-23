@@ -283,6 +283,7 @@ class AppController extends ChangeNotifier {
   final BleChatService ble = BleChatService();
   final CallService _calls = CallService();
   final Map<String, CallService> _groupCalls = {};
+  List<Map<String, dynamic>> _callIceServers = const [];
   final NotificationService _notifications = NotificationService();
   final OwnProfileStore _ownProfileStore = OwnProfileStore();
   final ProximityScreenService _proximityScreen = ProximityScreenService();
@@ -2416,6 +2417,12 @@ class AppController extends ChangeNotifier {
           unawaited(_syncWebPushSubscription());
           unawaited(_syncAndroidPushToken());
           unawaited(_retryQueuedMessages());
+          _socket.send({
+            'type': 'call_ice_servers_request',
+            'request_id': const Uuid().v4(),
+            'source_node': myNodeId,
+            'protocol_version': MeshSocket.protocolVersion,
+          });
         }
       case 'server_error':
         if (packet['code'] == 'incompatible_protocol') {
@@ -2569,6 +2576,8 @@ class AppController extends ChangeNotifier {
         _handleGroupJoinRequest(packet);
       case 'group_join_response':
         _handleGroupJoinResponse(packet);
+      case 'call_ice_servers_result':
+        _applyCallIceServers(packet);
       case 'call_offer':
         await _handleCallOffer(packet);
       case 'call_answer':
@@ -2585,6 +2594,22 @@ class AppController extends ChangeNotifier {
         await _handleCallScreenStop(packet);
     }
     notifyListeners();
+  }
+
+  void _applyCallIceServers(Map<String, dynamic> packet) {
+    final raw = packet['ice_servers'];
+    if (raw is! List) return;
+    final servers = raw
+        .whereType<Map>()
+        .map((server) => Map<String, dynamic>.from(server))
+        .where((server) => server['urls'] != null)
+        .toList(growable: false);
+    if (servers.isEmpty) return;
+    _callIceServers = servers;
+    _calls.setIceServers(servers);
+    for (final service in _groupCalls.values) {
+      service.setIceServers(servers);
+    }
   }
 
   Future<void> _completeDeltaSync(Map<String, dynamic> packet) async {
@@ -5810,6 +5835,7 @@ class AppController extends ChangeNotifier {
     var started = 0;
     for (final recipientNode in recipients) {
       final service = CallService();
+      service.setIceServers(_callIceServers);
       _groupCalls[recipientNode] = service;
       final offerSdp = await service
           .startOutgoing(

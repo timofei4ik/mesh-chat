@@ -281,10 +281,12 @@ class _ProfileHeroState extends State<_ProfileHero>
                     alignment: Alignment.center,
                     children: [
                       Positioned.fill(
-                        child: ProfileEffectBackground(
-                          profile: profile,
-                          enabled: profile.meshProBadge == true,
-                          highRefreshRate: true,
+                        child: RepaintBoundary(
+                          child: ProfileEffectBackground(
+                            profile: profile,
+                            enabled: profile.meshProBadge == true,
+                            highRefreshRate: false,
+                          ),
                         ),
                       ),
                       Positioned(
@@ -343,11 +345,13 @@ class _ProfileHeroState extends State<_ProfileHero>
                               ),
                             ],
                           ),
-                          child: ProfileAvatar(
-                            profile: profile,
-                            radius: avatarRadius,
-                            squareProgress: value,
-                            animateDecoration: value < 0.9,
+                          child: RepaintBoundary(
+                            child: ProfileAvatar(
+                              profile: profile,
+                              radius: avatarRadius,
+                              squareProgress: value,
+                              animateDecoration: false,
+                            ),
                           ),
                         ),
                       ),

@@ -49,6 +49,31 @@ SYNC_V2_DELTA_TEST_ACCOUNTS = frozenset(
     if login.strip()
 )
 
+TURN_STUN_URLS = tuple(
+    value.strip()
+    for value in os.environ.get(
+        "MESH_TURN_STUN_URLS",
+        "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302",
+    ).split(",")
+    if value.strip()
+)
+
+TURN_URLS = tuple(
+    value.strip()
+    for value in os.environ.get("MESH_TURN_URLS", "").split(",")
+    if value.strip()
+)
+
+TURN_SHARED_SECRET = os.environ.get(
+    "MESH_TURN_SHARED_SECRET",
+    "",
+).strip()
+
+TURN_CREDENTIAL_TTL_SECONDS = max(
+    300,
+    int(os.environ.get("MESH_TURN_CREDENTIAL_TTL_SECONDS", "3600")),
+)
+
 SUBSCRIPTION_CHECKOUT_URL = os.environ.get(
     "MESH_SUBSCRIPTION_CHECKOUT_URL",
     ""
