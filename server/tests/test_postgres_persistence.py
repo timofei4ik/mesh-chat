@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from server.ops.sqlite_to_postgres import _fingerprint
 from server.persistence.postgres import (
     apply_postgres_migrations,
     translate_sqlite_query,
@@ -58,6 +59,18 @@ class _FakeConnection:
 
 
 class PostgresPersistenceTests(unittest.TestCase):
+    def test_migration_fingerprint_ignores_database_collation_order(self):
+        rows = [
+            ("SERVER", "👍"),
+            ("a52d1d57-4465-4184-a2ee-c1e76917ee7c", "👌"),
+            ("e379b3c5-bb90-4354-b098-d6b4440d3cde", "🫎"),
+        ]
+
+        self.assertEqual(
+            _fingerprint(rows),
+            _fingerprint(list(reversed(rows))),
+        )
+
     def test_migrations_apply_in_order_and_only_once(self):
         connection = _FakeConnection()
         with tempfile.TemporaryDirectory() as directory:

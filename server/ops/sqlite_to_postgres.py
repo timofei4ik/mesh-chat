@@ -121,9 +121,10 @@ def _canonical_value(value):
 
 def _fingerprint(rows):
     digest = hashlib.sha256()
+    payloads = []
     for row in rows:
         payload = [_canonical_value(value) for value in row]
-        digest.update(
+        payloads.append(
             json.dumps(
                 payload,
                 ensure_ascii=False,
@@ -131,6 +132,10 @@ def _fingerprint(rows):
                 sort_keys=True,
             ).encode("utf-8")
         )
+    # SQLite and PostgreSQL may order identical text differently because
+    # their collations differ. Compare the row multiset, not database order.
+    for payload in sorted(payloads):
+        digest.update(payload)
         digest.update(b"\n")
     return digest.hexdigest()
 
