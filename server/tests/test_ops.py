@@ -9,12 +9,24 @@ from pathlib import Path
 
 from server import server as server_module
 from server import server_storage
+from server.ops.backup_postgres import _connection_arguments
 from server.ops.backup_server import create_backup
 from server.ops.healthcheck_server import collect_health
 from server.ops.reliability_audit import collect_reliability
 
 
 class ServerOperationsTests(unittest.TestCase):
+    def test_postgres_backup_parses_connection_url(self):
+        connection = _connection_arguments(
+            "postgresql://mesh%2Duser:s%40fe@db.internal:5544/mesh%2Dchat"
+        )
+
+        self.assertEqual("db.internal", connection["host"])
+        self.assertEqual("5544", connection["port"])
+        self.assertEqual("mesh-user", connection["user"])
+        self.assertEqual("s@fe", connection["password"])
+        self.assertEqual("mesh-chat", connection["database"])
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
