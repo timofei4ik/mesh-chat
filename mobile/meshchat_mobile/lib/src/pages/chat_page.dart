@@ -4773,9 +4773,14 @@ class _CallStatusStrip extends StatelessWidget {
         ? 'Connected'
         : 'Connecting';
     final qualityText = connected
-        ? call.quality <= 1
-              ? 'Weak'
-              : 'Good'
+        ? [
+            call.quality <= 1
+                ? 'Weak'
+                : call.quality == 2
+                ? 'Fair'
+                : 'Good',
+            if (call.roundTripTimeMs > 0) '${call.roundTripTimeMs} ms',
+          ].join(' · ')
         : 'Waiting audio';
     final participants = controller.callParticipantsLabel;
     return Wrap(
@@ -4795,6 +4800,16 @@ class _CallStatusStrip extends StatelessWidget {
           label: qualityText,
           accent: call.quality <= 1 ? Colors.orangeAccent : Colors.greenAccent,
         ),
+        if (connected && call.networkRoute != 'unknown')
+          _CallInfoPill(
+            icon: call.networkRoute == 'turn'
+                ? Icons.alt_route_rounded
+                : Icons.compare_arrows_rounded,
+            label: call.networkRoute == 'turn' ? 'TURN relay' : 'Direct',
+            accent: call.networkRoute == 'turn'
+                ? Colors.purpleAccent
+                : Colors.cyanAccent,
+          ),
         if (call.hdAudio)
           const _CallInfoPill(
             icon: Icons.hd_rounded,

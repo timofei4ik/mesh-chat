@@ -32,7 +32,21 @@ import '../services/story_store.dart';
 import '../services/sync_cursor_store.dart';
 import '../services/sync_delta_buffer.dart';
 
-enum CallStatus { ringing, outgoing, active, ended }
+enum CallStatus { ringing, outgoing, connecting, active, ended }
+
+bool isValidCallTransition(CallStatus from, CallStatus to) {
+  if (from == to) return true;
+  return switch (from) {
+    CallStatus.ringing => to == CallStatus.connecting || to == CallStatus.ended,
+    CallStatus.outgoing =>
+      to == CallStatus.connecting ||
+          to == CallStatus.active ||
+          to == CallStatus.ended,
+    CallStatus.connecting => to == CallStatus.active || to == CallStatus.ended,
+    CallStatus.active => to == CallStatus.connecting || to == CallStatus.ended,
+    CallStatus.ended => false,
+  };
+}
 
 class DiagnosticEvent {
   const DiagnosticEvent({
@@ -203,6 +217,10 @@ class ActiveCall {
     this.speakerOn = true,
     this.collapsed = false,
     this.quality = 0,
+    this.roundTripTimeMs = 0,
+    this.jitterMs = 0,
+    this.packetLossPercent = 0,
+    this.networkRoute = 'unknown',
     this.hdAudio = false,
     this.enhancedNoiseSuppression = false,
     this.screenSharing = false,
@@ -224,6 +242,10 @@ class ActiveCall {
   final bool speakerOn;
   final bool collapsed;
   final int quality;
+  final int roundTripTimeMs;
+  final int jitterMs;
+  final double packetLossPercent;
+  final String networkRoute;
   final bool hdAudio;
   final bool enhancedNoiseSuppression;
   final bool screenSharing;
@@ -237,6 +259,10 @@ class ActiveCall {
     bool? speakerOn,
     bool? collapsed,
     int? quality,
+    int? roundTripTimeMs,
+    int? jitterMs,
+    double? packetLossPercent,
+    String? networkRoute,
     bool? screenSharing,
     bool? remoteScreenSharing,
   }) {
@@ -256,6 +282,10 @@ class ActiveCall {
       speakerOn: speakerOn ?? this.speakerOn,
       collapsed: collapsed ?? this.collapsed,
       quality: quality ?? this.quality,
+      roundTripTimeMs: roundTripTimeMs ?? this.roundTripTimeMs,
+      jitterMs: jitterMs ?? this.jitterMs,
+      packetLossPercent: packetLossPercent ?? this.packetLossPercent,
+      networkRoute: networkRoute ?? this.networkRoute,
       hdAudio: hdAudio,
       enhancedNoiseSuppression: enhancedNoiseSuppression,
       screenSharing: screenSharing ?? this.screenSharing,
@@ -340,6 +370,9 @@ class AppController extends ChangeNotifier {
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
   Timer? _callTicker;
+  Timer? _callPhaseTimeout;
+  Timer? _callReconnectTimer;
+  final Set<String> _finishedCallIds = {};
   Timer? _softResyncTimer;
   final Map<int, String> _stickerLibrarySyncChunks = {};
   int _stickerLibrarySyncTotal = 0;
@@ -369,6 +402,12 @@ class AppController extends ChangeNotifier {
     ble.addListener(_handleBluetoothStateChanged);
     _calls.onRemoteScreenChanged = _handleRemoteScreenChanged;
     _calls.onLocalScreenEnded = _handleLocalScreenEnded;
+    _calls.onConnectionStateChanged = (phase) {
+      _handleCallConnectionState('', phase);
+    };
+    _calls.onQualityChanged = (quality) {
+      _handleCallQuality('', quality);
+    };
   }
 
   void addDiagnostic(String area, String message) {
@@ -2586,6 +2625,10 @@ class AppController extends ChangeNotifier {
         await _handleCallEnd(packet);
       case 'call_ice':
         await _handleCallIce(packet);
+      case 'call_restart_offer':
+        await _handleCallRestartOffer(packet);
+      case 'call_restart_answer':
+        await _handleCallRestartAnswer(packet);
       case 'call_screen_offer':
         await _handleCallScreenOffer(packet);
       case 'call_screen_answer':
@@ -5836,6 +5879,12 @@ class AppController extends ChangeNotifier {
     for (final recipientNode in recipients) {
       final service = CallService();
       service.setIceServers(_callIceServers);
+      service.onConnectionStateChanged = (phase) {
+        _handleCallConnectionState(recipientNode, phase);
+      };
+      service.onQualityChanged = (quality) {
+        _handleCallQuality(recipientNode, quality);
+      };
       _groupCalls[recipientNode] = service;
       final offerSdp = await service
           .startOutgoing(
@@ -5913,13 +5962,7 @@ class AppController extends ChangeNotifier {
           return '';
         });
     if (answerSdp.isEmpty) return;
-    _setActiveCall(
-      call.copyWith(
-        status: CallStatus.active,
-        connectedNodes: {call.peer.nodeId},
-        quality: 2,
-      ),
-    );
+    _setActiveCall(call.copyWith(status: CallStatus.connecting, quality: 0));
     notifyListeners();
     _socket.send({
       'type': 'call_answer',
@@ -5939,25 +5982,23 @@ class AppController extends ChangeNotifier {
   Future<void> declineCall() async {
     final call = activeCall;
     if (session == null || call == null) return;
-    unawaited(CallAlertService.stopAll());
-    _sendCallEnd(call, 'declined');
-    _appendCallHistory(call, 'declined_by_me');
-    _setActiveCall(
-      call.copyWith(status: CallStatus.ended, endReason: 'declined'),
+    await _finishCall(
+      call,
+      reason: 'declined',
+      historyReason: 'declined_by_me',
+      broadcast: true,
     );
-    notifyListeners();
-    await _endCallMedia();
   }
 
   Future<void> endCall() async {
     final call = activeCall;
     if (session == null || call == null) return;
-    unawaited(CallAlertService.stopAll());
-    _sendCallEnd(call, 'ended');
-    _appendCallHistory(call, 'ended_by_me');
-    _setActiveCall(call.copyWith(status: CallStatus.ended, endReason: 'ended'));
-    notifyListeners();
-    await _endCallMedia();
+    await _finishCall(
+      call,
+      reason: 'ended',
+      historyReason: 'ended_by_me',
+      broadcast: true,
+    );
   }
 
   Future<void> toggleCallMute() async {
@@ -6122,6 +6163,7 @@ class AppController extends ChangeNotifier {
       'ttl': 5,
       'call_id': call.callId,
       'reason': reason,
+      'operation_id': 'call-end:${call.callId}:$myNodeId:$destination',
       if (call.isGroup) 'group_id': call.groupId,
     });
   }
@@ -6241,22 +6283,14 @@ class AppController extends ChangeNotifier {
             .applyAnswer(packet['sdp']?.toString() ?? '')
             .catchError((_) {});
         _setActiveCall(
-          call.copyWith(
-            status: CallStatus.active,
-            connectedNodes: {...call.connectedNodes, source},
-            quality: 2,
-          ),
+          call.copyWith(status: CallStatus.connecting, quality: 0),
         );
       } else {
         await _calls
             .applyAnswer(packet['sdp']?.toString() ?? '')
             .catchError((_) {});
         _setActiveCall(
-          call.copyWith(
-            status: CallStatus.active,
-            connectedNodes: {source.isEmpty ? call.peer.nodeId : source},
-            quality: 2,
-          ),
+          call.copyWith(status: CallStatus.connecting, quality: 0),
         );
       }
     } else {
@@ -6281,14 +6315,11 @@ class AppController extends ChangeNotifier {
           return;
         }
       }
-      _setActiveCall(
-        call.copyWith(
-          status: CallStatus.ended,
-          endReason: packet['reason']?.toString() ?? 'remote ended',
-        ),
+      await _finishCall(
+        call,
+        reason: packet['reason']?.toString() ?? 'remote ended',
+        broadcast: false,
       );
-      notifyListeners();
-      await _endCallMedia();
     }
   }
 
@@ -6318,16 +6349,13 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       if (_groupCalls.isNotEmpty) return;
     }
-    _appendCallHistory(call, packet['reason']?.toString() ?? 'remote ended');
-    _setActiveCall(
-      call.copyWith(
-        status: CallStatus.ended,
-        endReason: packet['reason']?.toString() ?? 'remote ended',
-      ),
+    final reason = packet['reason']?.toString() ?? 'remote ended';
+    await _finishCall(
+      call,
+      reason: reason,
+      historyReason: reason,
+      broadcast: false,
     );
-    unawaited(CallAlertService.stopAll());
-    notifyListeners();
-    await _endCallMedia();
   }
 
   Future<void> _endCallMedia() async {
@@ -6343,6 +6371,190 @@ class AppController extends ChangeNotifier {
           .timeout(const Duration(seconds: 2), onTimeout: () {})
           .catchError((_) {});
     }
+  }
+
+  Future<void> _finishCall(
+    ActiveCall call, {
+    required String reason,
+    required bool broadcast,
+    String? historyReason,
+  }) async {
+    if (_finishedCallIds.contains(call.callId)) return;
+    _finishedCallIds.add(call.callId);
+    _callPhaseTimeout?.cancel();
+    _callReconnectTimer?.cancel();
+    _callPhaseTimeout = null;
+    _callReconnectTimer = null;
+    unawaited(CallAlertService.stopAll());
+    if (broadcast) _sendCallEnd(call, reason);
+    if (historyReason != null && historyReason.isNotEmpty) {
+      _appendCallHistory(call, historyReason);
+    }
+    final current = activeCall;
+    if (current != null && current.callId == call.callId) {
+      _setActiveCall(
+        current.copyWith(status: CallStatus.ended, endReason: reason),
+      );
+      notifyListeners();
+    }
+    await _endCallMedia();
+  }
+
+  void _handleCallConnectionState(String nodeId, CallConnectionPhase phase) {
+    final call = activeCall;
+    if (call == null || call.status == CallStatus.ended) return;
+    switch (phase) {
+      case CallConnectionPhase.connected:
+        _callReconnectTimer?.cancel();
+        _callReconnectTimer = null;
+        final connectedNode = nodeId.isEmpty ? call.peer.nodeId : nodeId;
+        _setActiveCall(
+          call.copyWith(
+            status: CallStatus.active,
+            connectedNodes: {...call.connectedNodes, connectedNode},
+            quality: call.quality == 0 ? 2 : call.quality,
+          ),
+        );
+        notifyListeners();
+      case CallConnectionPhase.connecting:
+      case CallConnectionPhase.newConnection:
+        if (call.status == CallStatus.ringing ||
+            call.status == CallStatus.outgoing) {
+          _setActiveCall(call.copyWith(status: CallStatus.connecting));
+          notifyListeners();
+        }
+      case CallConnectionPhase.disconnected:
+      case CallConnectionPhase.failed:
+        final connected = {...call.connectedNodes};
+        if (nodeId.isEmpty) {
+          connected.clear();
+        } else {
+          connected.remove(nodeId);
+        }
+        _setActiveCall(
+          call.copyWith(
+            status: CallStatus.connecting,
+            connectedNodes: connected,
+            quality: 0,
+          ),
+        );
+        notifyListeners();
+        _scheduleCallReconnect(call.callId, nodeId);
+      case CallConnectionPhase.closed:
+        if (call.status != CallStatus.ended) {
+          _scheduleCallReconnect(call.callId, nodeId);
+        }
+    }
+  }
+
+  void _handleCallQuality(String nodeId, CallQualitySnapshot quality) {
+    final call = activeCall;
+    if (call == null || call.status == CallStatus.ended) return;
+    if (call.isGroup &&
+        nodeId.isNotEmpty &&
+        !call.connectedNodes.contains(nodeId)) {
+      return;
+    }
+    _setActiveCall(
+      call.copyWith(
+        quality: quality.qualityLevel,
+        roundTripTimeMs: quality.roundTripTimeMs,
+        jitterMs: quality.jitterMs,
+        packetLossPercent: quality.packetLossPercent,
+        networkRoute: quality.route,
+      ),
+    );
+    notifyListeners();
+  }
+
+  void _scheduleCallReconnect(String callId, String nodeId) {
+    _callReconnectTimer?.cancel();
+    _callReconnectTimer = Timer(const Duration(seconds: 2), () async {
+      final call = activeCall;
+      if (call == null ||
+          call.callId != callId ||
+          call.status == CallStatus.ended) {
+        return;
+      }
+      if (!call.incoming) {
+        await _sendCallRestartOffer(call, nodeId);
+      }
+    });
+  }
+
+  Future<void> _sendCallRestartOffer(ActiveCall call, String nodeId) async {
+    final destination = nodeId.isEmpty ? call.peer.nodeId : nodeId;
+    final service = call.isGroup && !call.incoming
+        ? _groupCalls[destination]
+        : _calls;
+    if (service == null) return;
+    final sdp = await service.createRestartOffer().catchError((error) {
+      addDiagnostic('call', 'ICE restart failed: $error');
+      return '';
+    });
+    if (sdp.isEmpty) return;
+    _socket.send({
+      'type': 'call_restart_offer',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': destination,
+      'ttl': 5,
+      'call_id': call.callId,
+      'sdp': sdp,
+      if (call.isGroup) 'group_id': call.groupId,
+    });
+  }
+
+  Future<void> _handleCallRestartOffer(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (call == null ||
+        call.status == CallStatus.ended ||
+        packet['call_id']?.toString() != call.callId) {
+      return;
+    }
+    final source = packet['source_node']?.toString() ?? '';
+    final sdp = packet['sdp']?.toString() ?? '';
+    if (source.isEmpty || sdp.isEmpty) return;
+    final service = call.isGroup && !call.incoming
+        ? _groupCalls[source]
+        : _calls;
+    if (service == null) return;
+    final answer = await service.acceptRestartOffer(sdp).catchError((error) {
+      addDiagnostic('call', 'ICE restart offer failed: $error');
+      return '';
+    });
+    if (answer.isEmpty) return;
+    _socket.send({
+      'type': 'call_restart_answer',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': source,
+      'ttl': 5,
+      'call_id': call.callId,
+      'sdp': answer,
+      if (call.isGroup) 'group_id': call.groupId,
+    });
+  }
+
+  Future<void> _handleCallRestartAnswer(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (call == null ||
+        call.status == CallStatus.ended ||
+        packet['call_id']?.toString() != call.callId) {
+      return;
+    }
+    final source = packet['source_node']?.toString() ?? '';
+    final service = call.isGroup && !call.incoming
+        ? _groupCalls[source]
+        : _calls;
+    if (service == null) return;
+    await service.applyAnswer(packet['sdp']?.toString() ?? '').catchError((
+      error,
+    ) {
+      addDiagnostic('call', 'ICE restart answer failed: $error');
+    });
   }
 
   void _appendCallHistory(ActiveCall call, String reason) {
@@ -6408,31 +6620,11 @@ class AppController extends ChangeNotifier {
       await service
           .addIceCandidate(Map<String, dynamic>.from(raw))
           .catchError((_) {});
-      final current = activeCall;
-      if (current != null && current.callId == call.callId) {
-        _setActiveCall(
-          current.copyWith(
-            connectedNodes: {...current.connectedNodes, source},
-            quality: current.status == CallStatus.active ? 2 : 1,
-          ),
-        );
-        notifyListeners();
-      }
       return;
     }
     await _calls
         .addIceCandidate(Map<String, dynamic>.from(raw))
         .catchError((_) {});
-    final current = activeCall;
-    if (current != null && current.callId == call.callId) {
-      _setActiveCall(
-        current.copyWith(
-          connectedNodes: {...current.connectedNodes, source},
-          quality: current.status == CallStatus.active ? 2 : 1,
-        ),
-      );
-      notifyListeners();
-    }
   }
 
   Future<void> _handleCallScreenOffer(Map<String, dynamic> packet) async {
@@ -8675,7 +8867,21 @@ class AppController extends ChangeNotifier {
   }
 
   void _setActiveCall(ActiveCall? call) {
+    final previous = activeCall;
+    if (call != null &&
+        previous != null &&
+        call.callId == previous.callId &&
+        !isValidCallTransition(previous.status, call.status)) {
+      addDiagnostic(
+        'call',
+        'Ignored invalid state transition ${previous.status.name} -> '
+            '${call.status.name} for ${call.callId}',
+      );
+      return;
+    }
     activeCall = call;
+    _callPhaseTimeout?.cancel();
+    _callPhaseTimeout = null;
     unawaited(
       _proximityScreen.setEnabled(
         call != null && call.status != CallStatus.ended,
@@ -8686,6 +8892,33 @@ class AppController extends ChangeNotifier {
       _callTicker?.cancel();
       _callTicker = null;
     } else {
+      _finishedCallIds.remove(call.callId);
+      final timeout = switch (call.status) {
+        CallStatus.ringing ||
+        CallStatus.outgoing => const Duration(seconds: 45),
+        CallStatus.connecting => const Duration(seconds: 25),
+        CallStatus.active || CallStatus.ended => null,
+      };
+      if (timeout != null) {
+        final callId = call.callId;
+        _callPhaseTimeout = Timer(timeout, () {
+          final current = activeCall;
+          if (current == null ||
+              current.callId != callId ||
+              current.status == CallStatus.active ||
+              current.status == CallStatus.ended) {
+            return;
+          }
+          unawaited(
+            _finishCall(
+              current,
+              reason: 'timeout',
+              historyReason: 'timeout',
+              broadcast: true,
+            ),
+          );
+        });
+      }
       _callTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
         final current = activeCall;
         if (current == null || current.status == CallStatus.ended) {
@@ -9206,6 +9439,8 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _callTicker?.cancel();
+    _callPhaseTimeout?.cancel();
+    _callReconnectTimer?.cancel();
     _softResyncTimer?.cancel();
     _incomingPreviewTimer?.cancel();
     _softResyncTimer = null;

@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:js_interop';
 import 'dart:ui_web' as ui_web;
 
 import 'package:dart_webrtc/dart_webrtc.dart';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
+
+import 'call_models.dart';
 
 class CallAudioDevice {
   const CallAudioDevice({
@@ -38,8 +41,11 @@ class CallService {
     {'urls': 'stun:stun1.l.google.com:19302'},
   ];
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
+  Timer? _statsTimer;
   void Function()? onRemoteScreenChanged;
   void Function()? onLocalScreenEnded;
+  void Function(CallConnectionPhase phase)? onConnectionStateChanged;
+  void Function(CallQualitySnapshot quality)? onQualityChanged;
 
   void setIceServers(List<Map<String, dynamic>> servers) {
     if (servers.isEmpty) return;
@@ -128,6 +134,40 @@ class CallService {
     await _flushPendingRemoteCandidates();
   }
 
+  Future<String> createRestartOffer() async {
+    final peerConnection = _peerConnection;
+    if (peerConnection == null) return '';
+    await peerConnection.restartIce();
+    final offer = await peerConnection.createOffer({
+      'offerToReceiveAudio': 1,
+      'offerToReceiveVideo': isScreenSharing ? 1 : 0,
+      'iceRestart': true,
+    });
+    final sdp = _enhanceOpusSdp(offer.sdp ?? '');
+    await peerConnection.setLocalDescription(
+      RTCSessionDescription(sdp, 'offer'),
+    );
+    return sdp;
+  }
+
+  Future<String> acceptRestartOffer(String remoteOfferSdp) async {
+    final peerConnection = _peerConnection;
+    if (peerConnection == null || remoteOfferSdp.isEmpty) return '';
+    await peerConnection.setRemoteDescription(
+      RTCSessionDescription(remoteOfferSdp, 'offer'),
+    );
+    await _flushPendingRemoteCandidates();
+    final answer = await peerConnection.createAnswer({
+      'offerToReceiveAudio': 1,
+      'offerToReceiveVideo': isScreenSharing ? 1 : 0,
+    });
+    final sdp = _enhanceOpusSdp(answer.sdp ?? '');
+    await peerConnection.setLocalDescription(
+      RTCSessionDescription(sdp, 'answer'),
+    );
+    return sdp;
+  }
+
   Future<void> addIceCandidate(Map<String, dynamic> data) async {
     final peerConnection = _peerConnection;
     if (peerConnection == null) {
@@ -153,6 +193,7 @@ class CallService {
   }
 
   Future<void> end() async {
+    _stopStats();
     await _stopScreenMedia();
     _remoteAudioElement?.srcObject = null;
     _remoteAudioElement?.remove();
@@ -175,6 +216,7 @@ class CallService {
   }
 
   Future<void> _resetCurrentConnectionOnly() async {
+    _stopStats();
     await _stopScreenMedia();
     _remoteAudioElement?.srcObject = null;
     _remoteAudioElement?.remove();
@@ -235,6 +277,24 @@ class CallService {
       _attachRemoteAudio(stream);
       _attachRemoteScreen(stream);
     };
+    peerConnection.onConnectionState = _handleConnectionState;
+    peerConnection.onIceConnectionState = (state) {
+      switch (state) {
+        case RTCIceConnectionState.RTCIceConnectionStateConnected:
+        case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+          _handleConnectionPhase(CallConnectionPhase.connected);
+        case RTCIceConnectionState.RTCIceConnectionStateChecking:
+          _handleConnectionPhase(CallConnectionPhase.connecting);
+        case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+          _handleConnectionPhase(CallConnectionPhase.disconnected);
+        case RTCIceConnectionState.RTCIceConnectionStateFailed:
+          _handleConnectionPhase(CallConnectionPhase.failed);
+        case RTCIceConnectionState.RTCIceConnectionStateClosed:
+          _handleConnectionPhase(CallConnectionPhase.closed);
+        default:
+          break;
+      }
+    };
 
     _hdAudio = hdAudio;
     _enhancedNoiseSuppression = enhancedNoiseSuppression;
@@ -252,6 +312,101 @@ class CallService {
     }
     _localStream = stream;
     _peerConnection = peerConnection;
+  }
+
+  void _handleConnectionState(RTCPeerConnectionState state) {
+    switch (state) {
+      case RTCPeerConnectionState.RTCPeerConnectionStateNew:
+        _handleConnectionPhase(CallConnectionPhase.newConnection);
+      case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
+        _handleConnectionPhase(CallConnectionPhase.connecting);
+      case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+        _handleConnectionPhase(CallConnectionPhase.connected);
+      case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+        _handleConnectionPhase(CallConnectionPhase.disconnected);
+      case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+        _handleConnectionPhase(CallConnectionPhase.failed);
+      case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+        _handleConnectionPhase(CallConnectionPhase.closed);
+    }
+  }
+
+  void _handleConnectionPhase(CallConnectionPhase phase) {
+    onConnectionStateChanged?.call(phase);
+    if (phase == CallConnectionPhase.connected) {
+      _startStats();
+    } else if (phase == CallConnectionPhase.closed ||
+        phase == CallConnectionPhase.failed) {
+      _stopStats();
+    }
+  }
+
+  void _startStats() {
+    _statsTimer ??= Timer.periodic(const Duration(seconds: 2), (_) {
+      _collectQuality();
+    });
+    _collectQuality();
+  }
+
+  void _stopStats() {
+    _statsTimer?.cancel();
+    _statsTimer = null;
+  }
+
+  Future<void> _collectQuality() async {
+    final peerConnection = _peerConnection;
+    if (peerConnection == null) return;
+    final reports = await peerConnection.getStats().catchError(
+      (_) => <StatsReport>[],
+    );
+    if (reports.isEmpty) return;
+    final byId = {for (final report in reports) report.id: report};
+    StatsReport? selectedPair;
+    StatsReport? inboundAudio;
+    for (final report in reports) {
+      final values = report.values;
+      if (report.type == 'candidate-pair' &&
+          (values['selected'] == true ||
+              values['nominated'] == true &&
+                  values['state']?.toString() == 'succeeded')) {
+        selectedPair = report;
+      }
+      if (report.type == 'inbound-rtp' &&
+          values['kind']?.toString() == 'audio') {
+        inboundAudio = report;
+      }
+    }
+    if (selectedPair == null && inboundAudio == null) return;
+    final pairValues = selectedPair?.values ?? const <dynamic, dynamic>{};
+    final inboundValues = inboundAudio?.values ?? const <dynamic, dynamic>{};
+    final received = _asDouble(inboundValues['packetsReceived']);
+    final lost = _asDouble(inboundValues['packetsLost']);
+    final total = received + lost;
+    final rttSeconds = _asDouble(pairValues['currentRoundTripTime']) > 0
+        ? _asDouble(pairValues['currentRoundTripTime'])
+        : _asDouble(pairValues['totalRoundTripTime']);
+    final localCandidate = byId[pairValues['localCandidateId']?.toString()];
+    final remoteCandidate = byId[pairValues['remoteCandidateId']?.toString()];
+    final localType = localCandidate?.values['candidateType']?.toString() ?? '';
+    final remoteType =
+        remoteCandidate?.values['candidateType']?.toString() ?? '';
+    onQualityChanged?.call(
+      CallQualitySnapshot(
+        roundTripTimeMs: (rttSeconds * 1000).round(),
+        jitterMs: (_asDouble(inboundValues['jitter']) * 1000).round(),
+        packetLossPercent: total <= 0 ? 0 : (lost / total * 100),
+        route: localType == 'relay' || remoteType == 'relay'
+            ? 'turn'
+            : selectedPair == null
+            ? 'unknown'
+            : 'direct',
+      ),
+    );
+  }
+
+  double _asDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   Future<void> setMuted(bool muted) async {
