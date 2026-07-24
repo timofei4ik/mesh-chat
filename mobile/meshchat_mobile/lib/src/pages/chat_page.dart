@@ -374,10 +374,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       showSnack(channelWriteBlockedMessage);
       return;
     }
+    final shouldAnimateSend =
+        !widget.controller.appSettings.reducedAnimations && text.length <= 160;
     final keepComposerFocused =
         inputFocus.hasFocus || MediaQuery.viewInsetsOf(context).bottom > 0;
     if (keepComposerFocused && !inputFocus.hasFocus) {
       inputFocus.requestFocus();
+    }
+    if (shouldAnimateSend) {
+      playSendFlight(text);
     }
     input.clear();
     widget.controller.updateDraft(widget.thread, '');
@@ -386,6 +391,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       replyTo = null;
       smartReplies = const [];
     });
+    if (shouldAnimateSend) {
+      await Future<void>.delayed(const Duration(milliseconds: 72));
+      if (!mounted) return;
+    }
     String? error;
     if (widget.thread.isBluetooth) {
       error = await widget.controller.sendBluetoothMessageToThread(
