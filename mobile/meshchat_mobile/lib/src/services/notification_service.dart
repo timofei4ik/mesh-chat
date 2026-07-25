@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/services.dart';
 
 import 'android_push_service.dart';
 import 'notification_web_stub.dart'
@@ -43,10 +44,21 @@ class NotificationService {
       windows: windows,
     );
 
-    await _plugin.initialize(settings: settings);
+    await _plugin.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: _handleNotificationResponse,
+    );
     _initialized = true;
     await requestPermissions();
     await refreshAndroidPushToken();
+  }
+
+  Future<void> _handleNotificationResponse(
+    NotificationResponse response,
+  ) async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+      await const MethodChannel('meshchat/window').invokeMethod<void>('show');
+    }
   }
 
   Future<void> requestPermissions() async {
@@ -114,7 +126,15 @@ class NotificationService {
       presentBadge: true,
       presentSound: sound,
     );
-    final details = NotificationDetails(android: android, iOS: darwin);
+    const windows = WindowsNotificationDetails();
+    const linux = LinuxNotificationDetails(defaultActionName: 'Open');
+    final details = NotificationDetails(
+      android: android,
+      iOS: darwin,
+      macOS: darwin,
+      linux: linux,
+      windows: windows,
+    );
 
     await _plugin.show(
       id: _nextId++,
