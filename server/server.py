@@ -401,6 +401,11 @@ async def main():
                 )
 
             print(
+                "Android Push: "
+                + ("enabled" if relay.android_push_enabled else "disabled")
+            )
+
+            print(
                 "MeshPro billing HTTP: "
                 + ("enabled" if workers.billing_started else "disabled")
             )

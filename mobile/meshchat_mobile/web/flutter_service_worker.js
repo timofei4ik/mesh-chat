@@ -19,8 +19,12 @@ self.addEventListener('push', function(event) {
     body: payload.body || 'New message',
     icon: '/icons/Icon-192.png',
     badge: '/icons/Icon-192.png',
+    tag: payload.tag || payload.packet_id || undefined,
+    renotify: payload.packet_type === 'call_offer',
     data: {
-      url: payload.url || '/'
+      url: payload.url || '/',
+      packetType: payload.packet_type || '',
+      callId: payload.call_id || ''
     }
   };
 

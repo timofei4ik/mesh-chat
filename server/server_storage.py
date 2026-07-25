@@ -2205,7 +2205,7 @@ class ServerStorageMixin:
         return [
             device["node_id"]
             for device in self.get_account_devices(login)
-            if device.get("node_id")
+            if device.get("node_id") and not device.get("revoked")
         ]
 
     def get_online_account_nodes(

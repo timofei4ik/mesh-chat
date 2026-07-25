@@ -48,6 +48,32 @@ class ServerPushMixin:
     def web_push_public_key(self):
         return WEB_PUSH_VAPID_PUBLIC_KEY if self.web_push_enabled else ""
 
+    def _offline_push_target_nodes(self, destination_node):
+        destination_node = str(destination_node or "").strip()
+        if not destination_node:
+            return []
+
+        candidates = [destination_node]
+        destination_login = str(
+            self.get_login_by_node(destination_node) or ""
+        ).strip().lower()
+        if destination_login:
+            candidates.extend(self.get_account_node_ids(destination_login))
+
+        targets = []
+        seen = set()
+        for node_id in candidates:
+            normalized = str(node_id or "").strip()
+            if (
+                not normalized
+                or normalized in seen
+                or normalized in self.clients
+            ):
+                continue
+            seen.add(normalized)
+            targets.append(normalized)
+        return targets
+
     @property
     def android_push_enabled(self):
         return bool(
@@ -87,33 +113,39 @@ class ServerPushMixin:
         if not notification:
             return
 
-        if self.web_push_enabled:
-            for endpoint, subscription in self.web_push_subscriptions_for_node(
-                destination_node
-            ):
-                try:
-                    webpush(
-                        subscription_info=subscription,
-                        data=json.dumps(notification, ensure_ascii=False),
-                        vapid_private_key=WEB_PUSH_VAPID_PRIVATE_KEY,
-                        vapid_claims={
-                            "sub": WEB_PUSH_VAPID_SUBJECT
-                        },
-                        timeout=5
-                    )
-                except Exception as error:
-                    status_code = getattr(
-                        getattr(error, "response", None),
-                        "status_code",
-                        None
-                    )
-                    if status_code in (404, 410):
-                        self.delete_web_push_subscription(endpoint=endpoint)
-                    else:
-                        print(f"Web Push failed: {error}")
+        for target_node in self._offline_push_target_nodes(destination_node):
+            if self.web_push_enabled:
+                for endpoint, subscription in (
+                    self.web_push_subscriptions_for_node(target_node)
+                ):
+                    try:
+                        webpush(
+                            subscription_info=subscription,
+                            data=json.dumps(
+                                notification,
+                                ensure_ascii=False,
+                            ),
+                            vapid_private_key=WEB_PUSH_VAPID_PRIVATE_KEY,
+                            vapid_claims={
+                                "sub": WEB_PUSH_VAPID_SUBJECT
+                            },
+                            timeout=5
+                        )
+                    except Exception as error:
+                        status_code = getattr(
+                            getattr(error, "response", None),
+                            "status_code",
+                            None
+                        )
+                        if status_code in (404, 410):
+                            self.delete_web_push_subscription(
+                                endpoint=endpoint
+                            )
+                        else:
+                            print(f"Web Push failed: {error}")
 
-        if self.android_push_enabled and destination_node not in self.clients:
-            await self._send_android_push(destination_node, notification)
+            if self.android_push_enabled:
+                await self._send_android_push(target_node, notification)
 
     async def _send_android_push(self, destination_node, notification):
         app = self._firebase_app()
@@ -134,6 +166,9 @@ class ServerPushMixin:
                 data={
                     "type": str(packet_type),
                     "url": str(notification.get("url") or "/"),
+                    "tag": str(notification.get("tag") or ""),
+                    "packet_id": str(notification.get("packet_id") or ""),
+                    "call_id": str(notification.get("call_id") or ""),
                 },
                 android=messaging.AndroidConfig(
                     priority="high",
@@ -173,6 +208,8 @@ class ServerPushMixin:
                 "body": "Новое сообщение",
                 "url": "/",
                 "packet_type": packet_type,
+                "packet_id": packet.get("packet_id") or "",
+                "tag": f"chat:{packet.get('source_node') or sender}",
             }
 
         if packet_type == "group_message":
@@ -182,6 +219,8 @@ class ServerPushMixin:
                 "body": f"{sender}: новое сообщение",
                 "url": "/",
                 "packet_type": packet_type,
+                "packet_id": packet.get("packet_id") or "",
+                "tag": f"group:{packet.get('group_id') or group_name}",
             }
 
         if packet_type == "file_chunk" and packet.get("chunk_index") == 0:
@@ -190,6 +229,8 @@ class ServerPushMixin:
                 "body": "Новый файл",
                 "url": "/",
                 "packet_type": packet_type,
+                "packet_id": packet.get("packet_id") or "",
+                "tag": f"file:{packet.get('file_id') or sender}",
             }
 
         if packet_type == "call_offer":
@@ -198,6 +239,9 @@ class ServerPushMixin:
                 "body": "Входящий звонок",
                 "url": "/",
                 "packet_type": packet_type,
+                "packet_id": packet.get("packet_id") or "",
+                "call_id": packet.get("call_id") or "",
+                "tag": f"call:{packet.get('call_id') or sender}",
             }
 
         return None

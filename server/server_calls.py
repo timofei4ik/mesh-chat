@@ -123,8 +123,7 @@ async def route_call_signal(server, packet):
                 continue
             delivered = await deliver(target_node) or delivered
 
-    if not delivered:
-        await server.send_web_push_for_packet(destination_node, packet)
+    await server.send_web_push_for_packet(destination_node, packet)
     return delivered
 
 

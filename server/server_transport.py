@@ -167,10 +167,8 @@ class ServerTransportMixin:
                 delivered_nodes.add(target_node)
                 delivered = True
 
-            if delivered:
-                return
-
-            self.save_offline_packet(destination_node, packet)
+            if not delivered:
+                self.save_offline_packet(destination_node, packet)
             await self.send_web_push_for_packet(destination_node, packet)
             return
 
