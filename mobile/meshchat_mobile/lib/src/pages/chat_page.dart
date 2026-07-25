@@ -374,15 +374,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       showSnack(channelWriteBlockedMessage);
       return;
     }
-    final shouldAnimateSend =
-        !widget.controller.appSettings.reducedAnimations && text.length <= 160;
     final keepComposerFocused =
         inputFocus.hasFocus || MediaQuery.viewInsetsOf(context).bottom > 0;
     if (keepComposerFocused && !inputFocus.hasFocus) {
       inputFocus.requestFocus();
-    }
-    if (shouldAnimateSend) {
-      playSendFlight(text);
     }
     input.clear();
     widget.controller.updateDraft(widget.thread, '');
@@ -391,10 +386,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       replyTo = null;
       smartReplies = const [];
     });
-    if (shouldAnimateSend) {
-      await Future<void>.delayed(const Duration(milliseconds: 72));
-      if (!mounted) return;
-    }
     String? error;
     if (widget.thread.isBluetooth) {
       error = await widget.controller.sendBluetoothMessageToThread(
@@ -1811,46 +1802,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
     messageListRefresh.value++;
-  }
-
-  void playSendFlight(String text) {
-    if (text.isEmpty || !mounted) return;
-    final inputBox =
-        composerInputKey.currentContext?.findRenderObject() as RenderBox?;
-    final overlay = Overlay.of(context, rootOverlay: true);
-    final overlayBox = overlay.context.findRenderObject() as RenderBox?;
-    if (inputBox == null || overlayBox == null || !inputBox.hasSize) return;
-    final origin = overlayBox.globalToLocal(
-      inputBox.localToGlobal(Offset.zero),
-    );
-    final targetWidth = (72.0 + text.length * 7.0)
-        .clamp(88.0, 250.0)
-        .toDouble();
-    final flightHeight = math.min(44.0, inputBox.size.height);
-    final start = Rect.fromLTWH(
-      origin.dx + inputBox.size.width - targetWidth,
-      origin.dy + (inputBox.size.height - flightHeight) / 2,
-      targetWidth,
-      flightHeight,
-    );
-    final media = MediaQuery.of(context);
-    final end = Rect.fromLTWH(
-      media.size.width - targetWidth - 14,
-      math.max(media.padding.top + 76, start.top - flightHeight - 12),
-      targetWidth,
-      flightHeight,
-    );
-    late OverlayEntry entry;
-    entry = OverlayEntry(
-      builder: (_) => _SendFlightOverlay(
-        start: start,
-        end: end,
-        text: text,
-        color: _chatBubbleColor(widget.thread.themeId, true),
-        onFinished: () => entry.remove(),
-      ),
-    );
-    overlay.insert(entry);
   }
 
   void handleScroll() {
@@ -5564,155 +5515,6 @@ class _MessageSelectionBar extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class _SendFlightOverlay extends StatefulWidget {
-  const _SendFlightOverlay({
-    required this.start,
-    required this.end,
-    required this.text,
-    required this.color,
-    required this.onFinished,
-  });
-
-  final Rect start;
-  final Rect end;
-  final String text;
-  final Color color;
-  final VoidCallback onFinished;
-
-  @override
-  State<_SendFlightOverlay> createState() => _SendFlightOverlayState();
-}
-
-class _SendFlightOverlayState extends State<_SendFlightOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController controller;
-  late final Animation<double> position;
-  late final Animation<double> opacity;
-
-  @override
-  void initState() {
-    super.initState();
-    controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 340),
-    );
-    position = CurvedAnimation(
-      parent: controller,
-      curve: const Cubic(0.22, 0.72, 0.18, 1),
-    );
-    opacity = TweenSequence<double>([
-      TweenSequenceItem(tween: ConstantTween(1.0), weight: 72),
-      TweenSequenceItem(
-        tween: Tween<double>(
-          begin: 1.0,
-          end: 0.0,
-        ).chain(CurveTween(curve: Curves.easeInOutCubic)),
-        weight: 28,
-      ),
-    ]).animate(controller);
-    controller.addStatusListener((status) {
-      if (status == AnimationStatus.completed) widget.onFinished();
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) controller.forward();
-    });
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Stack(
-        children: [
-          Positioned.fromRect(
-            rect: widget.start,
-            child: AnimatedBuilder(
-              animation: controller,
-              child: RepaintBoundary(
-                child: SizedBox.fromSize(
-                  size: widget.start.size,
-                  child: CustomPaint(
-                    painter: _SendFlightPainter(
-                      text: widget.text,
-                      color: widget.color,
-                      textDirection: Directionality.of(context),
-                    ),
-                  ),
-                ),
-              ),
-              builder: (context, child) => Transform.translate(
-                offset: Offset.lerp(
-                  Offset.zero,
-                  widget.end.topLeft - widget.start.topLeft,
-                  position.value,
-                )!,
-                child: Opacity(opacity: opacity.value, child: child),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SendFlightPainter extends CustomPainter {
-  const _SendFlightPainter({
-    required this.text,
-    required this.color,
-    required this.textDirection,
-  });
-
-  final String text;
-  final Color color;
-  final TextDirection textDirection;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    final radius = Radius.circular(math.min(16, size.height / 2));
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, radius),
-      Paint()
-        ..color = color.withValues(alpha: 0.24)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, radius),
-      Paint()..color = color,
-    );
-
-    final painter = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          height: 1,
-          fontWeight: FontWeight.w400,
-        ),
-      ),
-      textDirection: textDirection,
-      textScaler: TextScaler.noScaling,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: math.max(0, size.width - 24));
-    painter.paint(canvas, Offset(12, (size.height - painter.height) / 2));
-  }
-
-  @override
-  bool shouldRepaint(covariant _SendFlightPainter oldDelegate) {
-    return oldDelegate.text != text ||
-        oldDelegate.color != color ||
-        oldDelegate.textDirection != textDirection;
   }
 }
 
