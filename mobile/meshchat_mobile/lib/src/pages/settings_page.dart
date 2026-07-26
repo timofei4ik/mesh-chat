@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../controllers/app_controller.dart';
@@ -1160,6 +1161,29 @@ class _NotificationSettings extends StatelessWidget {
                 ? (value) => save(settings.copyWith(notificationPreview: value))
                 : null,
           ),
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) ...[
+            const Divider(height: 1),
+            const ListTile(
+              leading: Icon(Icons.desktop_windows_outlined),
+              title: Text('Windows background mode'),
+            ),
+            SwitchListTile(
+              title: const Text('Keep running in tray'),
+              subtitle: const Text(
+                'Closing the window keeps notifications available',
+              ),
+              value: settings.windowsCloseToTray,
+              onChanged: (value) =>
+                  save(settings.copyWith(windowsCloseToTray: value)),
+            ),
+            SwitchListTile(
+              title: const Text('Launch with Windows'),
+              subtitle: const Text('Start MeshChat after signing in'),
+              value: settings.windowsLaunchAtStartup,
+              onChanged: (value) =>
+                  save(settings.copyWith(windowsLaunchAtStartup: value)),
+            ),
+          ],
         ],
       ),
     );

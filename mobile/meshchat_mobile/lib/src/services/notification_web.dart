@@ -17,11 +17,35 @@ Future<void> showNotification({
   required String title,
   required String body,
   String? icon,
+  Map<String, String>? target,
 }) async {
   if (!Notification.supported) return;
   if (Notification.permission != 'granted') return;
   final notification = Notification(title, body: body, icon: icon);
   Timer(const Duration(seconds: 8), notification.close);
+}
+
+Map<String, String>? consumeInitialNotificationTarget() {
+  final query = Uri.base.queryParameters;
+  final target = <String, String>{
+    'packet_type': query['notification_type'] ?? '',
+    'source_node': query['source_node'] ?? '',
+    'group_id': query['group_id'] ?? '',
+    'call_id': query['call_id'] ?? '',
+  };
+  if (target.values.every((value) => value.isEmpty)) return null;
+  window.history.replaceState(null, document.title, Uri.base.path);
+  return target;
+}
+
+Future<void> cancelNotification(String tag) async {
+  final serviceWorker = window.navigator.serviceWorker;
+  if (serviceWorker == null) return;
+  final registration = await serviceWorker.ready;
+  final notifications = await registration.getNotifications({'tag': tag});
+  for (final notification in notifications) {
+    notification.close();
+  }
 }
 
 Future<Map<String, dynamic>?> subscribeToPush(String vapidPublicKey) async {
@@ -30,7 +54,7 @@ Future<Map<String, dynamic>?> subscribeToPush(String vapidPublicKey) async {
   if (serviceWorker == null) return null;
   if (!await requestNotificationPermission()) return null;
 
-  await serviceWorker.register('/flutter_service_worker.js');
+  await serviceWorker.register('/push_service_worker.js');
   final registration = await serviceWorker.ready;
   final pushManager = registration.pushManager;
   if (pushManager == null) return null;

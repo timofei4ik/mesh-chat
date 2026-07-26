@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <string>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "resource.h"
@@ -47,6 +48,26 @@ bool FlutterWindow::OnCreate() {
           result->Success();
           return;
         }
+        if (call.method_name() == "setCloseToTray") {
+          const auto* enabled = std::get_if<bool>(call.arguments());
+          if (enabled == nullptr) {
+            result->Error("invalid_argument", "Expected a boolean value");
+            return;
+          }
+          close_to_tray_ = *enabled;
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "setLaunchAtStartup") {
+          const auto* enabled = std::get_if<bool>(call.arguments());
+          if (enabled == nullptr) {
+            result->Error("invalid_argument", "Expected a boolean value");
+            return;
+          }
+          result->Success(flutter::EncodableValue(
+              SetLaunchAtStartup(*enabled)));
+          return;
+        }
         result->NotImplemented();
       });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
@@ -88,10 +109,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_CLOSE:
-      if (!exiting_) {
+      if (!exiting_ && close_to_tray_) {
         ShowWindow(hwnd, SW_HIDE);
         return 0;
       }
+      exiting_ = true;
+      RemoveTrayIcon();
       break;
     case kTrayCallbackMessage: {
       const UINT tray_event = LOWORD(lparam);
@@ -199,4 +222,36 @@ void FlutterWindow::ShowTrayMenu() {
     RemoveTrayIcon();
     DestroyWindow(hwnd);
   }
+}
+
+bool FlutterWindow::SetLaunchAtStartup(bool enabled) {
+  HKEY key = nullptr;
+  const wchar_t* path =
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) !=
+      ERROR_SUCCESS) {
+    return false;
+  }
+
+  constexpr wchar_t kValueName[] = L"MeshChat";
+  LONG result = ERROR_SUCCESS;
+  if (enabled) {
+    wchar_t executable[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, executable, MAX_PATH) == 0) {
+      RegCloseKey(key);
+      return false;
+    }
+    const std::wstring command = L"\"" + std::wstring(executable) + L"\"";
+    result = RegSetValueExW(
+        key, kValueName, 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(command.c_str()),
+        static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+  } else {
+    result = RegDeleteValueW(key, kValueName);
+    if (result == ERROR_FILE_NOT_FOUND) {
+      result = ERROR_SUCCESS;
+    }
+  }
+  RegCloseKey(key);
+  return result == ERROR_SUCCESS;
 }

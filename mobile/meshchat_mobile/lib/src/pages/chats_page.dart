@@ -1263,6 +1263,32 @@ class _ChatStackHostState extends State<_ChatStackHost>
   Completer<void>? chatReady;
   bool opening = false;
   bool dragging = false;
+  bool openingNotification = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleNotificationTarget);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _handleNotificationTarget();
+    });
+  }
+
+  void _handleNotificationTarget() {
+    if (!mounted || openingNotification) return;
+    final thread = widget.controller.takeNotificationThread();
+    if (thread == null) return;
+    openingNotification = true;
+    unawaited(
+      (() async {
+        if (activeThread != null && activeThread != thread) {
+          await close();
+        }
+        if (activeThread == null) await open(thread);
+        widget.controller.markRead(thread);
+      })().whenComplete(() => openingNotification = false),
+    );
+  }
 
   Future<void> open(ChatThread thread) async {
     if (activeThread != null || opening) return;
@@ -1340,6 +1366,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
 
   @override
   void dispose() {
+    widget.controller.removeListener(_handleNotificationTarget);
     chatSnapshot.dispose();
     transition.dispose();
     super.dispose();

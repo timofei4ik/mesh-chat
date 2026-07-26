@@ -1,6 +1,7 @@
 package com.meshchat.meshchat_mobile
 
 import android.content.Context
+import android.content.Intent
 import android.os.PowerManager
 import com.google.firebase.messaging.FirebaseMessaging
 import io.flutter.embedding.engine.FlutterEngine
@@ -10,6 +11,8 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val proximityChannel = "meshchat/proximity_screen"
     private val androidPushChannel = "meshchat/android_push"
+    private var pushMethodChannel: MethodChannel? = null
+    private var pendingNotificationLaunch: Map<String, String>? = null
     private var proximityWakeLock: PowerManager.WakeLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -28,13 +31,41 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, androidPushChannel)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "initialize" -> initializeAndroidPush(call.arguments, result)
-                    else -> result.notImplemented()
+        val channel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            androidPushChannel
+        )
+        pushMethodChannel = channel
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "initialize" -> initializeAndroidPush(call.arguments, result)
+                "consumeNotificationLaunch" -> {
+                    val payload = pendingNotificationLaunch ?: notificationPayload(intent)
+                    pendingNotificationLaunch = null
+                    result.success(payload)
                 }
+                else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val payload = notificationPayload(intent) ?: return
+        pendingNotificationLaunch = payload
+        pushMethodChannel?.invokeMethod("notificationOpened", payload)
+    }
+
+    private fun notificationPayload(intent: Intent?): Map<String, String>? {
+        val extras = intent?.extras ?: return null
+        val payload = mapOf(
+            "packet_type" to (extras.getString("type") ?: ""),
+            "source_node" to (extras.getString("source_node") ?: ""),
+            "group_id" to (extras.getString("group_id") ?: ""),
+            "call_id" to (extras.getString("call_id") ?: "")
+        )
+        return if (payload.values.all { it.isBlank() }) null else payload
     }
 
     private fun initializeAndroidPush(arguments: Any?, result: MethodChannel.Result) {

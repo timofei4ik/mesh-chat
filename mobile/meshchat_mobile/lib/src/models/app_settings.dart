@@ -8,6 +8,8 @@ class AppSettings {
     this.notificationSound = true,
     this.notificationVibration = true,
     this.notificationPreview = true,
+    this.windowsCloseToTray = true,
+    this.windowsLaunchAtStartup = false,
     this.compressPhotos = true,
     this.sendFilesOriginal = true,
     this.dataSaver = false,
@@ -37,6 +39,8 @@ class AppSettings {
   final bool notificationSound;
   final bool notificationVibration;
   final bool notificationPreview;
+  final bool windowsCloseToTray;
+  final bool windowsLaunchAtStartup;
   final bool compressPhotos;
   final bool sendFilesOriginal;
   final bool dataSaver;
@@ -61,6 +65,8 @@ class AppSettings {
     bool? notificationSound,
     bool? notificationVibration,
     bool? notificationPreview,
+    bool? windowsCloseToTray,
+    bool? windowsLaunchAtStartup,
     bool? compressPhotos,
     bool? sendFilesOriginal,
     bool? dataSaver,
@@ -86,6 +92,9 @@ class AppSettings {
       notificationVibration:
           notificationVibration ?? this.notificationVibration,
       notificationPreview: notificationPreview ?? this.notificationPreview,
+      windowsCloseToTray: windowsCloseToTray ?? this.windowsCloseToTray,
+      windowsLaunchAtStartup:
+          windowsLaunchAtStartup ?? this.windowsLaunchAtStartup,
       compressPhotos: compressPhotos ?? this.compressPhotos,
       sendFilesOriginal: sendFilesOriginal ?? this.sendFilesOriginal,
       dataSaver: dataSaver ?? this.dataSaver,

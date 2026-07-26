@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 
 try:
     from pywebpush import WebPushException, webpush
@@ -158,6 +159,40 @@ class ServerPushMixin:
             else "meshchat_messages"
         )
         for token in self.android_push_tokens_for_node(destination_node):
+            if notification.get("cancel"):
+                message = messaging.Message(
+                    data={
+                        "type": str(packet_type),
+                        "tag": str(notification.get("tag") or ""),
+                        "packet_id": str(
+                            notification.get("packet_id") or ""
+                        ),
+                        "call_id": str(notification.get("call_id") or ""),
+                        "source_node": str(
+                            notification.get("source_node") or ""
+                        ),
+                        "group_id": str(
+                            notification.get("group_id") or ""
+                        ),
+                    },
+                    android=messaging.AndroidConfig(priority="high"),
+                    token=token,
+                )
+                try:
+                    await asyncio.to_thread(
+                        messaging.send,
+                        message,
+                        app=app,
+                    )
+                except Exception as error:
+                    if error.__class__.__name__ in {
+                        "UnregisteredError",
+                        "SenderIdMismatchError",
+                    }:
+                        self.delete_android_push_token(token=token)
+                    else:
+                        print(f"Android push failed: {error}")
+                continue
             message = messaging.Message(
                 notification=messaging.Notification(
                     title=notification.get("title") or "MeshChat",
@@ -169,13 +204,23 @@ class ServerPushMixin:
                     "tag": str(notification.get("tag") or ""),
                     "packet_id": str(notification.get("packet_id") or ""),
                     "call_id": str(notification.get("call_id") or ""),
+                    "source_node": str(
+                        notification.get("source_node") or ""
+                    ),
+                    "group_id": str(notification.get("group_id") or ""),
                 },
                 android=messaging.AndroidConfig(
                     priority="high",
+                    collapse_key=str(notification.get("tag") or ""),
                     notification=messaging.AndroidNotification(
                         channel_id=channel_id,
                         sound="default",
                         visibility="public",
+                        tag=(
+                            f"meshchat_call_{notification.get('call_id')}"
+                            if packet_type == "call_offer"
+                            else str(notification.get("tag") or "")
+                        ),
                     ),
                 ),
                 token=token,
@@ -201,15 +246,30 @@ class ServerPushMixin:
             or packet.get("sender_name")
             or "MeshChat"
         )
+        source_node = str(packet.get("source_node") or "")
+        group_id = str(packet.get("group_id") or "")
+        call_id = str(packet.get("call_id") or "")
+
+        def target_url(kind):
+            return "/?" + urlencode(
+                {
+                    "notification_type": kind,
+                    "source_node": source_node,
+                    "group_id": group_id,
+                    "call_id": call_id,
+                }
+            )
 
         if packet_type == "chat_message":
             return {
                 "title": sender,
                 "body": "Новое сообщение",
-                "url": "/",
+                "url": target_url(packet_type),
                 "packet_type": packet_type,
                 "packet_id": packet.get("packet_id") or "",
                 "tag": f"chat:{packet.get('source_node') or sender}",
+                "source_node": source_node,
+                "group_id": group_id,
             }
 
         if packet_type == "group_message":
@@ -217,31 +277,51 @@ class ServerPushMixin:
             return {
                 "title": group_name,
                 "body": f"{sender}: новое сообщение",
-                "url": "/",
+                "url": target_url(packet_type),
                 "packet_type": packet_type,
                 "packet_id": packet.get("packet_id") or "",
                 "tag": f"group:{packet.get('group_id') or group_name}",
+                "source_node": source_node,
+                "group_id": group_id,
             }
 
         if packet_type == "file_chunk" and packet.get("chunk_index") == 0:
             return {
                 "title": sender,
                 "body": "Новый файл",
-                "url": "/",
+                "url": target_url(packet_type),
                 "packet_type": packet_type,
                 "packet_id": packet.get("packet_id") or "",
                 "tag": f"file:{packet.get('file_id') or sender}",
+                "source_node": source_node,
+                "group_id": group_id,
             }
 
         if packet_type == "call_offer":
             return {
                 "title": sender,
                 "body": "Входящий звонок",
-                "url": "/",
+                "url": target_url(packet_type),
                 "packet_type": packet_type,
                 "packet_id": packet.get("packet_id") or "",
                 "call_id": packet.get("call_id") or "",
                 "tag": f"call:{packet.get('call_id') or sender}",
+                "source_node": source_node,
+                "group_id": group_id,
+            }
+
+        if packet_type == "call_end":
+            return {
+                "title": "",
+                "body": "",
+                "url": target_url(packet_type),
+                "packet_type": packet_type,
+                "packet_id": packet.get("packet_id") or "",
+                "call_id": call_id,
+                "tag": f"call:{call_id or sender}",
+                "source_node": source_node,
+                "group_id": group_id,
+                "cancel": True,
             }
 
         return None

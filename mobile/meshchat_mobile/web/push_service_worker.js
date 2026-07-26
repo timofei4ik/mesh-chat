@@ -14,6 +14,18 @@ self.addEventListener('push', function(event) {
     payload = {};
   }
 
+  if (payload.cancel) {
+    event.waitUntil(
+      self.registration.getNotifications({ tag: payload.tag })
+        .then(function(notifications) {
+          notifications.forEach(function(notification) {
+            notification.close();
+          });
+        })
+    );
+    return;
+  }
+
   var title = payload.title || 'MeshChat';
   var options = {
     body: payload.body || 'New message',
@@ -24,7 +36,9 @@ self.addEventListener('push', function(event) {
     data: {
       url: payload.url || '/',
       packetType: payload.packet_type || '',
-      callId: payload.call_id || ''
+      callId: payload.call_id || '',
+      sourceNode: payload.source_node || '',
+      groupId: payload.group_id || ''
     }
   };
 
@@ -40,8 +54,9 @@ self.addEventListener('notificationclick', function(event) {
         for (var i = 0; i < clientList.length; i++) {
           var client = clientList[i];
           if ('focus' in client) {
-            client.focus();
-            return;
+            return client.navigate(url).then(function() {
+              return client.focus();
+            });
           }
         }
         if (self.clients.openWindow) {

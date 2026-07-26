@@ -30,6 +30,7 @@ class FlutterWindow : public Win32Window {
   void RemoveTrayIcon();
   void RestoreFromTray();
   void ShowTrayMenu();
+  bool SetLaunchAtStartup(bool enabled);
 
   // The project to run.
   flutter::DartProject project_;
@@ -43,6 +44,7 @@ class FlutterWindow : public Win32Window {
   UINT taskbar_created_message_ = 0;
   bool tray_icon_added_ = false;
   bool exiting_ = false;
+  bool close_to_tray_ = true;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

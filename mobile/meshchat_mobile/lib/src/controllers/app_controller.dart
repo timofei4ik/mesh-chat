@@ -31,6 +31,7 @@ import '../services/sticker_store.dart';
 import '../services/story_store.dart';
 import '../services/sync_cursor_store.dart';
 import '../services/sync_delta_buffer.dart';
+import '../services/windows_background_service.dart';
 
 enum CallStatus { ringing, outgoing, connecting, active, ended }
 
@@ -317,6 +318,8 @@ class AppController extends ChangeNotifier {
   final NotificationService _notifications = NotificationService();
   final OwnProfileStore _ownProfileStore = OwnProfileStore();
   final ProximityScreenService _proximityScreen = ProximityScreenService();
+  final WindowsBackgroundService _windowsBackground =
+      WindowsBackgroundService();
   final Map<String, Profile> profiles = {};
   final Map<String, ChatThread> threads = {};
   final Map<String, ChatThread> groups = {};
@@ -392,12 +395,14 @@ class AppController extends ChangeNotifier {
   final Map<String, _GroupKey> _groupKeys = {};
   final Map<String, Map<String, _GroupKey>> _groupKeyHistory = {};
   final Map<String, Map<String, Set<String>>> _reactionActors = {};
+  NotificationTarget? _pendingNotificationTarget;
   ChatThread? incomingPreviewThread;
   ChatMessage? incomingPreviewMessage;
   int incomingPreviewVersion = 0;
 
   AppController() {
     _notifications.onAndroidPushToken = _handleAndroidPushToken;
+    _notifications.onActivated = _handleNotificationActivation;
     ble.onPacket = _handleBluetoothPacket;
     ble.addListener(_handleBluetoothStateChanged);
     _calls.onRemoteScreenChanged = _handleRemoteScreenChanged;
@@ -425,6 +430,38 @@ class AppController extends ChangeNotifier {
   List<StickerPack> get stickerPacks => stickerLibrary.packs;
   List<StickerItem> get favoriteStickers => stickerLibrary.favorites;
   List<StickerItem> get allStickers => stickerLibrary.allStickers;
+
+  void _handleNotificationActivation(NotificationTarget target) {
+    _pendingNotificationTarget = target;
+    final call = activeCall;
+    if (call != null &&
+        call.status != CallStatus.ended &&
+        (target.callId.isEmpty || target.callId == call.callId) &&
+        call.collapsed) {
+      _setActiveCall(call.copyWith(collapsed: false));
+    }
+    notifyListeners();
+  }
+
+  ChatThread? takeNotificationThread() {
+    final target = _pendingNotificationTarget;
+    if (target == null) return null;
+    ChatThread? thread;
+    if (target.groupId.isNotEmpty) {
+      thread = groups[target.groupId];
+    } else if (target.sourceNode.isNotEmpty) {
+      for (final candidate in threads.values) {
+        if (candidate.profile.nodeId == target.sourceNode &&
+            !candidate.isBluetooth) {
+          thread = candidate;
+          break;
+        }
+      }
+    }
+    if (thread == null) return null;
+    _pendingNotificationTarget = null;
+    return thread;
+  }
 
   Future<void> createStickerPack(String name) async {
     final trimmed = name.trim();
@@ -1113,6 +1150,9 @@ class AppController extends ChangeNotifier {
   Future<void> restoreSession() async {
     unawaited(_notifications.initialize());
     appSettings = await _settingsStore.load();
+    unawaited(
+      _windowsBackground.setCloseToTray(appSettings.windowsCloseToTray),
+    );
     recentSessions = await _store.loadRecent();
     session = await _store.load();
     if (session != null) {
@@ -3792,6 +3832,9 @@ class AppController extends ChangeNotifier {
           _showNotification(
             title: group.profile.displayName,
             body: '$senderName: $text',
+            notificationKey: 'message:$id',
+            sourceNode: sender,
+            groupId: group.groupId,
           ),
         );
       }
@@ -6266,6 +6309,9 @@ class AppController extends ChangeNotifier {
       _showCallNotification(
         title: profile.displayName,
         body: groupId.isEmpty ? 'Incoming call' : 'Incoming group call',
+        callId: activeCall?.callId ?? packet['call_id']?.toString() ?? '',
+        sourceNode: sender,
+        groupId: groupId,
       ),
     );
   }
@@ -6386,6 +6432,7 @@ class AppController extends ChangeNotifier {
     _callPhaseTimeout = null;
     _callReconnectTimer = null;
     unawaited(CallAlertService.stopAll());
+    unawaited(_notifications.cancelCall(call.callId));
     if (broadcast) _sendCallEnd(call, reason);
     if (historyReason != null && historyReason.isNotEmpty) {
       _appendCallHistory(call, historyReason);
@@ -8046,7 +8093,14 @@ class AppController extends ChangeNotifier {
           thread.unread++;
         }
         if (!active && !thread.muted) {
-          unawaited(_showNotification(title: profile.displayName, body: text));
+          unawaited(
+            _showNotification(
+              title: profile.displayName,
+              body: text,
+              notificationKey: 'message:$id',
+              sourceNode: sender,
+            ),
+          );
         }
         _publishIncomingPreview(thread, message);
       }
@@ -8186,6 +8240,9 @@ class AppController extends ChangeNotifier {
             _showNotification(
               title: group.profile.displayName,
               body: _fileNotificationBody(decryptedName),
+              notificationKey: 'message:$fileId',
+              sourceNode: sender,
+              groupId: group.groupId,
             ),
           );
         }
@@ -8290,6 +8347,8 @@ class AppController extends ChangeNotifier {
           _showNotification(
             title: profile.displayName,
             body: _fileNotificationBody(filename),
+            notificationKey: 'message:$fileId',
+            sourceNode: sender,
           ),
         );
       }
@@ -8447,6 +8506,9 @@ class AppController extends ChangeNotifier {
   Future<void> _showNotification({
     required String title,
     required String body,
+    required String notificationKey,
+    required String sourceNode,
+    String groupId = '',
   }) async {
     if (!appSettings.notificationsEnabled) return;
     await _notifications.showMessage(
@@ -8454,12 +8516,21 @@ class AppController extends ChangeNotifier {
       body: appSettings.notificationPreview ? body : 'New message',
       sound: appSettings.notificationSound,
       vibration: appSettings.notificationVibration,
+      notificationKey: notificationKey,
+      target: NotificationTarget(
+        packetType: groupId.isEmpty ? 'chat_message' : 'group_message',
+        sourceNode: sourceNode,
+        groupId: groupId,
+      ),
     );
   }
 
   Future<void> _showCallNotification({
     required String title,
     required String body,
+    required String callId,
+    required String sourceNode,
+    String groupId = '',
   }) async {
     if (!appSettings.notificationsEnabled) return;
     await _notifications.showCall(
@@ -8467,6 +8538,13 @@ class AppController extends ChangeNotifier {
       body: appSettings.notificationPreview ? body : 'Incoming call',
       sound: appSettings.notificationSound,
       vibration: appSettings.notificationVibration,
+      callId: callId,
+      target: NotificationTarget(
+        packetType: 'call_offer',
+        sourceNode: sourceNode,
+        groupId: groupId,
+        callId: callId,
+      ),
     );
   }
 
@@ -8812,8 +8890,20 @@ class AppController extends ChangeNotifier {
       unawaited(_unsubscribeWebPush());
       unawaited(_unsubscribeAndroidPush());
     }
+    final closeToTrayChanged =
+        appSettings.windowsCloseToTray != settings.windowsCloseToTray;
+    final launchAtStartupChanged =
+        appSettings.windowsLaunchAtStartup != settings.windowsLaunchAtStartup;
     appSettings = settings;
     await _settingsStore.save(settings);
+    if (closeToTrayChanged) {
+      unawaited(_windowsBackground.setCloseToTray(settings.windowsCloseToTray));
+    }
+    if (launchAtStartupChanged) {
+      unawaited(
+        _windowsBackground.setLaunchAtStartup(settings.windowsLaunchAtStartup),
+      );
+    }
     notifyListeners();
   }
 

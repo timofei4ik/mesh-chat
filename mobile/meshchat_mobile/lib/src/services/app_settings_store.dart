@@ -13,6 +13,9 @@ class AppSettingsStore {
       notificationSound: prefs.getBool('notification_sound') ?? true,
       notificationVibration: prefs.getBool('notification_vibration') ?? true,
       notificationPreview: prefs.getBool('notification_preview') ?? true,
+      windowsCloseToTray: prefs.getBool('windows_close_to_tray') ?? true,
+      windowsLaunchAtStartup:
+          prefs.getBool('windows_launch_at_startup') ?? false,
       compressPhotos: prefs.getBool('compress_photos') ?? true,
       sendFilesOriginal: prefs.getBool('send_files_original') ?? true,
       dataSaver: prefs.getBool('data_saver') ?? false,
@@ -46,6 +49,11 @@ class AppSettingsStore {
       settings.notificationVibration,
     );
     await prefs.setBool('notification_preview', settings.notificationPreview);
+    await prefs.setBool('windows_close_to_tray', settings.windowsCloseToTray);
+    await prefs.setBool(
+      'windows_launch_at_startup',
+      settings.windowsLaunchAtStartup,
+    );
     await prefs.setBool('compress_photos', settings.compressPhotos);
     await prefs.setBool('send_files_original', settings.sendFilesOriginal);
     await prefs.setBool('data_saver', settings.dataSaver);

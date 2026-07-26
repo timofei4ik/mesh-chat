@@ -137,6 +137,37 @@ class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("call:call-42", payload["tag"])
         self.assertEqual("call-42", payload["call_id"])
 
+    def test_call_end_cancels_the_matching_notification(self):
+        relay = FakePushServer()
+        payload = relay._web_push_payload(
+            {
+                "type": "call_end",
+                "packet_id": "packet-end",
+                "call_id": "call-42",
+                "source_node": "alice-device",
+            }
+        )
+
+        self.assertTrue(payload["cancel"])
+        self.assertEqual("call:call-42", payload["tag"])
+        self.assertIn("call_id=call-42", payload["url"])
+
+    def test_group_payload_contains_navigation_target(self):
+        relay = FakePushServer()
+        payload = relay._web_push_payload(
+            {
+                "type": "group_message",
+                "packet_id": "packet-group",
+                "source_node": "alice-device",
+                "group_id": "group-7",
+                "group_name": "Friends",
+            }
+        )
+
+        self.assertEqual("alice-device", payload["source_node"])
+        self.assertEqual("group-7", payload["group_id"])
+        self.assertIn("group_id=group-7", payload["url"])
+
 
 if __name__ == "__main__":
     unittest.main()
