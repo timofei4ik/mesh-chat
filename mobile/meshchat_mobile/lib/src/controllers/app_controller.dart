@@ -369,6 +369,7 @@ class AppController extends ChangeNotifier {
   Completer<List<ActiveDevice>>? _activeDevicesCompleter;
   final Map<String, Completer<String?>> _activeDeviceActionCompleters = {};
   final Map<String, Completer<String?>> _meshProPreferenceCompleters = {};
+  final Map<String, Completer<String?>> _meshProActivationCompleters = {};
   final Map<String, Completer<String?>> _passwordChangeCompleters = {};
   final Map<String, Completer<String?>> _accountDeleteCompleters = {};
   Completer<Map<String, dynamic>>? _emailVerificationCompleter;
@@ -394,14 +395,15 @@ class AppController extends ChangeNotifier {
   final List<DiagnosticEvent> diagnostics = [];
   final List<GroupJoinRequest> groupJoinRequests = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
-  final Map<String, Completer<Map<String, dynamic>>>
-  _mediaDownloadCompleters = {};
+  final Map<String, Completer<Map<String, dynamic>>> _mediaDownloadCompleters =
+      {};
   final Map<String, Future<bool>> _mediaDownloadsInFlight = {};
   final Map<String, _GroupKey> _groupKeys = {};
   final Map<String, Map<String, _GroupKey>> _groupKeyHistory = {};
   final Map<String, Map<String, Set<String>>> _reactionActors = {};
   final Map<String, Timer> _draftSyncTimers = {};
   final Map<String, int> _draftVersions = {};
+  final Map<String, bool> _archiveStates = {};
   NotificationTarget? _pendingNotificationTarget;
   ChatThread? incomingPreviewThread;
   ChatMessage? incomingPreviewMessage;
@@ -1219,6 +1221,57 @@ class AppController extends ChangeNotifier {
         return meshProSubscription;
       },
     );
+  }
+
+  Future<String?> activateMeshProCode(String code) async {
+    final normalizedCode = code.trim().toUpperCase();
+    if (session == null) return 'Sign in to activate MeshPro';
+    if (!_socket.isConnected) return 'No server connection';
+    if (normalizedCode.length < 8 || normalizedCode.length > 128) {
+      return 'Check the activation code';
+    }
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _meshProActivationCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'meshpro_activation_request',
+      'packet_id': const Uuid().v4(),
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'code': normalizedCode,
+      'ttl': 5,
+    });
+    return completer.future.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () {
+        _meshProActivationCompleters.remove(requestId);
+        return 'The server did not confirm activation';
+      },
+    );
+  }
+
+  void _handleMeshProActivationResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _meshProActivationCompleters.remove(requestId);
+    if (packet['ok'] == true) {
+      _applyMeshProSubscription(packet['subscription']);
+      if (completer != null && !completer.isCompleted) {
+        completer.complete(null);
+      }
+      return;
+    }
+    final error = switch (packet['error']?.toString()) {
+      'invalid_or_expired_code' => 'The code is invalid or already used',
+      'boosty_not_configured' =>
+        'MeshPro activation is temporarily unavailable',
+      'invalid_credentials' => 'Sign in again and retry activation',
+      _ => 'Could not activate MeshPro',
+    };
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(error);
+    }
   }
 
   void _applyMeshProSubscription(Object? raw) {
@@ -2581,6 +2634,8 @@ class AppController extends ChangeNotifier {
         }
       case 'subscription_status_result':
         _applyMeshProSubscription(packet['subscription']);
+      case 'meshpro_activation_result':
+        _handleMeshProActivationResult(packet);
       case 'ai_text_rewrite_result':
         _handleAiRewriteResult(packet);
       case 'ai_message_translation_result':
@@ -3066,6 +3121,7 @@ class AppController extends ChangeNotifier {
     _applyChatPreferences(packet['chat_preferences']);
     await _applyMeshProPreferences(packet['meshpro_preferences']);
     _applyScheduledMessages(packet['scheduled_messages']);
+    _applyArchiveStatesToThreads();
     await _repairCachedGroups();
     await _repairCachedMessages();
     await _saveCache();
@@ -3148,6 +3204,71 @@ class AppController extends ChangeNotifier {
     const mib = 1024 * 1024;
     final payloadMib = (packetBytes / mib).ceil().clamp(1, 6);
     return Duration(seconds: 15 + payloadMib * 15);
+  }
+
+  Future<String?> updateMeshStudioAppearance({
+    required String profileBackground,
+    required String profileEffect,
+    required String profileBlinkShape,
+    required String avatarDecoration,
+    required bool profileGlow,
+    required int profileAccent,
+  }) async {
+    final current = session;
+    if (current == null) return 'No active session';
+    if (!_socket.isConnected) return 'No server connection';
+    if (_profileUpdateCompleter != null) {
+      return 'Another profile update is already in progress';
+    }
+    final normalizedBackground = Profile.normalizeBackground(profileBackground);
+    final normalizedEffect = Profile.normalizeEffect(profileEffect);
+    final normalizedBlinkShape = Profile.normalizeBlinkShape(profileBlinkShape);
+    final normalizedDecoration = Profile.normalizeAvatarDecoration(
+      avatarDecoration,
+    );
+    final packet = <String, dynamic>{
+      'type': 'profile_update',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': current.nodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'login': current.login,
+      'profile_background': normalizedBackground,
+      'profile_effect': normalizedEffect,
+      'profile_blink_shape': normalizedBlinkShape,
+      'avatar_decoration': normalizedDecoration,
+      'profile_glow': profileGlow,
+      'profile_accent': profileAccent,
+    };
+    _profileUpdateCompleter = Completer<String?>();
+    try {
+      _socket.send(packet);
+      final result = await _profileUpdateCompleter!.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => 'The server did not confirm the appearance',
+      );
+      if (result != null) return result;
+
+      final existing = ownProfile;
+      final updated = existing.copyWith(
+        profileBackground: normalizedBackground,
+        profileEffect: normalizedEffect,
+        profileBlinkShape: normalizedBlinkShape,
+        avatarDecoration: normalizedDecoration,
+        profileGlow: profileGlow,
+        profileAccent: profileAccent,
+      );
+      profiles[current.nodeId] = updated;
+      await _saveOwnProfile(updated);
+      unawaited(_saveCache());
+      notifyListeners();
+      return null;
+    } catch (error) {
+      return 'Could not save the appearance: $error';
+    } finally {
+      _profileUpdateCompleter = null;
+    }
   }
 
   Future<String?> updateProfile({
@@ -4521,6 +4642,12 @@ class AppController extends ChangeNotifier {
 
   void toggleThreadArchive(ChatThread thread) {
     thread.archived = !thread.archived;
+    final key = thread.storageKey;
+    final current = session;
+    if (key.isNotEmpty && current != null) {
+      _archiveStates[key] = thread.archived;
+      unawaited(_cache.saveArchiveStates(current, _archiveStates));
+    }
     unawaited(_saveCache());
     notifyListeners();
   }
@@ -5722,6 +5849,7 @@ class AppController extends ChangeNotifier {
       return existing;
     }
     final thread = ChatThread(profile: mergedProfile);
+    _applyArchiveState(thread);
     threads[profile.nodeId] = thread;
     return thread;
   }
@@ -5784,8 +5912,22 @@ class AppController extends ChangeNotifier {
       threadId: threadId,
       chatKind: 'bluetooth',
     );
+    _applyArchiveState(thread);
     threads[threadId] = thread;
     return thread;
+  }
+
+  void _applyArchiveState(ChatThread thread) {
+    final key = thread.storageKey;
+    if (key.isEmpty) return;
+    final archived = _archiveStates[key];
+    if (archived != null) thread.archived = archived;
+  }
+
+  void _applyArchiveStatesToThreads() {
+    for (final thread in [...threads.values, ...groups.values]) {
+      _applyArchiveState(thread);
+    }
   }
 
   ChatThread _ensurePacketThread(Profile profile, Map<String, dynamic> data) {
@@ -8184,8 +8326,7 @@ class AppController extends ChangeNotifier {
     final mediaSha256 =
         packet['file_sha256']?.toString().trim().toLowerCase() ?? '';
     final mediaKeyId = packet['group_key_id']?.toString() ?? '';
-    final fileSize =
-        int.tryParse(packet['file_size']?.toString() ?? '') ?? 0;
+    final fileSize = int.tryParse(packet['file_size']?.toString() ?? '') ?? 0;
     var fileName = packet['filename']?.toString() ?? 'file';
     var caption = packet['caption']?.toString() ?? '';
     ChatThread thread;
@@ -8265,8 +8406,7 @@ class AppController extends ChangeNotifier {
               (packet['reply_to_message_id']?.toString() ?? '').isNotEmpty),
       messageEffect: packet['message_effect']?.toString() ?? 'none',
       transcription: packet['transcription']?.toString() ?? '',
-      transcriptionLanguage:
-          packet['transcription_language']?.toString() ?? '',
+      transcriptionLanguage: packet['transcription_language']?.toString() ?? '',
       transcriptionDurationSeconds:
           double.tryParse(
             packet['transcription_duration_seconds']?.toString() ?? '',
@@ -8524,8 +8664,7 @@ class AppController extends ChangeNotifier {
           first['media_id']?.toString() ??
           first['file_sha256']?.toString() ??
           '',
-      mediaSha256:
-          first['file_sha256']?.toString().trim().toLowerCase() ?? '',
+      mediaSha256: first['file_sha256']?.toString().trim().toLowerCase() ?? '',
       replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
       replyToText: first['reply_to_text']?.toString() ?? '',
       messageEffect: first['message_effect']?.toString() ?? 'none',
@@ -8689,10 +8828,37 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  Future<bool> ensureMediaAvailable(
-    ChatThread thread,
-    ChatMessage message,
-  ) {
+  Future<ChatThread> connectBluetoothThread(BlePeer peer) async {
+    final current = session;
+    if (current == null) {
+      throw StateError('No active session');
+    }
+    final startError = await _ensureBluetoothReadyForSend();
+    if (startError != null) throw StateError(startError);
+    final connectedPeer = await ble.connect(peer);
+    if (connectedPeer.nodeId.isEmpty || connectedPeer.publicKey.isEmpty) {
+      throw StateError('Could not read MeshChat profile over Bluetooth');
+    }
+    if (connectedPeer.nodeId == myNodeId) {
+      throw StateError('Cannot open a Bluetooth chat with yourself');
+    }
+    final recipient = Profile(
+      nodeId: connectedPeer.nodeId,
+      displayName: connectedPeer.displayName.isEmpty
+          ? connectedPeer.name
+          : connectedPeer.displayName,
+      publicUsername: connectedPeer.publicUsername,
+      publicKey: connectedPeer.publicKey,
+      online: true,
+    );
+    profiles[recipient.nodeId] = _mergeProfile(recipient, online: true);
+    final thread = _ensureBluetoothThread(recipient);
+    await _saveCache();
+    notifyListeners();
+    return thread;
+  }
+
+  Future<bool> ensureMediaAvailable(ChatThread thread, ChatMessage message) {
     final current = messageInThread(thread, message.id) ?? message;
     if (current.fileData.isNotEmpty) return Future<bool>.value(true);
     if (current.mediaId.isEmpty ||
@@ -8756,11 +8922,7 @@ class AppController extends ChangeNotifier {
               final bucket = (progress * 20).floor();
               if (bucket == lastProgressBucket) return;
               lastProgressBucket = bucket;
-              _updateMediaMessage(
-                thread,
-                current.id,
-                progress: progress,
-              );
+              _updateMediaMessage(thread, current.id, progress: progress);
             },
           );
         }
@@ -8784,10 +8946,7 @@ class AppController extends ChangeNotifier {
         await _saveCache();
         return true;
       } catch (failure) {
-        addDiagnostic(
-          'media',
-          'Could not load ${current.id}: $failure',
-        );
+        addDiagnostic('media', 'Could not load ${current.id}: $failure');
         _updateMediaMessage(thread, current.id, progress: 0);
         return false;
       } finally {
@@ -9823,6 +9982,7 @@ class AppController extends ChangeNotifier {
     }
     _draftSyncTimers.clear();
     _draftVersions.clear();
+    _archiveStates.clear();
     _incomingPreviewTimer?.cancel();
     _softResyncTimer?.cancel();
     _incomingPreviewTimer = null;
@@ -9909,6 +10069,10 @@ class AppController extends ChangeNotifier {
       if (!completer.isCompleted) completer.complete('Signed out');
     }
     _meshProPreferenceCompleters.clear();
+    for (final completer in _meshProActivationCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _meshProActivationCompleters.clear();
     for (final completer in _passwordChangeCompleters.values) {
       if (!completer.isCompleted) completer.complete('Signed out');
     }
@@ -9941,6 +10105,21 @@ class AppController extends ChangeNotifier {
       await _syncCursorStore.clear(current);
     }
     await _cache.load(current, profiles, threads, groups);
+    _archiveStates
+      ..clear()
+      ..addAll(await _cache.loadArchiveStates(current));
+    if (_archiveStates.isEmpty) {
+      for (final thread in [...threads.values, ...groups.values]) {
+        final key = thread.storageKey;
+        if (key.isNotEmpty && thread.archived) {
+          _archiveStates[key] = true;
+        }
+      }
+      if (_archiveStates.isNotEmpty) {
+        await _cache.saveArchiveStates(current, _archiveStates);
+      }
+    }
+    _applyArchiveStatesToThreads();
   }
 
   Future<void> _loadOwnProfile(Session current) async {

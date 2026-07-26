@@ -154,6 +154,31 @@ class ChatCacheStore {
     });
   }
 
+  Future<Map<String, bool>> loadArchiveStates(Session session) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_archiveStateKey(session));
+    if (raw == null || raw.isEmpty) return <String, bool>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return <String, bool>{};
+      return {
+        for (final entry in decoded.entries)
+          if (entry.key.toString().trim().isNotEmpty)
+            entry.key.toString(): entry.value == true,
+      };
+    } catch (_) {
+      return <String, bool>{};
+    }
+  }
+
+  Future<void> saveArchiveStates(
+    Session session,
+    Map<String, bool> states,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_archiveStateKey(session), jsonEncode(states));
+  }
+
   Future<int?> loadSyncCursor(Session session) async {
     if (kIsWeb) {
       final prefs = await SharedPreferences.getInstance();
@@ -660,6 +685,9 @@ class ChatCacheStore {
   String _key(Session session) {
     return 'chat_cache_${session.login}_${session.nodeId}';
   }
+
+  String _archiveStateKey(Session session) =>
+      '${_key(session)}_archive_state_v2';
 
   String _syncKey(Session session) => '${_key(session)}_sync_cursor_v3';
 

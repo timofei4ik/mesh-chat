@@ -92,35 +92,13 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
 
     setState(() => saving = true);
     try {
-      final current = widget.controller.ownProfile;
-      final error = await widget.controller.updateProfile(
-        displayName: current.displayName,
-        publicUsername: current.publicUsername,
-        about: current.about,
-        avatarData: current.avatarData,
-        profileBackground:
-            meshProFeatureEnabled(widget.controller, 'profile_background')
-            ? profileBackground
-            : null,
-        profileEffect:
-            meshProFeatureEnabled(widget.controller, 'profile_effect')
-            ? profileEffect
-            : null,
-        profileBlinkShape:
-            meshProFeatureEnabled(widget.controller, 'profile_effect')
-            ? profileBlinkShape
-            : null,
-        avatarDecoration:
-            meshProFeatureEnabled(widget.controller, 'animated_avatar')
-            ? avatarDecoration
-            : null,
-        profileGlow: meshProFeatureEnabled(widget.controller, 'profile_glow')
-            ? profileGlow
-            : null,
-        profileAccent: meshProFeatureEnabled(widget.controller, 'custom_accent')
-            ? profileAccent
-            : null,
-        emojiStatus: current.emojiStatus,
+      final error = await widget.controller.updateMeshStudioAppearance(
+        profileBackground: profileBackground,
+        profileEffect: profileEffect,
+        profileBlinkShape: profileBlinkShape,
+        avatarDecoration: avatarDecoration,
+        profileGlow: profileGlow,
+        profileAccent: profileAccent,
       );
       if (!mounted) return;
       if (error != null) {
@@ -853,6 +831,10 @@ Color _bannerBaseColor(String banner) {
     'aurora' => const Color(0xFF172438),
     'starlight' => const Color(0xFF11172C),
     'stardust' => const Color(0xFF090F21),
+    'nebula' => const Color(0xFF100D24),
+    'ocean' => const Color(0xFF061D2C),
+    'sakura' => const Color(0xFF21101E),
+    'solar' => const Color(0xFF21150A),
     'ember' => const Color(0xFF1A1118),
     'sunset' => const Color(0xFF151329),
     'frost' => const Color(0xFF0C1A25),

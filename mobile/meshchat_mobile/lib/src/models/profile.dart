@@ -52,6 +52,10 @@ class Profile {
       'aurora' => 'aurora',
       'starlight' => 'starlight',
       'stardust' => 'stardust',
+      'nebula' => 'nebula',
+      'ocean' => 'ocean',
+      'sakura' => 'sakura',
+      'solar' => 'solar',
       'ember' => 'ember',
       'sunset' => 'sunset',
       'frost' => 'frost',
@@ -64,6 +68,10 @@ class Profile {
     final background = effectiveProfileBackground;
     if ({
       'stardust',
+      'nebula',
+      'ocean',
+      'sakura',
+      'solar',
       'ember',
       'sunset',
       'frost',
@@ -83,9 +91,9 @@ class Profile {
 
   static String legacyCompatibleBackground(String? value) {
     return switch (value?.trim().toLowerCase()) {
-      'stardust' || 'orbit' => 'starlight',
-      'sunset' || 'frost' => 'aurora',
-      'ember' => 'mesh',
+      'stardust' || 'orbit' || 'nebula' => 'starlight',
+      'sunset' || 'frost' || 'ocean' || 'sakura' => 'aurora',
+      'ember' || 'solar' => 'mesh',
       'aurora' => 'aurora',
       'starlight' => 'starlight',
       _ => defaultBackground,

@@ -45,6 +45,120 @@ Future<void> openMeshProPurchase(BuildContext context) async {
   }
 }
 
+Future<bool> showMeshProActivationDialog(
+  BuildContext context,
+  AppController controller,
+) async {
+  final codeController = TextEditingController();
+  var busy = false;
+  var activated = false;
+  var error = '';
+  final result = await showDialog<bool>(
+    context: context,
+    barrierDismissible: !busy,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setState) {
+        Future<void> activate() async {
+          if (busy) return;
+          setState(() {
+            busy = true;
+            error = '';
+          });
+          final activationError = await controller.activateMeshProCode(
+            codeController.text,
+          );
+          if (!dialogContext.mounted) return;
+          setState(() {
+            busy = false;
+            activated = activationError == null;
+            error = activationError ?? '';
+          });
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF151F2C),
+          title: Text(activated ? 'MeshPro activated' : 'Activate MeshPro'),
+          content: AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            child: SizedBox(
+              width: 420,
+              child: activated
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.workspace_premium_rounded,
+                          color: Color(0xFF67F3C4),
+                          size: 54,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          meshProRemainingLabel(controller),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Enter the one-time code issued by the MeshPro bot.',
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                        const SizedBox(height: 14),
+                        TextField(
+                          controller: codeController,
+                          enabled: !busy,
+                          autofocus: true,
+                          textCapitalization: TextCapitalization.characters,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          onSubmitted: (_) => activate(),
+                          decoration: InputDecoration(
+                            labelText: 'Activation code',
+                            prefixIcon: const Icon(Icons.key_rounded),
+                            errorText: error.isEmpty ? null : error,
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+          actions: [
+            if (!activated)
+              TextButton(
+                onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+            FilledButton.icon(
+              onPressed: busy
+                  ? null
+                  : activated
+                  ? () => Navigator.pop(dialogContext, true)
+                  : activate,
+              icon: busy
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      activated
+                          ? Icons.check_rounded
+                          : Icons.workspace_premium_rounded,
+                    ),
+              label: Text(activated ? 'Done' : 'Activate'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+  codeController.dispose();
+  return result == true;
+}
+
 Future<void> showMeshProPaywall(
   BuildContext context,
   AppController controller, {
@@ -171,7 +285,10 @@ Future<void> showMeshProPaywall(
                   ),
                 ),
                 const SizedBox(height: 18),
-                Row(
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  alignment: WrapAlignment.end,
                   children: [
                     OutlinedButton.icon(
                       onPressed: controller.refreshMeshProSubscription,
@@ -179,13 +296,17 @@ Future<void> showMeshProPaywall(
                       label: const Text('Refresh'),
                     ),
                     const SizedBox(width: 10),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () => openMeshProPurchase(sheetContext),
-                        icon: const Icon(Icons.open_in_new_rounded),
-                        label: Text(
-                          active ? 'Extend on Boosty' : 'Buy on Boosty',
-                        ),
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          showMeshProActivationDialog(sheetContext, controller),
+                      icon: const Icon(Icons.key_rounded),
+                      label: const Text('Code'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () => openMeshProPurchase(sheetContext),
+                      icon: const Icon(Icons.open_in_new_rounded),
+                      label: Text(
+                        active ? 'Extend on Boosty' : 'Buy on Boosty',
                       ),
                     ),
                   ],

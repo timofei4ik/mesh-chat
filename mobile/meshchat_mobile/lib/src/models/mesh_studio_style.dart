@@ -5,6 +5,7 @@ typedef MeshStudioPreset = ({
   String effect,
   String blink,
   String decoration,
+  String messageEffect,
   int accent,
 });
 
@@ -27,10 +28,10 @@ const meshStudioAvatarDecorations = <(String, String)>[
 ];
 
 const meshStudioBackgrounds = <(String, String)>[
-  ('mesh', 'Mesh'),
-  ('aurora', 'Aurora'),
-  ('starlight', 'Starlight'),
-  ('stardust', 'Stardust'),
+  ('nebula', 'Nebula'),
+  ('ocean', 'Neon Tide'),
+  ('sakura', 'Sakura'),
+  ('solar', 'Solar'),
   ('ember', 'Ember'),
   ('sunset', 'Sunset'),
   ('frost', 'Frost'),
@@ -39,12 +40,53 @@ const meshStudioBackgrounds = <(String, String)>[
 
 const meshStudioPresets = <MeshStudioPreset>[
   (
+    id: 'nebula',
+    label: 'Nebula',
+    background: 'nebula',
+    effect: 'stars',
+    blink: 'star',
+    decoration: 'neon_orbit',
+    messageEffect: 'orbit',
+    accent: 0xFFC46BFF,
+  ),
+  (
+    id: 'tide',
+    label: 'Neon Tide',
+    background: 'ocean',
+    effect: 'nodes',
+    blink: 'dot',
+    decoration: 'frost_bloom',
+    messageEffect: 'frost',
+    accent: 0xFF42E8D1,
+  ),
+  (
+    id: 'sakura',
+    label: 'Sakura',
+    background: 'sakura',
+    effect: 'stars',
+    blink: 'star',
+    decoration: 'sunset_clouds',
+    messageEffect: 'sunset',
+    accent: 0xFFFF79B8,
+  ),
+  (
+    id: 'solar',
+    label: 'Solar',
+    background: 'solar',
+    effect: 'orbit',
+    blink: 'dot',
+    decoration: 'ember',
+    messageEffect: 'ember',
+    accent: 0xFFFFB34D,
+  ),
+  (
     id: 'stardust',
     label: 'Stardust',
     background: 'stardust',
     effect: 'stars',
     blink: 'star',
     decoration: 'stardust',
+    messageEffect: 'stardust',
     accent: 0xFF75DFFF,
   ),
   (
@@ -54,6 +96,7 @@ const meshStudioPresets = <MeshStudioPreset>[
     effect: 'nodes',
     blink: 'dot',
     decoration: 'ember',
+    messageEffect: 'ember',
     accent: 0xFFFF7A55,
   ),
   (
@@ -63,6 +106,7 @@ const meshStudioPresets = <MeshStudioPreset>[
     effect: 'orbit',
     blink: 'dot',
     decoration: 'sunset_clouds',
+    messageEffect: 'sunset',
     accent: 0xFFFF79B0,
   ),
   (
@@ -72,6 +116,7 @@ const meshStudioPresets = <MeshStudioPreset>[
     effect: 'stars',
     blink: 'star',
     decoration: 'frost_bloom',
+    messageEffect: 'frost',
     accent: 0xFFB9F3FF,
   ),
   (
@@ -81,6 +126,7 @@ const meshStudioPresets = <MeshStudioPreset>[
     effect: 'orbit',
     blink: 'dot',
     decoration: 'neon_orbit',
+    messageEffect: 'orbit',
     accent: 0xFFA56BFF,
   ),
 ];

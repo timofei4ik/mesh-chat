@@ -153,6 +153,10 @@ class _ProfileEffectPainter extends CustomPainter {
       'aurora' => const Color(0xFF0C1C2B),
       'starlight' => const Color(0xFF0C1123),
       'stardust' => const Color(0xFF090F21),
+      'nebula' => const Color(0xFF100D24),
+      'ocean' => const Color(0xFF061D2C),
+      'sakura' => const Color(0xFF21101E),
+      'solar' => const Color(0xFF21150A),
       'ember' => const Color(0xFF1A1118),
       'sunset' => const Color(0xFF151329),
       'frost' => const Color(0xFF0C1A25),
@@ -176,6 +180,115 @@ class _ProfileEffectPainter extends CustomPainter {
 
   void _paintBackdrop(Canvas canvas, Size size) {
     switch (background) {
+      case 'nebula':
+        final field = const LinearGradient(
+          begin: Alignment.bottomLeft,
+          end: Alignment.topRight,
+          colors: [Color(0xFF12184A), Color(0xFF2D1749), Color(0xFF0C2537)],
+        ).createShader(Offset.zero & size);
+        canvas.drawRect(Offset.zero & size, Paint()..shader = field);
+        final centers = [
+          Offset(size.width * 0.18, size.height * 0.76),
+          Offset(size.width * 0.58, size.height * 0.26),
+          Offset(size.width * 0.88, size.height * 0.68),
+        ];
+        final colors = [
+          const Color(0xFF3BD6FF),
+          const Color(0xFFC46BFF),
+          const Color(0xFFFF6BB0),
+        ];
+        for (var i = 0; i < centers.length; i++) {
+          final radius = math.max(size.width, size.height) * 0.34;
+          final rect = Rect.fromCircle(center: centers[i], radius: radius);
+          canvas.drawCircle(
+            centers[i],
+            radius,
+            Paint()
+              ..shader = RadialGradient(
+                colors: [colors[i].withValues(alpha: 0.18), Colors.transparent],
+              ).createShader(rect),
+          );
+        }
+      case 'ocean':
+        final water = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF08283A), Color(0xFF082033), Color(0xFF0D1630)],
+        ).createShader(Offset.zero & size);
+        canvas.drawRect(Offset.zero & size, Paint()..shader = water);
+        for (var row = 0; row < 5; row++) {
+          final path = Path();
+          for (var i = 0; i <= 24; i++) {
+            final x = size.width * i / 24;
+            final y =
+                size.height * (0.17 + row * 0.18) +
+                math.sin(i * 0.52 + t * math.pi * 2 + row * 0.8) *
+                    size.height *
+                    0.035;
+            if (i == 0) {
+              path.moveTo(x, y);
+            } else {
+              path.lineTo(x, y);
+            }
+          }
+          canvas.drawPath(
+            path,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.4
+              ..color =
+                  (row.isEven
+                          ? const Color(0xFF42E8D1)
+                          : const Color(0xFF4C8DFF))
+                      .withValues(alpha: 0.14),
+          );
+        }
+      case 'sakura':
+        final dusk = const LinearGradient(
+          begin: Alignment.bottomLeft,
+          end: Alignment.topRight,
+          colors: [Color(0xFF31172B), Color(0xFF1D1636), Color(0xFF17263E)],
+        ).createShader(Offset.zero & size);
+        canvas.drawRect(Offset.zero & size, Paint()..shader = dusk);
+        for (var i = 0; i < 16; i++) {
+          final phase = (t + i * 0.071) % 1;
+          final x =
+              ((i * 47 + seed * 11) % 101) / 100 * size.width +
+              math.sin(phase * math.pi * 2 + i) * 8;
+          final y = phase * size.height;
+          final center = Offset(x, y);
+          final petal = Rect.fromCenter(
+            center: center,
+            width: i.isEven ? 4.2 : 3.2,
+            height: i.isEven ? 7.2 : 5.6,
+          );
+          canvas.save();
+          canvas.translate(center.dx, center.dy);
+          canvas.rotate(i * 0.73 + phase * math.pi);
+          canvas.translate(-center.dx, -center.dy);
+          canvas.drawOval(
+            petal,
+            Paint()
+              ..color =
+                  (i.isEven ? const Color(0xFFFF9BC8) : const Color(0xFFD18AFF))
+                      .withValues(alpha: 0.34),
+          );
+          canvas.restore();
+        }
+      case 'solar':
+        final center = Offset(size.width * 0.72, size.height * 0.18);
+        final radius = math.max(size.width, size.height) * 0.62;
+        final rect = Rect.fromCircle(center: center, radius: radius);
+        canvas.drawCircle(
+          center,
+          radius,
+          Paint()
+            ..shader = const RadialGradient(
+              colors: [Color(0x99FFB94D), Color(0x554B2338), Color(0x00140F1D)],
+              stops: [0, 0.42, 1],
+            ).createShader(rect),
+        );
+        _paintDriftingSpecks(canvas, size, const Color(0xFFFFD27A), 18);
       case 'stardust':
         final shader = const LinearGradient(
           begin: Alignment.bottomLeft,

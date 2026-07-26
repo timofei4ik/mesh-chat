@@ -4103,6 +4103,16 @@ class _MeshProSettingsCardState extends State<_MeshProSettingsCard> {
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () =>
+                    showMeshProActivationDialog(context, widget.controller),
+                icon: const Icon(Icons.key_rounded),
+                label: const Text('Enter activation code'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
               child: FilledButton.icon(
                 onPressed: () => showMeshProPaywall(context, widget.controller),
                 icon: const Icon(Icons.open_in_new_rounded),

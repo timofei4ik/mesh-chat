@@ -24,7 +24,7 @@ void main() {
       expect(profile.effectiveProfileEffect, preset.effect);
       expect(profile.effectiveProfileBlinkShape, preset.blink);
       expect(profile.effectiveAvatarDecoration, preset.decoration);
-      expect(profile.effectiveMessageEffect, preset.id);
+      expect(profile.effectiveMessageEffect, preset.messageEffect);
       expect(
         matchingMeshStudioPreset(
           background: profile.effectiveProfileBanner,

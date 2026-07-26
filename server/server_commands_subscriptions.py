@@ -3,9 +3,11 @@ import uuid
 
 try:
     from server.server_billing import BillingError
+    from server.server_boosty import BoostyActivationError
     from server.server_command_bus import account_login, send_json
 except ModuleNotFoundError:
     from server_billing import BillingError
+    from server_boosty import BoostyActivationError
     from server_command_bus import account_login, send_json
 
 
@@ -40,6 +42,36 @@ async def handle_subscription_status(server, packet, context):
                 if authenticated_login
                 else None
             ),
+        },
+    )
+
+
+async def handle_meshpro_activation(server, packet, context):
+    login = account_login(server, context.node_id)
+    result = None
+    error = None
+    if not login:
+        error = "invalid_credentials"
+    else:
+        try:
+            result = server.redeem_boosty_subscription(
+                login,
+                packet.get("code"),
+            )
+        except BoostyActivationError as activation_error:
+            error = str(activation_error)
+        except (TypeError, ValueError):
+            error = "invalid_request"
+
+    await send_json(
+        context.websocket,
+        {
+            "type": "meshpro_activation_result",
+            "request_id": packet.get("request_id"),
+            "ok": bool(result),
+            "error": error,
+            "subscription": result.get("subscription") if result else None,
+            "duration_days": result.get("duration_days") if result else None,
         },
     )
 
@@ -220,6 +252,7 @@ def register_subscription_commands(registry):
         "subscription_status_request",
         handle_subscription_status,
     )
+    registry.register("meshpro_activation_request", handle_meshpro_activation)
     registry.register(
         "subscription_checkout_request",
         handle_subscription_checkout,

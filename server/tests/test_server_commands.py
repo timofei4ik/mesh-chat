@@ -46,6 +46,14 @@ class FakeCommandServer:
     def subscription_status(self, login, product):
         return {"login": login, "product": product}
 
+    def redeem_boosty_subscription(self, login, code):
+        self.calls.append(("meshpro-activation", login, code))
+        return {
+            "login": login,
+            "duration_days": 30,
+            "subscription": {"active": True, "product": "meshpro"},
+        }
+
     async def rewrite_text_with_ai(self, login, text, style):
         self.calls.append((login, text, style))
         return {"ok": True, "text": f"{style}:{text}"}
@@ -345,6 +353,40 @@ class PacketCommandRegistryTests(unittest.IsolatedAsyncioTestCase):
                     "login": "service-login",
                     "product": "meshpro",
                 },
+            },
+            websocket.sent[0],
+        )
+
+    async def test_meshpro_activation_uses_authenticated_account(self):
+        registry = build_command_registry()
+        websocket = FakeWebSocket()
+        server = FakeCommandServer()
+        handled = await registry.dispatch(
+            server,
+            {
+                "type": "meshpro_activation_request",
+                "request_id": "activation-1",
+                "code": "MPR-TEST-CODE",
+            },
+            ConnectionContext(websocket, "client-node"),
+        )
+
+        self.assertTrue(handled)
+        self.assertIn(
+            ("meshpro-activation", "client-login", "MPR-TEST-CODE"),
+            server.calls,
+        )
+        self.assertEqual(
+            {
+                "type": "meshpro_activation_result",
+                "request_id": "activation-1",
+                "ok": True,
+                "error": None,
+                "subscription": {
+                    "active": True,
+                    "product": "meshpro",
+                },
+                "duration_days": 30,
             },
             websocket.sent[0],
         )

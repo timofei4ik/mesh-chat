@@ -559,6 +559,15 @@ class ServerBoostyMixin:
         if not ok:
             raise BoostyActivationError("invalid_credentials")
 
+        return self.redeem_boosty_subscription(normalized_login, code)
+
+    def redeem_boosty_subscription(self, login, code):
+        if not self.boosty_activation_configured:
+            raise BoostyActivationError("boosty_not_configured")
+        normalized_login = str(login or "").strip().lower()
+        if not normalized_login:
+            raise BoostyActivationError("invalid_credentials")
+
         code_hash = self._boosty_code_hash(code)
         with self.unit_of_work_factory() as unit_of_work:
             row = unit_of_work.subscriptions.active_boosty_code(code_hash)

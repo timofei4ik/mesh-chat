@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../models/profile.dart';
@@ -160,7 +162,7 @@ class _AnimatedProfileNameState extends State<_AnimatedProfileName>
     return AnimatedBuilder(
       animation: controller,
       builder: (context, child) {
-        final shift = controller.value * 1.8 - 0.9;
+        final shift = math.sin(controller.value * math.pi * 2) * 0.9;
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [

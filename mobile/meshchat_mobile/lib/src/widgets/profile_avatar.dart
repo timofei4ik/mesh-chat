@@ -317,7 +317,11 @@ class _AvatarDecorationPainter extends CustomPainter {
     double radius,
     double size,
   ) {
-    _ring(canvas, center, radius, const Color(0x66EAF7FF), size * 0.012);
+    _animatedRing(canvas, center, radius, size * 0.012, const [
+      Color(0xFFEAF7FF),
+      Color(0xFF87DCFF),
+      Color(0xFFFFFFFF),
+    ], 0.42);
     const angles = <double>[
       -2.82,
       -2.47,
@@ -349,7 +353,11 @@ class _AvatarDecorationPainter extends CustomPainter {
   }
 
   void _paintEmber(Canvas canvas, Offset center, double radius, double size) {
-    _ring(canvas, center, radius, const Color(0x667D231E), size * 0.014);
+    _animatedRing(canvas, center, radius, size * 0.014, const [
+      Color(0xFFFF7043),
+      Color(0xFFFFC06A),
+      Color(0xFFD83D35),
+    ], 0.42);
     for (var i = 0; i < 10; i++) {
       final angle = 0.03 + (math.pi - 0.06) * i / 9;
       final sway = math.sin(tau * progress + i * 0.91) * 0.055;
@@ -388,7 +396,11 @@ class _AvatarDecorationPainter extends CustomPainter {
     double radius,
     double size,
   ) {
-    _ring(canvas, center, radius, const Color(0x665E4A8A), size * 0.012);
+    _animatedRing(canvas, center, radius, size * 0.012, const [
+      Color(0xFFB58CFF),
+      Color(0xFFFF9CC9),
+      Color(0xFF6EC5E9),
+    ], 0.44);
     final drift = math.sin(tau * progress) * size * 0.018;
     _cloud(
       canvas,
@@ -415,6 +427,11 @@ class _AvatarDecorationPainter extends CustomPainter {
     double radius,
     double size,
   ) {
+    _animatedRing(canvas, center, radius, size * 0.012, const [
+      Color(0xFF3BD6FF),
+      Color(0xFFA56BFF),
+      Color(0xFF64E6FF),
+    ], 0.5);
     final rotation = tau * progress;
     final rect = Rect.fromCircle(center: center, radius: radius * 1.06);
     canvas.drawArc(
@@ -457,7 +474,11 @@ class _AvatarDecorationPainter extends CustomPainter {
     double radius,
     double size,
   ) {
-    _ring(canvas, center, radius, const Color(0x668EDFFF), size * 0.012);
+    _animatedRing(canvas, center, radius, size * 0.012, const [
+      Color(0xFFB9F4FF),
+      Color(0xFF82B9FF),
+      Color(0xFFFFFFFF),
+    ], 0.44);
     const angles = <double>[-2.72, -2.05, -1.57, -1.08, -0.42, 0.52, 1.18, 2.0];
     for (var i = 0; i < angles.length; i++) {
       final pulse = 0.9 + 0.1 * math.sin(tau * progress + i * 0.7);
@@ -476,20 +497,29 @@ class _AvatarDecorationPainter extends CustomPainter {
     }
   }
 
-  void _ring(
+  void _animatedRing(
     Canvas canvas,
     Offset center,
     double radius,
-    Color color,
     double width,
+    List<Color> colors,
+    double alpha,
   ) {
+    final loopColors = [
+      for (final color in colors) color.withValues(alpha: alpha),
+      colors.first.withValues(alpha: alpha),
+    ];
+    final rect = Rect.fromCircle(center: center, radius: radius);
     canvas.drawCircle(
       center,
       radius,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = width
-        ..color = color,
+        ..shader = SweepGradient(
+          colors: loopColors,
+          transform: GradientRotation(tau * progress),
+        ).createShader(rect),
     );
   }
 
