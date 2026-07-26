@@ -101,6 +101,31 @@ BILLING_PORT = int(
     )
 )
 
+MEDIA_HTTP_HOST = os.environ.get(
+    "MESH_MEDIA_HTTP_HOST",
+    "127.0.0.1",
+).strip()
+
+MEDIA_HTTP_PORT = int(
+    os.environ.get(
+        "MESH_MEDIA_HTTP_PORT",
+        "8767",
+    )
+)
+
+MEDIA_PUBLIC_BASE_URL = os.environ.get(
+    "MESH_MEDIA_PUBLIC_BASE_URL",
+    "https://meshchat-losa.ru/media/v2",
+).strip().rstrip("/")
+
+MEDIA_DOWNLOAD_TOKEN_TTL_SECONDS = max(
+    60,
+    min(
+        3600,
+        int(os.environ.get("MESH_MEDIA_DOWNLOAD_TOKEN_TTL_SECONDS", "600")),
+    ),
+)
+
 BOOSTY_TELEGRAM_API_URL = os.environ.get(
     "MESH_BOOSTY_TELEGRAM_API_URL",
     "https://api.telegram.org"

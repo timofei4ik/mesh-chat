@@ -11,6 +11,8 @@ class ChatMessage {
     this.fileData = '',
     this.fileSize = 0,
     this.mediaId = '',
+    this.mediaSha256 = '',
+    this.mediaKeyId = '',
     this.transcription = '',
     this.transcriptionLanguage = '',
     this.transcriptionDurationSeconds = 0,
@@ -44,6 +46,8 @@ class ChatMessage {
   final String fileData;
   final int fileSize;
   final String mediaId;
+  final String mediaSha256;
+  final String mediaKeyId;
   final String transcription;
   final String transcriptionLanguage;
   final double transcriptionDurationSeconds;
@@ -72,6 +76,8 @@ class ChatMessage {
     String? fileData,
     int? fileSize,
     String? mediaId,
+    String? mediaSha256,
+    String? mediaKeyId,
     String? transcription,
     String? transcriptionLanguage,
     double? transcriptionDurationSeconds,
@@ -104,6 +110,8 @@ class ChatMessage {
       fileData: fileData ?? this.fileData,
       fileSize: fileSize ?? this.fileSize,
       mediaId: mediaId ?? this.mediaId,
+      mediaSha256: mediaSha256 ?? this.mediaSha256,
+      mediaKeyId: mediaKeyId ?? this.mediaKeyId,
       transcription: transcription ?? this.transcription,
       transcriptionLanguage:
           transcriptionLanguage ?? this.transcriptionLanguage,
@@ -151,6 +159,8 @@ class ChatMessage {
       fileData: fileData,
       fileSize: int.tryParse(json['file_size']?.toString() ?? '') ?? 0,
       mediaId: json['media_id']?.toString() ?? '',
+      mediaSha256: json['media_sha256']?.toString() ?? '',
+      mediaKeyId: json['media_key_id']?.toString() ?? '',
       transcription: json['transcription']?.toString() ?? '',
       transcriptionLanguage: json['transcription_language']?.toString() ?? '',
       transcriptionDurationSeconds:
@@ -192,6 +202,8 @@ class ChatMessage {
       'file_data': fileData,
       'file_size': fileSize,
       'media_id': mediaId,
+      'media_sha256': mediaSha256,
+      'media_key_id': mediaKeyId,
       'transcription': transcription,
       'transcription_language': transcriptionLanguage,
       'transcription_duration_seconds': transcriptionDurationSeconds,

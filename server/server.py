@@ -22,6 +22,7 @@ try:
         SYNC_V2_DELTA_TEST_ACCOUNTS,
     )
     from server.server_storage import ServerStorageMixin
+    from server.server_media import ServerMediaMixin
     from server.server_auth import ServerAuthMixin
     from server.server_email_auth import ServerEmailAuthMixin
     from server.server_ai import ServerAiMixin
@@ -70,6 +71,7 @@ except ModuleNotFoundError:
         SYNC_V2_DELTA_TEST_ACCOUNTS,
     )
     from server_storage import ServerStorageMixin
+    from server_media import ServerMediaMixin
     from server_auth import ServerAuthMixin
     from server_email_auth import ServerEmailAuthMixin
     from server_ai import ServerAiMixin
@@ -110,6 +112,7 @@ except ModuleNotFoundError:
 
 class MeshRelayServer(
     ServerTransportMixin,
+    ServerMediaMixin,
     ServerStorageMixin,
     ServerAuthMixin,
     ServerEmailAuthMixin,
@@ -279,6 +282,7 @@ class MeshRelayServer(
         self.client_capabilities = {}
         self.file_chunks = {}
         self.db = self.open_db()
+        self.initialize_media_delivery()
         self.account_deletion_orchestrator = (
             build_sqlite_account_deletion_orchestrator(
                 self.db,

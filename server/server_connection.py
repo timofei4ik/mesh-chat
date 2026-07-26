@@ -269,6 +269,9 @@ async def handle_server_hello(
         "file_transfer_v2": bool(
             packet.get("supports_file_transfer_v2", False)
         ),
+        "media_delivery_v2": bool(
+            packet.get("supports_media_delivery_v2", False)
+        ),
         "account_live_fanout": bool(
             packet.get("supports_account_live_fanout", False)
         ),
@@ -299,6 +302,7 @@ async def handle_server_hello(
             "offline_packet_ack": True,
             "mutation_ack": True,
             "file_transfer_v2": True,
+            "media_delivery_v2": True,
             "account_live_fanout": True,
             "multi_device_state": True,
             "email_2fa": True,
@@ -348,6 +352,9 @@ async def handle_server_hello(
     sync_offline_ack = bool(
         packet.get("supports_offline_packet_ack", False)
     )
+    sync_media_delivery_v2 = bool(
+        packet.get("supports_media_delivery_v2", False)
+    )
 
     async def send_initial_account_state():
         await server.send_account_sync(
@@ -358,6 +365,7 @@ async def handle_server_hello(
             sync_v2,
             sync_v2_delta,
             sync_cursor,
+            sync_media_delivery_v2,
         )
         await server.send_user_list()
         await server.flush_offline_packets(

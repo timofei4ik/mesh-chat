@@ -2,6 +2,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/chat_message.dart';
 
 void main() {
+  test('media delivery metadata survives cache round trip', () {
+    final checksum = List<String>.filled(64, 'a').join();
+    final source = ChatMessage(
+      id: 'file-1',
+      senderNode: 'alice',
+      receiverNode: 'bob',
+      text: '',
+      createdAt: DateTime.utc(2026, 7, 26),
+      kind: ChatMessageKind.file,
+      fileName: 'report.pdf',
+      fileSize: 123456,
+      mediaId: 'media-id',
+      mediaSha256: checksum,
+      mediaKeyId: 'group-key-2',
+      delivered: true,
+    );
+
+    final restored = ChatMessage.fromJson(source.toJson());
+
+    expect(restored.fileData, isEmpty);
+    expect(restored.mediaId, 'media-id');
+    expect(restored.mediaSha256, checksum);
+    expect(restored.mediaKeyId, 'group-key-2');
+    expect(restored.fileSize, 123456);
+  });
+
   test('voice transcription survives message cache round trip', () {
     final message = ChatMessage(
       id: 'voice-1',

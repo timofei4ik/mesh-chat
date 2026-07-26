@@ -1659,6 +1659,7 @@ class ServerSyncMixin:
         supports_sync_v2=False,
         supports_sync_v2_delta=False,
         requested_sync_cursor=0,
+        supports_media_delivery_v2=False,
     ):
         sync_plan = self.plan_sync_v2_delivery(
             login,
@@ -1761,7 +1762,10 @@ class ServerSyncMixin:
             ) or ""
             storage_path = file_info.pop("_storage_path", "") or ""
 
-            if data or (storage_path and Path(storage_path).is_file()):
+            if (
+                not supports_media_delivery_v2
+                and (data or (storage_path and Path(storage_path).is_file()))
+            ):
                 file_payloads.append(
                     (
                         dict(file_info),
@@ -1769,6 +1773,8 @@ class ServerSyncMixin:
                         storage_path,
                     )
                 )
+            if supports_media_delivery_v2:
+                file_info["media_delivery_v2"] = True
 
         sticker_library = packet.get("sticker_library")
         if isinstance(sticker_library, dict):

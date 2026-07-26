@@ -116,6 +116,26 @@ class ServerTransportMixin:
         if not destination_socket:
             return
         try:
+            destination_capabilities = self.client_capabilities.get(
+                destination_node,
+                {},
+            )
+            if destination_capabilities.get("media_delivery_v2") is True:
+                await destination_socket.send(
+                    json.dumps(
+                        {
+                            "type": "file_manifest",
+                            **metadata,
+                            "file_id": transfer_result.get("file_id") or "",
+                            "media_id": metadata.get("media_id") or "",
+                            "file_sha256": transfer_result.get("sha256") or "",
+                            "file_size": transfer_result.get("size_bytes") or 0,
+                            "media_delivery_v2": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return
             for delivery_packet in self.iter_file_transfer_delivery_packets(
                 transfer_result
             ):

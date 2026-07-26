@@ -23,6 +23,7 @@ import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
 import '../services/mesh_socket.dart';
+import '../services/media_cache_service.dart';
 import '../services/notification_service.dart';
 import '../services/own_profile_store.dart';
 import '../services/proximity_screen_service.dart';
@@ -310,6 +311,7 @@ class AppController extends ChangeNotifier {
   final SyncCursorStore _syncCursorStore = SyncCursorStore();
   final SyncDeltaBuffer _syncDeltaBuffer = SyncDeltaBuffer();
   final MeshSocket _socket = MeshSocket();
+  final MediaCacheService _mediaCache = MediaCacheService();
   final MeshCrypto _crypto = MeshCrypto();
   final BleChatService ble = BleChatService();
   final CallService _calls = CallService();
@@ -392,6 +394,9 @@ class AppController extends ChangeNotifier {
   final List<DiagnosticEvent> diagnostics = [];
   final List<GroupJoinRequest> groupJoinRequests = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
+  final Map<String, Completer<Map<String, dynamic>>>
+  _mediaDownloadCompleters = {};
+  final Map<String, Future<bool>> _mediaDownloadsInFlight = {};
   final Map<String, _GroupKey> _groupKeys = {};
   final Map<String, Map<String, _GroupKey>> _groupKeyHistory = {};
   final Map<String, Map<String, Set<String>>> _reactionActors = {};
@@ -2608,8 +2613,16 @@ class AppController extends ChangeNotifier {
         await _receiveGroupUpdate(packet);
       case 'file_chunk':
         await _receiveFileChunk(packet, fromSync: false);
+      case 'file_manifest':
+        await _receiveFileManifest(packet, fromSync: false);
       case 'server_file_sync_chunk':
         await _receiveFileChunk(packet, fromSync: true);
+      case 'media_download_ready':
+        final requestId = packet['request_id']?.toString() ?? '';
+        final completer = _mediaDownloadCompleters.remove(requestId);
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(Map<String, dynamic>.from(packet));
+        }
       case 'server_sticker_library_sync_chunk':
         await _applyStickerLibrarySyncChunk(packet);
       case 'message_received':
@@ -3032,6 +3045,14 @@ class AppController extends ChangeNotifier {
             : const []) {
       if (raw is! Map) continue;
       await _receiveGroupMessage(
+        Map<String, dynamic>.from(raw),
+        fromSync: true,
+      );
+    }
+    for (final raw
+        in packet['files'] is List ? packet['files'] as List : const []) {
+      if (raw is! Map) continue;
+      await _receiveFileManifest(
         Map<String, dynamic>.from(raw),
         fromSync: true,
       );
@@ -8146,6 +8167,144 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _receiveFileManifest(
+    Map<String, dynamic> packet, {
+    required bool fromSync,
+  }) async {
+    final fileId = packet['file_id']?.toString() ?? '';
+    if (fileId.isEmpty || _isDeletedMessage(fileId)) return;
+    final groupId = packet['group_id']?.toString() ?? '';
+    final sender = packet['sender_node']?.toString().isNotEmpty == true
+        ? packet['sender_node'].toString()
+        : packet['source_node']?.toString() ?? '';
+    final mediaId =
+        packet['media_id']?.toString() ??
+        packet['file_sha256']?.toString() ??
+        fileId;
+    final mediaSha256 =
+        packet['file_sha256']?.toString().trim().toLowerCase() ?? '';
+    final mediaKeyId = packet['group_key_id']?.toString() ?? '';
+    final fileSize =
+        int.tryParse(packet['file_size']?.toString() ?? '') ?? 0;
+    var fileName = packet['filename']?.toString() ?? 'file';
+    var caption = packet['caption']?.toString() ?? '';
+    ChatThread thread;
+    var sentByMe = _isOwnAccountNode(sender);
+
+    if (groupId.isNotEmpty) {
+      if (appSettings.deletedGroupIds.contains(groupId)) return;
+      thread = _ensureGroupThread(
+        groupId: groupId,
+        groupName: packet['group_name']?.toString() ?? 'Group',
+        isChannel: packet['is_channel'] == true,
+        commentsEnabled: packet.containsKey('comments_enabled')
+            ? packet['comments_enabled'] != false
+            : null,
+      );
+      await _acceptGroupKeyEnvelope(
+        groupId,
+        mediaKeyId,
+        packet['group_key_envelope']?.toString() ??
+            packet['group_key_sender_envelope']?.toString() ??
+            '',
+      );
+      final groupKey = _groupKeyForPacket(groupId, mediaKeyId);
+      fileName = await _crypto.decryptGroupText(groupKey, fileName);
+      caption = await _crypto.decryptGroupText(groupKey, caption);
+    } else {
+      final receiver = packet['receiver_node']?.toString().isNotEmpty == true
+          ? packet['receiver_node'].toString()
+          : packet['destination_node']?.toString() ?? '';
+      final senderLogin =
+          packet['sender_login']?.toString().toLowerCase() ?? '';
+      final receiverLogin =
+          packet['receiver_login']?.toString().toLowerCase() ?? '';
+      final myLogin = session?.login.toLowerCase() ?? '';
+      sentByMe =
+          sender == myNodeId ||
+          (senderLogin.isNotEmpty && senderLogin == myLogin);
+      final receivedByMe =
+          receiver == myNodeId ||
+          (receiverLogin.isNotEmpty && receiverLogin == myLogin);
+      if (!sentByMe && !receivedByMe) return;
+      final peerId = sentByMe ? receiver : sender;
+      if (peerId.isEmpty || peerId == myNodeId) return;
+      final profile = _resolveDirectPeerProfile(
+        nodeId: peerId,
+        accountLogin: sentByMe ? receiverLogin : senderLogin,
+        fallbackName:
+            packet['sender_name']?.toString() ??
+            packet['sender']?.toString() ??
+            peerId,
+      );
+      thread = _ensurePacketThread(profile, packet);
+    }
+    if (!sentByMe && isBlocked(sender)) return;
+
+    final message = ChatMessage(
+      id: fileId,
+      senderNode: sentByMe ? myNodeId : sender,
+      receiverNode: groupId.isNotEmpty
+          ? groupId
+          : packet['receiver_node']?.toString() ??
+                packet['destination_node']?.toString() ??
+                '',
+      text: caption,
+      createdAt: _parsePacketDate(packet),
+      kind: _fileMessageKind(packet),
+      fileName: fileName,
+      fileSize: fileSize,
+      mediaId: mediaId,
+      mediaSha256: mediaSha256,
+      mediaKeyId: mediaKeyId,
+      replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
+      replyToText: packet['reply_to_text']?.toString() ?? '',
+      isChannelComment:
+          packet['is_channel_comment'] == true ||
+          (thread.isChannel &&
+              (packet['reply_to_message_id']?.toString() ?? '').isNotEmpty),
+      messageEffect: packet['message_effect']?.toString() ?? 'none',
+      transcription: packet['transcription']?.toString() ?? '',
+      transcriptionLanguage:
+          packet['transcription_language']?.toString() ?? '',
+      transcriptionDurationSeconds:
+          double.tryParse(
+            packet['transcription_duration_seconds']?.toString() ?? '',
+          ) ??
+          0,
+      ocrText: packet['ocr_text']?.toString() ?? '',
+      ocrLanguage: packet['ocr_language']?.toString() ?? '',
+      ocrProcessed: packet['ocr_processed'] == true,
+      delivered: true,
+    );
+    final inserted = _upsertFileMessage(thread, message);
+    if (inserted && !fromSync && !sentByMe) {
+      final active = _isThreadActive(thread);
+      if (active) {
+        markRead(thread);
+      } else {
+        thread.unread++;
+      }
+      if (!active && !thread.muted) {
+        unawaited(
+          _showNotification(
+            title: thread.profile.displayName,
+            body: _fileNotificationBody(fileName),
+            notificationKey: 'message:$fileId',
+            sourceNode: sender,
+            groupId: groupId,
+          ),
+        );
+      }
+      _publishIncomingPreview(thread, message);
+    }
+    if (!fromSync && !sentByMe) {
+      await _sendDeliveryReceipt(packet, sender, fileId);
+    }
+    await _saveCache();
+    notifyListeners();
+  }
+
   Future<void> _receiveFileChunk(
     Map<String, dynamic> packet, {
     required bool fromSync,
@@ -8246,6 +8405,9 @@ class AppController extends ChangeNotifier {
             first['media_id']?.toString() ??
             first['file_sha256']?.toString() ??
             '',
+        mediaSha256:
+            first['file_sha256']?.toString().trim().toLowerCase() ?? '',
+        mediaKeyId: first['group_key_id']?.toString() ?? '',
         replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
         replyToText: first['reply_to_text']?.toString() ?? '',
         isChannelComment:
@@ -8362,6 +8524,8 @@ class AppController extends ChangeNotifier {
           first['media_id']?.toString() ??
           first['file_sha256']?.toString() ??
           '',
+      mediaSha256:
+          first['file_sha256']?.toString().trim().toLowerCase() ?? '',
       replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
       replyToText: first['reply_to_text']?.toString() ?? '',
       messageEffect: first['message_effect']?.toString() ?? 'none',
@@ -8479,6 +8643,12 @@ class AppController extends ChangeNotifier {
           : current.fileData,
       fileSize: incoming.fileSize > 0 ? incoming.fileSize : current.fileSize,
       mediaId: incoming.mediaId.isNotEmpty ? incoming.mediaId : current.mediaId,
+      mediaSha256: incoming.mediaSha256.isNotEmpty
+          ? incoming.mediaSha256
+          : current.mediaSha256,
+      mediaKeyId: incoming.mediaKeyId.isNotEmpty
+          ? incoming.mediaKeyId
+          : current.mediaKeyId,
       transcription: incoming.transcription.isNotEmpty
           ? incoming.transcription
           : current.transcription,
@@ -8510,6 +8680,146 @@ class AppController extends ChangeNotifier {
     );
     thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return false;
+  }
+
+  ChatMessage? messageInThread(ChatThread thread, String messageId) {
+    for (final message in thread.messages) {
+      if (message.id == messageId) return message;
+    }
+    return null;
+  }
+
+  Future<bool> ensureMediaAvailable(
+    ChatThread thread,
+    ChatMessage message,
+  ) {
+    final current = messageInThread(thread, message.id) ?? message;
+    if (current.fileData.isNotEmpty) return Future<bool>.value(true);
+    if (current.mediaId.isEmpty ||
+        current.id.isEmpty ||
+        !_socket.supportsMediaDeliveryV2 ||
+        session == null) {
+      return Future<bool>.value(false);
+    }
+    return _mediaDownloadsInFlight.putIfAbsent(current.id, () async {
+      try {
+        final sessionKey = _mediaCacheSessionKey;
+        var rawBytes = await _mediaCache.read(
+          sessionKey: sessionKey,
+          mediaId: current.mediaId,
+          expectedSha256: current.mediaSha256,
+        );
+        if (rawBytes == null) {
+          final requestId = const Uuid().v4();
+          final completer = Completer<Map<String, dynamic>>();
+          _mediaDownloadCompleters[requestId] = completer;
+          _socket.send({
+            'type': 'media_download_request',
+            'request_id': requestId,
+            'file_id': current.id,
+          });
+          final ticket = await completer.future.timeout(
+            const Duration(seconds: 15),
+            onTimeout: () {
+              _mediaDownloadCompleters.remove(requestId);
+              return const <String, dynamic>{
+                'ok': false,
+                'reason': 'media_ticket_timeout',
+              };
+            },
+          );
+          if (ticket['ok'] != true) {
+            throw StateError(
+              ticket['reason']?.toString() ?? 'media_ticket_failed',
+            );
+          }
+          final url = Uri.tryParse(ticket['download_url']?.toString() ?? '');
+          final token = ticket['download_token']?.toString() ?? '';
+          if (url == null || token.isEmpty) {
+            throw const FormatException('Invalid media download ticket');
+          }
+          final expectedSha256 =
+              ticket['file_sha256']?.toString().trim().toLowerCase() ??
+              current.mediaSha256;
+          final expectedSize =
+              int.tryParse(ticket['file_size']?.toString() ?? '') ??
+              current.fileSize;
+          var lastProgressBucket = -1;
+          rawBytes = await _mediaCache.download(
+            sessionKey: sessionKey,
+            mediaId: current.mediaId,
+            url: url,
+            token: token,
+            expectedSha256: expectedSha256,
+            expectedSize: expectedSize,
+            onProgress: (progress) {
+              final bucket = (progress * 20).floor();
+              if (bucket == lastProgressBucket) return;
+              lastProgressBucket = bucket;
+              _updateMediaMessage(
+                thread,
+                current.id,
+                progress: progress,
+              );
+            },
+          );
+        }
+
+        var displayBytes = rawBytes;
+        if (thread.isGroup && current.mediaKeyId.isNotEmpty) {
+          displayBytes = Uint8List.fromList(
+            await _crypto.decryptGroupBytes(
+              _groupKeyForPacket(thread.groupId, current.mediaKeyId),
+              rawBytes,
+            ),
+          );
+        }
+        _updateMediaMessage(
+          thread,
+          current.id,
+          fileData: _hexEncode(displayBytes),
+          fileSize: displayBytes.length,
+          progress: 1,
+        );
+        await _saveCache();
+        return true;
+      } catch (failure) {
+        addDiagnostic(
+          'media',
+          'Could not load ${current.id}: $failure',
+        );
+        _updateMediaMessage(thread, current.id, progress: 0);
+        return false;
+      } finally {
+        _mediaDownloadsInFlight.remove(current.id);
+      }
+    });
+  }
+
+  String get _mediaCacheSessionKey {
+    final current = session;
+    if (current == null) return 'signed-out';
+    return '${current.serverUrl}\u0000${current.login.toLowerCase()}';
+  }
+
+  void _updateMediaMessage(
+    ChatThread thread,
+    String messageId, {
+    String? fileData,
+    int? fileSize,
+    double? progress,
+  }) {
+    final index = thread.messages.indexWhere(
+      (message) => message.id == messageId,
+    );
+    if (index < 0) return;
+    final current = thread.messages[index];
+    thread.messages[index] = current.copyWith(
+      fileData: fileData ?? current.fileData,
+      fileSize: fileSize ?? current.fileSize,
+      progress: progress ?? current.progress,
+    );
+    notifyListeners();
   }
 
   ChatMessageKind _fileMessageKind(Map<String, dynamic> packet) {
@@ -9429,6 +9739,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> clearLocalCache() async {
     final current = session;
+    if (current != null) {
+      await _mediaCache.clear(
+        '${current.serverUrl}\u0000${current.login.toLowerCase()}',
+      );
+    }
     await _cache.clear(session);
     await _socket.close();
     _clearLocalState();
@@ -9493,6 +9808,16 @@ class AppController extends ChangeNotifier {
     typingUntil.clear();
     activityKinds.clear();
     _incomingFiles.clear();
+    for (final completer in _mediaDownloadCompleters.values) {
+      if (!completer.isCompleted) {
+        completer.complete(const <String, dynamic>{
+          'ok': false,
+          'reason': 'session_closed',
+        });
+      }
+    }
+    _mediaDownloadCompleters.clear();
+    _mediaDownloadsInFlight.clear();
     for (final timer in _draftSyncTimers.values) {
       timer.cancel();
     }

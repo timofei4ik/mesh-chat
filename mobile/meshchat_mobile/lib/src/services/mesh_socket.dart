@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/profile.dart';
@@ -15,7 +15,7 @@ typedef StatusHandler = void Function(String status);
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '1.0.62';
+  static const appVersion = '1.0.64';
 
   MeshSocket({
     MutationOutboxStore? outboxStore,
@@ -57,6 +57,7 @@ class MeshSocket {
   bool _serverCapabilitiesKnown = false;
   bool _supportsMutationAck = false;
   bool _supportsFileTransferV2 = false;
+  bool _supportsMediaDeliveryV2 = false;
   bool _supportsSyncV2Delta = false;
   bool _supportsMultiDeviceState = false;
   String _lastIdentityRecovery = '';
@@ -74,6 +75,7 @@ class MeshSocket {
   bool get isConnected => _connected;
   bool get supportsMutationAck => _supportsMutationAck;
   bool get supportsFileTransferV2 => _supportsFileTransferV2;
+  bool get supportsMediaDeliveryV2 => _supportsMediaDeliveryV2;
   bool get supportsSyncV2Delta => _supportsSyncV2Delta;
   bool get supportsMultiDeviceState => _supportsMultiDeviceState;
   String get lastIdentityRecovery => _lastIdentityRecovery;
@@ -95,6 +97,7 @@ class MeshSocket {
     _serverCapabilitiesKnown = false;
     _supportsMutationAck = false;
     _supportsFileTransferV2 = false;
+    _supportsMediaDeliveryV2 = false;
     _supportsSyncV2Delta = false;
     _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
@@ -141,6 +144,8 @@ class MeshSocket {
               _supportsMutationAck = capabilities['mutation_ack'] == true;
               _supportsFileTransferV2 =
                   capabilities['file_transfer_v2'] == true;
+              _supportsMediaDeliveryV2 =
+                  capabilities['media_delivery_v2'] == true;
               _supportsSyncV2Delta = capabilities['sync_v2_delta'] == true;
               _supportsMultiDeviceState =
                   capabilities['multi_device_state'] == true;
@@ -181,6 +186,7 @@ class MeshSocket {
         _serverCapabilitiesKnown = false;
         _supportsMutationAck = false;
         _supportsFileTransferV2 = false;
+        _supportsMediaDeliveryV2 = false;
         _supportsSyncV2Delta = false;
         _supportsMultiDeviceState = false;
         _fileChunksInFlight.clear();
@@ -200,6 +206,7 @@ class MeshSocket {
         _serverCapabilitiesKnown = false;
         _supportsMutationAck = false;
         _supportsFileTransferV2 = false;
+        _supportsMediaDeliveryV2 = false;
         _supportsSyncV2Delta = false;
         _supportsMultiDeviceState = false;
         _fileChunksInFlight.clear();
@@ -856,6 +863,7 @@ class MeshSocket {
       'supports_offline_packet_ack': true,
       'supports_mutation_ack': true,
       'supports_file_transfer_v2': true,
+      'supports_media_delivery_v2': !kIsWeb,
       'supports_account_live_fanout': true,
       'supports_multi_device_state': true,
       'protocol_version': protocolVersion,
@@ -945,6 +953,9 @@ class MeshSocket {
     _serverCapabilitiesKnown = false;
     _supportsMutationAck = false;
     _supportsFileTransferV2 = false;
+    _supportsMediaDeliveryV2 = false;
+    _supportsSyncV2Delta = false;
+    _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();
     _session = null;

@@ -19,6 +19,7 @@ try:
         register_identity_control_commands,
     )
     from server.server_commands_push import register_push_commands
+    from server.server_commands_media import register_media_commands
     from server.server_commands_subscriptions import (
         register_subscription_commands,
     )
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
         register_identity_control_commands,
     )
     from server_commands_push import register_push_commands
+    from server_commands_media import register_media_commands
     from server_commands_subscriptions import (
         register_subscription_commands,
     )
@@ -48,6 +50,7 @@ def build_command_registry():
     registry = PacketCommandRegistry()
     register_subscription_commands(registry)
     register_push_commands(registry)
+    register_media_commands(registry)
     register_identity_commands(registry)
     register_automation_commands(registry)
     register_ai_commands(registry)

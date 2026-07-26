@@ -2570,7 +2570,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final canDownload =
         (message.kind == ChatMessageKind.file ||
             message.kind == ChatMessageKind.sticker) &&
-        message.fileData.isNotEmpty;
+        (message.fileData.isNotEmpty || message.mediaId.isNotEmpty);
     final canSaveSticker =
         message.kind == ChatMessageKind.sticker && message.fileData.isNotEmpty;
     final canEdit =
@@ -3074,11 +3074,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   Future<void> downloadMessageFile(ChatMessage message) async {
-    if ((message.kind != ChatMessageKind.file &&
-            message.kind != ChatMessageKind.sticker) ||
-        message.fileData.isEmpty) {
+    if (message.kind != ChatMessageKind.file &&
+        message.kind != ChatMessageKind.sticker) {
       showSnack('File is not cached');
       return;
+    }
+    if (message.fileData.isEmpty) {
+      final loaded = await widget.controller.ensureMediaAvailable(
+        widget.thread,
+        message,
+      );
+      if (!loaded || !mounted) {
+        showSnack('Could not download file');
+        return;
+      }
+      message =
+          widget.controller.messageInThread(widget.thread, message.id) ??
+          message;
     }
     final filename = safeFilename(
       message.fileName.isEmpty ? 'meshchat_file' : message.fileName,
@@ -7216,6 +7228,36 @@ class _MessageBubbleState extends State<_MessageBubble> {
         if (mounted) setState(() => appeared = true);
       });
     }
+    _loadVisibleMedia();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MessageBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.message.id != widget.message.id ||
+        (oldWidget.message.fileData.isEmpty &&
+            widget.message.fileData.isEmpty &&
+            oldWidget.message.mediaId != widget.message.mediaId)) {
+      _loadVisibleMedia();
+    }
+  }
+
+  void _loadVisibleMedia() {
+    final message = widget.message;
+    if (message.fileData.isNotEmpty || message.mediaId.isEmpty) return;
+    final image = isImageName(message.fileName);
+    final audio = isAudioName(message.fileName);
+    final shouldLoad =
+        message.kind == ChatMessageKind.sticker ||
+        (image && (!widget.dataSaver || message.fileSize <= 512 * 1024)) ||
+        (audio && (!widget.dataSaver || message.fileSize <= 2 * 1024 * 1024));
+    if (!shouldLoad) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(
+        widget.controller.ensureMediaAvailable(widget.thread, message),
+      );
+    });
   }
 
   void _updateReplyDrag(DragUpdateDetails details) {
@@ -7603,6 +7645,7 @@ class _MessageBubbleBody extends StatelessWidget {
                         message: message,
                         imageBytes: imageBytes,
                         controller: controller,
+                        thread: thread,
                       )
                     : meetingPoint == null
                     ? _SharedLocationPreview(location: sharedLocation!)
@@ -8646,11 +8689,13 @@ class _FilePreview extends StatefulWidget {
     required this.message,
     required this.imageBytes,
     required this.controller,
+    required this.thread,
   });
 
   final ChatMessage message;
   final Uint8List? imageBytes;
   final AppController controller;
+  final ChatThread thread;
 
   @override
   State<_FilePreview> createState() => _FilePreviewState();
@@ -8690,9 +8735,22 @@ class _FilePreviewState extends State<_FilePreview> {
       description: 'Recognize text in this photo or document image.',
     );
     if (!allowed || !mounted) return;
+    var targetMessage = message;
+    if (targetMessage.fileData.isEmpty) {
+      final loaded = await widget.controller.ensureMediaAvailable(
+        widget.thread,
+        targetMessage,
+      );
+      if (!loaded || !mounted) return;
+      targetMessage =
+          widget.controller.messageInThread(widget.thread, message.id) ??
+          targetMessage;
+    }
     setState(() => extractingText = true);
     try {
-      final result = await widget.controller.extractImageTextWithAi(message);
+      final result = await widget.controller.extractImageTextWithAi(
+        targetMessage,
+      );
       if (!mounted) return;
       setState(() {
         localOcrText = result.text;
@@ -8763,10 +8821,18 @@ class _FilePreviewState extends State<_FilePreview> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          _UnavailableFilePreview(
-            icon: Icons.image_not_supported_outlined,
-            title: message.fileName.isEmpty ? 'Photo' : message.fileName,
-            subtitle: 'Preview is not cached',
+          InkWell(
+            onTap: () => widget.controller.ensureMediaAvailable(
+              widget.thread,
+              message,
+            ),
+            child: _UnavailableFilePreview(
+              icon: Icons.cloud_download_outlined,
+              title: message.fileName.isEmpty ? 'Photo' : message.fileName,
+              subtitle: message.progress > 0
+                  ? 'Downloading ${(message.progress * 100).round()}%'
+                  : 'Tap to download preview',
+            ),
           ),
           if (localOcrProcessed) ...[
             const SizedBox(height: 7),
@@ -8777,10 +8843,20 @@ class _FilePreviewState extends State<_FilePreview> {
     }
     if (isAudioName(message.fileName)) {
       if (message.fileData.isEmpty) {
-        return _UnavailableFilePreview(
-          icon: Icons.graphic_eq_rounded,
-          title: message.fileName.isEmpty ? 'Voice message' : message.fileName,
-          subtitle: 'Audio is not cached',
+        return InkWell(
+          onTap: () => widget.controller.ensureMediaAvailable(
+            widget.thread,
+            message,
+          ),
+          child: _UnavailableFilePreview(
+            icon: Icons.graphic_eq_rounded,
+            title: message.fileName.isEmpty
+                ? 'Voice message'
+                : message.fileName,
+            subtitle: message.progress > 0
+                ? 'Downloading ${(message.progress * 100).round()}%'
+                : 'Tap to download audio',
+          ),
         );
       }
       return Column(
@@ -8842,6 +8918,16 @@ class _FilePreviewState extends State<_FilePreview> {
       return;
     }
     try {
+      if (message.fileData.isEmpty) {
+        final loaded = await widget.controller.ensureMediaAvailable(
+          widget.thread,
+          message,
+        );
+        if (!loaded) throw StateError('Media is unavailable');
+        message =
+            widget.controller.messageInThread(widget.thread, message.id) ??
+            message;
+      }
       final dir = await getTemporaryDirectory();
       final filename = safeFilename(
         message.fileName.isEmpty ? 'meshchat_file' : message.fileName,

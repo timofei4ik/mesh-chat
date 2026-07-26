@@ -2,22 +2,32 @@ import asyncio
 
 try:
     from server.server_billing_http import BillingHttpServer
+    from server.server_media_http import MediaHttpServer
 except ModuleNotFoundError:
     from server_billing_http import BillingHttpServer
+    from server_media_http import MediaHttpServer
 
 
 class ServerWorkerSupervisor:
-    def __init__(self, relay, billing_http_factory=BillingHttpServer):
+    def __init__(
+        self,
+        relay,
+        billing_http_factory=BillingHttpServer,
+        media_http_factory=MediaHttpServer,
+    ):
         self.relay = relay
         self.stop_event = asyncio.Event()
         self.billing_http = billing_http_factory(relay)
+        self.media_http = media_http_factory(relay)
         self.boosty_started = False
         self.billing_started = False
+        self.media_started = False
         self._tasks = []
 
     async def start(self):
         self.boosty_started = await self.relay.start_boosty_bridge()
         self.billing_started = await self.billing_http.start()
+        self.media_started = await self.media_http.start()
         try:
             stats = self.relay.reconcile_wireguard_peers()
             print(f"WireGuard peer reconcile: {stats}")
@@ -42,6 +52,7 @@ class ServerWorkerSupervisor:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         await self.billing_http.close()
+        await self.media_http.close()
         await self.relay.stop_boosty_bridge()
 
     async def _wireguard_maintenance(self):
