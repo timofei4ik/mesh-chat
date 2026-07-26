@@ -91,6 +91,7 @@ void main() {
 
       expect(created.totalChunks, 3);
       expect(created.sha256, hasLength(64));
+      expect(created.packet['media_id'], created.sha256);
       expect(await writer.readChunk(created, 0), bytes.sublist(0, 64 * 1024));
       expect(await writer.readChunk(created, 2), bytes.sublist(2 * 64 * 1024));
 

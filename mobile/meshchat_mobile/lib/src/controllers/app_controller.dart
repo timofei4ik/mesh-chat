@@ -8242,6 +8242,10 @@ class AppController extends ChangeNotifier {
         fileName: decryptedName,
         fileData: decryptedData,
         fileSize: decryptedData.length ~/ 2,
+        mediaId:
+            first['media_id']?.toString() ??
+            first['file_sha256']?.toString() ??
+            '',
         replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
         replyToText: first['reply_to_text']?.toString() ?? '',
         isChannelComment:
@@ -8354,6 +8358,10 @@ class AppController extends ChangeNotifier {
       fileName: filename,
       fileData: fullData,
       fileSize: fullData.length ~/ 2,
+      mediaId:
+          first['media_id']?.toString() ??
+          first['file_sha256']?.toString() ??
+          '',
       replyToMessageId: first['reply_to_message_id']?.toString() ?? '',
       replyToText: first['reply_to_text']?.toString() ?? '',
       messageEffect: first['message_effect']?.toString() ?? 'none',
@@ -8470,6 +8478,7 @@ class AppController extends ChangeNotifier {
           ? incoming.fileData
           : current.fileData,
       fileSize: incoming.fileSize > 0 ? incoming.fileSize : current.fileSize,
+      mediaId: incoming.mediaId.isNotEmpty ? incoming.mediaId : current.mediaId,
       transcription: incoming.transcription.isNotEmpty
           ? incoming.transcription
           : current.transcription,

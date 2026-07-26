@@ -10,6 +10,7 @@ class ChatMessage {
     this.fileName = '',
     this.fileData = '',
     this.fileSize = 0,
+    this.mediaId = '',
     this.transcription = '',
     this.transcriptionLanguage = '',
     this.transcriptionDurationSeconds = 0,
@@ -42,6 +43,7 @@ class ChatMessage {
   final String fileName;
   final String fileData;
   final int fileSize;
+  final String mediaId;
   final String transcription;
   final String transcriptionLanguage;
   final double transcriptionDurationSeconds;
@@ -69,6 +71,7 @@ class ChatMessage {
     String? fileName,
     String? fileData,
     int? fileSize,
+    String? mediaId,
     String? transcription,
     String? transcriptionLanguage,
     double? transcriptionDurationSeconds,
@@ -100,6 +103,7 @@ class ChatMessage {
       fileName: fileName ?? this.fileName,
       fileData: fileData ?? this.fileData,
       fileSize: fileSize ?? this.fileSize,
+      mediaId: mediaId ?? this.mediaId,
       transcription: transcription ?? this.transcription,
       transcriptionLanguage:
           transcriptionLanguage ?? this.transcriptionLanguage,
@@ -146,6 +150,7 @@ class ChatMessage {
       fileName: fileName,
       fileData: fileData,
       fileSize: int.tryParse(json['file_size']?.toString() ?? '') ?? 0,
+      mediaId: json['media_id']?.toString() ?? '',
       transcription: json['transcription']?.toString() ?? '',
       transcriptionLanguage: json['transcription_language']?.toString() ?? '',
       transcriptionDurationSeconds:
@@ -186,6 +191,7 @@ class ChatMessage {
       'file_name': fileName,
       'file_data': fileData,
       'file_size': fileSize,
+      'media_id': mediaId,
       'transcription': transcription,
       'transcription_language': transcriptionLanguage,
       'transcription_duration_seconds': transcriptionDurationSeconds,

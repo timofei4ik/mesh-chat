@@ -13,6 +13,8 @@ void main() {
       fileName: 'voice_12s.m4a',
       fileData: '00ff',
       fileSize: 2,
+      mediaId:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       transcription: 'Test transcript',
       transcriptionLanguage: 'en',
       transcriptionDurationSeconds: 12.4,
@@ -23,6 +25,10 @@ void main() {
     expect(restored.transcription, 'Test transcript');
     expect(restored.transcriptionLanguage, 'en');
     expect(restored.transcriptionDurationSeconds, 12.4);
+    expect(
+      restored.mediaId,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
   });
 
   test('copyWith can attach transcription without changing file data', () {

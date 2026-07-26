@@ -164,7 +164,9 @@ class FileTransferOutboxStore {
       operationId: operationId,
       fileId: fileId,
       destinationNode: destinationNode,
-      packet: Map<String, dynamic>.from(packet)..remove('data'),
+      packet: Map<String, dynamic>.from(packet)
+        ..remove('data')
+        ..['media_id'] = sha256,
       payloadReference: reference,
       sizeBytes: bytes.length,
       sha256: sha256,

@@ -93,6 +93,7 @@ class ServerSchemaMigrationTests(unittest.TestCase):
                         "storage_path",
                         "sha256",
                         "size_bytes",
+                        "media_id",
                     }
                     <= file_columns
                 )
@@ -571,6 +572,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "file_id": file_id,
                     "filename": "durable.bin",
                     "caption": "durable transfer",
+                    "media_id": digest,
                     "file_sha256": digest,
                     "file_size": len(payload),
                     "chunk_size_bytes": chunk_size,
@@ -633,6 +635,11 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(Path(stored[1]).is_file())
         self.assertEqual(digest, stored[2])
         self.assertEqual(len(payload), stored[3])
+        stored_media_id = self.relay.db.execute(
+            "SELECT media_id FROM server_files WHERE file_id=?",
+            (file_id,),
+        ).fetchone()[0]
+        self.assertEqual(digest, stored_media_id)
 
         await receiver.close()
         receiver_tablet = await self.connect(
@@ -651,14 +658,52 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(all(item["file_sha256"] == digest for item in synced))
 
+        duplicate_file_id = "file-v2-deduplicated"
+        duplicate_transfer_id = "transfer-v2-deduplicated"
+        for index in range(total_chunks):
+            start = index * chunk_size
+            chunk = payload[start:start + chunk_size]
+            await sender.send(
+                {
+                    "type": "file_chunk",
+                    "packet_id": f"{duplicate_transfer_id}:{index}",
+                    "protocol_version": 5,
+                    "source_node": sender_node,
+                    "destination_node": receiver_node,
+                    "sender": "File sender",
+                    "transfer_id": duplicate_transfer_id,
+                    "operation_id": f"file_transfer:{duplicate_file_id}",
+                    "file_transfer_v2": True,
+                    "file_id": duplicate_file_id,
+                    "media_id": digest,
+                    "filename": "durable-copy.bin",
+                    "file_sha256": digest,
+                    "file_size": len(payload),
+                    "chunk_size_bytes": chunk_size,
+                    "chunk_index": index,
+                    "total_chunks": total_chunks,
+                    "data": chunk.hex(),
+                    "ttl": 5,
+                }
+            )
+            duplicate_ack = await sender.receive_type("file_chunk_ack")
+        self.assertTrue(duplicate_ack["complete"])
+        self.assertEqual(digest, duplicate_ack["media_id"])
+
+        duplicate_path = self.relay.db.execute(
+            "SELECT storage_path FROM server_files WHERE file_id=?",
+            (duplicate_file_id,),
+        ).fetchone()[0]
         storage_path = Path(stored[1])
+        self.assertEqual(str(storage_path), duplicate_path)
+
         deleted = self.relay._delete_server_files(
             "file_id=?",
             (file_id,),
         )
         self.relay.db.commit()
         self.assertEqual(1, deleted)
-        self.assertFalse(storage_path.exists())
+        self.assertTrue(storage_path.exists())
         self.assertEqual(
             0,
             self.relay.db.execute(
@@ -666,6 +711,15 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 (file_id,),
             ).fetchone()[0],
         )
+        self.assertEqual(
+            1,
+            self.relay._delete_server_files(
+                "file_id=?",
+                (duplicate_file_id,),
+            ),
+        )
+        self.relay.db.commit()
+        self.assertFalse(storage_path.exists())
 
     async def test_file_transfer_v2_checksum_reset_and_cancel(self):
         sender = await self.connect(

@@ -1268,6 +1268,7 @@ class ServerStorageMixin:
             """
             CREATE TABLE IF NOT EXISTS server_files(
                 file_id TEXT PRIMARY KEY,
+                media_id TEXT DEFAULT '',
                 sender_node TEXT,
                 sender_login TEXT,
                 sender_name TEXT,
@@ -1303,6 +1304,7 @@ class ServerStorageMixin:
                 source_node TEXT NOT NULL,
                 destination_node TEXT NOT NULL,
                 file_id TEXT NOT NULL,
+                media_id TEXT NOT NULL DEFAULT '',
                 total_chunks INTEGER NOT NULL,
                 chunk_size INTEGER NOT NULL,
                 size_bytes INTEGER NOT NULL,
@@ -1483,6 +1485,44 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE server_files ADD COLUMN size_bytes INTEGER DEFAULT 0"
             )
+        if "media_id" not in file_columns:
+            conn.execute(
+                "ALTER TABLE server_files ADD COLUMN media_id TEXT DEFAULT ''"
+            )
+        conn.execute(
+            """
+            UPDATE server_files
+            SET media_id=COALESCE(NULLIF(sha256, ''), file_id)
+            WHERE COALESCE(media_id, '')=''
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_server_files_media_id
+            ON server_files(media_id)
+            """
+        )
+
+        cursor = conn.execute(
+            "PRAGMA table_info(file_transfer_sessions)"
+        )
+        transfer_columns = {
+            row[1] for row in cursor.fetchall()
+        }
+        if "media_id" not in transfer_columns:
+            conn.execute(
+                """
+                ALTER TABLE file_transfer_sessions
+                ADD COLUMN media_id TEXT NOT NULL DEFAULT ''
+                """
+            )
+        conn.execute(
+            """
+            UPDATE file_transfer_sessions
+            SET media_id=sha256
+            WHERE COALESCE(media_id, '')=''
+            """
+        )
 
         conn.execute(
             """
@@ -3289,6 +3329,7 @@ class ServerStorageMixin:
         destination_node = str(packet.get("destination_node") or "").strip()
         filename = str(packet.get("filename") or "").strip()
         sha256 = str(packet.get("file_sha256") or "").strip().lower()
+        media_id = str(packet.get("media_id") or sha256).strip().lower()
 
         try:
             chunk_index = int(packet.get("chunk_index"))
@@ -3310,6 +3351,7 @@ class ServerStorageMixin:
             or not source_node
             or not destination_node
             or not filename
+            or re.fullmatch(r"[0-9a-f]{64}", media_id) is None
         )
         invalid_shape = (
             total_chunks < 1
@@ -3379,6 +3421,7 @@ class ServerStorageMixin:
         metadata["source_node"] = source_node
         metadata["destination_node"] = destination_node
         metadata["file_id"] = file_id
+        metadata["media_id"] = media_id
         metadata["filename"] = filename
         self.save_group_key_envelopes(packet)
         metadata_json = json.dumps(
@@ -3399,7 +3442,8 @@ class ServerStorageMixin:
                    sha256,
                    metadata_json,
                    status,
-                   storage_path
+                   storage_path,
+                   COALESCE(media_id, '')
             FROM file_transfer_sessions
             WHERE account_login=? AND transfer_id=?
             """,
@@ -3416,6 +3460,7 @@ class ServerStorageMixin:
                 and int(row[5]) == chunk_size
                 and int(row[6]) == size_bytes
                 and row[7] == sha256
+                and row[11] in {"", media_id}
             )
             if not consistent:
                 return self._file_transfer_result(
@@ -3430,6 +3475,7 @@ class ServerStorageMixin:
                     stored_metadata = json.loads(row[8] or "{}")
                 except (TypeError, ValueError, json.JSONDecodeError):
                     stored_metadata = metadata
+                stored_metadata["media_id"] = media_id
                 return self._file_transfer_result(
                     ok=True,
                     transfer_id=transfer_id,
@@ -3478,6 +3524,24 @@ class ServerStorageMixin:
                     metadata_json,
                 ),
             )
+            self.db.execute(
+                """
+                UPDATE file_transfer_sessions
+                SET media_id=?
+                WHERE account_login=? AND transfer_id=?
+                """,
+                (media_id, account_login, transfer_id),
+            )
+
+        self.db.execute(
+            """
+            UPDATE file_transfer_sessions
+            SET media_id=?
+            WHERE account_login=? AND transfer_id=?
+              AND COALESCE(media_id, '')=''
+            """,
+            (media_id, account_login, transfer_id),
+        )
 
         pending_path = self._file_transfer_pending_path(
             account_login,
@@ -3577,9 +3641,7 @@ class ServerStorageMixin:
                 size_bytes=size_bytes,
             )
 
-        completed_key = hashlib.sha256(
-            f"{file_id}\0{sha256}".encode("utf-8")
-        ).hexdigest()
+        completed_key = media_id
         completed_path = (
             self._file_transfer_root()
             / "completed"
@@ -3745,6 +3807,14 @@ class ServerStorageMixin:
                 size_bytes,
             ),
         )
+        self.db.execute(
+            """
+            UPDATE server_files
+            SET media_id=?
+            WHERE file_id=? AND COALESCE(media_id, '')=''
+            """,
+            (media_id, file_id),
+        )
         existing_file = self.db.execute(
             """
             SELECT COALESCE(sha256, ''), COALESCE(storage_path, '')
@@ -3755,7 +3825,17 @@ class ServerStorageMixin:
         ).fetchone()
         if existing_file and existing_file[0] not in {"", sha256}:
             self.db.rollback()
-            completed_path.unlink(missing_ok=True)
+            completed_path_still_used = self.db.execute(
+                """
+                SELECT 1
+                FROM server_files
+                WHERE storage_path=?
+                LIMIT 1
+                """,
+                (str(completed_path),),
+            ).fetchone()
+            if not completed_path_still_used:
+                completed_path.unlink(missing_ok=True)
             return self._file_transfer_result(
                 ok=False,
                 transfer_id=transfer_id,

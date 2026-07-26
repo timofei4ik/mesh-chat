@@ -90,6 +90,11 @@ class ServerTransportMixin:
             "transfer_id": transfer_result.get("transfer_id") or "",
             "operation_id": packet.get("operation_id") or "",
             "file_id": transfer_result.get("file_id") or "",
+            "media_id": (
+                (transfer_result.get("metadata") or {}).get("media_id")
+                or packet.get("media_id")
+                or ""
+            ),
             "chunk_index": transfer_result.get("chunk_index"),
             "received_ranges": transfer_result.get("received_ranges") or [],
             "complete": transfer_result.get("complete") is True,

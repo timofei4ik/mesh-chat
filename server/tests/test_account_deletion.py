@@ -121,6 +121,28 @@ class AccountDeletionOrchestratorTests(unittest.TestCase):
         )
         self.assertFalse(self.stored_file.exists())
 
+    def test_referenced_media_is_kept_after_account_deletion(self):
+        orchestrator = AccountDeletionOrchestrator(
+            StaticContextLoader(
+                AccountDeletionContext(
+                    login="alice",
+                    stored_paths=[str(self.stored_file)],
+                )
+            ),
+            [DeleteAccountOwner(self.connection)],
+            self.transaction,
+            path_is_referenced=lambda path: path == str(self.stored_file),
+        )
+
+        orchestrator.delete("alice")
+
+        self.assertIsNone(
+            self.connection.execute(
+                "SELECT 1 FROM accounts WHERE login='alice'"
+            ).fetchone()
+        )
+        self.assertTrue(self.stored_file.exists())
+
 
 class AccountDeletionPolicyTests(unittest.TestCase):
     ACCOUNT_LINK_COLUMNS = {

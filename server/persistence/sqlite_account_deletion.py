@@ -405,6 +405,23 @@ def build_sqlite_account_deletion_orchestrator(
     transaction_factory,
     pending_path_factory=None,
 ):
+    def path_is_referenced(storage_path):
+        if not storage_path:
+            return False
+        return connection.execute(
+            """
+            SELECT 1
+            FROM server_files
+            WHERE storage_path=?
+            UNION ALL
+            SELECT 1
+            FROM file_transfer_sessions
+            WHERE storage_path=?
+            LIMIT 1
+            """,
+            (storage_path, storage_path),
+        ).fetchone() is not None
+
     return AccountDeletionOrchestrator(
         SQLiteAccountDeletionContextLoader(connection),
         [
@@ -419,4 +436,5 @@ def build_sqlite_account_deletion_orchestrator(
         ],
         transaction_factory,
         pending_path_factory=pending_path_factory,
+        path_is_referenced=path_is_referenced,
     )

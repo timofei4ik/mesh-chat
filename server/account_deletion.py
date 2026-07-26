@@ -40,11 +40,13 @@ class AccountDeletionOrchestrator:
         owners: list[AccountDataOwner],
         transaction_factory: Callable,
         pending_path_factory=None,
+        path_is_referenced=None,
     ):
         self._context_loader = context_loader
         self._owners = tuple(owners)
         self._transaction_factory = transaction_factory
         self._pending_path_factory = pending_path_factory
+        self._path_is_referenced = path_is_referenced
         names = [owner.name for owner in self._owners]
         if len(names) != len(set(names)):
             raise ValueError("account deletion owner names must be unique")
@@ -72,6 +74,11 @@ class AccountDeletionOrchestrator:
 
     def _cleanup_files(self, context):
         for value in context.stored_paths:
+            if (
+                callable(self._path_is_referenced)
+                and self._path_is_referenced(value)
+            ):
+                continue
             try:
                 Path(value).unlink(missing_ok=True)
             except OSError:

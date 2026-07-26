@@ -1192,7 +1192,8 @@ class ServerSyncMixin:
                    COALESCE(chat_kind, 'normal'),
                    COALESCE(chat_id, ''),
                    COALESCE(message_effect, 'none'),
-                   created_at
+                   created_at,
+                   COALESCE(media_id, '')
             FROM server_files
             WHERE {file_where}
             ORDER BY created_at
@@ -1226,7 +1227,8 @@ class ServerSyncMixin:
                 "chat_kind": row[21],
                 "chat_id": row[22],
                 "message_effect": row[23],
-                "created_at": row[24]
+                "created_at": row[24],
+                "media_id": row[25] or row[17] or row[0]
             }
             for row in cursor.fetchall()
         ]
