@@ -121,6 +121,7 @@ class PostgresPersistenceTests(unittest.TestCase):
                 "002_billing.sql",
                 "003_server_data.sql",
                 "004_migration_support.sql",
+                "005_multidevice_state.sql",
             ],
             [item.name for item in migrations],
         )

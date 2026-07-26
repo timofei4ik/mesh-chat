@@ -28,6 +28,8 @@ class SyncDeltaBuffer {
     'chat_delete',
     'message_pin',
     'message_reaction',
+    'message_read',
+    'draft_update',
     'group_message',
     'group_update',
     'group_member_leave',

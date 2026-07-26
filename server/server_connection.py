@@ -272,6 +272,9 @@ async def handle_server_hello(
         "account_live_fanout": bool(
             packet.get("supports_account_live_fanout", False)
         ),
+        "multi_device_state": bool(
+            packet.get("supports_multi_device_state", False)
+        ),
     }
 
     normalized_login = ""
@@ -297,6 +300,7 @@ async def handle_server_hello(
             "mutation_ack": True,
             "file_transfer_v2": True,
             "account_live_fanout": True,
+            "multi_device_state": True,
             "email_2fa": True,
             "call_ice_servers": True,
         },

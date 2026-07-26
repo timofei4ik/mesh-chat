@@ -1277,6 +1277,25 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         bob_mirror_read = await bob_desktop.receive_type("message_read")
         self.assertEqual(["live-message-1"], alice_read["message_ids"])
         self.assertEqual(True, bob_mirror_read["account_mirror"])
+        self.assertEqual("live_bob", bob_mirror_read["reader_login"])
+
+        await bob_phone.send(
+            {
+                "type": "draft_update",
+                "packet_id": "live-draft-1",
+                "operation_id": "draft_update:live-draft-1",
+                "protocol_version": 5,
+                "source_node": bob_phone.node_id,
+                "destination_node": "SERVER",
+                "chat_key": "direct:live_alice",
+                "draft": "typing on the phone",
+                "ttl": 1,
+            }
+        )
+        bob_mirror_draft = await bob_desktop.receive_type("draft_update")
+        self.assertEqual(True, bob_mirror_draft["account_mirror"])
+        self.assertEqual("typing on the phone", bob_mirror_draft["draft"])
+        self.assertEqual(1, bob_mirror_draft["version"])
 
         reaction = {
             "type": "message_reaction",

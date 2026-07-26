@@ -132,4 +132,15 @@ void main() {
     (packet['event'] as Map<String, dynamic>)['requires_snapshot'] = true;
     expect(() => unsafe.addEvent(packet), throwsFormatException);
   });
+
+  test('treats account read state and drafts as durable events', () {
+    expect(
+      SyncDeltaBuffer.isDurableEventPacket({'type': 'message_read'}),
+      isTrue,
+    );
+    expect(
+      SyncDeltaBuffer.isDurableEventPacket({'type': 'draft_update'}),
+      isTrue,
+    );
+  });
 }

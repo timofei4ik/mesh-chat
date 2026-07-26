@@ -13,6 +13,8 @@ DELTA_SHADOW_EVENT_TYPES = frozenset(
         "chat_delete",
         "message_pin",
         "message_reaction",
+        "message_read",
+        "draft_update",
         "group_message",
         "group_update",
         "group_member_leave",
@@ -159,6 +161,8 @@ def canonical_sync_v2_state(snapshot):
         "group_messages": {},
         "reactions": {},
         "pins": {},
+        "read_receipts": {},
+        "chat_states": {},
         "stories": {},
     }
     for item in snapshot.get("direct_messages") or []:
@@ -201,6 +205,24 @@ def canonical_sync_v2_state(snapshot):
                 "text": _text(item.get("text")),
                 "group_key_id": _text(item.get("group_key_id")),
             }
+    for item in snapshot.get("read_receipts") or []:
+        if not isinstance(item, dict):
+            continue
+        message_id = _text(item.get("message_id"))
+        reader_login = _text(item.get("reader_login")).lower()
+        if message_id and reader_login:
+            state["read_receipts"][
+                f"{message_id}\u001f{reader_login}"
+            ] = True
+    for item in snapshot.get("chat_states") or []:
+        if not isinstance(item, dict):
+            continue
+        chat_key = _text(item.get("chat_key"))
+        if chat_key:
+            state["chat_states"][chat_key] = {
+                "draft": _text(item.get("draft")),
+                "version": int(item.get("version") or 0),
+            }
     for item in snapshot.get("stories") or []:
         if not isinstance(item, dict):
             continue
@@ -223,6 +245,11 @@ def _remove_message_relations(state, message_ids):
         key: value
         for key, value in state["pins"].items()
         if key.split("\u001f")[1] not in message_ids
+    }
+    state["read_receipts"] = {
+        key: value
+        for key, value in state["read_receipts"].items()
+        if key.split("\u001f")[0] not in message_ids
     }
 
 
@@ -396,6 +423,20 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
                     "pinner_node": _text(payload.get("source_node")),
                     "text": _text(payload.get("text")),
                     "group_key_id": _text(payload.get("group_key_id")),
+                }
+        elif packet_type == "message_read":
+            reader_login = _text(payload.get("reader_login")).lower()
+            for message_id in _sorted_texts(payload.get("message_ids")):
+                if reader_login:
+                    state["read_receipts"][
+                        f"{message_id}\u001f{reader_login}"
+                    ] = True
+        elif packet_type == "draft_update":
+            chat_key = _text(payload.get("chat_key"))
+            if chat_key:
+                state["chat_states"][chat_key] = {
+                    "draft": _text(payload.get("draft")),
+                    "version": int(payload.get("version") or 0),
                 }
         elif packet_type == "story_update":
             raw_story = payload.get("story")

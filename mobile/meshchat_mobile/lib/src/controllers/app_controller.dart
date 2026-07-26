@@ -395,6 +395,8 @@ class AppController extends ChangeNotifier {
   final Map<String, _GroupKey> _groupKeys = {};
   final Map<String, Map<String, _GroupKey>> _groupKeyHistory = {};
   final Map<String, Map<String, Set<String>>> _reactionActors = {};
+  final Map<String, Timer> _draftSyncTimers = {};
+  final Map<String, int> _draftVersions = {};
   NotificationTarget? _pendingNotificationTarget;
   ChatThread? incomingPreviewThread;
   ChatMessage? incomingPreviewMessage;
@@ -2613,7 +2615,9 @@ class AppController extends ChangeNotifier {
       case 'message_received':
         _markDelivered(packet['message_id']?.toString() ?? '');
       case 'message_read':
-        _markMessagesRead(_stringList(packet['message_ids']));
+        _applyReadPacket(packet);
+      case 'draft_update':
+        _applyDraftUpdate(packet);
       case 'message_reaction':
       case 'group_reaction':
         _applyReactionPacket(packet);
@@ -3034,6 +3038,8 @@ class AppController extends ChangeNotifier {
     }
     _applyReactions(packet['reactions']);
     _applyPins(packet['pins']);
+    _applyReadReceipts(packet['read_receipts']);
+    _applyChatStates(packet['chat_states']);
     await _applyStories(packet['stories']);
     await _applyStoryArchive(packet['story_archive']);
     _applyChatPreferences(packet['chat_preferences']);
@@ -3820,10 +3826,10 @@ class AppController extends ChangeNotifier {
     );
     final received = group.messages.last;
     group.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-    if (!fromSync && sender != myNodeId) {
+    if (!fromSync && !_isOwnAccountNode(sender)) {
       final active = _isThreadActive(group);
       if (active) {
-        group.unread = 0;
+        markRead(group);
       } else {
         group.unread++;
       }
@@ -4182,6 +4188,12 @@ class AppController extends ChangeNotifier {
     String reaction,
   ) async {
     if (session == null || reaction.trim().isEmpty) return;
+    final ownActor = 'login:${session!.login.trim().toLowerCase()}';
+    if ((message.reactionActors[reaction] ?? const <String>[]).contains(
+      ownActor,
+    )) {
+      return;
+    }
     _applyReactionPacket({
       'message_id': message.id,
       'reaction': reaction,
@@ -4460,6 +4472,29 @@ class AppController extends ChangeNotifier {
     if (thread.draft == value) return;
     thread.draft = value;
     unawaited(_saveCache());
+    final chatKey = chatPreferenceKey(thread);
+    _draftSyncTimers.remove(chatKey)?.cancel();
+    if (!thread.isBluetooth && chatKey.isNotEmpty) {
+      _draftSyncTimers[chatKey] = Timer(const Duration(milliseconds: 450), () {
+        _draftSyncTimers.remove(chatKey);
+        if (session == null ||
+            !_socket.isConnected ||
+            !_socket.supportsMultiDeviceState) {
+          return;
+        }
+        _socket.send({
+          'type': 'draft_update',
+          'packet_id': const Uuid().v4(),
+          'operation_id': 'draft_update:${const Uuid().v4()}',
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': myNodeId,
+          'destination_node': 'SERVER',
+          'chat_key': chatKey,
+          'draft': thread.draft,
+          'ttl': 1,
+        });
+      });
+    }
     notifyListeners();
   }
 
@@ -8088,7 +8123,7 @@ class AppController extends ChangeNotifier {
       if (!sentByMe) {
         final active = _isThreadActive(thread);
         if (active) {
-          thread.unread = 0;
+          markRead(thread);
         } else {
           thread.unread++;
         }
@@ -8228,10 +8263,10 @@ class AppController extends ChangeNotifier {
         delivered: true,
       );
       final inserted = _upsertFileMessage(group, message);
-      if (inserted && !fromSync && sender != myNodeId) {
+      if (inserted && !fromSync && !_isOwnAccountNode(sender)) {
         final active = _isThreadActive(group);
         if (active) {
-          group.unread = 0;
+          markRead(group);
         } else {
           group.unread++;
         }
@@ -8335,10 +8370,10 @@ class AppController extends ChangeNotifier {
       delivered: true,
     );
     final inserted = _upsertFileMessage(thread, message);
-    if (inserted && !fromSync && sender != myNodeId) {
+    if (inserted && !fromSync && !sentByMe) {
       final active = _isThreadActive(thread);
       if (active) {
-        thread.unread = 0;
+        markRead(thread);
       } else {
         thread.unread++;
       }
@@ -8357,7 +8392,7 @@ class AppController extends ChangeNotifier {
     await _saveCache();
     notifyListeners();
     _incomingFiles.remove(fileId);
-    if (!fromSync && sender != myNodeId) {
+    if (!fromSync && !sentByMe) {
       await _sendDeliveryReceipt(first, sender, fileId);
     }
   }
@@ -8763,19 +8798,120 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  void _applyReadPacket(Map<String, dynamic> packet) {
+    _markMessagesRead(_stringList(packet['message_ids']));
+  }
+
   void _markMessagesRead(List<String> ids) {
-    for (final id in ids.toSet()) {
-      if (id.isEmpty) continue;
-      _replaceMessage(
-        id,
-        (message) => message.copyWith(
+    final targets = ids.where((id) => id.isNotEmpty).toSet();
+    if (targets.isEmpty) return;
+    var changed = false;
+    for (final thread in [...threads.values, ...groups.values]) {
+      var threadChanged = false;
+      for (var index = 0; index < thread.messages.length; index++) {
+        final message = thread.messages[index];
+        if (!targets.contains(message.id)) continue;
+        if (message.read &&
+            message.delivered &&
+            !message.pending &&
+            !message.failed) {
+          continue;
+        }
+        thread.messages[index] = message.copyWith(
           read: true,
           delivered: true,
           pending: false,
           failed: false,
-        ),
-      );
+        );
+        threadChanged = true;
+        changed = true;
+      }
+      if (threadChanged) _recomputeUnread(thread);
     }
+    if (!changed) return;
+    unawaited(_saveCache());
+    notifyListeners();
+  }
+
+  void _applyReadReceipts(Object? rawReceipts) {
+    final currentLogin = session?.login.trim().toLowerCase() ?? '';
+    if (currentLogin.isEmpty || rawReceipts is! List) return;
+    final readersByMessage = <String, Set<String>>{};
+    for (final raw in rawReceipts) {
+      if (raw is! Map) continue;
+      final messageId = raw['message_id']?.toString().trim() ?? '';
+      final readerLogin =
+          raw['reader_login']?.toString().trim().toLowerCase() ?? '';
+      if (messageId.isEmpty || readerLogin.isEmpty) continue;
+      readersByMessage
+          .putIfAbsent(messageId, () => <String>{})
+          .add(readerLogin);
+    }
+    for (final thread in [...threads.values, ...groups.values]) {
+      for (var index = 0; index < thread.messages.length; index++) {
+        final message = thread.messages[index];
+        final readers = readersByMessage[message.id];
+        if (readers == null || readers.isEmpty) continue;
+        final sentByMe = _isOwnAccountNode(message.senderNode);
+        final shouldMarkRead = sentByMe
+            ? readers.any((reader) => reader != currentLogin)
+            : readers.contains(currentLogin);
+        if (!shouldMarkRead || message.read) continue;
+        thread.messages[index] = message.copyWith(
+          read: true,
+          delivered: true,
+          pending: false,
+          failed: false,
+        );
+      }
+      _recomputeUnread(thread);
+    }
+  }
+
+  void _recomputeUnread(ChatThread thread) {
+    thread.unread = thread.messages
+        .where(
+          (message) => !_isOwnAccountNode(message.senderNode) && !message.read,
+        )
+        .length;
+  }
+
+  void _applyChatStates(Object? rawStates) {
+    if (rawStates is! List) return;
+    for (final raw in rawStates) {
+      if (raw is! Map) continue;
+      _applyDraftUpdate(Map<String, dynamic>.from(raw));
+    }
+  }
+
+  void _applyDraftUpdate(Map<String, dynamic> packet) {
+    final packetLogin = packet['login']?.toString().trim().toLowerCase() ?? '';
+    final currentLogin = session?.login.trim().toLowerCase() ?? '';
+    if (packetLogin.isNotEmpty &&
+        currentLogin.isNotEmpty &&
+        packetLogin != currentLogin) {
+      return;
+    }
+    final chatKey = packet['chat_key']?.toString().trim() ?? '';
+    final version = int.tryParse(packet['version']?.toString() ?? '') ?? 0;
+    if (chatKey.isEmpty || version < (_draftVersions[chatKey] ?? 0)) return;
+    final matches = <ChatThread>[
+      ...threads.values.where((thread) => chatPreferenceKey(thread) == chatKey),
+      ...groups.values.where((thread) => chatPreferenceKey(thread) == chatKey),
+    ];
+    if (matches.isEmpty) return;
+    _draftVersions[chatKey] = version;
+    _draftSyncTimers.remove(chatKey)?.cancel();
+    final draft = packet['draft']?.toString() ?? '';
+    var changed = false;
+    for (final thread in matches) {
+      if (thread.draft == draft) continue;
+      thread.draft = draft;
+      changed = true;
+    }
+    if (!changed) return;
+    unawaited(_saveCache());
+    notifyListeners();
   }
 
   void _applyMutationAck(Map<String, dynamic> packet) {
@@ -8852,7 +8988,9 @@ class AppController extends ChangeNotifier {
     for (var index = 0; index < thread.messages.length; index++) {
       final message = thread.messages[index];
       final sender = message.senderNode.trim();
-      if (sender.isEmpty || sender == myNodeId || message.read) continue;
+      if (sender.isEmpty || _isOwnAccountNode(sender) || message.read) {
+        continue;
+      }
       unreadBySender.putIfAbsent(sender, () => <String>[]).add(message.id);
       thread.messages[index] = message.copyWith(read: true);
     }
@@ -9346,6 +9484,11 @@ class AppController extends ChangeNotifier {
     typingUntil.clear();
     activityKinds.clear();
     _incomingFiles.clear();
+    for (final timer in _draftSyncTimers.values) {
+      timer.cancel();
+    }
+    _draftSyncTimers.clear();
+    _draftVersions.clear();
     _incomingPreviewTimer?.cancel();
     _softResyncTimer?.cancel();
     _incomingPreviewTimer = null;
@@ -9533,6 +9676,10 @@ class AppController extends ChangeNotifier {
     _callReconnectTimer?.cancel();
     _softResyncTimer?.cancel();
     _incomingPreviewTimer?.cancel();
+    for (final timer in _draftSyncTimers.values) {
+      timer.cancel();
+    }
+    _draftSyncTimers.clear();
     _softResyncTimer = null;
     _incomingPreviewTimer = null;
     unawaited(CallAlertService.stopAll());

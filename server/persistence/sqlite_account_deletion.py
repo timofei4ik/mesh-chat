@@ -137,6 +137,8 @@ class SQLiteChatSyncDeletionOwner:
         AccountDataPolicy("chat_sync", "server_story_views"),
         AccountDataPolicy("chat_sync", "server_sticker_libraries"),
         AccountDataPolicy("chat_sync", "account_chat_preferences"),
+        AccountDataPolicy("chat_sync", "account_chat_state"),
+        AccountDataPolicy("chat_sync", "message_read_receipts"),
     )
 
     def __init__(self, connection):
@@ -234,6 +236,14 @@ class SQLiteChatSyncDeletionOwner:
         )
         self._connection.execute(
             "DELETE FROM account_chat_preferences WHERE login=?",
+            (context.login,),
+        )
+        self._connection.execute(
+            "DELETE FROM account_chat_state WHERE login=?",
+            (context.login,),
+        )
+        self._connection.execute(
+            "DELETE FROM message_read_receipts WHERE reader_login=?",
             (context.login,),
         )
         if context.nodes:

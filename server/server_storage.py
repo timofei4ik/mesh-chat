@@ -269,6 +269,19 @@ class ServerStorageMixin:
 
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS account_chat_state(
+                login TEXT NOT NULL,
+                chat_key TEXT NOT NULL,
+                draft_text TEXT NOT NULL DEFAULT '',
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(login, chat_key)
+            )
+            """
+        )
+
+        conn.execute(
+            """
             INSERT OR IGNORE INTO sync_event_state(
                 account_login,
                 retained_floor,
@@ -1229,6 +1242,25 @@ class ServerStorageMixin:
                 reactor_identity,
                 reaction
             )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS message_read_receipts(
+                message_id TEXT NOT NULL,
+                reader_login TEXT NOT NULL,
+                reader_node TEXT NOT NULL DEFAULT '',
+                read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(message_id, reader_login)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_message_read_receipts_reader
+            ON message_read_receipts(reader_login, message_id)
             """
         )
 
@@ -3977,6 +4009,187 @@ class ServerStorageMixin:
 
             self._commit_storage()
 
+        elif packet_type == "message_read":
+
+            source_node = str(packet.get("source_node") or "").strip()
+            reader_login = str(
+                self.get_login_by_node(source_node) or ""
+            ).strip().lower()
+            raw_message_ids = packet.get("message_ids")
+            if (
+                not source_node
+                or not reader_login
+                or not isinstance(raw_message_ids, list)
+            ):
+                return False
+
+            message_ids = []
+            for value in raw_message_ids[:500]:
+                message_id = str(value or "").strip()
+                if message_id and message_id not in message_ids:
+                    message_ids.append(message_id)
+            if not message_ids:
+                return False
+
+            accepted_ids = []
+            for message_id in message_ids:
+                direct_row = self.db.execute(
+                    """
+                    SELECT 1
+                    FROM direct_messages
+                    WHERE message_id=?
+                      AND (
+                        LOWER(COALESCE(receiver_login, ''))=?
+                        OR receiver_node IN (
+                            SELECT node_id
+                            FROM account_devices
+                            WHERE login=?
+                        )
+                      )
+                    LIMIT 1
+                    """,
+                    (message_id, reader_login, reader_login),
+                ).fetchone()
+                if direct_row:
+                    accepted_ids.append(message_id)
+                    continue
+
+                group_row = self.db.execute(
+                    """
+                    SELECT 1
+                    FROM server_group_messages gm
+                    JOIN server_group_members member
+                      ON member.group_id=gm.group_id
+                    WHERE gm.message_id=?
+                      AND (
+                        LOWER(COALESCE(member.login, ''))=?
+                        OR member.node_id IN (
+                            SELECT node_id
+                            FROM account_devices
+                            WHERE login=?
+                        )
+                      )
+                    LIMIT 1
+                    """,
+                    (message_id, reader_login, reader_login),
+                ).fetchone()
+                if group_row:
+                    accepted_ids.append(message_id)
+                    continue
+
+                file_row = self.db.execute(
+                    """
+                    SELECT 1
+                    FROM server_files file
+                    WHERE file.file_id=?
+                      AND (
+                        LOWER(COALESCE(file.receiver_login, ''))=?
+                        OR file.receiver_node IN (
+                            SELECT node_id
+                            FROM account_devices
+                            WHERE login=?
+                        )
+                        OR (
+                            COALESCE(file.group_id, '')!=''
+                            AND EXISTS(
+                                SELECT 1
+                                FROM server_group_members member
+                                WHERE member.group_id=file.group_id
+                                  AND (
+                                    LOWER(COALESCE(member.login, ''))=?
+                                    OR member.node_id IN (
+                                        SELECT node_id
+                                        FROM account_devices
+                                        WHERE login=?
+                                    )
+                                  )
+                            )
+                        )
+                      )
+                    LIMIT 1
+                    """,
+                    (
+                        message_id,
+                        reader_login,
+                        reader_login,
+                        reader_login,
+                        reader_login,
+                    ),
+                ).fetchone()
+                if file_row:
+                    accepted_ids.append(message_id)
+
+            if not accepted_ids:
+                return False
+
+            for message_id in accepted_ids:
+                self.db.execute(
+                    """
+                    INSERT INTO message_read_receipts(
+                        message_id,
+                        reader_login,
+                        reader_node,
+                        read_at
+                    )
+                    VALUES(?,?,?,CURRENT_TIMESTAMP)
+                    ON CONFLICT(message_id, reader_login) DO UPDATE SET
+                        reader_node=excluded.reader_node,
+                        read_at=CURRENT_TIMESTAMP
+                    """,
+                    (message_id, reader_login, source_node),
+                )
+
+            packet["message_ids"] = accepted_ids
+            packet["reader_login"] = reader_login
+            self._commit_storage()
+
+        elif packet_type == "draft_update":
+
+            source_node = str(packet.get("source_node") or "").strip()
+            source_login = str(
+                self.get_login_by_node(source_node) or ""
+            ).strip().lower()
+            chat_key = str(packet.get("chat_key") or "").strip()
+            draft_text = str(packet.get("draft") or "")
+            if (
+                not source_node
+                or not source_login
+                or not chat_key
+                or len(chat_key) > 512
+                or len(draft_text) > 4096
+            ):
+                return False
+
+            self.db.execute(
+                """
+                INSERT INTO account_chat_state(
+                    login,
+                    chat_key,
+                    draft_text,
+                    version,
+                    updated_at
+                )
+                VALUES(?,?,?,1,CURRENT_TIMESTAMP)
+                ON CONFLICT(login, chat_key) DO UPDATE SET
+                    draft_text=excluded.draft_text,
+                    version=account_chat_state.version+1,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (source_login, chat_key, draft_text),
+            )
+            version_row = self.db.execute(
+                """
+                SELECT version
+                FROM account_chat_state
+                WHERE login=? AND chat_key=?
+                """,
+                (source_login, chat_key),
+            ).fetchone()
+            packet["login"] = source_login
+            packet["draft"] = draft_text
+            packet["version"] = int(version_row[0] if version_row else 1)
+            self._commit_storage()
+
         elif packet_type == "profile_update":
 
             self.save_account_profile(
@@ -4424,6 +4637,16 @@ class ServerStorageMixin:
                 )
             )
 
+            self.db.execute(
+                """
+                DELETE FROM message_read_receipts
+                WHERE message_id=?
+                """,
+                (
+                    message_id,
+                )
+            )
+
             self._commit_storage()
 
         elif packet_type == "chat_delete":
@@ -4729,6 +4952,26 @@ class ServerStorageMixin:
 
             self.db.execute(
                 """
+                DELETE FROM message_read_receipts
+                WHERE message_id IN (
+                    SELECT message_id
+                    FROM server_group_messages
+                    WHERE group_id=?
+                )
+                OR message_id IN (
+                    SELECT file_id
+                    FROM server_files
+                    WHERE group_id=?
+                )
+                """,
+                (
+                    group_id,
+                    group_id,
+                )
+            )
+
+            self.db.execute(
+                """
                 DELETE FROM server_reactions
                 WHERE scope=?
                 """,
@@ -4910,6 +5153,16 @@ class ServerStorageMixin:
             self.db.execute(
                 """
                 DELETE FROM server_pins
+                WHERE message_id=?
+                """,
+                (
+                    message_id,
+                )
+            )
+
+            self.db.execute(
+                """
+                DELETE FROM message_read_receipts
                 WHERE message_id=?
                 """,
                 (

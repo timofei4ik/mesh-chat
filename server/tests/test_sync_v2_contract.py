@@ -177,6 +177,102 @@ class SyncV2ContractTests(unittest.TestCase):
             DELTA_SHADOW_EVENT_TYPES,
         )
 
+    def test_read_receipts_and_drafts_converge_across_account_devices(self):
+        self.register_device("alice", "alice-phone")
+        self.register_device("alice", "alice-desktop")
+        self.register_device("bob", "bob-phone")
+        self.persist_packet(
+            {
+                "type": "chat_message",
+                "packet_id": "multi-device-message",
+                "source_node": "bob-phone",
+                "destination_node": "alice-phone",
+                "sender": "Bob",
+                "message": "ciphertext:hello",
+            }
+        )
+        source_cursor = self.relay.sync_v2_cursor("alice")
+        source_snapshot = self.relay.build_sync_packet(
+            "alice",
+            "alice-phone",
+        )
+
+        self.persist_packet(
+            {
+                "type": "message_read",
+                "packet_id": "multi-device-read",
+                "source_node": "alice-phone",
+                "destination_node": "bob-phone",
+                "message_ids": ["multi-device-message"],
+            }
+        )
+        draft_result = self.relay.persist_history_mutation(
+            {
+                "type": "draft_update",
+                "packet_id": "multi-device-draft-1",
+                "operation_id": "draft_update:multi-device-draft-1",
+                "source_node": "alice-phone",
+                "destination_node": "SERVER",
+                "chat_key": "direct:bob",
+                "draft": "answer from the phone",
+            },
+            ["alice"],
+        )
+        self.assertIsNot(draft_result["saved"], False)
+        second_draft_result = self.relay.persist_history_mutation(
+            {
+                "type": "draft_update",
+                "packet_id": "multi-device-draft-2",
+                "operation_id": "draft_update:multi-device-draft-2",
+                "source_node": "alice-desktop",
+                "destination_node": "SERVER",
+                "chat_key": "direct:bob",
+                "draft": "answer from the desktop",
+            },
+            ["alice"],
+        )
+        self.assertIsNot(second_draft_result["saved"], False)
+
+        target_snapshot = self.relay.build_sync_packet(
+            "alice",
+            "alice-desktop",
+        )
+        self.assertEqual(
+            ["alice"],
+            [
+                item["reader_login"]
+                for item in target_snapshot["read_receipts"]
+                if item["message_id"] == "multi-device-message"
+            ],
+        )
+        self.assertEqual(
+            [
+                {
+                    "chat_key": "direct:bob",
+                    "draft": "answer from the desktop",
+                    "version": 2,
+                    "updated_at": target_snapshot["chat_states"][0][
+                        "updated_at"
+                    ],
+                }
+            ],
+            target_snapshot["chat_states"],
+        )
+
+        plan = self.relay.plan_sync_v2_delivery(
+            "alice",
+            source_cursor,
+            supports_delta=True,
+        )
+        report = compare_sync_v2_shadow(
+            source_snapshot,
+            plan["events"],
+            target_snapshot,
+            node_id="alice-desktop",
+        )
+        self.assertEqual("delta", plan["mode"])
+        self.assertTrue(report["ok"], report["mismatches"])
+
     def test_delta_can_be_enabled_for_canary_accounts_only(self):
         with mock.patch.object(
             server_module,

@@ -34,6 +34,8 @@ SYNC_V2_EVENT_PACKET_TYPES = frozenset(
         "chat_delete",
         "message_pin",
         "message_reaction",
+        "message_read",
+        "draft_update",
         "group_message",
         "group_update",
         "group_member_leave",
@@ -1388,6 +1390,7 @@ class ServerSyncMixin:
 
         reactions = []
         pins = []
+        read_receipts = []
 
         if message_ids:
 
@@ -1448,6 +1451,51 @@ class ServerSyncMixin:
                 }
                 for row in cursor.fetchall()
             ]
+
+            cursor.execute(
+                f"""
+                SELECT message_id,
+                       reader_login,
+                       reader_node,
+                       read_at
+                FROM message_read_receipts
+                WHERE message_id IN ({placeholders})
+                ORDER BY read_at
+                """,
+                message_ids
+            )
+
+            read_receipts = [
+                {
+                    "message_id": row[0],
+                    "reader_login": row[1],
+                    "reader_node": row[2],
+                    "read_at": row[3],
+                }
+                for row in cursor.fetchall()
+            ]
+
+        cursor.execute(
+            """
+            SELECT chat_key,
+                   draft_text,
+                   version,
+                   updated_at
+            FROM account_chat_state
+            WHERE login=?
+            ORDER BY chat_key
+            """,
+            (str(login or "").strip().lower(),),
+        )
+        chat_states = [
+            {
+                "chat_key": row[0],
+                "draft": row[1] or "",
+                "version": int(row[2] or 0),
+                "updated_at": row[3],
+            }
+            for row in cursor.fetchall()
+        ]
 
         profile_nodes = {
             node_id
@@ -1595,7 +1643,9 @@ class ServerSyncMixin:
             "scheduled_messages": scheduled_messages,
             "sticker_library": sticker_library,
             "reactions": reactions,
-            "pins": pins
+            "pins": pins,
+            "read_receipts": read_receipts,
+            "chat_states": chat_states
         }
 
     async def send_account_sync(
