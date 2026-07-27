@@ -100,9 +100,6 @@ async def route_call_signal(server, packet):
     async def deliver(target_node):
         if not target_node or target_node in delivered_nodes:
             return False
-        target_socket = server.clients.get(target_node)
-        if not target_socket:
-            return False
         routed = packet
         if target_node != destination_node:
             routed = {
@@ -110,7 +107,17 @@ async def route_call_signal(server, packet):
                 "destination_node": target_node,
                 "original_destination_node": destination_node,
             }
-        await send_json(target_socket, routed)
+        sender = getattr(server, "send_packet_to_node", None)
+        if callable(sender):
+            sent = await sender(target_node, routed)
+        else:
+            target_socket = server.clients.get(target_node)
+            if not target_socket:
+                return False
+            await send_json(target_socket, routed)
+            sent = True
+        if not sent:
+            return False
         delivered_nodes.add(target_node)
         return True
 
@@ -118,7 +125,13 @@ async def route_call_signal(server, packet):
     source_node = str(packet.get("source_node") or "").strip()
     destination_login = server.get_login_by_node(destination_node)
     if destination_login:
-        for target_node in server.get_online_account_nodes(destination_login):
+        resolver = getattr(server, "get_realtime_account_nodes", None)
+        target_nodes = (
+            await resolver(destination_login)
+            if callable(resolver)
+            else server.get_online_account_nodes(destination_login)
+        )
+        for target_node in target_nodes:
             if target_node == source_node:
                 continue
             delivered = await deliver(target_node) or delivered
@@ -131,21 +144,28 @@ async def _route_terminal_to_source_devices(server, packet, context):
     source_login = account_login(server, context.node_id)
     if not source_login:
         return
-    for target_node in server.get_online_account_nodes(source_login):
+    resolver = getattr(server, "get_realtime_account_nodes", None)
+    target_nodes = (
+        await resolver(source_login)
+        if callable(resolver)
+        else server.get_online_account_nodes(source_login)
+    )
+    for target_node in target_nodes:
         if target_node == context.node_id:
             continue
-        target_socket = server.clients.get(target_node)
-        if not target_socket:
-            continue
-        await send_json(
-            target_socket,
-            {
-                **packet,
-                "source_node": context.node_id,
-                "destination_node": target_node,
-                "mirrored_terminal": True,
-            },
-        )
+        mirrored = {
+            **packet,
+            "source_node": context.node_id,
+            "destination_node": target_node,
+            "mirrored_terminal": True,
+        }
+        sender = getattr(server, "send_packet_to_node", None)
+        if callable(sender):
+            await sender(target_node, mirrored)
+        else:
+            target_socket = server.clients.get(target_node)
+            if target_socket:
+                await send_json(target_socket, mirrored)
 
 
 async def handle_call_signal(server, packet, context):
@@ -162,8 +182,17 @@ async def handle_call_signal(server, packet, context):
         )
         return True
     operation_id = str(packet.get("operation_id") or "").strip()
-    if packet_type == "call_end" and not _claim_operation(operation_id):
-        return True
+    if packet_type == "call_end":
+        distributed_claim = getattr(server, "claim_realtime_operation", None)
+        claimed = (
+            await distributed_claim("call-end", operation_id)
+            if callable(distributed_claim)
+            else None
+        )
+        if claimed is False or (
+            claimed is None and not _claim_operation(operation_id)
+        ):
+            return True
 
     packet["source_node"] = context.node_id
     sender_login = account_login(server, context.node_id)

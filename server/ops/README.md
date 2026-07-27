@@ -83,3 +83,48 @@ Copy `firebase_push.example.json` to the ignored `firebase_push.json` first.
 The app registers refreshed FCM tokens with the authenticated MeshChat node;
 the server removes stale tokens automatically. Message bodies stay generic so
 encrypted chat content is never sent to Firebase.
+
+## Redis and multiple relay workers
+
+Chat/Sync workers share only live presence and transient packet fanout through
+Redis. PostgreSQL remains the durable source of truth, so a Redis restart cannot
+delete message history. Configure the common worker environment in
+`/etc/mesh-messenger/server.env`:
+
+```bash
+MESH_REDIS_URL=redis://127.0.0.1:6379/0
+MESH_REDIS_PREFIX=meshchat
+MESH_WORKER_COUNT=2
+MESH_REALTIME_PRESENCE_TTL_SECONDS=45
+MESH_REALTIME_HEARTBEAT_SECONDS=15
+```
+
+The checked-in `ops/redis/meshchat.conf` keeps Redis local-only, disables
+persistence for this intentionally ephemeral data, and caps memory at 64 MiB.
+Include it from `/etc/redis/redis.conf` before enabling workers.
+
+Install `ops/systemd/mesh-chat-worker@.service`, stop the legacy
+`mesh-server.service`, then start exactly the configured number of instances:
+
+```bash
+systemctl daemon-reload
+systemctl disable --now mesh-server.service
+systemctl enable --now mesh-chat-worker@0 mesh-chat-worker@1
+systemctl status mesh-chat-worker@0 mesh-chat-worker@1 redis-server --no-pager
+```
+
+Every worker binds the same relay port with `SO_REUSEPORT`. Only worker zero
+runs billing, media HTTP, Boosty, WireGuard reconciliation, and scheduled
+messages. Never set `MESH_WORKER_COUNT` above one without `MESH_REDIS_URL`.
+
+Verify real cross-worker signaling after deployment. The smoke command creates
+and removes a temporary account, opens enough sockets to reach both workers,
+and routes one call signal through Redis:
+
+```bash
+set -a
+. /etc/mesh-messenger/server.env
+. /etc/mesh-messenger/postgres.env
+set +a
+.venv/bin/python -m server.ops.smoke_realtime_workers
+```

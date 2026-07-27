@@ -1,0 +1,25 @@
+[Unit]
+Description=MeshChat relay worker %i
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/mesh_messenger
+EnvironmentFile=-/etc/mesh-messenger/server.env
+EnvironmentFile=-/etc/mesh-messenger/meshpro.env
+EnvironmentFile=-/etc/mesh-messenger/push.env
+EnvironmentFile=/etc/mesh-messenger/postgres.env
+EnvironmentFile=/etc/mesh-messenger/turn.env
+Environment=MESH_WORKER_INDEX=%i
+ExecStart=/root/mesh_messenger/.venv/bin/python -m server.server
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

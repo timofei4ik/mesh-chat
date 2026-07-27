@@ -1931,13 +1931,33 @@ class ServerSyncMixin:
     async def send_user_list(self):
 
         users = []
+        presence_reader = getattr(
+            self,
+            "get_realtime_presence_users",
+            None,
+        )
+        if callable(presence_reader):
+            presence_records = await presence_reader()
+        else:
+            try:
+                presence_records = [
+                    {
+                        "node_id": node_id,
+                        "username": username,
+                        "login": self.client_logins.get(node_id, ""),
+                    }
+                    for node_id, username in list(self.client_names.items())
+                ]
+            except RuntimeError:
+                presence_records = []
 
-        try:
-            client_names = list(self.client_names.items())
-        except RuntimeError:
-            client_names = []
-
-        for node_id, username in client_names:
+        seen_nodes = set()
+        for presence in presence_records:
+            node_id = str(presence.get("node_id") or "")
+            if not node_id or node_id in seen_nodes:
+                continue
+            seen_nodes.add(node_id)
+            username = presence.get("username") or node_id
 
             profile = self.get_profile_by_node(node_id)
 
@@ -1981,38 +2001,22 @@ class ServerSyncMixin:
             "users": users
         }
 
-        dead = []
+        sender = getattr(self, "send_packet_to_node", None)
+        if callable(sender):
+            await asyncio.gather(
+                *(
+                    sender(node_id, packet)
+                    for node_id in seen_nodes
+                ),
+                return_exceptions=True,
+            )
+            return
 
-        try:
-            client_items = list(self.clients.items())
-        except RuntimeError:
-            client_items = []
-
-        for node_id, websocket in client_items:
-
+        for node_id, websocket in list(self.clients.items()):
             try:
-
                 await websocket.send(
-                    json.dumps(
-                        packet,
-                        ensure_ascii=False
-                    )
+                    json.dumps(packet, ensure_ascii=False)
                 )
-
             except websockets.ConnectionClosed:
-
-                dead.append(
-                    node_id
-                )
-
-        for node_id in dead:
-
-            self.clients.pop(
-                node_id,
-                None
-            )
-
-            self.client_names.pop(
-                node_id,
-                None
-            )
+                self.clients.pop(node_id, None)
+                self.client_names.pop(node_id, None)

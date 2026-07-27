@@ -178,25 +178,63 @@ def collect_health(
     critical = []
     warnings = []
 
-    service = {"checked": check_service}
+    service_names = (
+        [
+            value.strip()
+            for value in str(service_name or "").split(",")
+            if value.strip()
+        ]
+        or ["mesh-server"]
+    )
+    service = {
+        "checked": check_service,
+        "name": ",".join(service_names),
+        "instances": [],
+    }
     if check_service:
-        code, state, error = _run_systemctl("is-active", service_name)
-        service["active"] = code == 0 and state == "active"
-        service["state"] = state or error or "unknown"
-        restarts_code, restarts, _ = _run_systemctl(
-            "show",
-            service_name,
-            "-p",
-            "NRestarts",
-            "--value",
+        restart_total = 0
+        for current_name in service_names:
+            code, state, error = _run_systemctl(
+                "is-active",
+                current_name,
+            )
+            active = code == 0 and state == "active"
+            restarts_code, restarts, _ = _run_systemctl(
+                "show",
+                current_name,
+                "-p",
+                "NRestarts",
+                "--value",
+            )
+            restart_count = (
+                int(restarts)
+                if restarts_code == 0 and restarts.isdigit()
+                else None
+            )
+            service["instances"].append(
+                {
+                    "name": current_name,
+                    "active": active,
+                    "state": state or error or "unknown",
+                    "restarts": restart_count,
+                }
+            )
+            if not active:
+                critical.append(f"service {current_name} is not active")
+            if restart_count:
+                restart_total += restart_count
+                warnings.append(
+                    f"service {current_name} restarted "
+                    f"{restart_count} time(s)"
+                )
+        service["active"] = all(
+            item["active"]
+            for item in service["instances"]
         )
-        service["restarts"] = (
-            int(restarts) if restarts_code == 0 and restarts.isdigit() else None
+        service["state"] = (
+            "active" if service["active"] else "degraded"
         )
-        if not service["active"]:
-            critical.append(f"service {service_name} is not active")
-        if service["restarts"]:
-            warnings.append(f"service restarted {service['restarts']} time(s)")
+        service["restarts"] = restart_total
 
     port_status = {"checked": check_port, "host": host, "port": int(port)}
     if check_port:

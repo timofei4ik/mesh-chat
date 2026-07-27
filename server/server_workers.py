@@ -14,8 +14,10 @@ class ServerWorkerSupervisor:
         relay,
         billing_http_factory=BillingHttpServer,
         media_http_factory=MediaHttpServer,
+        run_auxiliary=True,
     ):
         self.relay = relay
+        self.run_auxiliary = bool(run_auxiliary)
         self.stop_event = asyncio.Event()
         self.billing_http = billing_http_factory(relay)
         self.media_http = media_http_factory(relay)
@@ -25,6 +27,11 @@ class ServerWorkerSupervisor:
         self._tasks = []
 
     async def start(self):
+        start_realtime = getattr(self.relay, "start_realtime", None)
+        if callable(start_realtime):
+            await start_realtime()
+        if not self.run_auxiliary:
+            return
         self.boosty_started = await self.relay.start_boosty_bridge()
         self.billing_started = await self.billing_http.start()
         self.media_started = await self.media_http.start()
@@ -51,9 +58,13 @@ class ServerWorkerSupervisor:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        await self.billing_http.close()
-        await self.media_http.close()
-        await self.relay.stop_boosty_bridge()
+        if self.run_auxiliary:
+            await self.billing_http.close()
+            await self.media_http.close()
+            await self.relay.stop_boosty_bridge()
+        stop_realtime = getattr(self.relay, "stop_realtime", None)
+        if callable(stop_realtime):
+            await stop_realtime()
 
     async def _wireguard_maintenance(self):
         while not self.stop_event.is_set():

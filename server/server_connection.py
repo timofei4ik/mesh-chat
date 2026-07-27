@@ -229,6 +229,19 @@ async def handle_server_hello(
 
     if service:
         normalized_login = login.strip().lower()
+        register_realtime = getattr(
+            server,
+            "register_realtime_connection",
+            None,
+        )
+        if callable(register_realtime):
+            server.service_sessions[node_id] = await register_realtime(
+                node_id,
+                login=normalized_login,
+                username=username,
+                kind="service",
+                service=service,
+            )
         server.service_clients[node_id] = websocket
         server.client_services[node_id] = service
         server.service_logins[node_id] = normalized_login
@@ -248,11 +261,8 @@ async def handle_server_hello(
         print(f"Service online: {service}/{normalized_login} ({node_id})")
         return HandshakeOutcome(node_id)
 
-    server.clients[node_id] = websocket
-    server.client_names[node_id] = username
-
     delta_enabled = server.sync_v2_delta_enabled_for(login)
-    server.client_capabilities[node_id] = {
+    capabilities = {
         "sync_v2": bool(packet.get("supports_sync_v2", False)),
         "sync_v2_delta": bool(
             packet.get("supports_sync_v2_delta", False)
@@ -279,6 +289,21 @@ async def handle_server_hello(
             packet.get("supports_multi_device_state", False)
         ),
     }
+    register_realtime = getattr(
+        server,
+        "register_realtime_connection",
+        None,
+    )
+    if callable(register_realtime):
+        server.client_sessions[node_id] = await register_realtime(
+            node_id,
+            login=str(login or "").strip().lower(),
+            username=username,
+            capabilities=capabilities,
+        )
+    server.clients[node_id] = websocket
+    server.client_names[node_id] = username
+    server.client_capabilities[node_id] = capabilities
 
     normalized_login = ""
     if login:
@@ -388,6 +413,19 @@ async def cleanup_connection(server, websocket, node_id):
         service = server.client_services.pop(node_id, None)
         login = server.service_logins.pop(node_id, None)
         server.service_clients.pop(node_id, None)
+        service_sessions = getattr(server, "service_sessions", {})
+        session_id = service_sessions.pop(node_id, None)
+        unregister_realtime = getattr(
+            server,
+            "unregister_realtime_connection",
+            None,
+        )
+        if callable(unregister_realtime):
+            await unregister_realtime(
+                node_id,
+                session_id,
+                kind="service",
+            )
         print(f"Service offline: {service}/{login} ({node_id})")
 
     if not (
@@ -400,7 +438,20 @@ async def cleanup_connection(server, websocket, node_id):
     server.client_names.pop(node_id, None)
     server.client_capabilities.pop(node_id, None)
     login = server.client_logins.pop(node_id, None)
-    if login:
+    client_sessions = getattr(server, "client_sessions", {})
+    session_id = client_sessions.pop(node_id, None)
+    unregister_realtime = getattr(
+        server,
+        "unregister_realtime_connection",
+        None,
+    )
+    presence_removed = True
+    if callable(unregister_realtime):
+        presence_removed = await unregister_realtime(
+            node_id,
+            session_id,
+        )
+    if login and presence_removed:
         server.set_account_device_online(login, node_id, False)
     print(f"Client offline: {node_id}")
     await server.send_user_list()

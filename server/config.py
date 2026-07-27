@@ -49,6 +49,45 @@ SYNC_V2_DELTA_TEST_ACCOUNTS = frozenset(
     if login.strip()
 )
 
+REDIS_URL = os.environ.get(
+    "MESH_REDIS_URL",
+    "",
+).strip()
+
+REDIS_PREFIX = (
+    os.environ.get("MESH_REDIS_PREFIX", "meshchat").strip() or "meshchat"
+)
+
+REALTIME_PRESENCE_TTL_SECONDS = max(
+    15,
+    int(os.environ.get("MESH_REALTIME_PRESENCE_TTL_SECONDS", "45")),
+)
+
+REALTIME_HEARTBEAT_SECONDS = max(
+    5,
+    min(
+        REALTIME_PRESENCE_TTL_SECONDS // 2,
+        int(os.environ.get("MESH_REALTIME_HEARTBEAT_SECONDS", "15")),
+    ),
+)
+
+WORKER_COUNT = max(
+    1,
+    int(os.environ.get("MESH_WORKER_COUNT", "1")),
+)
+
+WORKER_INDEX = max(
+    0,
+    int(os.environ.get("MESH_WORKER_INDEX", "0")),
+)
+if WORKER_INDEX >= WORKER_COUNT:
+    raise RuntimeError("MESH_WORKER_INDEX must be lower than MESH_WORKER_COUNT")
+
+WORKER_ID = (
+    os.environ.get("MESH_WORKER_ID", "").strip()
+    or f"worker-{WORKER_INDEX}"
+)
+
 TURN_STUN_URLS = tuple(
     value.strip()
     for value in os.environ.get(

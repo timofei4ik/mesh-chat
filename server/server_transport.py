@@ -17,6 +17,36 @@ except ModuleNotFoundError:
 
 
 class ServerTransportMixin:
+    async def _live_account_nodes(self, login):
+        resolver = getattr(self, "get_realtime_account_nodes", None)
+        if callable(resolver):
+            return await resolver(login)
+        return list(self.get_online_account_nodes(login))
+
+    async def _send_live_packet(
+        self,
+        node_id,
+        packet,
+        required_capability=None,
+    ):
+        sender = getattr(self, "send_packet_to_node", None)
+        if callable(sender):
+            return await sender(
+                node_id,
+                packet,
+                required_capability=required_capability,
+            )
+        websocket = self.clients.get(node_id)
+        if websocket is None:
+            return False
+        if required_capability and not self.client_capabilities.get(
+            node_id,
+            {},
+        ).get(required_capability, False):
+            return False
+        await websocket.send(json.dumps(packet, ensure_ascii=False))
+        return True
+
     async def send_server_error(self, websocket, code, message, **details):
         await websocket.send(
             json.dumps(
@@ -112,36 +142,30 @@ class ServerTransportMixin:
         destination_node = str(metadata.get("destination_node") or "").strip()
         if not destination_node or destination_node.upper() == "SERVER":
             return
-        destination_socket = self.clients.get(destination_node)
-        if not destination_socket:
-            return
         try:
-            destination_capabilities = self.client_capabilities.get(
+            manifest_delivered = await self._send_live_packet(
                 destination_node,
-                {},
+                {
+                    "type": "file_manifest",
+                    **metadata,
+                    "file_id": transfer_result.get("file_id") or "",
+                    "media_id": metadata.get("media_id") or "",
+                    "file_sha256": transfer_result.get("sha256") or "",
+                    "file_size": transfer_result.get("size_bytes") or 0,
+                    "media_delivery_v2": True,
+                },
+                required_capability="media_delivery_v2",
             )
-            if destination_capabilities.get("media_delivery_v2") is True:
-                await destination_socket.send(
-                    json.dumps(
-                        {
-                            "type": "file_manifest",
-                            **metadata,
-                            "file_id": transfer_result.get("file_id") or "",
-                            "media_id": metadata.get("media_id") or "",
-                            "file_sha256": transfer_result.get("sha256") or "",
-                            "file_size": transfer_result.get("size_bytes") or 0,
-                            "media_delivery_v2": True,
-                        },
-                        ensure_ascii=False,
-                    )
-                )
+            if manifest_delivered:
                 return
             for delivery_packet in self.iter_file_transfer_delivery_packets(
                 transfer_result
             ):
-                await destination_socket.send(
-                    json.dumps(delivery_packet, ensure_ascii=False)
-                )
+                if not await self._send_live_packet(
+                    destination_node,
+                    delivery_packet,
+                ):
+                    break
         except (OSError, websockets.exceptions.ConnectionClosed) as error:
             print(
                 "Deferred durable file delivery:",
@@ -164,15 +188,14 @@ class ServerTransportMixin:
             ).strip().lower()
             target_nodes = [str(destination_node)]
             if destination_login:
-                target_nodes.extend(self.get_online_account_nodes(destination_login))
+                target_nodes.extend(
+                    await self._live_account_nodes(destination_login)
+                )
 
             delivered = False
             delivered_nodes = set()
             for target_node in target_nodes:
                 if not target_node or target_node in delivered_nodes:
-                    continue
-                target_socket = self.clients.get(target_node)
-                if not target_socket:
                     continue
                 routed_packet = packet
                 if target_node != destination_node:
@@ -186,11 +209,9 @@ class ServerTransportMixin:
                     destination_login,
                     target_node,
                 )
-                await target_socket.send(
-                    json.dumps(routed_packet, ensure_ascii=False)
-                )
-                delivered_nodes.add(target_node)
-                delivered = True
+                if await self._send_live_packet(target_node, routed_packet):
+                    delivered_nodes.add(target_node)
+                    delivered = True
 
             if not delivered:
                 self.save_offline_packet(destination_node, packet)
@@ -217,15 +238,8 @@ class ServerTransportMixin:
             return
 
         original_destination = packet.get("destination_node")
-        for target_node in self.get_online_account_nodes(source_login):
+        for target_node in await self._live_account_nodes(source_login):
             if not target_node or target_node == source_node:
-                continue
-            if not self.client_capabilities.get(target_node, {}).get(
-                "account_live_fanout", False
-            ):
-                continue
-            target_socket = self.clients.get(target_node)
-            if not target_socket:
                 continue
             mirrored_packet = self.normalize_group_packet_for_recipient(
                 {
@@ -236,6 +250,8 @@ class ServerTransportMixin:
                 source_login,
                 target_node,
             )
-            await target_socket.send(
-                json.dumps(mirrored_packet, ensure_ascii=False)
+            await self._send_live_packet(
+                target_node,
+                mirrored_packet,
+                required_capability="account_live_fanout",
             )

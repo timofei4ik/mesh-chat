@@ -1,6 +1,6 @@
 [Unit]
 Description=MeshChat verified database backup
-After=mesh-server.service
+After=mesh-chat-worker@0.service postgresql.service
 
 [Service]
 Type=oneshot

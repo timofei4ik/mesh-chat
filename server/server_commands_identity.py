@@ -89,27 +89,41 @@ async def handle_account_password_change(server, packet, context):
     if not ok:
         return
 
-    for other_node, other_login in list(server.client_logins.items()):
-        if (
-            other_node == context.node_id
-            or other_login != password_login
-        ):
-            continue
-        other_socket = server.clients.get(other_node)
-        if not other_socket:
+    resolver = getattr(server, "get_realtime_account_nodes", None)
+    account_nodes = (
+        await resolver(password_login)
+        if callable(resolver)
+        else [
+            node_id
+            for node_id, other_login in server.client_logins.items()
+            if other_login == password_login
+        ]
+    )
+    for other_node in account_nodes:
+        if other_node == context.node_id:
             continue
         try:
-            await send_json(
-                other_socket,
-                {
-                    "type": "server_error",
-                    "code": "account_password_changed",
-                    "message": (
-                        "The account password was changed from another "
-                        "signed-in device."
-                    ),
-                },
-            )
+            closer = getattr(server, "close_realtime_node", None)
+            error_packet = {
+                "type": "server_error",
+                "code": "account_password_changed",
+                "message": (
+                    "The account password was changed from another "
+                    "signed-in device."
+                ),
+            }
+            if callable(closer):
+                await closer(
+                    other_node,
+                    packet=error_packet,
+                    code=4004,
+                    reason="account password changed",
+                )
+                continue
+            other_socket = server.clients.get(other_node)
+            if not other_socket:
+                continue
+            await send_json(other_socket, error_packet)
             await other_socket.close(
                 code=4004,
                 reason="account password changed",
@@ -150,25 +164,31 @@ async def handle_active_device_action(server, packet, context):
 
     if not (ok and action == "revoke"):
         return
-    target_socket = server.clients.get(target_node)
-    if not target_socket:
-        return
     try:
-        await send_json(
-            target_socket,
-            {
-                "type": "server_error",
-                "code": "device_revoked",
-                "message": (
-                    "This device session was revoked from another signed-in "
-                    "device."
-                ),
-            },
-        )
-        await target_socket.close(
-            code=4003,
-            reason="device session revoked",
-        )
+        closer = getattr(server, "close_realtime_node", None)
+        error_packet = {
+            "type": "server_error",
+            "code": "device_revoked",
+            "message": (
+                "This device session was revoked from another signed-in "
+                "device."
+            ),
+        }
+        if callable(closer):
+            await closer(
+                target_node,
+                packet=error_packet,
+                code=4003,
+                reason="device session revoked",
+            )
+            return
+        target_socket = server.clients.get(target_node)
+        if target_socket:
+            await send_json(target_socket, error_packet)
+            await target_socket.close(
+                code=4003,
+                reason="device session revoked",
+            )
     except Exception as error:
         print("Device session close failed:", target_node, error)
 
@@ -277,30 +297,46 @@ async def handle_account_delete(server, packet, context):
         return
 
     await server.send_user_list()
-    account_sockets = [
-        client_socket
-        for client_node, client_socket in server.clients.items()
-        if server.client_logins.get(client_node) == delete_login
-    ]
-    service_sockets = [
-        client_socket
-        for client_node, client_socket in server.service_clients.items()
-        if server.service_logins.get(client_node) == delete_login
-    ]
     await asyncio.sleep(0.05)
-    await asyncio.gather(
-        *(
-            client_socket.close(
-                code=1000,
-                reason="account deleted",
-            )
-            for client_socket in {
-                *account_sockets,
-                *service_sockets,
-            }
-        ),
-        return_exceptions=True,
-    )
+    resolver = getattr(server, "get_realtime_account_nodes", None)
+    closer = getattr(server, "close_realtime_node", None)
+    if callable(resolver) and callable(closer):
+        client_nodes = await resolver(delete_login)
+        service_nodes = await resolver(delete_login, kind="service")
+        await asyncio.gather(
+            *(
+                closer(
+                    node_id,
+                    code=1000,
+                    reason="account deleted",
+                    kind=kind,
+                )
+                for kind, nodes in (
+                    ("client", client_nodes),
+                    ("service", service_nodes),
+                )
+                for node_id in nodes
+            ),
+            return_exceptions=True,
+        )
+    else:
+        account_sockets = [
+            client_socket
+            for client_node, client_socket in server.clients.items()
+            if server.client_logins.get(client_node) == delete_login
+        ]
+        service_sockets = [
+            client_socket
+            for client_node, client_socket in server.service_clients.items()
+            if server.service_logins.get(client_node) == delete_login
+        ]
+        await asyncio.gather(
+            *(
+                client_socket.close(code=1000, reason="account deleted")
+                for client_socket in {*account_sockets, *service_sockets}
+            ),
+            return_exceptions=True,
+        )
     raise StopConnectionHandler()
 
 

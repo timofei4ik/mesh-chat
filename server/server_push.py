@@ -49,7 +49,11 @@ class ServerPushMixin:
     def web_push_public_key(self):
         return WEB_PUSH_VAPID_PUBLIC_KEY if self.web_push_enabled else ""
 
-    def _offline_push_target_nodes(self, destination_node):
+    def _offline_push_target_nodes(
+        self,
+        destination_node,
+        online_nodes=None,
+    ):
         destination_node = str(destination_node or "").strip()
         if not destination_node:
             return []
@@ -61,6 +65,7 @@ class ServerPushMixin:
         if destination_login:
             candidates.extend(self.get_account_node_ids(destination_login))
 
+        online = set(online_nodes or self.clients)
         targets = []
         seen = set()
         for node_id in candidates:
@@ -68,7 +73,7 @@ class ServerPushMixin:
             if (
                 not normalized
                 or normalized in seen
-                or normalized in self.clients
+                or normalized in online
             ):
                 continue
             seen.add(normalized)
@@ -114,7 +119,17 @@ class ServerPushMixin:
         if not notification:
             return
 
-        for target_node in self._offline_push_target_nodes(destination_node):
+        online_nodes = set(self.clients)
+        destination_login = str(
+            self.get_login_by_node(destination_node) or ""
+        ).strip().lower()
+        resolver = getattr(self, "get_realtime_account_nodes", None)
+        if destination_login and callable(resolver):
+            online_nodes.update(await resolver(destination_login))
+        for target_node in self._offline_push_target_nodes(
+            destination_node,
+            online_nodes=online_nodes,
+        ):
             if self.web_push_enabled:
                 for endpoint, subscription in (
                     self.web_push_subscriptions_for_node(target_node)

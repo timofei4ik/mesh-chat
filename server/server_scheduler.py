@@ -352,7 +352,17 @@ class ServerSchedulerMixin:
         return dispatched
 
     async def _notify_schedule_owner(self, login, packet):
-        for account_node in self.get_online_account_nodes(login):
+        resolver = getattr(self, "get_realtime_account_nodes", None)
+        account_nodes = (
+            await resolver(login)
+            if callable(resolver)
+            else self.get_online_account_nodes(login)
+        )
+        for account_node in account_nodes:
+            sender = getattr(self, "send_packet_to_node", None)
+            if callable(sender):
+                await sender(account_node, packet)
+                continue
             websocket = self.clients.get(account_node)
             if websocket is None:
                 continue

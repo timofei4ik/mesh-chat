@@ -202,19 +202,28 @@ async def handle_meshpro_preferences_update(server, packet, context):
 
     if not ok:
         return
-    update_packet = json.dumps(
-        {
-            "type": "meshpro_preferences_changed",
-            "preferences": preferences,
-        },
-        ensure_ascii=False,
+    update_packet = {
+        "type": "meshpro_preferences_changed",
+        "preferences": preferences,
+    }
+    resolver = getattr(server, "get_realtime_account_nodes", None)
+    account_nodes = (
+        await resolver(preference_login)
+        if callable(resolver)
+        else server.get_online_account_nodes(preference_login)
     )
-    for account_node in server.get_online_account_nodes(preference_login):
+    for account_node in account_nodes:
         if account_node == context.node_id:
+            continue
+        sender = getattr(server, "send_packet_to_node", None)
+        if callable(sender):
+            await sender(account_node, update_packet)
             continue
         account_socket = server.clients.get(account_node)
         if account_socket:
-            await account_socket.send(update_packet)
+            await account_socket.send(
+                json.dumps(update_packet, ensure_ascii=False)
+            )
 
 
 async def handle_chat_preferences_update(server, packet, context):

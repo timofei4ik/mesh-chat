@@ -20,6 +20,13 @@ try:
         EMAIL_2FA_LEGACY_CLIENTS_ALLOWED,
         SYNC_V2_DELTA_ENABLED,
         SYNC_V2_DELTA_TEST_ACCOUNTS,
+        REDIS_URL,
+        REDIS_PREFIX,
+        REALTIME_PRESENCE_TTL_SECONDS,
+        REALTIME_HEARTBEAT_SECONDS,
+        WORKER_COUNT,
+        WORKER_INDEX,
+        WORKER_ID,
     )
     from server.server_storage import ServerStorageMixin
     from server.server_media import ServerMediaMixin
@@ -47,6 +54,7 @@ try:
         version_payload,
     )
     from server.server_transport import ServerTransportMixin
+    from server.server_realtime import ServerRealtimeMixin
     from server.server_workers import ServerWorkerSupervisor
     from server.server_commands import (
         build_control_command_registry,
@@ -69,6 +77,13 @@ except ModuleNotFoundError:
         EMAIL_2FA_LEGACY_CLIENTS_ALLOWED,
         SYNC_V2_DELTA_ENABLED,
         SYNC_V2_DELTA_TEST_ACCOUNTS,
+        REDIS_URL,
+        REDIS_PREFIX,
+        REALTIME_PRESENCE_TTL_SECONDS,
+        REALTIME_HEARTBEAT_SECONDS,
+        WORKER_COUNT,
+        WORKER_INDEX,
+        WORKER_ID,
     )
     from server_storage import ServerStorageMixin
     from server_media import ServerMediaMixin
@@ -96,6 +111,7 @@ except ModuleNotFoundError:
         version_payload,
     )
     from server_transport import ServerTransportMixin
+    from server_realtime import ServerRealtimeMixin
     from server_workers import ServerWorkerSupervisor
     from server_commands import (
         build_control_command_registry,
@@ -111,6 +127,7 @@ except ModuleNotFoundError:
 
 
 class MeshRelayServer(
+    ServerRealtimeMixin,
     ServerTransportMixin,
     ServerMediaMixin,
     ServerStorageMixin,
@@ -280,7 +297,16 @@ class MeshRelayServer(
         self.service_logins = {}
         self.client_services = {}
         self.client_capabilities = {}
+        self.client_sessions = {}
+        self.service_sessions = {}
         self.file_chunks = {}
+        self.initialize_realtime(
+            redis_url=REDIS_URL,
+            prefix=REDIS_PREFIX,
+            worker_id=WORKER_ID,
+            presence_ttl=REALTIME_PRESENCE_TTL_SECONDS,
+            heartbeat_interval=REALTIME_HEARTBEAT_SECONDS,
+        )
         self.db = self.open_db()
         self.initialize_media_delivery()
         self.account_deletion_orchestrator = (
@@ -316,8 +342,17 @@ class MeshRelayServer(
 
 async def main():
 
+    if WORKER_COUNT > 1 and not REDIS_URL:
+        raise RuntimeError(
+            "MESH_REDIS_URL is required when MESH_WORKER_COUNT is greater "
+            "than one"
+        )
+
     relay = MeshRelayServer()
-    workers = ServerWorkerSupervisor(relay)
+    workers = ServerWorkerSupervisor(
+        relay,
+        run_auxiliary=WORKER_INDEX == 0,
+    )
     await workers.start()
 
     loop = asyncio.get_running_loop()
@@ -339,17 +374,29 @@ async def main():
             pass
 
     try:
+        serve_options = {
+            "max_size": WEBSOCKET_MAX_SIZE,
+            "ping_interval": WEBSOCKET_PING_INTERVAL_SECONDS,
+            "ping_timeout": WEBSOCKET_PING_TIMEOUT_SECONDS,
+        }
+        if WORKER_COUNT > 1:
+            serve_options["reuse_port"] = True
         async with websockets.serve(
             relay.handler,
             HOST,
             PORT,
-            max_size=WEBSOCKET_MAX_SIZE,
-            ping_interval=WEBSOCKET_PING_INTERVAL_SECONDS,
-            ping_timeout=WEBSOCKET_PING_TIMEOUT_SECONDS
+            **serve_options,
         ):
 
             print(
-                f"Mesh relay server listening on ws://{HOST}:{PORT}"
+                "Mesh relay server listening on "
+                f"ws://{HOST}:{PORT} ({WORKER_ID}, "
+                f"{WORKER_INDEX + 1}/{WORKER_COUNT})"
+            )
+
+            print(
+                "Realtime coordination: "
+                + ("Redis" if relay.realtime.enabled else "local")
             )
 
             print(
