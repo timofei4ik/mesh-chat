@@ -14,6 +14,9 @@ EnvironmentFile=-/etc/mesh-messenger/push.env
 EnvironmentFile=/etc/mesh-messenger/postgres.env
 EnvironmentFile=/etc/mesh-messenger/turn.env
 Environment=MESH_WORKER_INDEX=%i
+Environment=MESH_SERVER_HOST=127.0.0.1
+Environment=MESH_SERVER_PORT_BASE=8870
+Environment=MESH_SERVER_REUSE_PORT=0
 ExecStart=/root/mesh_messenger/.venv/bin/python -m server.server
 Restart=always
 RestartSec=3

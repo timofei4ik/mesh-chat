@@ -4,10 +4,10 @@
 
 1. Run multiple Chat/Sync worker processes on one host.
 2. Coordinate connections, presence, events, and cross-worker delivery through Redis.
+3. Put WebSocket workers behind explicit nginx load balancing.
 
 ## Next
 
-3. Put WebSocket workers behind explicit nginx load balancing.
 4. Move media uploads and downloads into a separate media service and object storage.
 5. Isolate calls behind dedicated signaling, TURN, and SFU infrastructure.
 6. Load-test 1,000 to 5,000 concurrent clients, including reconnect and delta-sync scenarios.

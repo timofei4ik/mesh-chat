@@ -27,6 +27,7 @@ try:
         WORKER_COUNT,
         WORKER_INDEX,
         WORKER_ID,
+        SERVER_REUSE_PORT,
     )
     from server.server_storage import ServerStorageMixin
     from server.server_media import ServerMediaMixin
@@ -84,6 +85,7 @@ except ModuleNotFoundError:
         WORKER_COUNT,
         WORKER_INDEX,
         WORKER_ID,
+        SERVER_REUSE_PORT,
     )
     from server_storage import ServerStorageMixin
     from server_media import ServerMediaMixin
@@ -379,7 +381,7 @@ async def main():
             "ping_interval": WEBSOCKET_PING_INTERVAL_SECONDS,
             "ping_timeout": WEBSOCKET_PING_TIMEOUT_SECONDS,
         }
-        if WORKER_COUNT > 1:
+        if SERVER_REUSE_PORT:
             serve_options["reuse_port"] = True
         async with websockets.serve(
             relay.handler,

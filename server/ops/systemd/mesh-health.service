@@ -7,6 +7,6 @@ Type=oneshot
 User=root
 WorkingDirectory=/root/mesh_messenger
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/healthcheck_server.py --service mesh-chat-worker@0,mesh-chat-worker@1
+ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/healthcheck_server.py --service mesh-chat-worker@0,mesh-chat-worker@1 --port 8870,8871
 Nice=10
 UMask=0077

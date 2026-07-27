@@ -113,9 +113,19 @@ systemctl enable --now mesh-chat-worker@0 mesh-chat-worker@1
 systemctl status mesh-chat-worker@0 mesh-chat-worker@1 redis-server --no-pager
 ```
 
-Every worker binds the same relay port with `SO_REUSEPORT`. Only worker zero
-runs billing, media HTTP, Boosty, WireGuard reconciliation, and scheduled
-messages. Never set `MESH_WORKER_COUNT` above one without `MESH_REDIS_URL`.
+The systemd template binds worker zero to `127.0.0.1:8870` and worker one to
+`127.0.0.1:8871`. Install `ops/nginx/meshchat-realtime-upstream.conf` in
+`/etc/nginx/conf.d/` and include
+`ops/nginx/meshchat-realtime-location.conf` from the public TLS server block.
+nginx balances new WebSocket connections with `least_conn`; Redis carries
+presence and live packets between workers after the handshake.
+
+`MESH_SERVER_PORT_BASE` is added to `MESH_WORKER_INDEX` by the server process,
+so additional worker instances receive consecutive loopback ports.
+
+Only worker zero runs billing, media HTTP, Boosty, WireGuard reconciliation,
+and scheduled messages. Never set `MESH_WORKER_COUNT` above one without
+`MESH_REDIS_URL`.
 
 Verify real cross-worker signaling after deployment. The smoke command creates
 and removes a temporary account, opens enough sockets to reach both workers,
@@ -126,5 +136,6 @@ set -a
 . /etc/mesh-messenger/server.env
 . /etc/mesh-messenger/postgres.env
 set +a
-.venv/bin/python -m server.ops.smoke_realtime_workers
+.venv/bin/python -m server.ops.smoke_realtime_workers \
+  --uri wss://meshchat-losa.ru/ws
 ```

@@ -236,14 +236,39 @@ def collect_health(
         )
         service["restarts"] = restart_total
 
-    port_status = {"checked": check_port, "host": host, "port": int(port)}
+    ports = [
+        int(value)
+        for value in (
+            port
+            if isinstance(port, (list, tuple, set))
+            else str(port).split(",")
+        )
+        if str(value).strip()
+    ]
+    port_status = {
+        "checked": check_port,
+        "host": host,
+        "port": ports[0] if len(ports) == 1 else None,
+        "ports": [],
+    }
     if check_port:
-        try:
-            port_status["open"] = asyncio.run(_check_websocket(host, port))
-        except Exception as error:
-            port_status["open"] = False
-            port_status["error"] = str(error)
-            critical.append(f"WebSocket {host}:{port} is not reachable")
+        for current_port in ports:
+            current_status = {"port": current_port}
+            try:
+                current_status["open"] = asyncio.run(
+                    _check_websocket(host, current_port)
+                )
+            except Exception as error:
+                current_status["open"] = False
+                current_status["error"] = str(error)
+                critical.append(
+                    f"WebSocket {host}:{current_port} is not reachable"
+                )
+            port_status["ports"].append(current_status)
+        port_status["open"] = bool(ports) and all(
+            item["open"]
+            for item in port_status["ports"]
+        )
 
     database = {"path": str(database_path), "exists": database_path.is_file()}
     if database["exists"]:
@@ -338,7 +363,7 @@ def main():
     )
     parser.add_argument("--service", default="mesh-server")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--port", default=str(PORT))
     parser.add_argument("--no-service-check", action="store_true")
     parser.add_argument("--no-port-check", action="store_true")
     args = parser.parse_args()

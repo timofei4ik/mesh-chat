@@ -83,10 +83,24 @@ WORKER_INDEX = max(
 if WORKER_INDEX >= WORKER_COUNT:
     raise RuntimeError("MESH_WORKER_INDEX must be lower than MESH_WORKER_COUNT")
 
+SERVER_PORT_BASE = os.environ.get(
+    "MESH_SERVER_PORT_BASE",
+    "",
+).strip()
+if SERVER_PORT_BASE:
+    PORT = int(SERVER_PORT_BASE) + WORKER_INDEX
+if not 1 <= PORT <= 65535:
+    raise RuntimeError("MeshChat relay port must be between 1 and 65535")
+
 WORKER_ID = (
     os.environ.get("MESH_WORKER_ID", "").strip()
     or f"worker-{WORKER_INDEX}"
 )
+
+SERVER_REUSE_PORT = os.environ.get(
+    "MESH_SERVER_REUSE_PORT",
+    "1" if WORKER_COUNT > 1 else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 TURN_STUN_URLS = tuple(
     value.strip()

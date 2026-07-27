@@ -1,4 +1,4 @@
-"""Live smoke test for Redis fanout between SO_REUSEPORT relay workers."""
+"""Live smoke test for Redis fanout between balanced relay workers."""
 
 import argparse
 import asyncio
