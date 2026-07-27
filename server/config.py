@@ -1,4 +1,5 @@
 import os
+import socket
 from pathlib import Path
 
 
@@ -101,6 +102,58 @@ SERVER_REUSE_PORT = os.environ.get(
     "MESH_SERVER_REUSE_PORT",
     "1" if WORKER_COUNT > 1 else "0",
 ).strip().lower() in {"1", "true", "yes", "on"}
+
+RUN_AUXILIARY = os.environ.get(
+    "MESH_RUN_AUXILIARY",
+    "1" if WORKER_INDEX == 0 else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+CALL_SIGNALING_ENABLED = os.environ.get(
+    "MESH_CALL_SIGNALING_ENABLED",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+CALL_SIGNALING_STREAM_MAXLEN = max(
+    1000,
+    int(os.environ.get("MESH_CALL_SIGNALING_STREAM_MAXLEN", "100000")),
+)
+
+CALL_SIGNALING_HEARTBEAT_TTL_SECONDS = max(
+    5,
+    int(os.environ.get("MESH_CALL_SIGNALING_HEARTBEAT_TTL_SECONDS", "15")),
+)
+CALL_SIGNALING_ACTIVE_CALL_TTL_SECONDS = max(
+    60,
+    int(os.environ.get("MESH_CALL_SIGNALING_ACTIVE_CALL_TTL_SECONDS", "86400")),
+)
+
+CALL_SIGNALING_HOST = os.environ.get(
+    "MESH_CALL_SIGNALING_HOST",
+    "127.0.0.1",
+).strip()
+
+CALL_SIGNALING_PORT = int(
+    os.environ.get("MESH_CALL_SIGNALING_PORT", "8781")
+)
+
+CALL_SIGNALING_INSTANCE_INDEX = max(
+    0,
+    int(os.environ.get("MESH_CALL_SIGNALING_INSTANCE_INDEX", "0")),
+)
+
+CALL_SIGNALING_PORT_BASE = os.environ.get(
+    "MESH_CALL_SIGNALING_PORT_BASE",
+    "",
+).strip()
+if CALL_SIGNALING_PORT_BASE:
+    CALL_SIGNALING_PORT = (
+        int(CALL_SIGNALING_PORT_BASE) + CALL_SIGNALING_INSTANCE_INDEX
+    )
+
+CALL_SIGNALING_CONSUMER_ID = (
+    os.environ.get("MESH_CALL_SIGNALING_CONSUMER_ID", "").strip()
+    or f"{socket.gethostname()}-{CALL_SIGNALING_INSTANCE_INDEX}"
+)
 
 TURN_STUN_URLS = tuple(
     value.strip()

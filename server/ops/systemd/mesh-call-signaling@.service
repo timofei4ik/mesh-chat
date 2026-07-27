@@ -1,0 +1,24 @@
+[Unit]
+Description=MeshChat call signaling consumer %i
+After=network-online.target redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/mesh_messenger
+EnvironmentFile=/etc/mesh-messenger/server.env
+EnvironmentFile=/etc/mesh-messenger/call-signaling.env
+Environment=MESH_CALL_SIGNALING_INSTANCE_INDEX=%i
+Environment=MESH_CALL_SIGNALING_CONSUMER_ID=call-%i
+ExecStart=/root/mesh_messenger/.venv/bin/python -m server.call_signaling_service
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+KillSignal=SIGTERM
+NoNewPrivileges=true
+LimitNOFILE=131072
+
+[Install]
+WantedBy=multi-user.target

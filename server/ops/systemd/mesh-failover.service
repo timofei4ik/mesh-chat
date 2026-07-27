@@ -1,0 +1,10 @@
+[Unit]
+Description=MeshChat local failover guard
+After=mesh-chat-worker@0.service mesh-call-signaling@0.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/mesh_messenger
+ExecStart=/root/mesh_messenger/.venv/bin/python -m server.ops.failover_check --apply
+Nice=10

@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meshchat-chat
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: meshchat-chat}
+  template:
+    metadata:
+      labels: {app: meshchat-chat}
+    spec:
+      containers:
+        - name: chat
+          image: ghcr.io/replace-with-owner/meshchat-server:latest
+          command: ["python", "-m", "server.server"]
+          ports:
+            - {name: websocket, containerPort: 8765}
+          env:
+            - {name: MESH_SERVER_HOST, value: "0.0.0.0"}
+            - {name: MESH_SERVER_PORT, value: "8765"}
+            - {name: MESH_RUN_AUXILIARY, value: "0"}
+            - {name: MESH_CALL_SIGNALING_ENABLED, value: "1"}
+            - name: MESH_WORKER_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+          envFrom:
+            - secretRef: {name: meshchat-runtime}
+          readinessProbe:
+            tcpSocket: {port: websocket}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: websocket}
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 250m, memory: 384Mi}
+            limits: {cpu: "1", memory: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meshchat-chat
+spec:
+  selector: {app: meshchat-chat}
+  ports:
+    - {name: websocket, port: 8765, targetPort: websocket}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: meshchat-chat
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: meshchat-chat
+  minReplicas: 2
+  maxReplicas: 12
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 65}
+    - type: Resource
+      resource:
+        name: memory
+        target: {type: Utilization, averageUtilization: 75}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meshchat-chat
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: meshchat-chat}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meshchat-call-signaling
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: meshchat-call-signaling}
+  template:
+    metadata:
+      labels: {app: meshchat-call-signaling}
+    spec:
+      containers:
+        - name: signaling
+          image: ghcr.io/replace-with-owner/meshchat-server:latest
+          command: ["python", "-m", "server.call_signaling_service"]
+          ports:
+            - {name: health, containerPort: 8781}
+          env:
+            - {name: MESH_CALL_SIGNALING_HOST, value: "0.0.0.0"}
+            - {name: MESH_CALL_SIGNALING_PORT, value: "8781"}
+            - name: MESH_CALL_SIGNALING_CONSUMER_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+          envFrom:
+            - secretRef: {name: meshchat-runtime}
+          readinessProbe:
+            httpGet: {path: /ready, port: health}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: health}
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: meshchat-call-signaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: meshchat-call-signaling
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 60}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meshchat-call-signaling
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: meshchat-call-signaling}

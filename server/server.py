@@ -28,6 +28,9 @@ try:
         WORKER_INDEX,
         WORKER_ID,
         SERVER_REUSE_PORT,
+        RUN_AUXILIARY,
+        CALL_SIGNALING_ENABLED,
+        CALL_SIGNALING_STREAM_MAXLEN,
     )
     from server.server_storage import ServerStorageMixin
     from server.server_media import ServerMediaMixin
@@ -57,6 +60,7 @@ try:
     from server.server_transport import ServerTransportMixin
     from server.server_realtime import ServerRealtimeMixin
     from server.server_workers import ServerWorkerSupervisor
+    from server.call_signaling import CallSignalingPublisher
     from server.server_commands import (
         build_control_command_registry,
         build_command_registry,
@@ -86,6 +90,9 @@ except ModuleNotFoundError:
         WORKER_INDEX,
         WORKER_ID,
         SERVER_REUSE_PORT,
+        RUN_AUXILIARY,
+        CALL_SIGNALING_ENABLED,
+        CALL_SIGNALING_STREAM_MAXLEN,
     )
     from server_storage import ServerStorageMixin
     from server_media import ServerMediaMixin
@@ -115,6 +122,7 @@ except ModuleNotFoundError:
     from server_transport import ServerTransportMixin
     from server_realtime import ServerRealtimeMixin
     from server_workers import ServerWorkerSupervisor
+    from call_signaling import CallSignalingPublisher
     from server_commands import (
         build_control_command_registry,
         build_command_registry,
@@ -185,7 +193,7 @@ class MeshRelayServer(
             }, ""
 
         account_exists = self.account_exists(normalized_login)
-        if account_exists and not self.verify_account_password(
+        if account_exists and not await self.verify_account_password_async(
             normalized_login,
             password,
         ):
@@ -309,6 +317,12 @@ class MeshRelayServer(
             presence_ttl=REALTIME_PRESENCE_TTL_SECONDS,
             heartbeat_interval=REALTIME_HEARTBEAT_SECONDS,
         )
+        self.call_signaling = CallSignalingPublisher(
+            REDIS_URL,
+            prefix=REDIS_PREFIX,
+            enabled=CALL_SIGNALING_ENABLED,
+            stream_maxlen=CALL_SIGNALING_STREAM_MAXLEN,
+        )
         self.db = self.open_db()
         self.initialize_media_delivery()
         self.account_deletion_orchestrator = (
@@ -353,7 +367,7 @@ async def main():
     relay = MeshRelayServer()
     workers = ServerWorkerSupervisor(
         relay,
-        run_auxiliary=WORKER_INDEX == 0,
+        run_auxiliary=RUN_AUXILIARY,
     )
     await workers.start()
 

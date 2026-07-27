@@ -14,6 +14,7 @@ EnvironmentFile=-/etc/mesh-messenger/push.env
 EnvironmentFile=/etc/mesh-messenger/media.env
 EnvironmentFile=/etc/mesh-messenger/postgres.env
 EnvironmentFile=/etc/mesh-messenger/turn.env
+EnvironmentFile=/etc/mesh-messenger/call-signaling.env
 Environment=MESH_WORKER_INDEX=%i
 Environment=MESH_SERVER_HOST=127.0.0.1
 Environment=MESH_SERVER_PORT_BASE=8870

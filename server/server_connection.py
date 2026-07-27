@@ -187,6 +187,7 @@ async def handle_server_hello(
             bool(packet.get("reactivate_device", False)),
             verified_email,
             bool(verified_email) and not account_existed,
+            bool(account_existed and not service),
         )
         if not ok:
             await server.send_server_error(
@@ -332,6 +333,8 @@ async def handle_server_hello(
             "multi_device_state": True,
             "email_2fa": True,
             "call_ice_servers": True,
+            "call_signaling_v2": True,
+            "call_sfu_v1": False,
         },
         **version_payload(),
     }

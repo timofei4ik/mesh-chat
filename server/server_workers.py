@@ -25,6 +25,9 @@ class ServerWorkerSupervisor:
         start_realtime = getattr(self.relay, "start_realtime", None)
         if callable(start_realtime):
             await start_realtime()
+        call_signaling = getattr(self.relay, "call_signaling", None)
+        if call_signaling is not None:
+            await call_signaling.start()
         if not self.run_auxiliary:
             return
         self.boosty_started = await self.relay.start_boosty_bridge()
@@ -55,6 +58,9 @@ class ServerWorkerSupervisor:
         if self.run_auxiliary:
             await self.billing_http.close()
             await self.relay.stop_boosty_bridge()
+        call_signaling = getattr(self.relay, "call_signaling", None)
+        if call_signaling is not None:
+            await call_signaling.stop()
         stop_realtime = getattr(self.relay, "stop_realtime", None)
         if callable(stop_realtime):
             await stop_realtime()

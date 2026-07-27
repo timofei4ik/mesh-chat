@@ -1,0 +1,18 @@
+# Prepared SFU control plane. Do not enable in production until the clients
+# negotiate LiveKit rooms behind the `call_sfu_v1` capability.
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+redis:
+  address: 127.0.0.1:6379
+keys:
+  replace-livekit-api-key: replace-livekit-api-secret
+room:
+  auto_create: false
+  empty_timeout: 300
+  departure_timeout: 20
+logging:
+  level: info

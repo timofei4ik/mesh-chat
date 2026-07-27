@@ -42,6 +42,16 @@ class FakeCallServer:
         self.pushes.append((destination, packet["type"]))
 
 
+class FakeSignalingPublisher:
+    def __init__(self, accepted=True):
+        self.accepted = accepted
+        self.packets = []
+
+    async def submit(self, packet):
+        self.packets.append(dict(packet))
+        return self.accepted
+
+
 class CallDomainTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         server_calls._seen_operations.clear()
@@ -140,3 +150,27 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertEqual("call_restart_offer", target.sent[0]["type"])
+
+    async def test_dedicated_signaling_bypasses_local_socket_and_keeps_push(self):
+        server = FakeCallServer()
+        server.call_signaling = FakeSignalingPublisher()
+        target = FakeSocket()
+        server.clients["callee"] = target
+
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_offer",
+                "destination_node": "callee",
+                "call_id": "call-dedicated",
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual([], target.sent)
+        self.assertEqual(
+            "caller",
+            server.call_signaling.packets[0]["source_node"],
+        )
+        self.assertEqual([("callee", "call_offer")], server.pushes)

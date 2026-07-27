@@ -66,6 +66,10 @@ class FakePipeline:
         self.operations.append(("eval", args, kwargs))
         return self
 
+    def set(self, *args, **kwargs):
+        self.operations.append(("set", args, kwargs))
+        return self
+
     async def execute(self):
         results = []
         for name, args, kwargs in self.operations:
@@ -206,3 +210,11 @@ class RealtimeCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             await second.claim_operation("call-end", "operation-1")
         )
+
+    async def test_worker_heartbeat_is_refreshed_without_sessions(self):
+        broker = FakeRedisBroker()
+        _, coordinator = self.make_coordinator(broker, "worker-empty")
+
+        await coordinator._refresh_heartbeat()
+
+        self.assertIn(coordinator._worker_key(), broker.values)

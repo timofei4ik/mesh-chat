@@ -1,0 +1,12 @@
+[Unit]
+Description=Run MeshChat failover guard every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+RandomizedDelaySec=10
+Persistent=true
+Unit=mesh-failover.service
+
+[Install]
+WantedBy=timers.target

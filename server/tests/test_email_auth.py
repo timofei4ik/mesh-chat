@@ -106,6 +106,31 @@ class EmailAuthTests(unittest.TestCase):
             self.relay.is_email_device_trusted("legacy", "old-phone")
         )
 
+    def test_async_password_verification_matches_sync_result(self):
+        created, reason = self.relay.authenticate_account(
+            "async-password",
+            "password123",
+            "phone",
+            "Async Password",
+        )
+        self.assertTrue(created, reason)
+        self.assertTrue(
+            asyncio.run(
+                self.relay.verify_account_password_async(
+                    "async-password",
+                    "password123",
+                )
+            )
+        )
+        self.assertFalse(
+            asyncio.run(
+                self.relay.verify_account_password_async(
+                    "async-password",
+                    "wrong-password",
+                )
+            )
+        )
+
     def test_new_registration_requires_code_before_account_creation(self):
         packet = {
             "supports_email_2fa": True,

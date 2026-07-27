@@ -62,6 +62,9 @@ class RealtimeCoordinator:
     def _worker_channel(self, worker_id=None):
         return f"{self.prefix}:worker:{worker_id or self.worker_id}"
 
+    def _worker_key(self):
+        return f"{self.prefix}:worker:heartbeat:{self.worker_id}"
+
     def _operation_key(self, namespace, operation_id):
         return f"{self.prefix}:operation:{namespace}:{operation_id}"
 
@@ -69,20 +72,22 @@ class RealtimeCoordinator:
         if not self.enabled:
             return
         try:
-            import redis.asyncio as redis_async
+            from server.redis_client import (
+                create_async_redis,
+                warm_async_redis,
+            )
+            self.redis = create_async_redis(self.redis_url)
         except ImportError as error:
             raise RuntimeError(
                 "MESH_REDIS_URL is configured but the redis package is missing"
             ) from error
-
-        self.redis = redis_async.from_url(
-            self.redis_url,
-            decode_responses=True,
-            health_check_interval=15,
-            socket_connect_timeout=3,
-            socket_timeout=5,
-        )
+        await warm_async_redis(self.redis, 32)
         await self.redis.ping()
+        await self.redis.set(
+            self._worker_key(),
+            str(asyncio.get_running_loop().time()),
+            ex=self.presence_ttl,
+        )
         await self._open_pubsub()
         self._listener_task = asyncio.create_task(
             self._listen(),
@@ -112,6 +117,7 @@ class RealtimeCoordinator:
         if self.pubsub is not None:
             await self.pubsub.aclose()
         if self.redis is not None:
+            await self.redis.delete(self._worker_key())
             await self.redis.aclose()
         self.pubsub = None
         self.redis = None
@@ -483,21 +489,28 @@ class RealtimeCoordinator:
             await asyncio.sleep(self.heartbeat_interval)
             if self.redis is None:
                 continue
-            sessions = list(self._local_sessions.items())
-            pipeline = self.redis.pipeline(transaction=False)
-            for (kind, node_id), session_id in sessions:
-                pipeline.eval(
-                    _REFRESH_SCRIPT,
-                    1,
-                    self._presence_key(node_id, kind),
-                    session_id,
-                    self.presence_ttl,
-                )
-            if sessions:
-                try:
-                    await pipeline.execute()
-                except Exception as error:
-                    self._report_error("heartbeat", error)
+            try:
+                await self._refresh_heartbeat()
+            except Exception as error:
+                self._report_error("heartbeat", error)
+
+    async def _refresh_heartbeat(self):
+        sessions = list(self._local_sessions.items())
+        pipeline = self.redis.pipeline(transaction=False)
+        pipeline.set(
+            self._worker_key(),
+            str(asyncio.get_running_loop().time()),
+            ex=self.presence_ttl,
+        )
+        for (kind, node_id), session_id in sessions:
+            pipeline.eval(
+                _REFRESH_SCRIPT,
+                1,
+                self._presence_key(node_id, kind),
+                session_id,
+                self.presence_ttl,
+            )
+        await pipeline.execute()
 
     async def _open_pubsub(self):
         self.pubsub = self.redis.pubsub(

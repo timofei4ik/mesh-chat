@@ -42,6 +42,7 @@ class ServerAuthMixin:
         reactivate_device=False,
         email=None,
         email_verified=False,
+        password_verified=False,
     ):
 
         login = (
@@ -115,16 +116,17 @@ class ServerAuthMixin:
 
         salt_hex, expected_hash = row
 
-        password_hash = self.hash_password(
-            password,
-            salt_hex
-        )
+        if not password_verified:
+            password_hash = self.hash_password(
+                password,
+                salt_hex
+            )
 
-        if not secrets.compare_digest(
-            password_hash,
-            expected_hash
-        ):
-            return False, "bad login or password"
+            if not secrets.compare_digest(
+                password_hash,
+                expected_hash
+            ):
+                return False, "bad login or password"
 
         if verify_only:
 

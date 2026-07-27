@@ -131,6 +131,24 @@ async def run(uri, connection_count):
         )
         if delivered.get("call_id") != call_id:
             raise RuntimeError("cross-worker packet identity changed")
+        await sockets[source_node].send(
+            json.dumps(
+                {
+                    "type": "call_end",
+                    "source_node": source_node,
+                    "destination_node": destination_node,
+                    "call_id": call_id,
+                    "operation_id": f"smoke-end-{suffix}",
+                    "reason": "smoke_complete",
+                }
+            )
+        )
+        ended = await _wait_for_packet(
+            sockets[destination_node],
+            "call_end",
+        )
+        if ended.get("call_id") != call_id:
+            raise RuntimeError("call cleanup packet identity changed")
 
         result = {
             "ok": True,
@@ -140,7 +158,7 @@ async def run(uri, connection_count):
             },
             "source_worker": worker_ids[0],
             "destination_worker": worker_ids[1],
-            "packet": "call_offer",
+            "packets": ["call_offer", "call_end"],
         }
         print(json.dumps(result, sort_keys=True))
     finally:
@@ -154,7 +172,7 @@ async def run(uri, connection_count):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--uri", default="ws://127.0.0.1:8765")
+    parser.add_argument("--uri", default="wss://meshchat-losa.ru/ws")
     parser.add_argument("--connections", type=int, default=12)
     args = parser.parse_args()
     asyncio.run(run(args.uri, max(4, args.connections)))

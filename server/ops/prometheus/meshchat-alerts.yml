@@ -1,0 +1,39 @@
+groups:
+  - name: meshchat-capacity
+    rules:
+      - alert: MeshChatRedisDown
+        expr: meshchat_redis_up == 0
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: Redis coordination is unavailable
+      - alert: MeshChatWorkerQuorumLost
+        expr: meshchat_chat_workers < 2
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: Fewer than two Chat/Sync workers are alive
+      - alert: MeshChatCallSignalingQuorumLost
+        expr: meshchat_call_signaling_instances < 2
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: Call signaling is running without redundancy
+      - alert: MeshChatCallSignalingDown
+        expr: meshchat_call_signaling_instances == 0
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: Dedicated call signaling is down; legacy fallback is active
+      - alert: MeshChatCallQueueBacklog
+        expr: meshchat_call_signal_pending > 100
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Call signaling queue has more than 100 pending events
+      - alert: MeshChatConnectionsPerWorkerHigh
+        expr: meshchat_connected_clients / clamp_min(meshchat_chat_workers, 1) > 750
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 750 WebSockets per Chat/Sync worker

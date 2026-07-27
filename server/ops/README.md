@@ -127,6 +127,18 @@ Only worker zero runs billing, Boosty, WireGuard reconciliation, and scheduled
 messages. Media HTTP is an independent service described below. Never set
 `MESH_WORKER_COUNT` above one without `MESH_REDIS_URL`.
 
+## Dedicated call signaling and observability
+
+Call offer/answer/ICE packets can be moved out of Chat/Sync workers without a
+client rebuild. Install two `mesh-call-signaling@` consumers and enable
+`MESH_CALL_SIGNALING_ENABLED=1` using `call-signaling.env.example`. Redis Streams
+provide consumer failover; when no consumer heartbeat exists, workers use the
+legacy direct call route automatically.
+
+The detailed rollout, 1,000-5,000 client load gates, Prometheus alerts,
+Kubernetes HPA/PDB manifests, TURN/SFU boundary, and host failover requirements
+are in `CALL_SCALING_RUNBOOK.md`.
+
 Verify real cross-worker signaling after deployment. The smoke command creates
 and removes a temporary account, opens enough sockets to reach both workers,
 and routes one call signal through Redis:

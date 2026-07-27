@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import re
@@ -77,6 +78,18 @@ class ServerEmailAuthMixin:
         if not row:
             return False
         candidate = self.hash_password(str(password or ""), row[0])
+        return secrets.compare_digest(candidate, row[1])
+
+    async def verify_account_password_async(self, login, password):
+        with self.unit_of_work_factory() as unit_of_work:
+            row = unit_of_work.identity.credentials(login)
+        if not row:
+            return False
+        candidate = await asyncio.to_thread(
+            self.hash_password,
+            str(password or ""),
+            row[0],
+        )
         return secrets.compare_digest(candidate, row[1])
 
     def is_email_device_trusted(self, login, node_id):

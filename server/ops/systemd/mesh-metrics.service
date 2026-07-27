@@ -1,0 +1,20 @@
+[Unit]
+Description=MeshChat Prometheus metrics endpoint
+After=network-online.target redis-server.service
+Wants=network-online.target
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/mesh_messenger
+EnvironmentFile=/etc/mesh-messenger/server.env
+Environment=MESH_METRICS_HOST=127.0.0.1
+Environment=MESH_METRICS_PORT=8780
+ExecStart=/root/mesh_messenger/.venv/bin/python -m server.observability_service
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

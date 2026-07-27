@@ -95,6 +95,11 @@ async def route_call_signal(server, packet):
     if not destination_node or destination_node.upper() == "SERVER":
         return False
 
+    signaling = getattr(server, "call_signaling", None)
+    if signaling is not None and await signaling.submit(packet):
+        await server.send_web_push_for_packet(destination_node, packet)
+        return True
+
     delivered_nodes = set()
 
     async def deliver(target_node):
