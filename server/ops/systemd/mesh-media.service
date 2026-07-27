@@ -1,0 +1,22 @@
+[Unit]
+Description=MeshChat media delivery service
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/mesh_messenger
+EnvironmentFile=-/etc/mesh-messenger/server.env
+EnvironmentFile=/etc/mesh-messenger/postgres.env
+EnvironmentFile=/etc/mesh-messenger/media.env
+ExecStart=/root/mesh_messenger/.venv/bin/python -m server.media_service
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

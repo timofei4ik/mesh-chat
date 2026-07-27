@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,8 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from server.config import DB_PATH, PORT
+from server.config import DATABASE_BACKEND, DATABASE_URL, DB_PATH, PORT
+from server.persistence import connect_postgres
 from server.server_storage import (
     OFFLINE_PACKET_MAX_AGE_DAYS,
     OFFLINE_QUEUE_PACKET_TYPES,
@@ -52,7 +54,10 @@ def _run_systemctl(*args):
 def _latest_backup(backup_dir, now):
     backup_dir = Path(backup_dir)
     backups = sorted(
-        backup_dir.glob("server-*.db.gz"),
+        [
+            *backup_dir.glob("server-*.db.gz"),
+            *backup_dir.glob("server-*.pgdump"),
+        ],
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
@@ -74,6 +79,20 @@ async def _check_websocket(host, port):
         close_timeout=2,
     ):
         return True
+
+
+def _check_http_health(url):
+    request = urllib.request.Request(
+        str(url),
+        headers={"User-Agent": "mesh-health/1"},
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        if int(response.status) != 200:
+            return False, f"HTTP {response.status}"
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("ok") is not True:
+        return False, "health payload is not ok"
+    return True, ""
 
 
 def _database_health(database_path):
@@ -163,6 +182,97 @@ def _database_health(database_path):
         conn.close()
 
 
+def _postgres_database_health(database_url):
+    conn = connect_postgres(database_url)
+    try:
+        queue_rows = conn.execute(
+            f"""
+            SELECT destination_node,
+                   packet_json,
+                   created_at < (
+                       CURRENT_TIMESTAMP
+                       - INTERVAL '{int(OFFLINE_PACKET_MAX_AGE_DAYS)} days'
+                   ) AS expired
+            FROM offline_packets
+            """
+        ).fetchall()
+        packet_types = Counter()
+        server_packets = 0
+        unsupported_packets = 0
+        expired_packets = 0
+        for destination_node, packet_json, expired in queue_rows:
+            server_packets += int(
+                str(destination_node or "").strip().upper() == "SERVER"
+            )
+            try:
+                packet = (
+                    packet_json
+                    if isinstance(packet_json, dict)
+                    else json.loads(packet_json)
+                )
+                packet_type = (
+                    str(packet.get("type") or "")
+                    if isinstance(packet, dict)
+                    else ""
+                )
+            except (TypeError, ValueError):
+                packet_type = "<invalid>"
+            packet_types[packet_type] += 1
+            unsupported_packets += int(
+                packet_type not in OFFLINE_QUEUE_PACKET_TYPES
+            )
+            expired_packets += int(bool(expired))
+
+        orphan_reactions = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM server_reactions
+            WHERE NOT EXISTS(
+                SELECT 1 FROM direct_messages
+                WHERE direct_messages.message_id=server_reactions.message_id
+            )
+            AND NOT EXISTS(
+                SELECT 1 FROM server_group_messages
+                WHERE server_group_messages.message_id=server_reactions.message_id
+            )
+            AND NOT EXISTS(
+                SELECT 1 FROM server_files
+                WHERE server_files.file_id=server_reactions.message_id
+            )
+            """
+        ).fetchone()[0]
+
+        counts = {}
+        for table in (
+            "accounts",
+            "account_devices",
+            "direct_messages",
+            "server_groups",
+            "server_group_messages",
+            "server_files",
+            "server_stories",
+            "server_sticker_libraries",
+        ):
+            counts[table] = conn.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+        return {
+            "backend": "postgres",
+            "quick_check": ["ok"],
+            "counts": counts,
+            "offline_queue": {
+                "total": len(queue_rows),
+                "server": server_packets,
+                "unsupported": unsupported_packets,
+                "expired": expired_packets,
+                "types": dict(sorted(packet_types.items())),
+            },
+            "orphan_reactions": orphan_reactions,
+        }
+    finally:
+        conn.close()
+
+
 def collect_health(
     database_path,
     backup_dir,
@@ -171,6 +281,9 @@ def collect_health(
     port=PORT,
     check_service=True,
     check_port=True,
+    http_health_url="",
+    database_backend=DATABASE_BACKEND,
+    database_url=DATABASE_URL,
 ):
     now = datetime.now(timezone.utc)
     database_path = resolve_path(database_path)
@@ -270,11 +383,41 @@ def collect_health(
             for item in port_status["ports"]
         )
 
-    database = {"path": str(database_path), "exists": database_path.is_file()}
-    if database["exists"]:
-        database["bytes"] = database_path.stat().st_size
+    http_health = {
+        "checked": bool(http_health_url),
+        "url": str(http_health_url or ""),
+    }
+    if http_health_url:
         try:
-            database.update(_database_health(database_path))
+            healthy, error = _check_http_health(http_health_url)
+        except Exception as error:
+            healthy = False
+            error = str(error)
+        http_health["ok"] = bool(healthy)
+        if error:
+            http_health["error"] = str(error)
+        if not healthy:
+            critical.append(
+                f"HTTP health endpoint {http_health_url} is not healthy"
+            )
+
+    database_backend = str(database_backend or "sqlite").strip().lower()
+    database = {
+        "backend": database_backend,
+        "path": str(database_path) if database_backend == "sqlite" else "",
+        "exists": (
+            database_path.is_file()
+            if database_backend == "sqlite"
+            else bool(database_url)
+        ),
+    }
+    if database["exists"]:
+        try:
+            if database_backend == "postgres":
+                database.update(_postgres_database_health(database_url))
+            else:
+                database["bytes"] = database_path.stat().st_size
+                database.update(_database_health(database_path))
             if database["quick_check"] != ["ok"]:
                 critical.append("database quick_check failed")
             queue = database["offline_queue"]
@@ -292,7 +435,7 @@ def collect_health(
                 warnings.append(
                     f"database contains {database['orphan_reactions']} orphan reaction(s)"
                 )
-        except (OSError, sqlite3.Error) as error:
+        except Exception as error:
             database["error"] = str(error)
             critical.append(f"database check failed: {error}")
     else:
@@ -326,6 +469,7 @@ def collect_health(
         "warnings": warnings,
         "service": service,
         "port": port_status,
+        "http_health": http_health,
         "database": database,
         "disk": disk_status,
         "latest_backup": latest_backup,
@@ -364,6 +508,15 @@ def main():
     parser.add_argument("--service", default="mesh-server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=str(PORT))
+    parser.add_argument("--http-health", default="")
+    parser.add_argument(
+        "--database-backend",
+        default=os.environ.get("MESH_DATABASE_BACKEND", DATABASE_BACKEND),
+    )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("MESH_DATABASE_URL", DATABASE_URL),
+    )
     parser.add_argument("--no-service-check", action="store_true")
     parser.add_argument("--no-port-check", action="store_true")
     args = parser.parse_args()
@@ -376,6 +529,9 @@ def main():
         port=args.port,
         check_service=not args.no_service_check,
         check_port=not args.no_port_check,
+        http_health_url=args.http_health,
+        database_backend=args.database_backend,
+        database_url=args.database_url,
     )
     write_status(status, args.status_file)
     print(json.dumps(status, ensure_ascii=True, sort_keys=True))

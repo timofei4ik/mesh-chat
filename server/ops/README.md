@@ -123,9 +123,9 @@ presence and live packets between workers after the handshake.
 `MESH_SERVER_PORT_BASE` is added to `MESH_WORKER_INDEX` by the server process,
 so additional worker instances receive consecutive loopback ports.
 
-Only worker zero runs billing, media HTTP, Boosty, WireGuard reconciliation,
-and scheduled messages. Never set `MESH_WORKER_COUNT` above one without
-`MESH_REDIS_URL`.
+Only worker zero runs billing, Boosty, WireGuard reconciliation, and scheduled
+messages. Media HTTP is an independent service described below. Never set
+`MESH_WORKER_COUNT` above one without `MESH_REDIS_URL`.
 
 Verify real cross-worker signaling after deployment. The smoke command creates
 and removes a temporary account, opens enough sockets to reach both workers,
@@ -139,3 +139,30 @@ set +a
 .venv/bin/python -m server.ops.smoke_realtime_workers \
   --uri wss://meshchat-losa.ru/ws
 ```
+
+## Standalone media delivery
+
+Uploads continue through the File Transfer v2 WebSocket protocol. Completed
+payloads are committed into the content-addressed object store, while downloads
+are served by the independent `mesh-media.service`. This keeps file downloads
+from consuming Chat/Sync worker capacity and permits a later S3-compatible
+backend without changing clients.
+
+Create `/etc/mesh-messenger/media.env` from `ops/media.env.example`, replace the
+signing secret with at least 32 random bytes, and keep the file mode at `600`.
+Every Chat/Sync worker and `mesh-media.service` must read the same file:
+
+```bash
+install -m 600 server/ops/media.env.example /etc/mesh-messenger/media.env
+sed -i "s/replace-with-at-least-32-random-bytes/$(openssl rand -hex 32)/" \
+  /etc/mesh-messenger/media.env
+install -m 644 server/ops/systemd/mesh-media.service \
+  /etc/systemd/system/mesh-media.service
+systemctl daemon-reload
+systemctl enable --now mesh-media.service
+curl --fail http://127.0.0.1:8777/media/health
+```
+
+Install `server/nginx_media_v2.conf` as the media snippet included by the public
+TLS virtual host, run `nginx -t`, and reload nginx. Restart Chat/Sync workers one
+at a time afterward so issued download tokens use the shared signing key.

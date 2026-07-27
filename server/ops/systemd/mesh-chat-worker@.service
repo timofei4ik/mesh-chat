@@ -11,6 +11,7 @@ WorkingDirectory=/root/mesh_messenger
 EnvironmentFile=-/etc/mesh-messenger/server.env
 EnvironmentFile=-/etc/mesh-messenger/meshpro.env
 EnvironmentFile=-/etc/mesh-messenger/push.env
+EnvironmentFile=/etc/mesh-messenger/media.env
 EnvironmentFile=/etc/mesh-messenger/postgres.env
 EnvironmentFile=/etc/mesh-messenger/turn.env
 Environment=MESH_WORKER_INDEX=%i

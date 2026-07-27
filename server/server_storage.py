@@ -3645,13 +3645,7 @@ class ServerStorageMixin:
                 size_bytes=size_bytes,
             )
 
-        completed_key = media_id
-        completed_path = (
-            self._file_transfer_root()
-            / "completed"
-            / completed_key[:2]
-            / f"{completed_key}.bin"
-        )
+        completed_path = self.media_object_storage.path_for(media_id)
         completed_path.parent.mkdir(parents=True, exist_ok=True)
         assembling_path = completed_path.with_suffix(".assembling")
         digest = hashlib.sha256()

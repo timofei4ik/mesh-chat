@@ -41,10 +41,6 @@ class FakeBillingHttpServer:
         self.closed = True
 
 
-class FakeMediaHttpServer(FakeBillingHttpServer):
-    pass
-
-
 class FakeRelay:
     def __init__(self):
         self.boosty_started = False
@@ -176,7 +172,6 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
         supervisor = server_workers.ServerWorkerSupervisor(
             relay,
             billing_http_factory=FakeBillingHttpServer,
-            media_http_factory=FakeMediaHttpServer,
         )
 
         await supervisor.start()
@@ -184,7 +179,6 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(relay.boosty_started)
         self.assertTrue(supervisor.billing_started)
-        self.assertTrue(supervisor.media_started)
         self.assertEqual(1, relay.wireguard_runs)
         self.assertGreaterEqual(relay.schedule_runs, 1)
 
@@ -192,6 +186,5 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(supervisor.stop_event.is_set())
         self.assertTrue(supervisor.billing_http.closed)
-        self.assertTrue(supervisor.media_http.closed)
         self.assertTrue(relay.boosty_stopped)
         self.assertEqual([], supervisor._tasks)

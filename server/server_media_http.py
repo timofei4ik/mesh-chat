@@ -45,7 +45,18 @@ class MediaHttpServer:
             self.site = None
 
     async def _health(self, request):
-        return web.json_response({"ok": True, "version": 2})
+        try:
+            health = self.relay.media_delivery_health()
+        except Exception as error:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "version": 3,
+                    "error": type(error).__name__,
+                },
+                status=503,
+            )
+        return web.json_response(health)
 
     async def _download(self, request):
         authorization = request.headers.get("Authorization", "")
@@ -69,10 +80,13 @@ class MediaHttpServer:
                 + quote(media["filename"] or "meshchat-file", safe="")
             ),
         }
-        storage_path = media["storage_path"]
-        if storage_path and Path(storage_path).is_file():
+        object_path = self.relay.media_object_storage.resolve(
+            media["storage_path"],
+            media["media_id"],
+        )
+        if object_path:
             return web.FileResponse(
-                Path(storage_path),
+                object_path,
                 headers=headers,
             )
 

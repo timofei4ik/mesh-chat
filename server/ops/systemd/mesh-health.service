@@ -1,12 +1,15 @@
 [Unit]
 Description=MeshChat relay health check
-After=mesh-chat-worker@0.service mesh-chat-worker@1.service redis-server.service
+After=mesh-chat-worker@0.service mesh-chat-worker@1.service mesh-media.service redis-server.service
 
 [Service]
 Type=oneshot
 User=root
 WorkingDirectory=/root/mesh_messenger
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/healthcheck_server.py --service mesh-chat-worker@0,mesh-chat-worker@1 --port 8870,8871
+EnvironmentFile=-/etc/mesh-messenger/server.env
+EnvironmentFile=/etc/mesh-messenger/postgres.env
+EnvironmentFile=/etc/mesh-messenger/media.env
+ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/healthcheck_server.py --service mesh-chat-worker@0,mesh-chat-worker@1,mesh-media --port 8870,8871 --http-health http://127.0.0.1:8777/media/health
 Nice=10
 UMask=0077

@@ -179,6 +179,22 @@ MEDIA_DOWNLOAD_TOKEN_TTL_SECONDS = max(
     ),
 )
 
+MEDIA_SIGNING_SECRET = os.environ.get(
+    "MESH_MEDIA_SIGNING_SECRET",
+    "",
+).strip()
+
+MEDIA_OBJECT_ROOT = Path(
+    os.environ.get(
+        "MESH_MEDIA_OBJECT_ROOT",
+        str(
+            DB_PATH.parent
+            / f"{DB_PATH.stem}_file_storage"
+            / "completed"
+        ),
+    )
+).resolve()
+
 BOOSTY_TELEGRAM_API_URL = os.environ.get(
     "MESH_BOOSTY_TELEGRAM_API_URL",
     "https://api.telegram.org"

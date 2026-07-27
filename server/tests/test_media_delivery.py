@@ -125,6 +125,18 @@ class MediaDeliveryTests(unittest.TestCase):
             )
         )
 
+    def test_download_token_is_valid_across_media_runtimes(self):
+        second_relay = _Relay(self.temp.name)
+        try:
+            issued = self.relay.issue_media_download("bob", "direct-file")
+            authorized = second_relay.authorize_media_download(
+                issued["download_token"],
+                "direct-file",
+            )
+            self.assertEqual("direct-file", authorized["file_id"])
+        finally:
+            second_relay.db.close()
+
     def test_single_http_ranges_are_normalized(self):
         parse = MediaHttpServer._requested_range
         self.assertEqual((200, 0, 9), parse("", 10))

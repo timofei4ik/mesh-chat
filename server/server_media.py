@@ -2,26 +2,49 @@ import base64
 import hashlib
 import hmac
 import json
-import secrets
+import os
 import time
-from pathlib import Path
 from urllib.parse import quote
 
 try:
     from server.config import (
         MEDIA_DOWNLOAD_TOKEN_TTL_SECONDS,
+        MEDIA_OBJECT_ROOT,
         MEDIA_PUBLIC_BASE_URL,
+        MEDIA_SIGNING_SECRET,
+        SERVER_TOKEN,
     )
+    from server.media_object_store import LocalMediaObjectStore
 except ModuleNotFoundError:
     from config import (
         MEDIA_DOWNLOAD_TOKEN_TTL_SECONDS,
+        MEDIA_OBJECT_ROOT,
         MEDIA_PUBLIC_BASE_URL,
+        MEDIA_SIGNING_SECRET,
+        SERVER_TOKEN,
     )
+    from media_object_store import LocalMediaObjectStore
 
 
 class ServerMediaMixin:
     def initialize_media_delivery(self):
-        self._media_signing_secret = secrets.token_bytes(32)
+        configured_secret = (
+            MEDIA_SIGNING_SECRET
+            or SERVER_TOKEN
+            or "meshchat-development-media-signing-key"
+        )
+        self._media_signing_secret = hashlib.sha256(
+            configured_secret.encode("utf-8")
+        ).digest()
+        object_root = MEDIA_OBJECT_ROOT
+        transfer_root = getattr(self, "_file_transfer_root", None)
+        if (
+            not os.environ.get("MESH_MEDIA_OBJECT_ROOT", "").strip()
+            and callable(transfer_root)
+        ):
+            object_root = transfer_root() / "completed"
+        self.media_object_storage = LocalMediaObjectStore(object_root)
+        self.media_object_storage.ensure_ready()
 
     def resolve_media_file(self, login, file_id):
         normalized_login = str(login or "").strip().lower()
@@ -90,15 +113,20 @@ class ServerMediaMixin:
         storage_path = str(row[2] or "")
         inline_hex = str(row[3] or "")
         size_bytes = int(row[5] or 0)
-        if storage_path and Path(storage_path).is_file():
-            size_bytes = Path(storage_path).stat().st_size
+        sha256 = str(row[4] or "").strip().lower()
+        media_id = str(row[1] or sha256 or row[0]).strip().lower()
+        object_path = self.media_object_storage.resolve(
+            storage_path,
+            media_id,
+        )
+        if object_path:
+            storage_path = str(object_path)
+            size_bytes = object_path.stat().st_size
         elif inline_hex:
             size_bytes = len(inline_hex) // 2
         else:
             return None
 
-        sha256 = str(row[4] or "").strip().lower()
-        media_id = str(row[1] or sha256 or row[0]).strip().lower()
         return {
             "file_id": str(row[0]),
             "media_id": media_id,
@@ -177,6 +205,15 @@ class ServerMediaMixin:
             payload.get("login"),
             payload.get("file_id"),
         )
+
+    def media_delivery_health(self):
+        self.db.execute("SELECT 1").fetchone()
+        return {
+            "ok": True,
+            "version": 3,
+            "catalog": "available",
+            "storage": self.media_object_storage.health(),
+        }
 
     @staticmethod
     def _encode_media_token_part(value):

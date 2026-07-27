@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from server.config import DB_PATH
+from server.config import DATABASE_BACKEND, DATABASE_URL, DB_PATH
 from server.ops.backup_server import DEFAULT_BACKUP_DIR, resolve_path
+from server.persistence import connect_postgres
 
 
 DEFAULT_STATUS_PATH = Path(__file__).resolve().parents[2] / "data" / "reliability.json"
@@ -181,10 +183,63 @@ def audit_database(database_path, verify_media=True):
         connection.close()
 
 
+def audit_postgres_database(database_url, verify_media=True):
+    connection = connect_postgres(database_url)
+    try:
+        duplicate_operations = connection.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT account_login, operation_id
+                FROM sync_events
+                WHERE operation_id <> ''
+                GROUP BY account_login, operation_id
+                HAVING COUNT(*) > 1
+            ) AS duplicate_sync_operations
+            """
+        ).fetchone()[0]
+        invalid_cursors = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM sync_cursors AS cursor_state
+            WHERE cursor_state.cursor > COALESCE((
+                SELECT MAX(event.event_id)
+                FROM sync_events AS event
+                WHERE event.account_login=cursor_state.account_login
+            ), 0)
+            """
+        ).fetchone()[0]
+        duplicate_reactions = connection.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT scope, message_id, reactor_identity, reaction
+                FROM server_reactions
+                GROUP BY scope, message_id, reactor_identity, reaction
+                HAVING COUNT(*) > 1
+            ) AS duplicate_reaction_rows
+            """
+        ).fetchone()[0]
+        result = {
+            "backend": "postgres",
+            "quick_check": ["ok"],
+            "foreign_key_violations": [],
+            "duplicate_operations": duplicate_operations,
+            "invalid_sync_cursors": invalid_cursors,
+            "duplicate_reactions": duplicate_reactions,
+        }
+        if verify_media:
+            result["media"] = _audit_media(connection)
+        return result
+    finally:
+        connection.close()
+
+
 def audit_latest_backup(backup_dir):
     backup_dir = resolve_path(backup_dir)
     backups = sorted(
-        backup_dir.glob("server-*.db.gz"),
+        [
+            *backup_dir.glob("server-*.db.gz"),
+            *backup_dir.glob("server-*.pgdump"),
+        ],
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
@@ -211,21 +266,37 @@ def audit_latest_backup(backup_dir):
             problems.append("backup metadata checksum mismatch")
 
     integrity = []
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            restored = Path(temp_dir) / "restored.db"
-            with gzip.open(backup, "rb") as source, restored.open("wb") as target:
-                for block in iter(lambda: source.read(1024 * 1024), b""):
-                    target.write(block)
-            connection = sqlite3.connect(restored)
-            try:
-                integrity = [row[0] for row in connection.execute("PRAGMA integrity_check")]
-            finally:
-                connection.close()
-        if integrity != ["ok"]:
-            problems.append("restored backup integrity_check failed")
-    except (OSError, EOFError, sqlite3.Error) as error:
-        problems.append(f"backup restore failed: {error}")
+    if backup.suffix == ".pgdump":
+        try:
+            subprocess.run(
+                ["pg_restore", "--list", str(backup)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            integrity = ["pg_restore-list-ok"]
+        except (OSError, subprocess.SubprocessError) as error:
+            problems.append(f"backup catalog verification failed: {error}")
+    else:
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                restored = Path(temp_dir) / "restored.db"
+                with gzip.open(backup, "rb") as source, restored.open("wb") as target:
+                    for block in iter(lambda: source.read(1024 * 1024), b""):
+                        target.write(block)
+                connection = sqlite3.connect(restored)
+                try:
+                    integrity = [
+                        row[0]
+                        for row in connection.execute("PRAGMA integrity_check")
+                    ]
+                finally:
+                    connection.close()
+            if integrity != ["ok"]:
+                problems.append("restored backup integrity_check failed")
+        except (OSError, EOFError, sqlite3.Error) as error:
+            problems.append(f"backup restore failed: {error}")
 
     modified = datetime.fromtimestamp(backup.stat().st_mtime, timezone.utc)
     return {
@@ -242,11 +313,28 @@ def audit_latest_backup(backup_dir):
     }
 
 
-def collect_reliability(database_path, backup_dir, verify_media=True):
+def collect_reliability(
+    database_path,
+    backup_dir,
+    verify_media=True,
+    database_backend=DATABASE_BACKEND,
+    database_url=DATABASE_URL,
+):
     critical = []
     warnings = []
     try:
-        database = audit_database(database_path, verify_media=verify_media)
+        if str(database_backend or "").strip().lower() == "postgres":
+            if not database_url:
+                raise RuntimeError("MESH_DATABASE_URL is required")
+            database = audit_postgres_database(
+                database_url,
+                verify_media=verify_media,
+            )
+        else:
+            database = audit_database(
+                database_path,
+                verify_media=verify_media,
+            )
         if database["quick_check"] != ["ok"]:
             critical.append("database quick_check failed")
         if database["foreign_key_violations"]:
@@ -260,7 +348,7 @@ def collect_reliability(database_path, backup_dir, verify_media=True):
         media = database.get("media") or {}
         if media.get("problems"):
             critical.append(f"media integrity failed for {len(media['problems'])} item(s)")
-    except (OSError, sqlite3.Error, json.JSONDecodeError) as error:
+    except Exception as error:
         database = {"path": str(resolve_path(database_path)), "error": str(error)}
         critical.append(f"database audit failed: {error}")
 
@@ -311,11 +399,21 @@ def main():
         default=os.environ.get("MESH_RELIABILITY_STATUS", str(DEFAULT_STATUS_PATH)),
     )
     parser.add_argument("--no-media", action="store_true")
+    parser.add_argument(
+        "--database-backend",
+        default=os.environ.get("MESH_DATABASE_BACKEND", DATABASE_BACKEND),
+    )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("MESH_DATABASE_URL", DATABASE_URL),
+    )
     args = parser.parse_args()
     report = collect_reliability(
         args.database,
         args.backup_dir,
         verify_media=not args.no_media,
+        database_backend=args.database_backend,
+        database_url=args.database_url,
     )
     write_report(report, args.status_file)
     print(json.dumps(report, ensure_ascii=True, sort_keys=True))

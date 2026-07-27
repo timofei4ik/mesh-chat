@@ -19,18 +19,22 @@ continue to receive the legacy WebSocket chunk stream.
    its local LRU cache. Group payloads are decrypted only after the encrypted
    bytes pass integrity verification.
 
-Tokens expire after ten minutes by default and are invalidated when the server
-restarts. The public endpoint never accepts an account name or password.
+Tokens expire after ten minutes by default. A shared signing secret allows the
+standalone media service to validate tokens issued by any Chat/Sync worker.
+The public endpoint never accepts an account name or password.
 
 ## Configuration
 
-The worker defaults to `127.0.0.1:8767` and can be configured with:
+The standalone service is started with `python -m server.media_service`. The
+production unit binds `127.0.0.1:8777` and can be configured with:
 
 - `MESH_MEDIA_HTTP_HOST`
 - `MESH_MEDIA_HTTP_PORT`
 - `MESH_MEDIA_PUBLIC_BASE_URL`
 - `MESH_MEDIA_TOKEN_TTL_SECONDS`
+- `MESH_MEDIA_SIGNING_SECRET`
+- `MESH_MEDIA_OBJECT_ROOT`
 
-Expose the worker through nginx with `nginx_media_v2.conf`. Keep the worker
-bound to loopback so token validation cannot be bypassed through a second
-public listener.
+Completed uploads are stored by SHA-256 in the configured object root. Expose
+the service through nginx with `nginx_media_v2.conf`. Keep it bound to loopback
+so token validation cannot be bypassed through a second public listener.
