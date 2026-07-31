@@ -23,6 +23,7 @@ import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
 import '../services/mesh_socket.dart';
+import '../services/read_state_reconciler.dart';
 import '../services/media_cache_service.dart';
 import '../services/notification_service.dart';
 import '../services/own_profile_store.dart';
@@ -9313,37 +9314,12 @@ class AppController extends ChangeNotifier {
 
   void _applyReadReceipts(Object? rawReceipts) {
     final currentLogin = session?.login.trim().toLowerCase() ?? '';
-    if (currentLogin.isEmpty || rawReceipts is! List) return;
-    final readersByMessage = <String, Set<String>>{};
-    for (final raw in rawReceipts) {
-      if (raw is! Map) continue;
-      final messageId = raw['message_id']?.toString().trim() ?? '';
-      final readerLogin =
-          raw['reader_login']?.toString().trim().toLowerCase() ?? '';
-      if (messageId.isEmpty || readerLogin.isEmpty) continue;
-      readersByMessage
-          .putIfAbsent(messageId, () => <String>{})
-          .add(readerLogin);
-    }
-    for (final thread in [...threads.values, ...groups.values]) {
-      for (var index = 0; index < thread.messages.length; index++) {
-        final message = thread.messages[index];
-        final readers = readersByMessage[message.id];
-        if (readers == null || readers.isEmpty) continue;
-        final sentByMe = _isOwnAccountNode(message.senderNode);
-        final shouldMarkRead = sentByMe
-            ? readers.any((reader) => reader != currentLogin)
-            : readers.contains(currentLogin);
-        if (!shouldMarkRead || message.read) continue;
-        thread.messages[index] = message.copyWith(
-          read: true,
-          delivered: true,
-          pending: false,
-          failed: false,
-        );
-      }
-      _recomputeUnread(thread);
-    }
+    ReadStateReconciler.apply(
+      threads: [...threads.values, ...groups.values],
+      rawReceipts: rawReceipts,
+      currentLogin: currentLogin,
+      isOwnNode: _isOwnAccountNode,
+    );
   }
 
   void _recomputeUnread(ChatThread thread) {
@@ -9462,30 +9438,42 @@ class AppController extends ChangeNotifier {
 
   void markRead(ChatThread thread) {
     thread.unread = 0;
-    final unreadBySender = <String, List<String>>{};
+    final receiptsBySender = <String, List<String>>{};
+    final latestIncomingBySender = <String, String>{};
     for (var index = 0; index < thread.messages.length; index++) {
       final message = thread.messages[index];
       final sender = message.senderNode.trim();
-      if (sender.isEmpty || _isOwnAccountNode(sender) || message.read) {
-        continue;
+      if (sender.isEmpty || _isOwnAccountNode(sender)) continue;
+      latestIncomingBySender[sender] = message.id;
+      if (!message.read) {
+        receiptsBySender.putIfAbsent(sender, () => <String>[]).add(message.id);
+        thread.messages[index] = message.copyWith(read: true);
       }
-      unreadBySender.putIfAbsent(sender, () => <String>[]).add(message.id);
-      thread.messages[index] = message.copyWith(read: true);
     }
-    for (final entry in unreadBySender.entries) {
-      final receipt = {
-        'type': 'message_read',
-        'packet_id': const Uuid().v4(),
-        'protocol_version': MeshSocket.protocolVersion,
-        'source_node': myNodeId,
-        'destination_node': entry.key,
-        'message_ids': entry.value,
-        'ttl': thread.isBluetooth ? 1 : 5,
-      };
-      if (thread.isBluetooth) {
-        unawaited(ble.sendPacketToNode(entry.key, receipt));
-      } else {
-        _socket.send(receipt);
+
+    for (final entry in latestIncomingBySender.entries) {
+      final ids = receiptsBySender.putIfAbsent(entry.key, () => <String>[]);
+      if (!ids.contains(entry.value)) ids.add(entry.value);
+    }
+    for (final entry in receiptsBySender.entries) {
+      for (var offset = 0; offset < entry.value.length; offset += 500) {
+        final end = offset + 500 < entry.value.length
+            ? offset + 500
+            : entry.value.length;
+        final receipt = {
+          'type': 'message_read',
+          'packet_id': const Uuid().v4(),
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': myNodeId,
+          'destination_node': entry.key,
+          'message_ids': entry.value.sublist(offset, end),
+          'ttl': thread.isBluetooth ? 1 : 5,
+        };
+        if (thread.isBluetooth) {
+          unawaited(ble.sendPacketToNode(entry.key, receipt));
+        } else {
+          _socket.send(receipt);
+        }
       }
     }
     unawaited(_saveCache());

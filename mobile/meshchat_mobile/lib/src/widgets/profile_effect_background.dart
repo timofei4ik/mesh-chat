@@ -2,8 +2,10 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../models/mesh_studio_style.dart';
 import '../models/profile.dart';
 import 'mesh_frame_clock.dart';
+import 'mesh_studio_image.dart';
 
 @visibleForTesting
 double profileEffectPulse(double animationValue) {
@@ -90,36 +92,69 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: RepaintBoundary(
-        child: ShaderMask(
-          blendMode: BlendMode.dstIn,
-          shaderCallback: (bounds) => const LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Colors.transparent,
-              Colors.white,
-              Colors.white,
-              Colors.transparent,
-            ],
-            stops: [0, 0.18, 0.88, 1],
-          ).createShader(bounds),
-          child: CustomPaint(
-            isComplex: true,
-            willChange: widget.enabled,
-            painter: _ProfileEffectPainter(
-              animation: controller,
-              seed: 4,
-              background: widget.profile.effectiveProfileBanner,
-              effect: widget.enabled
-                  ? widget.profile.effectiveProfileEffect
-                  : 'none',
-              blinkShape: widget.profile.effectiveProfileBlinkShape,
-              accent: Color(widget.profile.effectiveProfileAccent),
+    final background = widget.profile.effectiveProfileBanner;
+    final bannerAsset = meshStudioBannerAsset(background);
+    final scene = Stack(
+      fit: StackFit.expand,
+      children: [
+        if (bannerAsset != null) ...[
+          ColoredBox(
+            color: const Color(0xFF081321),
+            child: Opacity(
+              opacity: 0.34,
+              child: MeshStudioImage(
+                source: bannerAsset,
+                fallbackAsset: meshStudioBundledBannerAsset(background),
+                fit: BoxFit.cover,
+                alignment: Alignment.center,
+                filterQuality: FilterQuality.high,
+              ),
             ),
           ),
+          MeshStudioImage(
+            source: bannerAsset,
+            fallbackAsset: meshStudioBundledBannerAsset(background),
+            fit: BoxFit.contain,
+            alignment: Alignment.center,
+            filterQuality: FilterQuality.high,
+          ),
+        ],
+        CustomPaint(
+          isComplex: true,
+          willChange: widget.enabled,
+          painter: _ProfileEffectPainter(
+            animation: controller,
+            seed: 4,
+            background: background,
+            paintBackdrop: bannerAsset == null,
+            effect: widget.enabled
+                ? widget.profile.effectiveProfileEffect
+                : 'none',
+            blinkShape: widget.profile.effectiveProfileBlinkShape,
+            accent: Color(widget.profile.effectiveProfileAccent),
+          ),
         ),
+      ],
+    );
+    return IgnorePointer(
+      child: RepaintBoundary(
+        child: bannerAsset != null
+            ? scene
+            : ShaderMask(
+                blendMode: BlendMode.dstIn,
+                shaderCallback: (bounds) => const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.white,
+                    Colors.white,
+                    Colors.transparent,
+                  ],
+                  stops: [0, 0.18, 0.88, 1],
+                ).createShader(bounds),
+                child: scene,
+              ),
       ),
     );
   }
@@ -130,6 +165,7 @@ class _ProfileEffectPainter extends CustomPainter {
     required this.animation,
     required this.seed,
     required this.background,
+    required this.paintBackdrop,
     required this.effect,
     required this.blinkShape,
     required this.accent,
@@ -138,6 +174,7 @@ class _ProfileEffectPainter extends CustomPainter {
   final MeshFrameClock animation;
   final int seed;
   final String background;
+  final bool paintBackdrop;
   final String effect;
   final String blinkShape;
   final Color accent;
@@ -149,22 +186,24 @@ class _ProfileEffectPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final baseColor = switch (background) {
-      'aurora' => const Color(0xFF0C1C2B),
-      'starlight' => const Color(0xFF0C1123),
-      'stardust' => const Color(0xFF090F21),
-      'nebula' => const Color(0xFF100D24),
-      'ocean' => const Color(0xFF061D2C),
-      'sakura' => const Color(0xFF21101E),
-      'solar' => const Color(0xFF21150A),
-      'ember' => const Color(0xFF1A1118),
-      'sunset' => const Color(0xFF151329),
-      'frost' => const Color(0xFF0C1A25),
-      'orbit' => const Color(0xFF0B1324),
-      _ => const Color(0xFF111927),
-    };
-    canvas.drawRect(Offset.zero & size, Paint()..color = baseColor);
-    _paintBackdrop(canvas, size);
+    if (paintBackdrop) {
+      final baseColor = switch (background) {
+        'aurora' => const Color(0xFF0C1C2B),
+        'starlight' => const Color(0xFF0C1123),
+        'stardust' => const Color(0xFF090F21),
+        'nebula' => const Color(0xFF100D24),
+        'ocean' => const Color(0xFF061D2C),
+        'sakura' => const Color(0xFF21101E),
+        'solar' => const Color(0xFF21150A),
+        'ember' => const Color(0xFF1A1118),
+        'sunset' => const Color(0xFF151329),
+        'frost' => const Color(0xFF0C1A25),
+        'orbit' => const Color(0xFF0B1324),
+        _ => const Color(0xFF111927),
+      };
+      canvas.drawRect(Offset.zero & size, Paint()..color = baseColor);
+      _paintBackdrop(canvas, size);
+    }
 
     switch (effect) {
       case 'none':
@@ -666,6 +705,7 @@ class _ProfileEffectPainter extends CustomPainter {
     return oldDelegate.animation != animation ||
         oldDelegate.seed != seed ||
         oldDelegate.background != background ||
+        oldDelegate.paintBackdrop != paintBackdrop ||
         oldDelegate.effect != effect ||
         oldDelegate.blinkShape != blinkShape ||
         oldDelegate.accent != accent;

@@ -667,6 +667,70 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual("stars", normalized["profile_effect"])
         self.assertEqual("ember", normalized["avatar_decoration"])
 
+        ok, reason = self.relay.save_account_profile(
+            "subscriber",
+            "subscriber-node",
+            "Subscriber",
+            profile_background="camp_moon",
+            profile_effect="stars",
+            avatar_decoration="camp_moon",
+        )
+        self.assertTrue(ok, reason)
+        campfire = self.relay.get_profile_by_node("subscriber-node")
+        self.assertEqual("camp_moon", campfire["profile_background"])
+        self.assertEqual("stars", campfire["profile_effect"])
+        self.assertEqual("camp_moon", campfire["avatar_decoration"])
+
+        ok, reason = self.relay.save_account_profile(
+            "subscriber",
+            "subscriber-node",
+            "Subscriber",
+            profile_background="camp_rainlight",
+            profile_effect="nodes",
+            avatar_decoration="camp_rainlight",
+        )
+        self.assertTrue(ok, reason)
+        rainlight = self.relay.get_profile_by_node("subscriber-node")
+        self.assertEqual(
+            "camp_rainlight",
+            rainlight["profile_background"],
+        )
+        self.assertEqual(
+            "camp_rainlight",
+            rainlight["avatar_decoration"],
+        )
+
+        ok, reason = self.relay.save_account_profile(
+            "subscriber",
+            "subscriber-node",
+            "Subscriber",
+            profile_background="remote_crystal_garden",
+            profile_effect="orbit",
+            avatar_decoration="remote_crystal_garden",
+        )
+        self.assertTrue(ok, reason)
+        remote = self.relay.get_profile_by_node("subscriber-node")
+        self.assertEqual(
+            "remote_crystal_garden",
+            remote["profile_background"],
+        )
+        self.assertEqual(
+            "remote_crystal_garden",
+            remote["avatar_decoration"],
+        )
+
+        ok, reason = self.relay.save_account_profile(
+            "subscriber",
+            "subscriber-node",
+            "Subscriber",
+            profile_background="remote_../invalid",
+            avatar_decoration="remote_../invalid",
+        )
+        self.assertTrue(ok, reason)
+        invalid_remote = self.relay.get_profile_by_node("subscriber-node")
+        self.assertEqual("mesh", invalid_remote["profile_background"])
+        self.assertEqual("none", invalid_remote["avatar_decoration"])
+
     def test_grant_extends_an_existing_period(self):
         first = self.relay.grant_subscription("subscriber", days=7)
         second = self.relay.grant_subscription("subscriber", days=7)

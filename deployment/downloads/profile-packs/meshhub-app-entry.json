@@ -1,0 +1,18 @@
+{
+  "id": "meshstudio_enchanted_gardens",
+  "kind": "profile_pack",
+  "name": "Enchanted Gardens",
+  "tagline": "MeshStudio collection",
+  "version": "2026.07.30.1",
+  "description": "Five animated garden profiles and matching avatar frames. Loaded by MeshChat from the server.",
+  "logoAsset": "assets/meshhub_logo.png",
+  "logoUrl": "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-preview.webp",
+  "colors": [
+    "#67DFFF",
+    "#9C7BFF"
+  ],
+  "androidUrl": "",
+  "windowsUrl": "",
+  "windowsExecutable": "",
+  "androidPackage": ""
+}

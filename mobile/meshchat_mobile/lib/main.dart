@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'src/app.dart';
 import 'src/services/android_push_service.dart';
 import 'src/services/firebase_telemetry_service.dart';
+import 'src/services/mesh_studio_catalog_service.dart';
 import 'src/services/platform_capabilities.dart';
 
 Future<void> main() async {
@@ -19,6 +22,8 @@ Future<void> main() async {
     await initializeAndroidPushBackgroundHandling();
   }
   await FirebaseTelemetryService.initialize();
+  await MeshStudioCatalogService.loadCached();
+  unawaited(MeshStudioCatalogService.refresh());
   if (!kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.windows ||
           defaultTargetPlatform == TargetPlatform.linux ||

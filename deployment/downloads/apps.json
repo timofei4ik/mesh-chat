@@ -1,0 +1,98 @@
+{
+  "catalogVersion": 26,
+  "updatedAt": "2026-08-01T00:00:00Z",
+  "apps": [
+    {
+      "id": "meshchat",
+      "name": "MeshChat",
+      "tagline": "Messenger",
+      "version": "1.0.68",
+      "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
+      "logoAsset": "assets/meshchat_logo_card.png",
+      "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
+      "colors": [
+        "#43D9FF",
+        "#9C63FF"
+      ],
+      "androidUrl": "https://meshchat-losa.ru/downloads/MeshChat-Android.apk",
+      "windowsUrl": "https://meshchat-losa.ru/downloads/MeshChat-Windows.zip",
+      "windowsExecutable": "MeshChat.exe",
+      "androidPackage": "com.meshchat.meshchat_mobile",
+      "build": 171,
+      "android_url": "/downloads/MeshChat-Android.apk",
+      "windows_url": "/downloads/MeshChat-Windows.zip",
+      "web_url": "/downloads/MeshChat-Web.zip",
+      "updated_at": "2026-08-01T00:00:00Z",
+      "webUrl": "https://meshchat-losa.ru/downloads/MeshChat-Web.zip"
+    },
+    {
+      "id": "meshdrop",
+      "name": "MeshDrop",
+      "tagline": "Fast file transfer",
+      "version": "1.0.0",
+      "description": "Nearby file drops, rooms, QR handoff and direct transfers.",
+      "logoAsset": "assets/meshdrop_logo_card.png",
+      "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshdrop.png",
+      "colors": [
+        "#45D6FF",
+        "#8D72FF"
+      ],
+      "androidUrl": "https://meshchat-losa.ru/downloads/MeshDrop-Android.apk",
+      "windowsUrl": "https://meshchat-losa.ru/downloads/MeshDrop-Windows.zip",
+      "windowsExecutable": "meshdrop.exe",
+      "androidPackage": "com.example.meshdrop"
+    },
+    {
+      "id": "meshprivacy",
+      "name": "MeshPrivacy",
+      "tagline": "One-tap VPN",
+      "version": "1.3.0",
+      "description": "Minimal privacy switch with ready VPN profile support.",
+      "logoAsset": "assets/meshprivacy_logo_card.png",
+      "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshprivacy.png",
+      "colors": [
+        "#5EFCE8",
+        "#736EFE"
+      ],
+      "androidUrl": "https://meshchat-losa.ru/downloads/MeshPrivacy-Android.apk",
+      "windowsUrl": "https://meshchat-losa.ru/downloads/MeshPrivacy-Windows.zip",
+      "windowsExecutable": "meshprivacy.exe",
+      "androidPackage": "com.example.meshprivacy"
+    },
+    {
+      "id": "meshscan",
+      "name": "MeshScan",
+      "tagline": "Document scanner",
+      "version": "1.0.0",
+      "description": "Scan, align, OCR, export PDF and send documents via MeshDrop.",
+      "logoAsset": "assets/meshscan_logo_card.png",
+      "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshscan.png",
+      "colors": [
+        "#45D6FF",
+        "#56F0C8"
+      ],
+      "androidUrl": "https://meshchat-losa.ru/downloads/MeshScan-Android.apk",
+      "windowsUrl": "https://meshchat-losa.ru/downloads/MeshScan-Windows.zip",
+      "windowsExecutable": "meshscan.exe",
+      "androidPackage": "ru.meshscan.meshscan"
+    },
+    {
+      "id": "meshstudio_enchanted_gardens",
+      "kind": "profile_pack",
+      "name": "Enchanted Gardens",
+      "tagline": "MeshStudio collection",
+      "version": "2026.07.30.1",
+      "description": "Five animated garden profiles and matching avatar frames. Loaded by MeshChat from the server.",
+      "logoAsset": "assets/meshhub_logo.png",
+      "logoUrl": "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-preview.webp",
+      "colors": [
+        "#67DFFF",
+        "#9C7BFF"
+      ],
+      "androidUrl": "",
+      "windowsUrl": "",
+      "windowsExecutable": "",
+      "androidPackage": ""
+    }
+  ]
+}

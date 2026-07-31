@@ -1,7 +1,7 @@
 name: meshchat_mobile
 description: "MeshChat mobile client."
 publish_to: "none"
-version: 1.0.65+168
+version: 1.0.68+171
 
 environment:
   sdk: ^3.12.2
@@ -54,3 +54,23 @@ flutter:
     - assets/app_icon.png
     - assets/meshpro_badge.png
     - assets/moose_reaction.png
+    - assets/profile_collections/campfire_trails/cloud_camp_banner.webp
+    - assets/profile_collections/campfire_trails/cloud_camp_banner_static.webp
+    - assets/profile_collections/campfire_trails/cloud_camp_frame.png
+    - assets/profile_collections/campfire_trails/cloud_camp_frame.webp
+    - assets/profile_collections/campfire_trails/moon_trail_banner.webp
+    - assets/profile_collections/campfire_trails/moon_trail_banner_static.webp
+    - assets/profile_collections/campfire_trails/moon_trail_frame.png
+    - assets/profile_collections/campfire_trails/moon_trail_frame.webp
+    - assets/profile_collections/campfire_trails/ember_night_banner.webp
+    - assets/profile_collections/campfire_trails/ember_night_banner_static.webp
+    - assets/profile_collections/campfire_trails/ember_night_frame.png
+    - assets/profile_collections/campfire_trails/ember_night_frame.webp
+    - assets/profile_collections/campfire_trails/story_lanterns_banner.webp
+    - assets/profile_collections/campfire_trails/story_lanterns_banner_static.webp
+    - assets/profile_collections/campfire_trails/story_lanterns_frame.png
+    - assets/profile_collections/campfire_trails/story_lanterns_frame.webp
+    - assets/profile_collections/campfire_trails/rainlight_banner.webp
+    - assets/profile_collections/campfire_trails/rainlight_banner_static.webp
+    - assets/profile_collections/campfire_trails/rainlight_frame.png
+    - assets/profile_collections/campfire_trails/rainlight_frame.webp

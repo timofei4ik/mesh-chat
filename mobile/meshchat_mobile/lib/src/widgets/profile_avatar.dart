@@ -5,9 +5,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../models/mesh_studio_style.dart';
 import '../models/profile.dart';
 import '../utils/animated_avatar_crop.dart';
 import 'mesh_frame_clock.dart';
+import 'mesh_studio_image.dart';
 
 class ProfileAvatar extends StatelessWidget {
   const ProfileAvatar({
@@ -32,8 +34,17 @@ class ProfileAvatar extends StatelessWidget {
     final decoration = profile.effectiveAvatarDecoration;
     final decorated =
         decoration != Profile.defaultAvatarDecoration && radius >= 16;
+    final shouldAnimateDecoration = animateDecoration ?? radius >= 40;
+    final rasterDecoration = meshStudioDecorationAsset(
+      decoration,
+      animated: shouldAnimateDecoration,
+    );
     final morph = squareProgress.clamp(0.0, 1.0);
-    final avatarRadius = decorated ? radius * (0.79 + 0.21 * morph) : radius;
+    final decorationScale = meshStudioDecorationAvatarScale(decoration);
+    final frameOffset = meshStudioDecorationFrameOffset(decoration);
+    final avatarRadius = decorated
+        ? radius * (decorationScale + (1 - decorationScale) * morph)
+        : radius;
     final cornerRadius = avatarRadius + (18 - avatarRadius) * morph;
     final avatar = SizedBox(
       width: radius * 2,
@@ -74,11 +85,29 @@ class ProfileAvatar extends StatelessWidget {
             Positioned.fill(
               child: Opacity(
                 opacity: 1 - morph,
-                child: _AnimatedAvatarDecoration(
-                  style: decoration,
-                  animate: animateDecoration ?? radius >= 40,
-                  highRefreshRate: radius >= 40,
-                ),
+                child: rasterDecoration == null
+                    ? _AnimatedAvatarDecoration(
+                        style: decoration,
+                        animate: shouldAnimateDecoration,
+                        highRefreshRate: radius >= 40,
+                      )
+                    : IgnorePointer(
+                        child: Transform.translate(
+                          offset: Offset(
+                            frameOffset.x * radius,
+                            frameOffset.y * radius,
+                          ),
+                          child: MeshStudioImage(
+                            source: rasterDecoration,
+                            fallbackAsset: meshStudioBundledDecorationAsset(
+                              decoration,
+                              animated: shouldAnimateDecoration,
+                            ),
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.medium,
+                          ),
+                        ),
+                      ),
               ),
             ),
         ],

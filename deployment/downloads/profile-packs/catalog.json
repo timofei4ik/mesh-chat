@@ -1,0 +1,187 @@
+{
+    "schemaVersion":  1,
+    "catalogVersion":  "2026-07-31.3",
+    "updatedAt":  "2026-07-31T19:40:49Z",
+    "packs":  [
+                  {
+                      "id":  "campfire_trails",
+                      "name":  "Enchanted Gardens",
+                      "description":  "Five living nocturnal gardens with matching animated avatar frames.",
+                      "heroUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-preview.webp",
+                      "requiresMeshPro":  true,
+                      "presets":  [
+                                      {
+                                          "id":  "cloud_camp",
+                                          "name":  "Spirit Garden",
+                                          "styleId":  "camp_clouds",
+                                          "effect":  "stars",
+                                          "blink":  "star",
+                                          "messageEffect":  "sunset",
+                                          "accent":  "#FF8FAF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/spirit-garden-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "baa3d1d8ae3efafe7e169adb5e0fa84727c399a53b0cd0c4e66274d97d06f522",
+                                                         "frame":  "0eec10a0d0d9351f20d99a37836c7524ad345c153bb89ceb71ff6abaef5c203c"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "moon_trail",
+                                          "name":  "Tidal Shrine",
+                                          "styleId":  "camp_moon",
+                                          "effect":  "orbit",
+                                          "blink":  "star",
+                                          "messageEffect":  "frost",
+                                          "accent":  "#67DFFF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/tidal-shrine-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/tidal-shrine-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/tidal-shrine-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/tidal-shrine-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "2d3d6eb26c4764f28eff46be618c27ca64909e54f234a87d7733c610ff570f10",
+                                                         "frame":  "6d9182adea3bce44b6b4ece5bd341542eba4d454a5c987bcfbb413de2f7e0428"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "ember_night",
+                                          "name":  "Moonflower Courtyard",
+                                          "styleId":  "camp_ember",
+                                          "effect":  "stars",
+                                          "blink":  "star",
+                                          "messageEffect":  "stardust",
+                                          "accent":  "#C2D8FF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/moonflower-courtyard-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/moonflower-courtyard-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/moonflower-courtyard-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/moonflower-courtyard-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "806943614e707055beef05eb35cc11a4abbcbc1fae7ab66c66f285f904c791c7",
+                                                         "frame":  "b9c6a908a671c5073331eecc4ab3ee929bb7cb50cd4230b1de7eff9f91eb9281"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "story_lanterns",
+                                          "name":  "Sunken Lotus Garden",
+                                          "styleId":  "camp_stories",
+                                          "effect":  "nodes",
+                                          "blink":  "dot",
+                                          "messageEffect":  "orbit",
+                                          "accent":  "#9C7BFF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/sunken-lotus-garden-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/sunken-lotus-garden-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/sunken-lotus-garden-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/sunken-lotus-garden-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "bcf1cc57ad06098c07a4fbd3e9c5c83cef75820e0eb013c9647ed3ad78489f8c",
+                                                         "frame":  "8b3df8393d55ad63c68ebae19d38e45d66320a6ad91d2ba9cb5d67e9e0fdea77"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "rainlight",
+                                          "name":  "Rainlight Conservatory",
+                                          "styleId":  "camp_rainlight",
+                                          "effect":  "nodes",
+                                          "blink":  "dot",
+                                          "messageEffect":  "frost",
+                                          "accent":  "#50D9FF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/rainlight-conservatory-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/rainlight-conservatory-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/rainlight-conservatory-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/enchanted-gardens/rainlight-conservatory-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "7e2eedce05273b70b64c237b91fd627ddb66097217f6e8f314aabaf164318dc3",
+                                                         "frame":  "cf160f5814f347d660de0b9152bfc8c15f3b27df36a54f8f2dcf2bd90bea10b3"
+                                                     }
+                                      }
+                                  ]
+                  },
+                  {
+                      "id":  "moonlit_trails",
+                      "name":  "Moonlit Trails",
+                      "description":  "Four living night journeys above clouds, beside moonlit water, around a campfire and among story lanterns.",
+                      "heroUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/skybound-camp-preview.webp",
+                      "requiresMeshPro":  true,
+                      "presets":  [
+                                      {
+                                          "id":  "moonlit_skybound_camp",
+                                          "name":  "Skybound Camp",
+                                          "styleId":  "remote_skybound_camp",
+                                          "effect":  "stars",
+                                          "blink":  "star",
+                                          "messageEffect":  "frost",
+                                          "accent":  "#8FCBFF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/skybound-camp-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/skybound-camp-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/skybound-camp-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/skybound-camp-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "5b2c2b32ed094bf34751e42bb099c5eee5f23eefacfee12a5d1db551f6dab663",
+                                                         "frame":  "b9c6a908a671c5073331eecc4ab3ee929bb7cb50cd4230b1de7eff9f91eb9281"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "moonlit_moonlit_path",
+                                          "name":  "Moonlit Path",
+                                          "styleId":  "remote_moonlit_path",
+                                          "effect":  "orbit",
+                                          "blink":  "star",
+                                          "messageEffect":  "orbit",
+                                          "accent":  "#9B88FF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/moonlit-path-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/moonlit-path-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/moonlit-path-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/moonlit-path-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "af1bd0469fd18fbd09737a4ad008961e31ce25e76b64c47c62c2ec64efd460fe",
+                                                         "frame":  "6d9182adea3bce44b6b4ece5bd341542eba4d454a5c987bcfbb413de2f7e0428"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "moonlit_ember_vale",
+                                          "name":  "Ember Vale",
+                                          "styleId":  "remote_ember_vale",
+                                          "effect":  "stars",
+                                          "blink":  "dot",
+                                          "messageEffect":  "sunset",
+                                          "accent":  "#FF9B61",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/ember-vale-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/ember-vale-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/ember-vale-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/ember-vale-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "3f0668c07cb693fbebcd38badaccebf1cf980f3f886af21cc9107a17cc0ce66c",
+                                                         "frame":  "0eec10a0d0d9351f20d99a37836c7524ad345c153bb89ceb71ff6abaef5c203c"
+                                                     }
+                                      },
+                                      {
+                                          "id":  "moonlit_lantern_stories",
+                                          "name":  "Lantern Stories",
+                                          "styleId":  "remote_lantern_stories",
+                                          "effect":  "nodes",
+                                          "blink":  "star",
+                                          "messageEffect":  "stardust",
+                                          "accent":  "#D88BFF",
+                                          "avatarScale":  0.68,
+                                          "bannerUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/lantern-stories-banner.webp",
+                                          "previewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/lantern-stories-preview.webp",
+                                          "frameUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/lantern-stories-frame.webp",
+                                          "framePreviewUrl":  "https://meshchat-losa.ru/downloads/profile-packs/moonlit-trails/lantern-stories-frame.png",
+                                          "sha256":  {
+                                                         "banner":  "f6e26e0e898fd430a2b3293ea4c959cc1e9272725b411147be56bf9d8c923d48",
+                                                         "frame":  "8b3df8393d55ad63c68ebae19d38e45d66320a6ad91d2ba9cb5d67e9e0fdea77"
+                                                     }
+                                      }
+                                  ]
+                  }
+              ]
+}

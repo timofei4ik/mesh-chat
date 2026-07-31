@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../controllers/app_controller.dart';
 import '../models/mesh_studio_style.dart';
 import '../models/profile.dart';
+import '../services/mesh_studio_catalog_service.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/message_send_effect.dart';
+import '../widgets/mesh_studio_image.dart';
 import '../widgets/profile_avatar.dart';
 import '../widgets/profile_effect_background.dart';
 
@@ -25,6 +27,7 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
   late String avatarDecoration;
   late bool profileGlow;
   late int profileAccent;
+  late String selectedCollectionId;
 
   bool saving = false;
   int messagePreviewRevision = 0;
@@ -62,6 +65,21 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
     avatarDecoration = profile.effectiveAvatarDecoration;
     profileGlow = profile.effectiveProfileGlow;
     profileAccent = profile.effectiveProfileAccent;
+    selectedCollectionId = meshStudioCollectionForStyle(
+      background: profileBackground,
+      decoration: avatarDecoration,
+    );
+    MeshStudioCatalogService.refresh()
+        .then((_) {
+          if (!mounted) return;
+          setState(() {
+            selectedCollectionId = meshStudioCollectionForStyle(
+              background: profileBackground,
+              decoration: avatarDecoration,
+            );
+          });
+        })
+        .catchError((_) {});
   }
 
   void applyPreset(MeshStudioPreset preset) {
@@ -72,6 +90,7 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
       avatarDecoration = preset.decoration;
       profileAccent = preset.accent;
       profileGlow = true;
+      selectedCollectionId = preset.collection;
       messagePreviewRevision++;
     });
   }
@@ -163,7 +182,10 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
                     avatarDecoration: avatarDecoration,
                     profileGlow: profileGlow,
                     profileAccent: profileAccent,
+                    selectedCollectionId: selectedCollectionId,
                     onPreset: applyPreset,
+                    onCollection: (value) =>
+                        setState(() => selectedCollectionId = value),
                     onBackground: (value) =>
                         setState(() => profileBackground = value),
                     onEffect: (value) => setState(() => profileEffect = value),
@@ -369,7 +391,9 @@ class _StudioControls extends StatelessWidget {
     required this.avatarDecoration,
     required this.profileGlow,
     required this.profileAccent,
+    required this.selectedCollectionId,
     required this.onPreset,
+    required this.onCollection,
     required this.onBackground,
     required this.onEffect,
     required this.onBlinkShape,
@@ -386,7 +410,9 @@ class _StudioControls extends StatelessWidget {
   final String avatarDecoration;
   final bool profileGlow;
   final int profileAccent;
+  final String selectedCollectionId;
   final ValueChanged<MeshStudioPreset> onPreset;
+  final ValueChanged<String> onCollection;
   final ValueChanged<String> onBackground;
   final ValueChanged<String> onEffect;
   final ValueChanged<String> onBlinkShape;
@@ -397,20 +423,40 @@ class _StudioControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = Color(profileAccent);
+    final collection = meshStudioCollections.firstWhere(
+      (item) => item.id == selectedCollectionId,
+      orElse: () => meshStudioCollections.first,
+    );
+    final presets = meshStudioPresetsForCollection(collection.id);
+    final backgrounds = meshStudioBackgroundsForCollection(collection.id);
+    final decorations = meshStudioDecorationsForCollection(collection.id);
     return Column(
       children: [
         _StudioPanel(
+          title: 'Collections',
+          subtitle:
+              'Explore complete profile looks without mixing unrelated pieces.',
+          icon: Icons.collections_bookmark_outlined,
+          child: _CollectionPicker(
+            selectedCollectionId: collection.id,
+            profile: profile,
+            onSelected: onCollection,
+          ),
+        ),
+        const SizedBox(height: 14),
+        _StudioPanel(
           title: 'Linked presets',
-          subtitle: 'One choice links the banner, frame, name and send effect.',
+          subtitle:
+              '${collection.label}: one choice links the banner, frame, name and send effect.',
           icon: Icons.style_outlined,
           child: SizedBox(
             height: 94,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: meshStudioPresets.length,
+              itemCount: presets.length,
               separatorBuilder: (_, _) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
-                final preset = meshStudioPresets[index];
+                final preset = presets[index];
                 final selected = selectedPresetId == preset.id;
                 final color = Color(preset.accent);
                 return Tooltip(
@@ -474,7 +520,7 @@ class _StudioControls extends StatelessWidget {
               Wrap(
                 spacing: 7,
                 runSpacing: 7,
-                children: meshStudioBackgrounds.map((option) {
+                children: backgrounds.map((option) {
                   return ChoiceChip(
                     label: Text(option.$2),
                     selected: profileBackground == option.$1,
@@ -554,10 +600,10 @@ class _StudioControls extends StatelessWidget {
             height: 103,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              itemCount: meshStudioAvatarDecorations.length,
+              itemCount: decorations.length,
               separatorBuilder: (_, _) => const SizedBox(width: 7),
               itemBuilder: (context, index) {
-                final option = meshStudioAvatarDecorations[index];
+                final option = decorations[index];
                 final selected = avatarDecoration == option.$1;
                 return InkWell(
                   borderRadius: BorderRadius.circular(15),
@@ -675,6 +721,196 @@ class _StudioControls extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _CollectionPicker extends StatelessWidget {
+  const _CollectionPicker({
+    required this.selectedCollectionId,
+    required this.profile,
+    required this.onSelected,
+  });
+
+  final String selectedCollectionId;
+  final Profile profile;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = meshStudioCollections.firstWhere(
+      (collection) => collection.id == selectedCollectionId,
+      orElse: () => meshStudioCollections.first,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          height: 48,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: meshStudioCollections.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, index) {
+              final collection = meshStudioCollections[index];
+              final active = collection.id == selected.id;
+              return InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => onSelected(collection.id),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOutCubic,
+                  constraints: const BoxConstraints(minWidth: 150),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: active
+                        ? const Color(0xFF3BD6FF).withValues(alpha: 0.13)
+                        : Colors.white.withValues(alpha: 0.035),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: active
+                          ? const Color(0xFF6DE4FF).withValues(alpha: 0.62)
+                          : Colors.white.withValues(alpha: 0.10),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      AnimatedRotation(
+                        turns: active ? 0.04 : 0,
+                        duration: const Duration(milliseconds: 260),
+                        child: Icon(
+                          collection.id == meshStudioCampfireCollection
+                              ? Icons.park_outlined
+                              : Icons.hub_outlined,
+                          size: 19,
+                          color: active
+                              ? const Color(0xFF7FE7FF)
+                              : Colors.white54,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        collection.label,
+                        style: TextStyle(
+                          fontWeight: active
+                              ? FontWeight.w900
+                              : FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 11),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 320),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) {
+            final slide = Tween<Offset>(
+              begin: const Offset(0.035, 0),
+              end: Offset.zero,
+            ).animate(animation);
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(position: slide, child: child),
+            );
+          },
+          child: _CollectionHero(
+            key: ValueKey(selected.id),
+            collection: selected,
+            profile: profile,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CollectionHero extends StatelessWidget {
+  const _CollectionHero({
+    super.key,
+    required this.collection,
+    required this.profile,
+  });
+
+  final MeshStudioCollection collection;
+  final Profile profile;
+
+  @override
+  Widget build(BuildContext context) {
+    final leadPreset = meshStudioPresetsForCollection(collection.id).first;
+    final previewProfile = profile.copyWith(
+      profileBackground: leadPreset.background,
+      profileEffect: leadPreset.effect,
+      profileBlinkShape: leadPreset.blink,
+      avatarDecoration: leadPreset.decoration,
+      profileAccent: leadPreset.accent,
+    );
+    return Container(
+      height: 146,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A1522),
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (collection.heroAsset != null)
+            MeshStudioImage(
+              source: collection.heroAsset!,
+              fit: BoxFit.contain,
+              alignment: Alignment.center,
+              filterQuality: FilterQuality.high,
+            )
+          else
+            ProfileEffectBackground(profile: previewProfile, enabled: true),
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  Color(0xE6101928),
+                  Color(0x80101928),
+                  Color(0x16101928),
+                ],
+                stops: [0, 0.58, 1],
+              ),
+            ),
+          ),
+          Positioned(
+            left: 18,
+            right: 18,
+            bottom: 17,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  collection.label,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  collection.subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

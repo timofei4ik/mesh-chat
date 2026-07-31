@@ -50,4 +50,48 @@ void main() {
       'custom',
     );
   });
+
+  test('every MeshStudio collection has isolated presets and controls', () {
+    final presetIds = <String>{};
+    for (final collection in meshStudioCollections) {
+      final presets = meshStudioPresetsForCollection(collection.id);
+      expect(presets, isNotEmpty, reason: '${collection.label} is empty');
+      expect(
+        meshStudioBackgroundsForCollection(collection.id),
+        isNotEmpty,
+        reason: '${collection.label} has no backgrounds',
+      );
+      expect(
+        meshStudioDecorationsForCollection(collection.id),
+        isNotEmpty,
+        reason: '${collection.label} has no avatar decorations',
+      );
+      for (final preset in presets) {
+        expect(preset.collection, collection.id);
+        expect(
+          presetIds.add(preset.id),
+          isTrue,
+          reason: 'Preset ${preset.id} appears in multiple collections',
+        );
+      }
+    }
+  });
+
+  test('Enchanted Gardens presets resolve to generated raster assets', () {
+    final presets = meshStudioPresetsForCollection(
+      meshStudioCampfireCollection,
+    );
+    for (final preset in presets) {
+      expect(meshStudioBannerAsset(preset.background), isNotNull);
+      expect(
+        meshStudioDecorationAsset(preset.decoration, animated: false),
+        endsWith('.png'),
+      );
+      expect(
+        meshStudioDecorationAsset(preset.decoration, animated: true),
+        endsWith('.webp'),
+      );
+    }
+    expect(presets, hasLength(5));
+  });
 }

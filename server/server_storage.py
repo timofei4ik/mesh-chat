@@ -75,6 +75,11 @@ PROFILE_BACKGROUND_ALIASES = {
     "sunset": "sunset",
     "frost": "frost",
     "orbit": "orbit",
+    "camp_clouds": "camp_clouds",
+    "camp_moon": "camp_moon",
+    "camp_ember": "camp_ember",
+    "camp_stories": "camp_stories",
+    "camp_rainlight": "camp_rainlight",
 }
 PROFILE_EFFECT_ALIASES = {
     "stars": "stars",
@@ -104,7 +109,27 @@ AVATAR_DECORATION_ALIASES = {
     "neon_orbit": "neon_orbit",
     "frost": "frost_bloom",
     "frost_bloom": "frost_bloom",
+    "camp_clouds": "camp_clouds",
+    "camp_moon": "camp_moon",
+    "camp_ember": "camp_ember",
+    "camp_stories": "camp_stories",
+    "camp_rainlight": "camp_rainlight",
 }
+REMOTE_APPEARANCE_ID_PATTERN = re.compile(r"^remote_[a-z0-9_]{1,40}$")
+
+
+def _normalize_profile_background(value):
+    normalized = str(value or "").strip().lower()
+    if REMOTE_APPEARANCE_ID_PATTERN.fullmatch(normalized):
+        return normalized
+    return PROFILE_BACKGROUND_ALIASES.get(normalized, "mesh")
+
+
+def _normalize_avatar_decoration(value):
+    normalized = str(value or "").strip().lower()
+    if REMOTE_APPEARANCE_ID_PATTERN.fullmatch(normalized):
+        return normalized
+    return AVATAR_DECORATION_ALIASES.get(normalized, "none")
 
 
 class ServerStorageMixin:
@@ -2340,10 +2365,8 @@ class ServerStorageMixin:
             return False, "missing authenticated account"
 
         if profile_background is not None:
-            profile_background = str(profile_background).strip().lower()
-            profile_background = PROFILE_BACKGROUND_ALIASES.get(
-                profile_background,
-                "mesh"
+            profile_background = _normalize_profile_background(
+                profile_background
             )
             if not self.subscription_feature_enabled(
                 login,
@@ -2370,10 +2393,8 @@ class ServerStorageMixin:
                 return False, "meshpro_required"
 
         if avatar_decoration is not None:
-            avatar_decoration = str(avatar_decoration).strip().lower()
-            avatar_decoration = AVATAR_DECORATION_ALIASES.get(
-                avatar_decoration,
-                "none"
+            avatar_decoration = _normalize_avatar_decoration(
+                avatar_decoration
             )
             if not self.subscription_feature_enabled(login, "animated_avatar"):
                 return False, "meshpro_required"
@@ -2537,13 +2558,13 @@ class ServerStorageMixin:
             )
 
         background = str(profile_background or "mesh").strip().lower()
-        background = PROFILE_BACKGROUND_ALIASES.get(background, "mesh")
+        background = _normalize_profile_background(background)
         effect = str(profile_effect or "nodes").strip().lower()
         effect = PROFILE_EFFECT_ALIASES.get(effect, "nodes")
         blink_shape = str(profile_blink_shape or "auto").strip().lower()
         blink_shape = PROFILE_BLINK_SHAPE_ALIASES.get(blink_shape, "auto")
         decoration = str(avatar_decoration or "none").strip().lower()
-        decoration = AVATAR_DECORATION_ALIASES.get(decoration, "none")
+        decoration = _normalize_avatar_decoration(decoration)
         try:
             accent = int(profile_accent)
         except (TypeError, ValueError):

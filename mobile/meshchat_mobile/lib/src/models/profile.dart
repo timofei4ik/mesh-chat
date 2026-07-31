@@ -1,3 +1,5 @@
+import 'mesh_studio_style.dart';
+
 class Profile {
   static const String defaultBackground = 'mesh';
   static const String defaultEffect = 'nodes';
@@ -48,7 +50,9 @@ class Profile {
   }
 
   static String normalizeBackground(String? value) {
-    return switch (value?.trim().toLowerCase()) {
+    final normalized = value?.trim().toLowerCase() ?? '';
+    if (_isRemoteAppearanceId(normalized)) return normalized;
+    return switch (normalized) {
       'aurora' => 'aurora',
       'starlight' => 'starlight',
       'stardust' => 'stardust',
@@ -60,12 +64,18 @@ class Profile {
       'sunset' => 'sunset',
       'frost' => 'frost',
       'orbit' => 'orbit',
+      'camp_clouds' => 'camp_clouds',
+      'camp_moon' => 'camp_moon',
+      'camp_ember' => 'camp_ember',
+      'camp_stories' => 'camp_stories',
+      'camp_rainlight' => 'camp_rainlight',
       _ => defaultBackground,
     };
   }
 
   String get effectiveProfileBanner {
     final background = effectiveProfileBackground;
+    if (_isRemoteAppearanceId(background)) return background;
     if ({
       'stardust',
       'nebula',
@@ -76,6 +86,11 @@ class Profile {
       'sunset',
       'frost',
       'orbit',
+      'camp_clouds',
+      'camp_moon',
+      'camp_ember',
+      'camp_stories',
+      'camp_rainlight',
     }.contains(background)) {
       return background;
     }
@@ -85,15 +100,24 @@ class Profile {
       'sunset_clouds' => 'sunset',
       'frost_bloom' => 'frost',
       'neon_orbit' => 'orbit',
+      'camp_clouds' => 'camp_clouds',
+      'camp_moon' => 'camp_moon',
+      'camp_ember' => 'camp_ember',
+      'camp_stories' => 'camp_stories',
+      'camp_rainlight' => 'camp_rainlight',
       _ => background,
     };
   }
 
   static String legacyCompatibleBackground(String? value) {
-    return switch (value?.trim().toLowerCase()) {
+    final normalized = value?.trim().toLowerCase() ?? '';
+    if (_isRemoteAppearanceId(normalized)) return 'starlight';
+    return switch (normalized) {
       'stardust' || 'orbit' || 'nebula' => 'starlight',
       'sunset' || 'frost' || 'ocean' || 'sakura' => 'aurora',
       'ember' || 'solar' => 'mesh',
+      'camp_clouds' || 'camp_moon' || 'camp_stories' => 'starlight',
+      'camp_ember' || 'camp_rainlight' => 'mesh',
       'aurora' => 'aurora',
       'starlight' => 'starlight',
       _ => defaultBackground,
@@ -134,25 +158,45 @@ class Profile {
   }
 
   static String normalizeAvatarDecoration(String? value) {
-    return switch (value?.trim().toLowerCase()) {
+    final normalized = value?.trim().toLowerCase() ?? '';
+    if (_isRemoteAppearanceId(normalized)) return normalized;
+    return switch (normalized) {
       'stardust' || 'stars' => 'stardust',
       'ember' || 'ember_flame' || 'flame' || 'fire' => 'ember',
       'sunset' || 'sunset_clouds' || 'clouds' => 'sunset_clouds',
       'orbit' || 'neon_orbit' => 'neon_orbit',
       'frost' || 'frost_bloom' => 'frost_bloom',
+      'camp_clouds' => 'camp_clouds',
+      'camp_moon' => 'camp_moon',
+      'camp_ember' => 'camp_ember',
+      'camp_stories' => 'camp_stories',
+      'camp_rainlight' => 'camp_rainlight',
       _ => defaultAvatarDecoration,
     };
   }
 
   String get effectiveAppearancePreset {
+    final remote = meshStudioAppearanceEffectForStyle(
+      effectiveAvatarDecoration,
+    );
+    if (remote != null) return remote;
     return switch (effectiveAvatarDecoration) {
       'stardust' => 'stardust',
       'ember' => 'ember',
       'sunset_clouds' => 'sunset',
       'frost_bloom' => 'frost',
       'neon_orbit' => 'orbit',
+      'camp_clouds' => 'sunset',
+      'camp_moon' => 'frost',
+      'camp_ember' => 'stardust',
+      'camp_stories' => 'orbit',
+      'camp_rainlight' => 'frost',
       _ => 'custom',
     };
+  }
+
+  static bool _isRemoteAppearanceId(String value) {
+    return RegExp(r'^remote_[a-z0-9_]{1,40}$').hasMatch(value);
   }
 
   String get effectiveNameEffect => effectiveAppearancePreset;
