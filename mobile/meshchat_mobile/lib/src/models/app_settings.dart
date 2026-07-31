@@ -13,6 +13,7 @@ class AppSettings {
     this.compressPhotos = true,
     this.sendFilesOriginal = true,
     this.dataSaver = false,
+    this.lowEndDeviceMode = false,
     this.reducedAnimations = false,
     this.messageEffectsEnabled = true,
     this.showOnline = true,
@@ -44,6 +45,7 @@ class AppSettings {
   final bool compressPhotos;
   final bool sendFilesOriginal;
   final bool dataSaver;
+  final bool lowEndDeviceMode;
   final bool reducedAnimations;
   final bool messageEffectsEnabled;
   final bool showOnline;
@@ -70,6 +72,7 @@ class AppSettings {
     bool? compressPhotos,
     bool? sendFilesOriginal,
     bool? dataSaver,
+    bool? lowEndDeviceMode,
     bool? reducedAnimations,
     bool? messageEffectsEnabled,
     bool? showOnline,
@@ -98,6 +101,7 @@ class AppSettings {
       compressPhotos: compressPhotos ?? this.compressPhotos,
       sendFilesOriginal: sendFilesOriginal ?? this.sendFilesOriginal,
       dataSaver: dataSaver ?? this.dataSaver,
+      lowEndDeviceMode: lowEndDeviceMode ?? this.lowEndDeviceMode,
       reducedAnimations: reducedAnimations ?? this.reducedAnimations,
       messageEffectsEnabled:
           messageEffectsEnabled ?? this.messageEffectsEnabled,

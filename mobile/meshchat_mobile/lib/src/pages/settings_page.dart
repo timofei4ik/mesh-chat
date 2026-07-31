@@ -1300,6 +1300,16 @@ class _MediaSettings extends StatelessWidget {
             ),
           ),
           SwitchListTile(
+            title: const Text('Low-end device mode'),
+            subtitle: const Text(
+              'Use static profile art and cheaper glass rendering',
+            ),
+            value: settings.lowEndDeviceMode,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(lowEndDeviceMode: value),
+            ),
+          ),
+          SwitchListTile(
             title: const Text('Reduced animations'),
             subtitle: const Text('Keep the glass UI, but pause glow effects'),
             value: settings.reducedAnimations,

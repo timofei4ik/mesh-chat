@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/profile.dart';
 import 'mesh_frame_clock.dart';
+import 'mesh_performance_scope.dart';
 
 class MeshProBadge extends StatelessWidget {
   const MeshProBadge({super.key, this.size = 18});
@@ -49,7 +50,9 @@ class MeshProProfileName extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (animate && profile.meshProBadge == true) {
+    if (animate &&
+        profile.meshProBadge == true &&
+        !MeshPerformanceScope.lowEndDeviceModeOf(context)) {
       return _AnimatedProfileName(
         profile: profile,
         style: style,

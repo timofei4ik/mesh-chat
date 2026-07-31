@@ -6,6 +6,7 @@ import 'pages/email_binding_page.dart';
 import 'pages/login_page.dart';
 import 'services/platform_capabilities.dart';
 import 'widgets/mesh_liquid_glass.dart';
+import 'widgets/mesh_performance_scope.dart';
 
 class MeshChatApp extends StatefulWidget {
   const MeshChatApp({
@@ -50,27 +51,30 @@ class _MeshChatAppState extends State<MeshChatApp> {
         listenable: controller,
         builder: (context, _) {
           final settings = controller.appSettings;
-          return MaterialApp(
-            debugShowCheckedModeBanner: false,
-            title: 'MeshChat',
-            themeMode: settings.themeMode,
-            theme: _theme(settings.accentColor, Brightness.light),
-            darkTheme: _theme(settings.accentColor, Brightness.dark),
-            home: Builder(
-              builder: (context) {
-                if (!controller.initialized) {
-                  return const Scaffold(
-                    body: Center(child: CircularProgressIndicator()),
-                  );
-                }
-                if (!controller.hasSession) {
-                  return LoginPage(controller: controller);
-                }
-                if (controller.emailBindingRequired) {
-                  return EmailBindingPage(controller: controller);
-                }
-                return ChatsPage(controller: controller);
-              },
+          return MeshPerformanceScope(
+            lowEndDeviceMode: settings.lowEndDeviceMode,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              title: 'MeshChat',
+              themeMode: settings.themeMode,
+              theme: _theme(settings.accentColor, Brightness.light),
+              darkTheme: _theme(settings.accentColor, Brightness.dark),
+              home: Builder(
+                builder: (context) {
+                  if (!controller.initialized) {
+                    return const Scaffold(
+                      body: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (!controller.hasSession) {
+                    return LoginPage(controller: controller);
+                  }
+                  if (controller.emailBindingRequired) {
+                    return EmailBindingPage(controller: controller);
+                  }
+                  return ChatsPage(controller: controller);
+                },
+              ),
             ),
           );
         },

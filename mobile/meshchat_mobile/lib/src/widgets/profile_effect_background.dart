@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/mesh_studio_style.dart';
 import '../models/profile.dart';
 import 'mesh_frame_clock.dart';
+import 'mesh_performance_scope.dart';
 import 'mesh_studio_image.dart';
 
 @visibleForTesting
@@ -36,8 +37,10 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   late final MeshFrameClock controller;
   bool appActive = true;
   bool tickerModeActive = true;
+  bool lowEndMode = false;
 
-  bool get canAnimate => widget.enabled && appActive && tickerModeActive;
+  bool get canAnimate =>
+      widget.enabled && !lowEndMode && appActive && tickerModeActive;
 
   @override
   void initState() {
@@ -58,8 +61,10 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   void didChangeDependencies() {
     super.didChangeDependencies();
     final next = TickerMode.valuesOf(context).enabled;
-    if (tickerModeActive == next) return;
+    final nextLowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
+    if (tickerModeActive == next && lowEndMode == nextLowEndMode) return;
     tickerModeActive = next;
+    lowEndMode = nextLowEndMode;
     _syncAnimationActivity();
   }
 
@@ -93,7 +98,25 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   @override
   Widget build(BuildContext context) {
     final background = widget.profile.effectiveProfileBanner;
-    final bannerAsset = meshStudioBannerAsset(background);
+    final bannerAsset = lowEndMode
+        ? meshStudioStaticBannerAsset(background)
+        : meshStudioBannerAsset(background);
+    if (lowEndMode && bannerAsset != null) {
+      return IgnorePointer(
+        child: RepaintBoundary(
+          child: ColoredBox(
+            color: const Color(0xFF081321),
+            child: MeshStudioImage(
+              source: bannerAsset,
+              fallbackAsset: meshStudioBundledBannerAsset(background),
+              fit: BoxFit.cover,
+              alignment: Alignment.center,
+              filterQuality: FilterQuality.medium,
+            ),
+          ),
+        ),
+      );
+    }
     final scene = Stack(
       fit: StackFit.expand,
       children: [
@@ -121,15 +144,13 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
         ],
         CustomPaint(
           isComplex: true,
-          willChange: widget.enabled,
+          willChange: canAnimate,
           painter: _ProfileEffectPainter(
             animation: controller,
             seed: 4,
             background: background,
             paintBackdrop: bannerAsset == null,
-            effect: widget.enabled
-                ? widget.profile.effectiveProfileEffect
-                : 'none',
+            effect: canAnimate ? widget.profile.effectiveProfileEffect : 'none',
             blinkShape: widget.profile.effectiveProfileBlinkShape,
             accent: Color(widget.profile.effectiveProfileAccent),
           ),

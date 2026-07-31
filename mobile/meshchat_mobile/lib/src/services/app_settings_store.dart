@@ -19,6 +19,7 @@ class AppSettingsStore {
       compressPhotos: prefs.getBool('compress_photos') ?? true,
       sendFilesOriginal: prefs.getBool('send_files_original') ?? true,
       dataSaver: prefs.getBool('data_saver') ?? false,
+      lowEndDeviceMode: prefs.getBool('low_end_device_mode') ?? false,
       reducedAnimations: prefs.getBool('reduced_animations') ?? false,
       messageEffectsEnabled: prefs.getBool('message_effects_enabled') ?? true,
       showOnline: prefs.getBool('privacy_show_online') ?? true,
@@ -57,6 +58,7 @@ class AppSettingsStore {
     await prefs.setBool('compress_photos', settings.compressPhotos);
     await prefs.setBool('send_files_original', settings.sendFilesOriginal);
     await prefs.setBool('data_saver', settings.dataSaver);
+    await prefs.setBool('low_end_device_mode', settings.lowEndDeviceMode);
     await prefs.setBool('reduced_animations', settings.reducedAnimations);
     await prefs.setBool(
       'message_effects_enabled',

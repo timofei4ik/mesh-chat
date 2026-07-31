@@ -16,8 +16,10 @@ import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/app_update_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
+import '../widgets/mesh_performance_scope.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
@@ -1546,7 +1548,9 @@ class _HomeShellState extends State<_HomeShell> {
       children: [
         Positioned.fill(
           child: _HomeLiquidBackground(
-            enabled: !widget.controller.appSettings.reducedAnimations,
+            enabled:
+                !widget.controller.appSettings.reducedAnimations &&
+                !MeshPerformanceScope.lowEndDeviceModeOf(context),
           ),
         ),
         SafeArea(
@@ -1558,6 +1562,7 @@ class _HomeShellState extends State<_HomeShell> {
                 onNewChat: () => widget.parent.startNew(context),
                 onSearch: () => widget.parent.openGlobalSearch(context),
               ),
+              const AppUpdateBanner(),
               _QueuedMessagesBanner(controller: controller),
               _HomeCallBanner(controller: controller),
               if (tab == _HomeTab.chats)

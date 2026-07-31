@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../services/platform_capabilities.dart';
 import '../utils/mesh_page_route.dart';
+import 'mesh_performance_scope.dart';
 
 typedef MeshGlassFallbackBuilder =
     Widget Function(BuildContext context, Widget child);
@@ -67,6 +68,9 @@ class MeshLiquidGlass extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (MeshPerformanceScope.lowEndDeviceModeOf(context)) {
+      return _lowEndSurface(context);
+    }
     if (!MeshPlatformScope.liquidGlassOf(context)) {
       return fallbackBuilder?.call(context, child) ?? child;
     }
@@ -89,6 +93,32 @@ class MeshLiquidGlass extends StatelessWidget {
             ? _routeTransitionSurface(context)
             : _revealedNativeGlass(context);
       },
+    );
+  }
+
+  Widget _lowEndSurface(BuildContext context) {
+    final tint = selected
+        ? 0.18
+        : prominent
+        ? 0.13
+        : dim
+        ? 0.045
+        : 0.08;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Color.alphaBlend(
+            accent.withValues(alpha: tint),
+            const Color(0xFF172231),
+          ),
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: selected ? 0.18 : 0.10),
+          ),
+        ),
+        child: child,
+      ),
     );
   }
 

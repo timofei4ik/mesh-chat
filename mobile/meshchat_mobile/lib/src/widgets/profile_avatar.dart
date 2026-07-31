@@ -9,6 +9,7 @@ import '../models/mesh_studio_style.dart';
 import '../models/profile.dart';
 import '../utils/animated_avatar_crop.dart';
 import 'mesh_frame_clock.dart';
+import 'mesh_performance_scope.dart';
 import 'mesh_studio_image.dart';
 
 class ProfileAvatar extends StatelessWidget {
@@ -29,12 +30,14 @@ class ProfileAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
     final image = _avatarImage(profile.avatarData);
     final crop = AnimatedAvatarCrop.tryParse(profile.avatarData);
     final decoration = profile.effectiveAvatarDecoration;
     final decorated =
         decoration != Profile.defaultAvatarDecoration && radius >= 16;
-    final shouldAnimateDecoration = animateDecoration ?? radius >= 40;
+    final shouldAnimateDecoration =
+        !lowEndMode && (animateDecoration ?? radius >= 40);
     final rasterDecoration = meshStudioDecorationAsset(
       decoration,
       animated: shouldAnimateDecoration,
