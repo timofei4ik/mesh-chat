@@ -36,6 +36,16 @@ enum _HomeFilter { all, personal, groups, channels, bluetooth }
 
 enum _HomeTab { chats, settings, bluetooth }
 
+class _NeverListenable implements Listenable {
+  const _NeverListenable();
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
+}
+
 class _ActionSheetGlass extends StatelessWidget {
   const _ActionSheetGlass({required this.children});
 
@@ -990,7 +1000,9 @@ class ChatsPage extends StatelessWidget {
       body: _ChatStackHost(
         controller: controller,
         home: ListenableBuilder(
-          listenable: controller,
+          // _HomeShell owns a throttled controller listener. Keeping this
+          // builder inert avoids rebuilding the entire home tree per packet.
+          listenable: const _NeverListenable(),
           builder: (context, _) {
             if (DateTime.now().microsecondsSinceEpoch >= 0) {
               return _HomeShell(parent: this, controller: controller);
@@ -1469,19 +1481,44 @@ class _HomeShellState extends State<_HomeShell> {
   double tabDirection = 1;
   double filterDirection = 1;
   final callAlert = CallAlertService();
+  Timer? lowEndRefreshTimer;
+  bool lowEndMode = false;
 
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(syncCallAlert);
+    widget.controller.addListener(_handleControllerChange);
     syncCallAlert();
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
+  }
+
+  @override
   void dispose() {
-    widget.controller.removeListener(syncCallAlert);
+    widget.controller.removeListener(_handleControllerChange);
+    lowEndRefreshTimer?.cancel();
     unawaited(callAlert.dispose());
     super.dispose();
+  }
+
+  void _handleControllerChange() {
+    if (!mounted) return;
+    if (!lowEndMode) {
+      syncCallAlert();
+      setState(() {});
+      return;
+    }
+    if (lowEndRefreshTimer != null) return;
+    lowEndRefreshTimer = Timer(const Duration(milliseconds: 100), () {
+      lowEndRefreshTimer = null;
+      if (!mounted) return;
+      syncCallAlert();
+      setState(() {});
+    });
   }
 
   void syncCallAlert() {

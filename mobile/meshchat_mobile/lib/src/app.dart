@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'controllers/app_controller.dart';
+import 'models/app_settings.dart';
 import 'pages/chats_page.dart';
 import 'pages/email_binding_page.dart';
 import 'pages/login_page.dart';
@@ -22,17 +23,26 @@ class MeshChatApp extends StatefulWidget {
 
 class _MeshChatAppState extends State<MeshChatApp> {
   late final AppController controller;
+  late final ValueNotifier<_AppVisualSettings> visualSettings;
+  late final ValueNotifier<_RootStage> rootStage;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
-    controller = AppController()..restoreSession();
+    controller = AppController();
+    visualSettings = ValueNotifier(_visualSettingsOf(controller.appSettings));
+    rootStage = ValueNotifier(_rootStageOf(controller));
+    controller.addListener(_syncRootState);
+    controller.restoreSession();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(_lifecycleObserver);
+    controller.removeListener(_syncRootState);
+    visualSettings.dispose();
+    rootStage.dispose();
     controller.dispose();
     super.dispose();
   }
@@ -47,10 +57,9 @@ class _MeshChatAppState extends State<MeshChatApp> {
   Widget build(BuildContext context) {
     return MeshPlatformScope(
       capabilities: widget.platformCapabilities,
-      child: ListenableBuilder(
-        listenable: controller,
-        builder: (context, _) {
-          final settings = controller.appSettings;
+      child: ValueListenableBuilder<_AppVisualSettings>(
+        valueListenable: visualSettings,
+        builder: (context, settings, _) {
           return MeshPerformanceScope(
             lowEndDeviceMode: settings.lowEndDeviceMode,
             child: MaterialApp(
@@ -59,20 +68,17 @@ class _MeshChatAppState extends State<MeshChatApp> {
               themeMode: settings.themeMode,
               theme: _theme(settings.accentColor, Brightness.light),
               darkTheme: _theme(settings.accentColor, Brightness.dark),
-              home: Builder(
-                builder: (context) {
-                  if (!controller.initialized) {
-                    return const Scaffold(
-                      body: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  if (!controller.hasSession) {
-                    return LoginPage(controller: controller);
-                  }
-                  if (controller.emailBindingRequired) {
-                    return EmailBindingPage(controller: controller);
-                  }
-                  return ChatsPage(controller: controller);
+              home: ValueListenableBuilder<_RootStage>(
+                valueListenable: rootStage,
+                builder: (context, stage, _) => switch (stage) {
+                  _RootStage.loading => const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  ),
+                  _RootStage.login => LoginPage(controller: controller),
+                  _RootStage.bindEmail => EmailBindingPage(
+                    controller: controller,
+                  ),
+                  _RootStage.chats => ChatsPage(controller: controller),
                 },
               ),
             ),
@@ -80,6 +86,26 @@ class _MeshChatAppState extends State<MeshChatApp> {
         },
       ),
     );
+  }
+
+  void _syncRootState() {
+    final nextVisual = _visualSettingsOf(controller.appSettings);
+    if (visualSettings.value != nextVisual) visualSettings.value = nextVisual;
+    final nextStage = _rootStageOf(controller);
+    if (rootStage.value != nextStage) rootStage.value = nextStage;
+  }
+
+  _AppVisualSettings _visualSettingsOf(AppSettings settings) => (
+    themeMode: settings.themeMode,
+    accentColor: settings.accentColor,
+    lowEndDeviceMode: settings.lowEndDeviceMode,
+  );
+
+  _RootStage _rootStageOf(AppController value) {
+    if (!value.initialized) return _RootStage.loading;
+    if (!value.hasSession) return _RootStage.login;
+    if (value.emailBindingRequired) return _RootStage.bindEmail;
+    return _RootStage.chats;
   }
 
   ThemeData _theme(Color accent, Brightness brightness) {
@@ -117,6 +143,14 @@ class _MeshChatAppState extends State<MeshChatApp> {
     );
   }
 }
+
+typedef _AppVisualSettings = ({
+  ThemeMode themeMode,
+  Color accentColor,
+  bool lowEndDeviceMode,
+});
+
+enum _RootStage { loading, login, bindEmail, chats }
 
 class _MeshChatLifecycleObserver extends WidgetsBindingObserver {
   _MeshChatLifecycleObserver({required this.onResumed, required this.onPaused});
