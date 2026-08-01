@@ -13,6 +13,7 @@ class MeshStudioImage extends StatelessWidget {
     this.fit = BoxFit.contain,
     this.alignment = Alignment.center,
     this.filterQuality = FilterQuality.medium,
+    this.cacheWidth,
   });
 
   final String source;
@@ -20,6 +21,7 @@ class MeshStudioImage extends StatelessWidget {
   final BoxFit fit;
   final AlignmentGeometry alignment;
   final FilterQuality filterQuality;
+  final int? cacheWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +31,7 @@ class MeshStudioImage extends StatelessWidget {
         fit: fit,
         alignment: alignment,
         filterQuality: filterQuality,
+        cacheWidth: cacheWidth,
         gaplessPlayback: true,
       );
     }
@@ -37,6 +40,7 @@ class MeshStudioImage extends StatelessWidget {
       fit: fit,
       alignment: alignment,
       filterQuality: filterQuality,
+      cacheWidth: cacheWidth,
       gaplessPlayback: true,
       errorBuilder: (_, _, _) {
         final fallback = fallbackAsset;
@@ -48,6 +52,7 @@ class MeshStudioImage extends StatelessWidget {
           fit: fit,
           alignment: alignment,
           filterQuality: filterQuality,
+          cacheWidth: cacheWidth,
           gaplessPlayback: true,
         );
       },

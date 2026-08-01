@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -27,6 +28,7 @@ class ProfileAvatar extends StatelessWidget {
   final double squareProgress;
 
   static final Map<String, MemoryImage> _imageCache = {};
+  static final Map<String, Future<ui.Image?>> _staticFrameCache = {};
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +77,13 @@ class ProfileAvatar extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
+                      )
+                    : lowEndMode
+                    ? _StaticAvatarImage(
+                        cacheKey: profile.avatarData,
+                        bytes: _avatarBytes(profile.avatarData)!,
+                        diameter: avatarRadius * 2,
+                        crop: crop,
                       )
                     : _AvatarImage(
                         image: image,
@@ -152,6 +161,66 @@ class ProfileAvatar extends StatelessWidget {
         .map((part) => part.characters.first.toUpperCase())
         .join();
     return result.isEmpty ? '?' : result;
+  }
+
+  static Future<ui.Image?> _staticFrame(String key, Uint8List bytes) {
+    return _staticFrameCache.putIfAbsent(key, () async {
+      try {
+        if (_staticFrameCache.length > 48) _staticFrameCache.clear();
+        final codec = await ui.instantiateImageCodec(bytes, targetWidth: 256);
+        final frame = await codec.getNextFrame();
+        codec.dispose();
+        return frame.image;
+      } catch (_) {
+        return null;
+      }
+    });
+  }
+}
+
+class _StaticAvatarImage extends StatelessWidget {
+  const _StaticAvatarImage({
+    required this.cacheKey,
+    required this.bytes,
+    required this.diameter,
+    required this.crop,
+  });
+
+  final String cacheKey;
+  final Uint8List bytes;
+  final double diameter;
+  final AnimatedAvatarCrop? crop;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<ui.Image?>(
+      future: ProfileAvatar._staticFrame(cacheKey, bytes),
+      builder: (context, snapshot) {
+        final image = snapshot.data;
+        if (image == null) return const SizedBox.expand();
+        Widget content = SizedBox(
+          width: diameter,
+          height: diameter,
+          child: RawImage(
+            image: image,
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.medium,
+          ),
+        );
+        final value = crop;
+        if (value == null) return content;
+        final ratio = diameter / animatedAvatarCropViewport;
+        content = Transform.translate(
+          offset: Offset(value.translateX * ratio, value.translateY * ratio),
+          child: Transform.scale(
+            scale: value.scale,
+            alignment: Alignment.topLeft,
+            child: content,
+          ),
+        );
+        return content;
+      },
+    );
   }
 }
 

@@ -112,6 +112,7 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
               fit: BoxFit.cover,
               alignment: Alignment.center,
               filterQuality: FilterQuality.medium,
+              cacheWidth: 720,
             ),
           ),
         ),

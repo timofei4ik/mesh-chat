@@ -5141,6 +5141,7 @@ class _HomeGlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
     final nativeMaterial = MeshPlatformScope.liquidGlassOf(context);
     final base = nativeMaterial
         ? selected
@@ -5220,7 +5221,7 @@ class _HomeGlassSurface extends StatelessWidget {
     );
     final clipped = ClipRRect(
       borderRadius: BorderRadius.circular(radius),
-      child: nativeMaterial
+      child: nativeMaterial || lowEndMode
           ? surface
           : BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),

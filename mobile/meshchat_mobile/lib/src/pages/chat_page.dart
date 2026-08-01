@@ -29,6 +29,7 @@ import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
+import '../widgets/mesh_performance_scope.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
 import '../widgets/message_send_effect.dart';
@@ -3426,6 +3427,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               child: _LiquidMeshBackground(
                 enabled:
                     !widget.controller.appSettings.reducedAnimations &&
+                    !MeshPerformanceScope.lowEndDeviceModeOf(context) &&
                     widget.thread.animatedBackground,
                 themeId: widget.thread.themeId,
               ),
@@ -7254,9 +7256,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
     if (!shouldLoad) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      unawaited(
-        widget.controller.ensureMediaAvailable(widget.thread, message),
-      );
+      unawaited(widget.controller.ensureMediaAvailable(widget.thread, message));
     });
   }
 
@@ -8822,10 +8822,8 @@ class _FilePreviewState extends State<_FilePreview> {
         mainAxisSize: MainAxisSize.min,
         children: [
           InkWell(
-            onTap: () => widget.controller.ensureMediaAvailable(
-              widget.thread,
-              message,
-            ),
+            onTap: () =>
+                widget.controller.ensureMediaAvailable(widget.thread, message),
             child: _UnavailableFilePreview(
               icon: Icons.cloud_download_outlined,
               title: message.fileName.isEmpty ? 'Photo' : message.fileName,
@@ -8844,10 +8842,8 @@ class _FilePreviewState extends State<_FilePreview> {
     if (isAudioName(message.fileName)) {
       if (message.fileData.isEmpty) {
         return InkWell(
-          onTap: () => widget.controller.ensureMediaAvailable(
-            widget.thread,
-            message,
-          ),
+          onTap: () =>
+              widget.controller.ensureMediaAvailable(widget.thread, message),
           child: _UnavailableFilePreview(
             icon: Icons.graphic_eq_rounded,
             title: message.fileName.isEmpty
