@@ -1483,10 +1483,12 @@ class _HomeShellState extends State<_HomeShell> {
   final callAlert = CallAlertService();
   Timer? lowEndRefreshTimer;
   bool lowEndMode = false;
+  late int homeFingerprint;
 
   @override
   void initState() {
     super.initState();
+    homeFingerprint = _computeHomeFingerprint();
     widget.controller.addListener(_handleControllerChange);
     syncCallAlert();
   }
@@ -1507,6 +1509,9 @@ class _HomeShellState extends State<_HomeShell> {
 
   void _handleControllerChange() {
     if (!mounted) return;
+    final nextFingerprint = _computeHomeFingerprint();
+    if (homeFingerprint == nextFingerprint) return;
+    homeFingerprint = nextFingerprint;
     if (!lowEndMode) {
       syncCallAlert();
       setState(() {});
@@ -1519,6 +1524,47 @@ class _HomeShellState extends State<_HomeShell> {
       syncCallAlert();
       setState(() {});
     });
+  }
+
+  int _computeHomeFingerprint() {
+    final controller = widget.controller;
+    final threads = controller.sortedThreads;
+    final peers = controller.ble.peers;
+    return Object.hash(
+      controller.status,
+      controller.queuedMessageCount,
+      identityHashCode(controller.activeCall),
+      Object.hashAll(
+        threads.map(
+          (thread) => Object.hash(
+            thread.storageKey,
+            identityHashCode(thread.profile),
+            identityHashCode(thread.lastMessage),
+            thread.unread,
+            thread.draft,
+            thread.archived,
+            thread.pinned,
+            thread.muted,
+            thread.members.length,
+          ),
+        ),
+      ),
+      Object.hashAll(controller.stories.values.map(identityHashCode)),
+      controller.ble.running,
+      controller.ble.scanning,
+      controller.ble.queuedCount,
+      Object.hashAll(
+        peers.map(
+          (peer) => Object.hash(
+            peer.id,
+            peer.nodeId,
+            peer.rssi,
+            peer.connected,
+            peer.lastSeen,
+          ),
+        ),
+      ),
+    );
   }
 
   void syncCallAlert() {

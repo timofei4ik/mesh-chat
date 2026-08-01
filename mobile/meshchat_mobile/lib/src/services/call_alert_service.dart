@@ -26,6 +26,7 @@ class CallAlertService {
     final shouldAlert =
         call != null && call.incoming && call.status == CallStatus.ringing;
     if (!shouldAlert) {
+      if (_activeCallId.isEmpty && _vibrationTimer == null) return;
       await stop();
       return;
     }
@@ -41,6 +42,7 @@ class CallAlertService {
   }
 
   Future<void> stop() async {
+    if (_activeCallId.isEmpty && _vibrationTimer == null) return;
     await stopAll();
   }
 

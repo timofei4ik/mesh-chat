@@ -119,6 +119,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool messageListScrolling = false;
   bool pendingMessageListRefresh = false;
   bool followLatestMessages = true;
+  late int messageListFingerprint;
 
   bool get isChannelCommentThread =>
       widget.thread.isChannel && widget.channelPost != null;
@@ -228,6 +229,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
     });
     scroll.addListener(handleScroll);
+    messageListFingerprint = _computeMessageListFingerprint();
     widget.controller.addListener(syncMessageList);
     widget.controller.markRead(widget.thread);
     widget.controller.setActiveThread(widget.thread);
@@ -1798,11 +1800,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   void syncMessageList() {
     if (!mounted) return;
+    final nextFingerprint = _computeMessageListFingerprint();
+    if (messageListFingerprint == nextFingerprint) return;
+    messageListFingerprint = nextFingerprint;
     if (messageListScrolling) {
       pendingMessageListRefresh = true;
       return;
     }
     messageListRefresh.value++;
+  }
+
+  int _computeMessageListFingerprint() {
+    return Object.hash(
+      Object.hashAll(widget.thread.messages.map(identityHashCode)),
+      Object.hashAll(widget.thread.pinnedMessageIds),
+      widget.thread.commentsEnabled,
+    );
   }
 
   void handleScroll() {
@@ -7285,6 +7298,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
   Widget build(BuildContext context) {
     final message = widget.message;
     final mine = widget.mine;
+    final lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
     final imageBytes = _MessageBubble.imageBytesFor(
       message,
       dataSaver: widget.dataSaver,
@@ -7293,7 +7307,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: animateAppearance ? 0 : 1, end: appeared ? 1 : 0),
       duration: animateAppearance
-          ? const Duration(milliseconds: 220)
+          ? lowEndMode
+                ? Duration.zero
+                : const Duration(milliseconds: 220)
           : Duration.zero,
       curve: Curves.easeOutQuart,
       builder: (context, value, child) => Opacity(
@@ -7358,7 +7374,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
                       ? null
                       : () => _showImage(context, imageBytes, message.id)),
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 120),
+                duration: lowEndMode
+                    ? Duration.zero
+                    : const Duration(milliseconds: 120),
                 curve: Curves.easeOutCubic,
                 transform: Matrix4.translationValues(replyDrag, 0, 0),
                 transformAlignment: Alignment.center,
@@ -7368,6 +7386,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   messageId: message.id,
                   effect: message.messageEffect,
                   enabled:
+                      !lowEndMode &&
                       widget.controller.appSettings.messageEffectsEnabled &&
                       !widget.controller.appSettings.reducedAnimations &&
                       message.messageEffect != 'none' &&
@@ -8642,6 +8661,64 @@ class _MeetingStatusChip extends StatelessWidget {
   }
 }
 
+class _EfficientMemoryImage extends StatelessWidget {
+  const _EfficientMemoryImage({
+    required this.cacheKey,
+    required this.bytes,
+    required this.fit,
+    required this.fallback,
+    this.gaplessPlayback = false,
+  });
+
+  static final Map<String, Future<FrameInfo?>> _firstFrameCache = {};
+
+  final String cacheKey;
+  final Uint8List bytes;
+  final BoxFit fit;
+  final Widget fallback;
+  final bool gaplessPlayback;
+
+  static Future<FrameInfo?> _firstFrame(String key, Uint8List bytes) {
+    return _firstFrameCache.putIfAbsent(key, () async {
+      try {
+        if (_firstFrameCache.length > 64) _firstFrameCache.clear();
+        final codec = await instantiateImageCodec(bytes, targetWidth: 720);
+        final frame = await codec.getNextFrame();
+        codec.dispose();
+        return frame;
+      } catch (_) {
+        return null;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!MeshPerformanceScope.lowEndDeviceModeOf(context)) {
+      return Image.memory(
+        bytes,
+        fit: fit,
+        gaplessPlayback: gaplessPlayback,
+        cacheWidth: 1080,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (_, _, _) => fallback,
+      );
+    }
+    return FutureBuilder<FrameInfo?>(
+      future: _firstFrame(cacheKey, bytes),
+      builder: (context, snapshot) {
+        final frame = snapshot.data;
+        if (frame == null) return fallback;
+        return RawImage(
+          image: frame.image,
+          fit: fit,
+          filterQuality: FilterQuality.low,
+        );
+      },
+    );
+  }
+}
+
 class _StickerMessagePreview extends StatelessWidget {
   const _StickerMessagePreview({
     required this.message,
@@ -8672,12 +8749,15 @@ class _StickerMessagePreview extends StatelessWidget {
           minHeight: 92,
           maxHeight: 190,
         ),
-        child: Image.memory(
-          bytes,
+        child: _EfficientMemoryImage(
+          cacheKey: 'sticker:${message.id}:${bytes.length}',
+          bytes: bytes,
           fit: BoxFit.contain,
           gaplessPlayback: true,
-          errorBuilder: (_, _, _) =>
-              const Icon(Icons.broken_image_rounded, color: Colors.white38),
+          fallback: const Icon(
+            Icons.broken_image_rounded,
+            color: Colors.white38,
+          ),
         ),
       ),
     );
@@ -8788,10 +8868,15 @@ class _FilePreviewState extends State<_FilePreview> {
                   maxWidth: 300,
                   maxHeight: 260,
                 ),
-                child: Image.memory(
-                  bytes,
+                child: _EfficientMemoryImage(
+                  cacheKey: 'file:${message.id}:${bytes.length}',
+                  bytes: bytes,
                   fit: BoxFit.cover,
                   gaplessPlayback: true,
+                  fallback: const Icon(
+                    Icons.broken_image_rounded,
+                    color: Colors.white38,
+                  ),
                 ),
               ),
             ),
