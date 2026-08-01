@@ -31,6 +31,7 @@ class _MeshChatAppState extends State<MeshChatApp> {
     super.initState();
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
     controller = AppController();
+    _configureImageCache(controller.appSettings.lowEndDeviceMode);
     visualSettings = ValueNotifier(_visualSettingsOf(controller.appSettings));
     rootStage = ValueNotifier(_rootStageOf(controller));
     controller.addListener(_syncRootState);
@@ -90,9 +91,21 @@ class _MeshChatAppState extends State<MeshChatApp> {
 
   void _syncRootState() {
     final nextVisual = _visualSettingsOf(controller.appSettings);
-    if (visualSettings.value != nextVisual) visualSettings.value = nextVisual;
+    if (visualSettings.value != nextVisual) {
+      if (visualSettings.value.lowEndDeviceMode !=
+          nextVisual.lowEndDeviceMode) {
+        _configureImageCache(nextVisual.lowEndDeviceMode);
+      }
+      visualSettings.value = nextVisual;
+    }
     final nextStage = _rootStageOf(controller);
     if (rootStage.value != nextStage) rootStage.value = nextStage;
+  }
+
+  void _configureImageCache(bool lowEndMode) {
+    final cache = PaintingBinding.instance.imageCache;
+    cache.maximumSize = lowEndMode ? 160 : 1000;
+    cache.maximumSizeBytes = lowEndMode ? 48 << 20 : 100 << 20;
   }
 
   _AppVisualSettings _visualSettingsOf(AppSettings settings) => (

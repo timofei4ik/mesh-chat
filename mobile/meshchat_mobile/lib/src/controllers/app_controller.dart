@@ -403,6 +403,9 @@ class AppController extends ChangeNotifier {
   final Map<String, Map<String, _GroupKey>> _groupKeyHistory = {};
   final Map<String, Map<String, Set<String>>> _reactionActors = {};
   final Map<String, Timer> _draftSyncTimers = {};
+  Timer? _draftCacheSaveTimer;
+  Future<void>? _cacheSaveFuture;
+  bool _cacheSavePending = false;
   final Map<String, int> _draftVersions = {};
   final Map<String, bool> _archiveStates = {};
   NotificationTarget? _pendingNotificationTarget;
@@ -4614,7 +4617,14 @@ class AppController extends ChangeNotifier {
   void updateDraft(ChatThread thread, String value) {
     if (thread.draft == value) return;
     thread.draft = value;
-    unawaited(_saveCache());
+    _draftCacheSaveTimer?.cancel();
+    // Persist only after typing settles. Serializing every cached thread while
+    // the user is actively typing causes visible frame drops on older phones.
+    _draftCacheSaveTimer = Timer(const Duration(milliseconds: 1200), () {
+      _draftCacheSaveTimer = null;
+      unawaited(_saveCache());
+      notifyListeners();
+    });
     final chatKey = chatPreferenceKey(thread);
     _draftSyncTimers.remove(chatKey)?.cancel();
     if (!thread.isBluetooth && chatKey.isNotEmpty) {
@@ -4638,7 +4648,6 @@ class AppController extends ChangeNotifier {
         });
       });
     }
-    notifyListeners();
   }
 
   void toggleThreadArchive(ChatThread thread) {
@@ -9969,6 +9978,8 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _draftSyncTimers.clear();
+    _draftCacheSaveTimer?.cancel();
+    _draftCacheSaveTimer = null;
     _draftVersions.clear();
     _archiveStates.clear();
     _incomingPreviewTimer?.cancel();
@@ -10067,12 +10078,31 @@ class AppController extends ChangeNotifier {
     _passwordChangeCompleters.clear();
   }
 
-  Future<void> _saveCache() async {
-    try {
-      await _cache.save(session, [...threads.values, ...groups.values]);
-    } catch (_) {
-      // Web storage can reject writes when Safari quota is exhausted.
-      // The app should keep working; sync can restore data later.
+  Future<void> _saveCache() {
+    _cacheSavePending = true;
+    final existing = _cacheSaveFuture;
+    if (existing != null) return existing;
+    late final Future<void> future;
+    future = _drainCacheSaves().whenComplete(() {
+      if (identical(_cacheSaveFuture, future)) _cacheSaveFuture = null;
+      if (_cacheSavePending) unawaited(_saveCache());
+    });
+    _cacheSaveFuture = future;
+    return future;
+  }
+
+  Future<void> _drainCacheSaves() async {
+    while (_cacheSavePending) {
+      // Message acknowledgements and sync deltas commonly arrive in short
+      // bursts. Let the burst settle so it becomes one SQLite transaction.
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      _cacheSavePending = false;
+      try {
+        await _cache.save(session, [...threads.values, ...groups.values]);
+      } catch (_) {
+        // Web storage can reject writes when Safari quota is exhausted.
+        // The app should keep working; sync can restore data later.
+      }
     }
   }
 
@@ -10181,6 +10211,8 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _draftSyncTimers.clear();
+    _draftCacheSaveTimer?.cancel();
+    _draftCacheSaveTimer = null;
     _softResyncTimer = null;
     _incomingPreviewTimer = null;
     unawaited(CallAlertService.stopAll());

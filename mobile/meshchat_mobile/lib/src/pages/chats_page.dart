@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
@@ -1418,9 +1419,20 @@ class _ChatStackHostState extends State<_ChatStackHost>
         return Stack(
           fit: StackFit.expand,
           children: [
-            TickerMode(
-              enabled: thread == null,
+            AnimatedBuilder(
+              animation: transition,
               child: RepaintBoundary(child: widget.home),
+              builder: (context, child) {
+                final hiddenBehindSettledChat =
+                    thread != null &&
+                    !opening &&
+                    !dragging &&
+                    transition.value >= 0.999;
+                return Offstage(
+                  offstage: hiddenBehindSettledChat,
+                  child: TickerMode(enabled: thread == null, child: child!),
+                );
+              },
             ),
             if (chatLayer != null)
               IgnorePointer(
@@ -1509,21 +1521,24 @@ class _HomeShellState extends State<_HomeShell> {
 
   void _handleControllerChange() {
     if (!mounted) return;
+    if (lowEndMode) {
+      if (lowEndRefreshTimer != null) return;
+      lowEndRefreshTimer = Timer(const Duration(milliseconds: 100), () {
+        lowEndRefreshTimer = null;
+        if (!mounted) return;
+        final nextFingerprint = _computeHomeFingerprint();
+        if (homeFingerprint == nextFingerprint) return;
+        homeFingerprint = nextFingerprint;
+        syncCallAlert();
+        setState(() {});
+      });
+      return;
+    }
     final nextFingerprint = _computeHomeFingerprint();
     if (homeFingerprint == nextFingerprint) return;
     homeFingerprint = nextFingerprint;
-    if (!lowEndMode) {
-      syncCallAlert();
-      setState(() {});
-      return;
-    }
-    if (lowEndRefreshTimer != null) return;
-    lowEndRefreshTimer = Timer(const Duration(milliseconds: 100), () {
-      lowEndRefreshTimer = null;
-      if (!mounted) return;
-      syncCallAlert();
-      setState(() {});
-    });
+    syncCallAlert();
+    setState(() {});
   }
 
   int _computeHomeFingerprint() {
@@ -2103,6 +2118,8 @@ class _StoryTile extends StatelessWidget {
                                   image,
                                   fit: BoxFit.cover,
                                   width: double.infinity,
+                                  cacheWidth: 240,
+                                  filterQuality: FilterQuality.medium,
                                   gaplessPlayback: true,
                                 ),
                         ),
@@ -2280,6 +2297,9 @@ class _StoryArchivePage extends StatelessWidget {
                                                   image,
                                                   width: double.infinity,
                                                   fit: BoxFit.cover,
+                                                  cacheWidth: 640,
+                                                  filterQuality:
+                                                      FilterQuality.medium,
                                                 ),
                                         ),
                                       ),
@@ -2904,14 +2924,34 @@ String _formatStoryArchiveDate(DateTime date) {
 
 Uint8List? _storyImage(String value) {
   if (value.isEmpty) return null;
+  final cached = _storyImageCache[value];
+  if (cached != null) {
+    _storyImageCache.remove(value);
+    _storyImageCache[value] = cached;
+    return cached;
+  }
   final comma = value.indexOf(',');
   final raw = comma >= 0 ? value.substring(comma + 1) : value;
   try {
-    return base64Decode(raw);
+    final bytes = base64Decode(raw);
+    if (bytes.lengthInBytes > _storyImageCacheBudget) return bytes;
+    while (_storyImageCache.isNotEmpty &&
+        _storyImageCacheSize + bytes.lengthInBytes > _storyImageCacheBudget) {
+      final removed = _storyImageCache.remove(_storyImageCache.keys.first);
+      if (removed != null) _storyImageCacheSize -= removed.lengthInBytes;
+    }
+    _storyImageCache[value] = bytes;
+    _storyImageCacheSize += bytes.lengthInBytes;
+    return bytes;
   } catch (_) {
     return null;
   }
 }
+
+final LinkedHashMap<String, Uint8List> _storyImageCache =
+    LinkedHashMap<String, Uint8List>();
+int _storyImageCacheSize = 0;
+const int _storyImageCacheBudget = 16 * 1024 * 1024;
 
 class _AnimatedChatEntrance extends StatelessWidget {
   const _AnimatedChatEntrance({
@@ -2925,6 +2965,7 @@ class _AnimatedChatEntrance extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (MeshPerformanceScope.lowEndDeviceModeOf(context)) return child;
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
       duration: Duration(milliseconds: 240 + math.min(index, 5) * 35),
@@ -5237,6 +5278,34 @@ class _HomeGlassSurface extends StatelessWidget {
         : dim
         ? const Color(0xFF18222D)
         : const Color(0xFF243241);
+    if (lowEndMode) {
+      return RepaintBoundary(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(radius),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(radius),
+              color: Color.alphaBlend(
+                base.withValues(
+                  alpha: selected
+                      ? 0.92
+                      : dim
+                      ? 0.78
+                      : 0.86,
+                ),
+                const Color(0xFF101A25),
+              ),
+              border: Border.all(
+                color: selected
+                    ? accent.withValues(alpha: 0.36)
+                    : Colors.white.withValues(alpha: 0.10),
+              ),
+            ),
+            child: child,
+          ),
+        ),
+      );
+    }
     final alpha = nativeMaterial
         ? selected
               ? 0.38

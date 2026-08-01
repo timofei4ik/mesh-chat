@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -29,11 +30,18 @@ class ProfileAvatar extends StatelessWidget {
 
   static final Map<String, MemoryImage> _imageCache = {};
   static final Map<String, Future<ui.Image?>> _staticFrameCache = {};
+  static final LinkedHashMap<String, Uint8List> _bytesCache =
+      LinkedHashMap<String, Uint8List>();
+  static int _bytesCacheSize = 0;
+  static const int _bytesCacheBudget = 16 * 1024 * 1024;
 
   @override
   Widget build(BuildContext context) {
     final lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
-    final image = _avatarImage(profile.avatarData);
+    final avatarBytes = _avatarBytes(profile.avatarData);
+    final image = lowEndMode
+        ? null
+        : _avatarImage(profile.avatarData, bytes: avatarBytes);
     final crop = AnimatedAvatarCrop.tryParse(profile.avatarData);
     final decoration = profile.effectiveAvatarDecoration;
     final decorated =
@@ -67,7 +75,7 @@ class ProfileAvatar extends StatelessWidget {
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(cornerRadius),
-                child: image == null
+                child: avatarBytes == null
                     ? Center(
                         child: Text(
                           _initials(profile.displayName),
@@ -81,12 +89,12 @@ class ProfileAvatar extends StatelessWidget {
                     : lowEndMode
                     ? _StaticAvatarImage(
                         cacheKey: profile.avatarData,
-                        bytes: _avatarBytes(profile.avatarData)!,
+                        bytes: avatarBytes,
                         diameter: avatarRadius * 2,
                         crop: crop,
                       )
                     : _AvatarImage(
-                        image: image,
+                        image: image!,
                         diameter: avatarRadius * 2,
                         crop: crop,
                       ),
@@ -132,22 +140,38 @@ class ProfileAvatar extends StatelessWidget {
     return RepaintBoundary(child: avatar);
   }
 
-  static MemoryImage? _avatarImage(String value) {
+  static MemoryImage? _avatarImage(String value, {Uint8List? bytes}) {
     if (value.isEmpty) return null;
     final cached = _imageCache[value];
     if (cached != null) return cached;
-    final bytes = _avatarBytes(value);
-    if (bytes == null) return null;
-    if (_imageCache.length > 80) _imageCache.clear();
-    return _imageCache[value] = MemoryImage(bytes);
+    final resolvedBytes = bytes ?? _avatarBytes(value);
+    if (resolvedBytes == null) return null;
+    if (_imageCache.length > 40) _imageCache.clear();
+    return _imageCache[value] = MemoryImage(resolvedBytes);
   }
 
   static Uint8List? _avatarBytes(String value) {
     if (value.isEmpty) return null;
+    final cached = _bytesCache.remove(value);
+    if (cached != null) {
+      _bytesCache[value] = cached;
+      return cached;
+    }
     final comma = value.indexOf(',');
     final raw = comma >= 0 ? value.substring(comma + 1) : value;
     try {
-      return base64Decode(raw);
+      final bytes = base64Decode(raw);
+      while (_bytesCache.isNotEmpty &&
+          _bytesCacheSize + bytes.lengthInBytes > _bytesCacheBudget) {
+        final oldestKey = _bytesCache.keys.first;
+        final removed = _bytesCache.remove(oldestKey);
+        if (removed != null) _bytesCacheSize -= removed.lengthInBytes;
+      }
+      if (bytes.lengthInBytes <= _bytesCacheBudget) {
+        _bytesCache[value] = bytes;
+        _bytesCacheSize += bytes.lengthInBytes;
+      }
+      return bytes;
     } catch (_) {
       return null;
     }
@@ -166,7 +190,7 @@ class ProfileAvatar extends StatelessWidget {
   static Future<ui.Image?> _staticFrame(String key, Uint8List bytes) {
     return _staticFrameCache.putIfAbsent(key, () async {
       try {
-        if (_staticFrameCache.length > 48) _staticFrameCache.clear();
+        if (_staticFrameCache.length > 24) _staticFrameCache.clear();
         final codec = await ui.instantiateImageCodec(bytes, targetWidth: 256);
         final frame = await codec.getNextFrame();
         codec.dispose();
