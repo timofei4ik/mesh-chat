@@ -13,11 +13,15 @@ continue to receive the legacy WebSocket chunk stream.
 3. The server verifies that the account is a direct participant or a current
    member of the target group and returns a short-lived, file-scoped bearer
    token.
-4. The client downloads `/media/v2/{file_id}` and resumes an interrupted
-   transfer with an HTTP `Range` request.
-5. The client verifies size and SHA-256 before atomically moving the file into
-   its local LRU cache. Group payloads are decrypted only after the encrypted
-   bytes pass integrity verification.
+4. The client downloads `/media/v2/{file_id}` and keeps interrupted bytes in a
+   persistent `.part` file. The next attempt resumes with an HTTP `Range`
+   request and rejects a mismatched `Content-Range` rather than joining bytes
+   from different representations.
+5. The client verifies size and SHA-256 as a stream before atomically moving
+   the file into its local LRU cache. A corrupt partial is discarded and the
+   transfer is retried once from byte zero. Group payloads are decrypted only
+   after the encrypted bytes pass integrity verification. Abandoned partials
+   are removed after seven days.
 
 Tokens expire after ten minutes by default. A shared signing secret allows the
 standalone media service to validate tokens issued by any Chat/Sync worker.
