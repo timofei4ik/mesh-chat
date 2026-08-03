@@ -168,14 +168,42 @@ class ServerPushMixin:
         if app is None:
             return
         data = self._android_push_data(notification)
+        packet_type = data["type"]
+        is_cancel = data["cancel"] == "true"
+        channel_id = (
+            "meshchat_calls"
+            if packet_type == "call_offer"
+            else "meshchat_messages"
+        )
         for token in self.android_push_tokens_for_node(destination_node):
+            android_notification = None
+            firebase_notification = None
+            if not is_cancel:
+                # Keep the notification payload until all installed Android
+                # clients have the native data-message renderer. New clients
+                # still receive the complete data payload, while old clients
+                # continue to show notifications when the app is terminated.
+                firebase_notification = messaging.Notification(
+                    title=data["title"],
+                    body=data["body"],
+                )
+                android_notification = messaging.AndroidNotification(
+                    channel_id=channel_id,
+                    sound="default",
+                    visibility="public",
+                    tag=(
+                        f"meshchat_call_{data['call_id']}"
+                        if packet_type == "call_offer"
+                        else (data["tag"] or None)
+                    ),
+                )
             message = messaging.Message(
+                notification=firebase_notification,
                 data=data,
                 android=messaging.AndroidConfig(
                     priority="high",
-                    collapse_key=(
-                        str(notification.get("tag") or "") or None
-                    ),
+                    collapse_key=(data["tag"] or None),
+                    notification=android_notification,
                 ),
                 token=token,
             )
