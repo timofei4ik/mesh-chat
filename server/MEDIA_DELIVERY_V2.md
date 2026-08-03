@@ -42,3 +42,12 @@ production unit binds `127.0.0.1:8777` and can be configured with:
 Completed uploads are stored by SHA-256 in the configured object root. Expose
 the service through nginx with `nginx_media_v2.conf`. Keep it bound to loopback
 so token validation cannot be bypassed through a second public listener.
+
+## Observability
+
+`/media/health` includes a point-in-time metrics object. `/media/metrics` and
+`/metrics` expose the same counters in Prometheus text format, including active
+downloads, range requests, response bytes, authorization failures, invalid
+ranges, storage kind, and server errors. Alert on sustained authorization or
+server errors rather than individual interrupted range requests: resumable
+clients deliberately reconnect after network loss.

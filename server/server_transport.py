@@ -146,8 +146,8 @@ class ServerTransportMixin:
             manifest_delivered = await self._send_live_packet(
                 destination_node,
                 {
-                    "type": "file_manifest",
                     **metadata,
+                    "type": "file_manifest",
                     "file_id": transfer_result.get("file_id") or "",
                     "media_id": metadata.get("media_id") or "",
                     "file_sha256": transfer_result.get("sha256") or "",

@@ -168,6 +168,45 @@ class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("group-7", payload["group_id"])
         self.assertIn("group_id=group-7", payload["url"])
 
+    def test_android_data_payload_is_self_contained_for_terminated_app(self):
+        relay = FakePushServer()
+        payload = relay._web_push_payload(
+            {
+                "type": "group_message",
+                "packet_id": "packet-group",
+                "source_node": "alice-device",
+                "group_id": "group-7",
+                "group_name": "Friends",
+            }
+        )
+
+        data = relay._android_push_data(payload)
+
+        self.assertEqual("group_message", data["type"])
+        self.assertEqual("Friends", data["title"])
+        self.assertEqual("alice-device", data["source_node"])
+        self.assertEqual("group-7", data["group_id"])
+        self.assertEqual("false", data["cancel"])
+        self.assertTrue(data["body"])
+
+    def test_android_call_end_payload_carries_native_cancel_signal(self):
+        relay = FakePushServer()
+        payload = relay._web_push_payload(
+            {
+                "type": "call_end",
+                "packet_id": "packet-end",
+                "call_id": "call-42",
+                "source_node": "alice-device",
+            }
+        )
+
+        data = relay._android_push_data(payload)
+
+        self.assertEqual("call_end", data["type"])
+        self.assertEqual("call-42", data["call_id"])
+        self.assertEqual("call:call-42", data["tag"])
+        self.assertEqual("true", data["cancel"])
+
 
 if __name__ == "__main__":
     unittest.main()

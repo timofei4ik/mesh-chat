@@ -145,3 +145,19 @@ class MediaDeliveryTests(unittest.TestCase):
         self.assertEqual((206, 4, 9), parse("bytes=4-", 10))
         self.assertEqual(416, parse("bytes=20-", 10)[0])
         self.assertEqual(416, parse("bytes=0-1,4-5", 10)[0])
+
+    def test_media_metrics_track_ranges_bytes_and_storage_kind(self):
+        server = MediaHttpServer(self.relay)
+        server._metrics["requests_total"] = 2
+        server._record_download_response(206, 8, "object")
+        server._record_download_response(200, 4, "inline", is_head=True)
+
+        snapshot = server.metrics_snapshot()
+        self.assertEqual(2, snapshot["requests_total"])
+        self.assertEqual(2, snapshot["authorized_total"])
+        self.assertEqual(1, snapshot["range_requests_total"])
+        self.assertEqual(8, snapshot["response_bytes_total"])
+        metrics = server.prometheus_text()
+        self.assertIn("mesh_media_object_responses_total 1", metrics)
+        self.assertIn("mesh_media_inline_responses_total 1", metrics)
+        self.assertIn("mesh_media_response_bytes_total 8", metrics)

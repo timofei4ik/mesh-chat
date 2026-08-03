@@ -167,75 +167,14 @@ class ServerPushMixin:
         app = self._firebase_app()
         if app is None:
             return
-        packet_type = notification.get("packet_type") or "message"
-        channel_id = (
-            "meshchat_calls"
-            if packet_type == "call_offer"
-            else "meshchat_messages"
-        )
+        data = self._android_push_data(notification)
         for token in self.android_push_tokens_for_node(destination_node):
-            if notification.get("cancel"):
-                message = messaging.Message(
-                    data={
-                        "type": str(packet_type),
-                        "tag": str(notification.get("tag") or ""),
-                        "packet_id": str(
-                            notification.get("packet_id") or ""
-                        ),
-                        "call_id": str(notification.get("call_id") or ""),
-                        "source_node": str(
-                            notification.get("source_node") or ""
-                        ),
-                        "group_id": str(
-                            notification.get("group_id") or ""
-                        ),
-                    },
-                    android=messaging.AndroidConfig(priority="high"),
-                    token=token,
-                )
-                try:
-                    await asyncio.to_thread(
-                        messaging.send,
-                        message,
-                        app=app,
-                    )
-                except Exception as error:
-                    if error.__class__.__name__ in {
-                        "UnregisteredError",
-                        "SenderIdMismatchError",
-                    }:
-                        self.delete_android_push_token(token=token)
-                    else:
-                        print(f"Android push failed: {error}")
-                continue
             message = messaging.Message(
-                notification=messaging.Notification(
-                    title=notification.get("title") or "MeshChat",
-                    body=notification.get("body") or "Новое сообщение",
-                ),
-                data={
-                    "type": str(packet_type),
-                    "url": str(notification.get("url") or "/"),
-                    "tag": str(notification.get("tag") or ""),
-                    "packet_id": str(notification.get("packet_id") or ""),
-                    "call_id": str(notification.get("call_id") or ""),
-                    "source_node": str(
-                        notification.get("source_node") or ""
-                    ),
-                    "group_id": str(notification.get("group_id") or ""),
-                },
+                data=data,
                 android=messaging.AndroidConfig(
                     priority="high",
-                    collapse_key=str(notification.get("tag") or ""),
-                    notification=messaging.AndroidNotification(
-                        channel_id=channel_id,
-                        sound="default",
-                        visibility="public",
-                        tag=(
-                            f"meshchat_call_{notification.get('call_id')}"
-                            if packet_type == "call_offer"
-                            else str(notification.get("tag") or "")
-                        ),
+                    collapse_key=(
+                        str(notification.get("tag") or "") or None
                     ),
                 ),
                 token=token,
@@ -250,6 +189,21 @@ class ServerPushMixin:
                     self.delete_android_push_token(token=token)
                 else:
                     print(f"Android push failed: {error}")
+
+    @staticmethod
+    def _android_push_data(notification):
+        return {
+            "type": str(notification.get("packet_type") or "message"),
+            "title": str(notification.get("title") or "MeshChat"),
+            "body": str(notification.get("body") or "New message"),
+            "url": str(notification.get("url") or "/"),
+            "tag": str(notification.get("tag") or ""),
+            "packet_id": str(notification.get("packet_id") or ""),
+            "call_id": str(notification.get("call_id") or ""),
+            "source_node": str(notification.get("source_node") or ""),
+            "group_id": str(notification.get("group_id") or ""),
+            "cancel": "true" if notification.get("cancel") else "false",
+        }
 
     def _web_push_payload(
         self,

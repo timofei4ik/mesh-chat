@@ -17,6 +17,8 @@ RELIABILITY_TESTS = (
     "server.tests.test_sync_integration.ServerSyncIntegrationTests."
     "test_file_transfer_v2_checksum_reset_and_cancel",
     "server.tests.test_sync_integration.ServerSyncIntegrationTests."
+    "test_large_file_transfer_v2_resumes_after_client_restart",
+    "server.tests.test_sync_integration.ServerSyncIntegrationTests."
     "test_secret_text_photo_and_file_restore_then_stay_deleted",
     "server.tests.test_sync_integration.ServerSyncIntegrationTests."
     "test_story_media_reactions_and_views_follow_account_devices",

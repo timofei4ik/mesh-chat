@@ -73,6 +73,13 @@ MESH_FIREBASE_CREDENTIALS=/etc/mesh-messenger/firebase-service-account.json
 MESH_FIREBASE_PROJECT_ID=your-firebase-project-id
 ```
 
+The server sends high-priority data-only FCM packets. The native Android
+service creates the visible message or call notification, so delivery does not
+depend on the Flutter activity remaining in memory. A matching `call_end`
+packet removes the incoming-call notification. Android still blocks all FCM
+delivery after the user explicitly chooses **Force stop** until the app is
+opened again.
+
 The Android APK must be built with the matching public Firebase app values:
 
 ```powershell
@@ -83,6 +90,18 @@ Copy `firebase_push.example.json` to the ignored `firebase_push.json` first.
 The app registers refreshed FCM tokens with the authenticated MeshChat node;
 the server removes stale tokens automatically. Message bodies stay generic so
 encrypted chat content is never sent to Firebase.
+
+## iOS push readiness
+
+The iOS target declares the `remote-notification` background mode, but real
+terminated-state delivery cannot be enabled by source code alone. It requires
+an Apple Developer membership, the Push Notifications capability, a signed
+provisioning profile containing the `aps-environment` entitlement, and an APNs
+authentication key uploaded to the MeshChat Firebase project. Do not add a
+fake `aps-environment` entitlement to unsigned builds: it cannot authorize
+APNs and can make signing fail. Once those credentials exist, add Firebase
+Messaging token registration using the same account-device token model as
+Android.
 
 ## Redis and multiple relay workers
 

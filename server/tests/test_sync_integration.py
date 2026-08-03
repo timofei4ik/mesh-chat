@@ -283,6 +283,7 @@ class TestClient:
         supports_mutation_ack=False,
         supports_mutation_reconcile=False,
         supports_file_transfer_v2=False,
+        supports_media_delivery_v2=False,
         supports_account_live_fanout=False,
     ):
         self.uri = uri
@@ -303,6 +304,7 @@ class TestClient:
         self.supports_mutation_ack = supports_mutation_ack
         self.supports_mutation_reconcile = supports_mutation_reconcile
         self.supports_file_transfer_v2 = supports_file_transfer_v2
+        self.supports_media_delivery_v2 = supports_media_delivery_v2
         self.supports_account_live_fanout = supports_account_live_fanout
 
     async def connect(self):
@@ -334,6 +336,7 @@ class TestClient:
                     self.supports_mutation_reconcile
                 ),
                 "supports_file_transfer_v2": self.supports_file_transfer_v2,
+                "supports_media_delivery_v2": self.supports_media_delivery_v2,
                 "supports_account_live_fanout": (
                     self.supports_account_live_fanout
                 ),
@@ -484,6 +487,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         supports_mutation_ack=False,
         supports_mutation_reconcile=False,
         supports_file_transfer_v2=False,
+        supports_media_delivery_v2=False,
         supports_account_live_fanout=False,
     ):
         client = TestClient(
@@ -498,6 +502,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             supports_mutation_ack=supports_mutation_ack,
             supports_mutation_reconcile=supports_mutation_reconcile,
             supports_file_transfer_v2=supports_file_transfer_v2,
+            supports_media_delivery_v2=supports_media_delivery_v2,
             supports_account_live_fanout=supports_account_live_fanout,
         )
         self.clients.append(client)
@@ -829,6 +834,128 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 (cancel_id,),
             ).fetchone()[0],
         )
+
+    async def test_large_file_transfer_v2_resumes_after_client_restart(self):
+        sender_node = str(uuid.uuid4())
+        receiver_node = str(uuid.uuid4())
+        sender = await self.connect(
+            "file_v2_large_sender",
+            node_id=sender_node,
+            supports_file_transfer_v2=True,
+        )
+        receiver = await self.connect(
+            "file_v2_large_receiver",
+            node_id=receiver_node,
+            supports_file_transfer_v2=True,
+            supports_media_delivery_v2=True,
+        )
+        self.assertTrue(
+            self.relay.client_capabilities[receiver_node]["media_delivery_v2"]
+        )
+
+        chunk_size = 256 * 1024
+        payload_size = (8 * 1024 * 1024) + 123
+        payload = bytes((index * 29 + 7) % 251 for index in range(payload_size))
+        digest = hashlib.sha256(payload).hexdigest()
+        total_chunks = (payload_size + chunk_size - 1) // chunk_size
+        transfer_id = "transfer-v2-large-client-restart"
+        file_id = "file-v2-large-client-restart"
+
+        async def send_chunk(client, chunk_index):
+            start = chunk_index * chunk_size
+            chunk = payload[start:start + chunk_size]
+            await client.send(
+                {
+                    "type": "file_chunk",
+                    "packet_id": f"{transfer_id}:{chunk_index}",
+                    "protocol_version": 5,
+                    "source_node": sender_node,
+                    "destination_node": receiver_node,
+                    "sender": "Large file sender",
+                    "transfer_id": transfer_id,
+                    "operation_id": f"file_transfer:{file_id}",
+                    "file_transfer_v2": True,
+                    "file_id": file_id,
+                    "filename": "large-resumable.bin",
+                    "media_id": digest,
+                    "file_sha256": digest,
+                    "file_size": payload_size,
+                    "chunk_size_bytes": chunk_size,
+                    "chunk_index": chunk_index,
+                    "total_chunks": total_chunks,
+                    "data": chunk.hex(),
+                    "ttl": 5,
+                }
+            )
+            return await client.receive_type("file_chunk_ack", timeout=5.0)
+
+        restart_after = 7
+        for chunk_index in range(restart_after):
+            partial_ack = await send_chunk(sender, chunk_index)
+            self.assertTrue(partial_ack["ok"])
+            self.assertFalse(partial_ack["complete"])
+        self.assertEqual(
+            [[0, restart_after - 1]],
+            partial_ack["received_ranges"],
+        )
+
+        await sender.close()
+        await asyncio.sleep(0.05)
+        sender = await self.connect(
+            "file_v2_large_sender",
+            node_id=sender_node,
+            supports_file_transfer_v2=True,
+        )
+        for chunk_index in range(restart_after, total_chunks):
+            final_ack = await send_chunk(sender, chunk_index)
+
+        self.assertTrue(final_ack["ok"])
+        self.assertTrue(final_ack["complete"])
+        self.assertEqual([[0, total_chunks - 1]], final_ack["received_ranges"])
+        self.assertEqual(digest, final_ack["media_id"])
+
+        manifest = await receiver.receive_type("file_manifest", timeout=10.0)
+        self.assertTrue(manifest["media_delivery_v2"])
+        self.assertEqual(file_id, manifest["file_id"])
+        self.assertEqual(digest, manifest["media_id"])
+        self.assertEqual(digest, manifest["file_sha256"])
+        self.assertEqual(payload_size, manifest["file_size"])
+
+        stored = self.relay.db.execute(
+            """
+            SELECT storage_path, sha256, size_bytes
+            FROM server_files
+            WHERE file_id=?
+            """,
+            (file_id,),
+        ).fetchone()
+        self.assertIsNotNone(stored)
+        stored_path = Path(stored[0])
+        self.assertTrue(stored_path.is_file())
+        self.assertEqual(digest, stored[1])
+        self.assertEqual(payload_size, stored[2])
+        stored_digest = hashlib.sha256()
+        with stored_path.open("rb") as stored_file:
+            while block := stored_file.read(1024 * 1024):
+                stored_digest.update(block)
+        self.assertEqual(digest, stored_digest.hexdigest())
+
+        issued = self.relay.issue_media_download(
+            "file_v2_large_receiver",
+            file_id,
+        )
+        self.assertIsNotNone(issued)
+        authorized = self.relay.authorize_media_download(
+            issued["download_token"],
+            file_id,
+        )
+        self.assertIsNotNone(authorized)
+        received_path = self.relay.media_object_storage.resolve(
+            authorized["storage_path"],
+            authorized["media_id"],
+        )
+        self.assertIsNotNone(received_path)
+        self.assertEqual(payload, received_path.read_bytes())
 
     async def test_mutation_ack_is_durable_and_duplicate_is_not_rerouted(self):
         sender = await self.connect(
