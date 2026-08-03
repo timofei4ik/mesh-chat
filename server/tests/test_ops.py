@@ -11,11 +11,36 @@ from server import server as server_module
 from server import server_storage
 from server.ops.backup_postgres import _connection_arguments
 from server.ops.backup_server import create_backup
-from server.ops.healthcheck_server import collect_health
+from server.ops.healthcheck_server import (
+    _media_metric_warnings,
+    collect_health,
+)
 from server.ops.reliability_audit import collect_reliability
 
 
 class ServerOperationsTests(unittest.TestCase):
+    def test_media_metric_warnings_only_flag_integrity_and_server_errors(self):
+        self.assertEqual(
+            [],
+            _media_metric_warnings(
+                {
+                    "unauthorized_total": 4,
+                    "invalid_range_total": 2,
+                    "invalid_media_total": 0,
+                    "server_errors_total": 0,
+                }
+            ),
+        )
+        warnings = _media_metric_warnings(
+            {
+                "invalid_media_total": 2,
+                "server_errors_total": 1,
+            }
+        )
+        self.assertEqual(2, len(warnings))
+        self.assertIn("2 invalid object", warnings[0])
+        self.assertIn("1 server error", warnings[1])
+
     def test_postgres_backup_parses_connection_url(self):
         connection = _connection_arguments(
             "postgresql://mesh%2Duser:s%40fe@db.internal:5544/mesh%2Dchat"

@@ -192,6 +192,19 @@ class MediaHttpServer:
                 + self._metrics["invalid_media_total"]
                 + self._metrics["server_errors_total"]
             ),
+            "unauthorized_total": int(
+                self._metrics["unauthorized_total"]
+            ),
+            "forbidden_total": int(self._metrics["forbidden_total"]),
+            "invalid_range_total": int(
+                self._metrics["invalid_range_total"]
+            ),
+            "invalid_media_total": int(
+                self._metrics["invalid_media_total"]
+            ),
+            "server_errors_total": int(
+                self._metrics["server_errors_total"]
+            ),
             "active_requests": int(self._active_requests),
         }
 

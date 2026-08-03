@@ -10,6 +10,6 @@ Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/mesh-messenger/server.env
 EnvironmentFile=/etc/mesh-messenger/postgres.env
 EnvironmentFile=/etc/mesh-messenger/media.env
-ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/healthcheck_server.py --service mesh-chat-worker@0,mesh-chat-worker@1,mesh-media,mesh-call-signaling@0,mesh-call-signaling@1,mesh-metrics --port 8870,8871 --http-health http://127.0.0.1:8780/health
+ExecStart=/root/mesh_messenger/.venv/bin/python /root/mesh_messenger/server/ops/healthcheck_server.py --service mesh-chat-worker@0,mesh-chat-worker@1,mesh-media,mesh-call-signaling@0,mesh-call-signaling@1,mesh-metrics --port 8870,8871 --http-health http://127.0.0.1:8780/health --media-health http://127.0.0.1:8777/media/health
 Nice=10
 UMask=0077

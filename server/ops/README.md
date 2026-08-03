@@ -194,6 +194,12 @@ systemctl enable --now mesh-media.service
 curl --fail http://127.0.0.1:8777/media/health
 ```
 
+Reinstall `ops/systemd/mesh-health.service` with the media service. The regular
+health run records media counters in `data/health.json`, fails when the media
+endpoint is unavailable, and warns on stored-object integrity or internal
+delivery errors. Prometheus counters remain available on the loopback-only
+`http://127.0.0.1:8777/media/metrics` endpoint.
+
 Install `server/nginx_media_v2.conf` as the media snippet included by the public
 TLS virtual host, run `nginx -t`, and reload nginx. Restart Chat/Sync workers one
 at a time afterward so issued download tokens use the shared signing key.

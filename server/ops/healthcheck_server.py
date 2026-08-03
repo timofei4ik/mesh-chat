@@ -81,7 +81,7 @@ async def _check_websocket(host, port):
         return True
 
 
-def _check_http_health(url):
+def _check_http_health_details(url):
     request = urllib.request.Request(
         str(url),
         headers={"User-Agent": "mesh-health/1"},
@@ -91,8 +91,29 @@ def _check_http_health(url):
             return False, f"HTTP {response.status}"
         payload = json.loads(response.read().decode("utf-8"))
     if payload.get("ok") is not True:
-        return False, "health payload is not ok"
-    return True, ""
+        return False, "health payload is not ok", payload
+    return True, "", payload
+
+
+def _check_http_health(url):
+    healthy, error, _payload = _check_http_health_details(url)
+    return healthy, error
+
+
+def _media_metric_warnings(metrics):
+    metrics = metrics if isinstance(metrics, dict) else {}
+    warnings = []
+    invalid_media = int(metrics.get("invalid_media_total") or 0)
+    server_errors = int(metrics.get("server_errors_total") or 0)
+    if invalid_media:
+        warnings.append(
+            f"media delivery reported {invalid_media} invalid object(s)"
+        )
+    if server_errors:
+        warnings.append(
+            f"media delivery reported {server_errors} server error(s)"
+        )
+    return warnings
 
 
 def _database_health(database_path):
@@ -282,6 +303,7 @@ def collect_health(
     check_service=True,
     check_port=True,
     http_health_url="",
+    media_health_url="",
     database_backend=DATABASE_BACKEND,
     database_url=DATABASE_URL,
 ):
@@ -401,6 +423,35 @@ def collect_health(
                 f"HTTP health endpoint {http_health_url} is not healthy"
             )
 
+    media_health = {
+        "checked": bool(media_health_url),
+        "url": str(media_health_url or ""),
+    }
+    if media_health_url:
+        try:
+            healthy, error, payload = _check_http_health_details(
+                media_health_url
+            )
+        except Exception as error:
+            healthy = False
+            payload = {}
+            error = str(error)
+        media_health["ok"] = bool(healthy)
+        media_health["metrics"] = (
+            payload.get("metrics", {})
+            if isinstance(payload, dict)
+            else {}
+        )
+        if error:
+            media_health["error"] = str(error)
+        if not healthy:
+            critical.append(
+                f"Media health endpoint {media_health_url} is not healthy"
+            )
+        warnings.extend(
+            _media_metric_warnings(media_health["metrics"])
+        )
+
     database_backend = str(database_backend or "sqlite").strip().lower()
     database = {
         "backend": database_backend,
@@ -470,6 +521,7 @@ def collect_health(
         "service": service,
         "port": port_status,
         "http_health": http_health,
+        "media_health": media_health,
         "database": database,
         "disk": disk_status,
         "latest_backup": latest_backup,
@@ -509,6 +561,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=str(PORT))
     parser.add_argument("--http-health", default="")
+    parser.add_argument("--media-health", default="")
     parser.add_argument(
         "--database-backend",
         default=os.environ.get("MESH_DATABASE_BACKEND", DATABASE_BACKEND),
@@ -530,6 +583,7 @@ def main():
         check_service=not args.no_service_check,
         check_port=not args.no_port_check,
         http_health_url=args.http_health,
+        media_health_url=args.media_health,
         database_backend=args.database_backend,
         database_url=args.database_url,
     )
