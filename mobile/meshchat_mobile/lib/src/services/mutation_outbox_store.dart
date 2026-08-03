@@ -7,6 +7,14 @@ import 'package:sqflite/sqflite.dart';
 import '../models/session.dart';
 import 'app_database_path.dart';
 
+enum MutationOutboxState {
+  queued,
+  sent;
+
+  static MutationOutboxState parse(Object? value) =>
+      value?.toString() == sent.name ? sent : queued;
+}
+
 class MutationOutboxEntry {
   const MutationOutboxEntry({
     required this.outboxId,
@@ -14,6 +22,9 @@ class MutationOutboxEntry {
     required this.packet,
     required this.createdAt,
     this.attempts = 0,
+    this.state = MutationOutboxState.queued,
+    this.lastAttemptAt,
+    this.lastError = '',
   });
 
   final String outboxId;
@@ -21,6 +32,9 @@ class MutationOutboxEntry {
   final Map<String, dynamic> packet;
   final DateTime createdAt;
   final int attempts;
+  final MutationOutboxState state;
+  final DateTime? lastAttemptAt;
+  final String lastError;
 
   factory MutationOutboxEntry.fromJson(Map<String, dynamic> json) {
     final rawPacket = json['packet'];
@@ -34,6 +48,11 @@ class MutationOutboxEntry {
           DateTime.tryParse(json['created_at']?.toString() ?? '')?.toUtc() ??
           DateTime.now().toUtc(),
       attempts: int.tryParse(json['attempts']?.toString() ?? '') ?? 0,
+      state: MutationOutboxState.parse(json['state']),
+      lastAttemptAt: DateTime.tryParse(
+        json['last_attempt_at']?.toString() ?? '',
+      )?.toUtc(),
+      lastError: json['last_error']?.toString() ?? '',
     );
   }
 
@@ -43,7 +62,29 @@ class MutationOutboxEntry {
     'packet': packet,
     'created_at': createdAt.toUtc().toIso8601String(),
     'attempts': attempts,
+    'state': state.name,
+    'last_attempt_at': lastAttemptAt?.toUtc().toIso8601String(),
+    'last_error': lastError,
   };
+
+  MutationOutboxEntry copyWith({
+    int? attempts,
+    MutationOutboxState? state,
+    DateTime? lastAttemptAt,
+    bool clearLastAttemptAt = false,
+    String? lastError,
+  }) => MutationOutboxEntry(
+    outboxId: outboxId,
+    operationId: operationId,
+    packet: packet,
+    createdAt: createdAt,
+    attempts: attempts ?? this.attempts,
+    state: state ?? this.state,
+    lastAttemptAt: clearLastAttemptAt
+        ? null
+        : lastAttemptAt ?? this.lastAttemptAt,
+    lastError: lastError ?? this.lastError,
+  );
 }
 
 class MutationOutboxStore {
@@ -68,6 +109,9 @@ class MutationOutboxStore {
             'packet': _decodePacket(row['packet_json']),
             'created_at': row['created_at'],
             'attempts': row['attempts'],
+            'state': row['state'],
+            'last_attempt_at': row['last_attempt_at'],
+            'last_error': row['last_error'],
           }),
         )
         .where(_isValid)
@@ -97,22 +141,28 @@ class MutationOutboxStore {
       'packet_json': jsonEncode(entry.packet),
       'created_at': entry.createdAt.toUtc().toIso8601String(),
       'attempts': entry.attempts,
+      'state': entry.state.name,
+      'last_attempt_at': entry.lastAttemptAt?.toUtc().toIso8601String(),
+      'last_error': entry.lastError,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<void> markAttempt(Session session, String outboxId) async {
+  Future<void> markSent(
+    Session session,
+    String outboxId, {
+    DateTime? attemptedAt,
+  }) async {
     if (outboxId.isEmpty) return;
+    final sentAt = (attemptedAt ?? DateTime.now()).toUtc();
     if (kIsWeb) {
       final entries = await _loadWeb(session);
       final index = entries.indexWhere((entry) => entry.outboxId == outboxId);
       if (index < 0) return;
-      final current = entries[index];
-      entries[index] = MutationOutboxEntry(
-        outboxId: current.outboxId,
-        operationId: current.operationId,
-        packet: current.packet,
-        createdAt: current.createdAt,
-        attempts: current.attempts + 1,
+      entries[index] = entries[index].copyWith(
+        attempts: entries[index].attempts + 1,
+        state: MutationOutboxState.sent,
+        lastAttemptAt: sentAt,
+        lastError: '',
       );
       await _saveWeb(session, entries);
       return;
@@ -121,10 +171,49 @@ class MutationOutboxStore {
     await db.rawUpdate(
       '''
       UPDATE mutation_outbox
-      SET attempts=attempts+1
+      SET attempts=attempts+1,
+          state=?,
+          last_attempt_at=?,
+          last_error=''
       WHERE session_key=? AND outbox_id=?
       ''',
-      [_sessionKey(session), outboxId],
+      [
+        MutationOutboxState.sent.name,
+        sentAt.toIso8601String(),
+        _sessionKey(session),
+        outboxId,
+      ],
+    );
+  }
+
+  Future<void> markAttempt(Session session, String outboxId) =>
+      markSent(session, outboxId);
+
+  Future<void> markQueued(
+    Session session,
+    String outboxId, {
+    String error = '',
+  }) async {
+    if (outboxId.isEmpty) return;
+    if (kIsWeb) {
+      final entries = await _loadWeb(session);
+      final index = entries.indexWhere((entry) => entry.outboxId == outboxId);
+      if (index < 0) return;
+      entries[index] = entries[index].copyWith(
+        state: MutationOutboxState.queued,
+        lastError: error,
+      );
+      await _saveWeb(session, entries);
+      return;
+    }
+    final db = await _db();
+    await db.rawUpdate(
+      '''
+      UPDATE mutation_outbox
+      SET state=?, last_error=?
+      WHERE session_key=? AND outbox_id=?
+      ''',
+      [MutationOutboxState.queued.name, error, _sessionKey(session), outboxId],
     );
   }
 
@@ -192,7 +281,7 @@ class MutationOutboxStore {
     final path = await appDatabasePath(_databaseName);
     _database = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE mutation_outbox(
@@ -202,6 +291,9 @@ class MutationOutboxStore {
             packet_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'queued',
+            last_attempt_at TEXT,
+            last_error TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(session_key, outbox_id)
           )
           ''');
@@ -209,6 +301,19 @@ class MutationOutboxStore {
           CREATE INDEX idx_mutation_outbox_operation
           ON mutation_outbox(session_key, operation_id)
           ''');
+      },
+      onUpgrade: (db, oldVersion, _) async {
+        if (oldVersion < 2) {
+          await db.execute(
+            "ALTER TABLE mutation_outbox ADD COLUMN state TEXT NOT NULL DEFAULT 'queued'",
+          );
+          await db.execute(
+            'ALTER TABLE mutation_outbox ADD COLUMN last_attempt_at TEXT',
+          );
+          await db.execute(
+            "ALTER TABLE mutation_outbox ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+          );
+        }
       },
     );
     return _database!;

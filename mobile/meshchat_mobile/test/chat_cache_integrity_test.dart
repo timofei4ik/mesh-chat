@@ -91,4 +91,50 @@ void main() {
       expect(await store.loadSyncCursor(session), 9);
     },
   );
+
+  test('checkpoint commits threads, digest, and cursor together', () async {
+    final store = ChatCacheStore();
+    await store.saveCheckpoint(session, [thread('peer-a')], 11);
+
+    final profiles = <String, Profile>{};
+    final threads = <String, ChatThread>{};
+    final groups = <String, ChatThread>{};
+    await store.load(session, profiles, threads, groups);
+
+    expect(threads.keys, ['peer-a']);
+    expect(await store.loadSyncCursor(session), 11);
+    expect((await store.inspectIntegrity(session)).verified, isTrue);
+  });
+
+  test('failed checkpoint rolls back both cache and cursor', () async {
+    final store = ChatCacheStore();
+    await store.saveCheckpoint(session, [thread('peer-a')], 7);
+    final db = await openDatabase(await appDatabasePath('meshchat_cache.db'));
+    await db.execute('''
+      CREATE TRIGGER fail_test_checkpoint
+      BEFORE INSERT ON chat_threads
+      WHEN NEW.thread_key='direct:normal:peer-fail'
+      BEGIN
+        SELECT RAISE(ABORT, 'checkpoint test failure');
+      END
+      ''');
+
+    try {
+      await expectLater(
+        store.saveCheckpoint(session, [thread('peer-fail')], 12),
+        throwsA(isA<DatabaseException>()),
+      );
+    } finally {
+      await db.execute('DROP TRIGGER IF EXISTS fail_test_checkpoint');
+    }
+
+    final profiles = <String, Profile>{};
+    final threads = <String, ChatThread>{};
+    final groups = <String, ChatThread>{};
+    await store.load(session, profiles, threads, groups);
+
+    expect(threads.keys, ['peer-a']);
+    expect(await store.loadSyncCursor(session), 7);
+    expect((await store.inspectIntegrity(session)).verified, isTrue);
+  });
 }

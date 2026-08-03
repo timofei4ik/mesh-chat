@@ -33,6 +33,7 @@ class FakeCommandServer:
             "client-node": {
                 "sticker_library_chunks": True,
                 "sync_v2": True,
+                "mutation_reconcile": True,
             }
         }
         self.calls = []
@@ -242,6 +243,10 @@ class FakeCommandServer:
 
     def acknowledge_sync_v2_cursor(self, login, node_id, cursor):
         self.calls.append(("sync-ack", login, node_id, cursor))
+
+    def mutation_was_processed(self, login, outbox_id):
+        self.calls.append(("mutation-status", login, outbox_id))
+        return outbox_id in {"accepted-1", "accepted-2"}
 
     async def send_account_sync(self, *args):
         self.calls.append(("account-sync", args))
@@ -727,6 +732,50 @@ class PacketCommandRegistryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(sync_call[1][3])
         self.assertTrue(sync_call[1][4])
+
+    async def test_mutation_status_is_account_scoped_and_deduplicated(self):
+        registry = build_control_command_registry()
+        websocket = FakeWebSocket()
+        server = FakeCommandServer()
+        context = ConnectionContext(websocket, "client-node")
+
+        handled = await registry.dispatch(
+            server,
+            {
+                "type": "mutation_status_request",
+                "request_id": "status-1",
+                "outbox_ids": [
+                    "accepted-1",
+                    "missing",
+                    "accepted-1",
+                    "accepted-2",
+                ],
+            },
+            context,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            {
+                "type": "mutation_status_result",
+                "request_id": "status-1",
+                "processed_outbox_ids": ["accepted-1", "accepted-2"],
+            },
+            {
+                key: value
+                for key, value in websocket.sent[-1].items()
+                if key
+                in {
+                    "type",
+                    "request_id",
+                    "processed_outbox_ids",
+                }
+            },
+        )
+        self.assertIn(
+            ("mutation-status", "client-login", "accepted-1"),
+            server.calls,
+        )
 
     async def test_file_transfer_v2_is_handled_but_legacy_falls_through(self):
         registry = build_control_command_registry()

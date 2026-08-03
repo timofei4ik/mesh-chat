@@ -93,6 +93,9 @@ void main() {
       },
       createdAt: createdAt,
       attempts: 2,
+      state: MutationOutboxState.sent,
+      lastAttemptAt: createdAt.add(const Duration(seconds: 3)),
+      lastError: 'lost_ack',
     );
 
     final restored = MutationOutboxEntry.fromJson(entry.toJson());
@@ -101,6 +104,9 @@ void main() {
     expect(restored.packet, entry.packet);
     expect(restored.createdAt, createdAt);
     expect(restored.attempts, 2);
+    expect(restored.state, MutationOutboxState.sent);
+    expect(restored.lastAttemptAt, createdAt.add(const Duration(seconds: 3)));
+    expect(restored.lastError, 'lost_ack');
   });
 
   test(
@@ -137,13 +143,51 @@ void main() {
       expect(restored.single.packet, entry.packet);
       expect(await reader.hasOperation(session, entry.operationId), isTrue);
 
-      await reader.markAttempt(session, entry.outboxId);
+      await reader.markSent(
+        session,
+        entry.outboxId,
+        attemptedAt: DateTime.utc(2026, 7, 18, 8),
+      );
       restored = await MutationOutboxStore().load(session);
       expect(restored.single.attempts, 1);
+      expect(restored.single.state, MutationOutboxState.sent);
+      expect(restored.single.lastAttemptAt, DateTime.utc(2026, 7, 18, 8));
+
+      await reader.markQueued(
+        session,
+        entry.outboxId,
+        error: 'socket_unavailable',
+      );
+      restored = await MutationOutboxStore().load(session);
+      expect(restored.single.state, MutationOutboxState.queued);
+      expect(restored.single.lastError, 'socket_unavailable');
 
       await reader.delete(session, entry.outboxId);
       expect(await MutationOutboxStore().load(session), isEmpty);
       expect(await reader.hasOperation(session, entry.operationId), isFalse);
     },
   );
+
+  test('mutation retries use bounded exponential delays', () {
+    expect(
+      MeshSocket.mutationRetryDelayForAttempts(0),
+      const Duration(seconds: 2),
+    );
+    expect(
+      MeshSocket.mutationRetryDelayForAttempts(1),
+      const Duration(seconds: 2),
+    );
+    expect(
+      MeshSocket.mutationRetryDelayForAttempts(2),
+      const Duration(seconds: 4),
+    );
+    expect(
+      MeshSocket.mutationRetryDelayForAttempts(5),
+      const Duration(seconds: 30),
+    );
+    expect(
+      MeshSocket.mutationRetryDelayForAttempts(20),
+      const Duration(seconds: 30),
+    );
+  });
 }

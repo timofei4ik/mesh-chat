@@ -277,6 +277,9 @@ async def handle_server_hello(
         "mutation_ack": bool(
             packet.get("supports_mutation_ack", False)
         ),
+        "mutation_reconcile": bool(
+            packet.get("supports_mutation_reconcile", False)
+        ),
         "file_transfer_v2": bool(
             packet.get("supports_file_transfer_v2", False)
         ),
@@ -327,6 +330,7 @@ async def handle_server_hello(
             "sync_v2_delta": delta_enabled,
             "offline_packet_ack": True,
             "mutation_ack": True,
+            "mutation_reconcile": True,
             "file_transfer_v2": True,
             "media_delivery_v2": True,
             "account_live_fanout": True,

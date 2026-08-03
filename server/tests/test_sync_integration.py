@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from websockets.exceptions import ConnectionClosed
 
 from server import server as server_module
 from server import server_auth, server_storage, server_sync
+from server.sync_v2_shadow import canonical_sync_v2_state
 
 
 class ServerSchemaMigrationTests(unittest.TestCase):
@@ -279,6 +281,7 @@ class TestClient:
         sync_cursor=0,
         supports_offline_ack=False,
         supports_mutation_ack=False,
+        supports_mutation_reconcile=False,
         supports_file_transfer_v2=False,
         supports_account_live_fanout=False,
     ):
@@ -298,6 +301,7 @@ class TestClient:
         self.delta_events = []
         self.supports_offline_ack = supports_offline_ack
         self.supports_mutation_ack = supports_mutation_ack
+        self.supports_mutation_reconcile = supports_mutation_reconcile
         self.supports_file_transfer_v2 = supports_file_transfer_v2
         self.supports_account_live_fanout = supports_account_live_fanout
 
@@ -326,6 +330,9 @@ class TestClient:
                 "sync_cursor": self.sync_cursor,
                 "supports_offline_packet_ack": self.supports_offline_ack,
                 "supports_mutation_ack": self.supports_mutation_ack,
+                "supports_mutation_reconcile": (
+                    self.supports_mutation_reconcile
+                ),
                 "supports_file_transfer_v2": self.supports_file_transfer_v2,
                 "supports_account_live_fanout": (
                     self.supports_account_live_fanout
@@ -451,7 +458,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await client.close()
         self.server.close()
         await self.server.wait_closed()
-        self.relay.db.close()
+        await self._close_relay_runtime()
         server_module.SYNC_V2_DELTA_ENABLED = (
             self.previous_sync_v2_delta_enabled
         )
@@ -459,6 +466,11 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.previous_sync_v2_delta_test_accounts
         )
         self.temp_dir.cleanup()
+
+    async def _close_relay_runtime(self):
+        await self.relay.stop_realtime()
+        await self.relay.call_signaling.stop()
+        self.relay.db.close()
 
     async def connect(
         self,
@@ -470,6 +482,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         sync_cursor=0,
         supports_offline_ack=False,
         supports_mutation_ack=False,
+        supports_mutation_reconcile=False,
         supports_file_transfer_v2=False,
         supports_account_live_fanout=False,
     ):
@@ -483,6 +496,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             sync_cursor=sync_cursor,
             supports_offline_ack=supports_offline_ack,
             supports_mutation_ack=supports_mutation_ack,
+            supports_mutation_reconcile=supports_mutation_reconcile,
             supports_file_transfer_v2=supports_file_transfer_v2,
             supports_account_live_fanout=supports_account_live_fanout,
         )
@@ -496,7 +510,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.clients.clear()
         self.server.close()
         await self.server.wait_closed()
-        self.relay.db.close()
+        await self._close_relay_runtime()
         self.relay = server_module.MeshRelayServer()
         self.relay.wireguard_config_for = lambda login, device_id: (
             "[Interface]\n"
@@ -883,6 +897,335 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(duplicate_ack["duplicate"])
         with self.assertRaises((TimeoutError, asyncio.TimeoutError)):
             await receiver.receive_type("chat_message", timeout=0.25)
+
+    async def test_two_device_endurance_recovers_from_network_faults(self):
+        iterations = max(
+            8,
+            min(
+                int(os.environ.get("MESH_SYNC_ENDURANCE_ITERATIONS", "24")),
+                2_000,
+            ),
+        )
+        alice_nodes = ("endurance-alice-phone", "endurance-alice-desktop")
+        bob_node = "endurance-bob-phone"
+        cursors = {node_id: 0 for node_id in (*alice_nodes, bob_node)}
+
+        async def connect_device(login, node_id, *, delta=True):
+            client = await self.connect(
+                login,
+                node_id=node_id,
+                supports_sync_v2=True,
+                supports_sync_v2_delta=delta,
+                sync_cursor=cursors[node_id],
+                supports_mutation_ack=True,
+                supports_mutation_reconcile=True,
+                supports_account_live_fanout=True,
+            )
+            cursors[node_id] = int(
+                (client.sync_done or {}).get("sync_cursor") or 0
+            )
+            if client.sync.get("type") == "server_sync_delta_begin":
+                events = [packet["event"] for packet in client.delta_events]
+                self.assertEqual(
+                    server_sync.sync_v2_delta_digest(events),
+                    client.sync["event_digest_sha256"],
+                )
+            return client
+
+        clients = {
+            alice_nodes[0]: await connect_device(
+                "endurance_alice", alice_nodes[0]
+            ),
+            alice_nodes[1]: await connect_device(
+                "endurance_alice", alice_nodes[1]
+            ),
+            bob_node: await connect_device("endurance_bob", bob_node),
+        }
+        live_message_ids = []
+        expected_deleted_ids = set()
+
+        async def reconnect(node_id):
+            login = (
+                "endurance_bob"
+                if node_id == bob_node
+                else "endurance_alice"
+            )
+            clients[node_id] = await connect_device(login, node_id)
+            return clients[node_id]
+
+        async def reconnect_everyone():
+            for node_id in (*alice_nodes, bob_node):
+                await reconnect(node_id)
+
+        async def receive_stage(
+            client,
+            packet_type,
+            *,
+            iteration,
+            stage,
+            message_id="",
+            outbox_id="",
+            timeout=2.0,
+        ):
+            try:
+                return await client.receive_type(packet_type, timeout=timeout)
+            except (TimeoutError, asyncio.TimeoutError) as error:
+                message_rows = 0
+                if message_id:
+                    message_rows = self.relay.db.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM direct_messages
+                        WHERE message_id=?
+                        """,
+                        (message_id,),
+                    ).fetchone()[0]
+                mutation_rows = 0
+                if outbox_id:
+                    mutation_rows = self.relay.db.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM processed_mutations
+                        WHERE outbox_id=?
+                        """,
+                        (outbox_id,),
+                    ).fetchone()[0]
+                socket_state = getattr(client.websocket, "state", "closed")
+                task_names = sorted(
+                    task.get_name()
+                    for task in asyncio.all_tasks()
+                    if not task.done()
+                )
+                raise AssertionError(
+                    "Endurance delivery timeout: "
+                    f"iteration={iteration}, stage={stage}, "
+                    f"packet_type={packet_type}, client={client.node_id}, "
+                    f"socket_state={socket_state}, "
+                    f"active_clients={sorted(self.relay.clients)}, "
+                    f"pending={[item.get('type') for item in client.pending]}, "
+                    f"message_rows={message_rows}, "
+                    f"mutation_rows={mutation_rows}, "
+                    f"active_tasks={len(task_names)}, "
+                    f"task_names={task_names[:20]}"
+                ) from error
+
+        for index in range(iterations):
+            source_node = alice_nodes[index % 2]
+            mirror_node = alice_nodes[(index + 1) % 2]
+            source = clients[source_node]
+            mirror = clients[mirror_node]
+            bob = clients[bob_node]
+            mirror_was_offline = index % 7 == 2
+            lose_ack = index % 10 == 4
+
+            if mirror_was_offline:
+                await mirror.close()
+
+            message_id = f"endurance-message-{index:04d}"
+            operation_id = f"chat_message:{message_id}"
+            outbox_id = f"{operation_id}|{bob_node}|"
+            packet = {
+                "type": "chat_message",
+                "packet_id": message_id,
+                "operation_id": operation_id,
+                "outbox_id": outbox_id,
+                "protocol_version": 5,
+                "source_node": source_node,
+                "destination_node": bob_node,
+                "sender": "endurance_alice",
+                "message": f"ciphertext:endurance:{index}",
+                "ttl": 5,
+            }
+            await source.send(packet)
+            delivered = await receive_stage(
+                bob,
+                "chat_message",
+                iteration=index,
+                stage="recipient_live_delivery",
+                message_id=message_id,
+                outbox_id=outbox_id,
+            )
+            self.assertEqual(message_id, delivered["packet_id"])
+            if not mirror_was_offline:
+                mirrored = await receive_stage(
+                    mirror,
+                    "chat_message",
+                    iteration=index,
+                    stage="same_account_live_fanout",
+                    message_id=message_id,
+                    outbox_id=outbox_id,
+                )
+                self.assertTrue(mirrored["account_mirror"])
+
+            if lose_ack:
+                await source.close()
+                source = await reconnect(source_node)
+                request_id = f"endurance-status-{index:04d}"
+                await source.send(
+                    {
+                        "type": "mutation_status_request",
+                        "request_id": request_id,
+                        "outbox_ids": [outbox_id, outbox_id],
+                    }
+                )
+                status = await receive_stage(
+                    source,
+                    "mutation_status_result",
+                    iteration=index,
+                    stage="lost_ack_reconciliation",
+                    message_id=message_id,
+                    outbox_id=outbox_id,
+                )
+                self.assertEqual(request_id, status["request_id"])
+                self.assertEqual([outbox_id], status["processed_outbox_ids"])
+            else:
+                ack = await receive_stage(
+                    source,
+                    "mutation_ack",
+                    iteration=index,
+                    stage="mutation_ack",
+                    message_id=message_id,
+                    outbox_id=outbox_id,
+                )
+                self.assertTrue(ack["ok"])
+                self.assertFalse(ack["duplicate"])
+
+            if mirror_was_offline:
+                mirror = await reconnect(mirror_node)
+                self.assertGreaterEqual(cursors[mirror_node], 1)
+
+            if index % 5 == 1:
+                duplicate_source = clients[mirror_node]
+                duplicate_packet = {
+                    **packet,
+                    "source_node": mirror_node,
+                }
+                await duplicate_source.send(duplicate_packet)
+                duplicate_ack = await receive_stage(
+                    duplicate_source,
+                    "mutation_ack",
+                    iteration=index,
+                    stage="duplicate_mutation_ack",
+                    message_id=message_id,
+                    outbox_id=outbox_id,
+                )
+                self.assertTrue(duplicate_ack["ok"])
+                self.assertTrue(duplicate_ack["duplicate"])
+                with self.assertRaises((TimeoutError, asyncio.TimeoutError)):
+                    await bob.receive_type("chat_message", timeout=0.05)
+
+            live_message_ids.append(message_id)
+            if index % 6 == 5 and len(live_message_ids) > 3:
+                deleted_id = live_message_ids.pop(0)
+                delete_source = clients[source_node]
+                delete_operation = f"message_delete:{deleted_id}"
+                await delete_source.send(
+                    {
+                        "type": "message_delete",
+                        "packet_id": f"endurance-delete-{index:04d}",
+                        "operation_id": delete_operation,
+                        "outbox_id": f"{delete_operation}|{bob_node}|",
+                        "protocol_version": 5,
+                        "source_node": source_node,
+                        "destination_node": bob_node,
+                        "message_id": deleted_id,
+                        "ttl": 5,
+                    }
+                )
+                delete_outbox_id = f"{delete_operation}|{bob_node}|"
+                delete_ack = await receive_stage(
+                    delete_source,
+                    "mutation_ack",
+                    iteration=index,
+                    stage="delete_mutation_ack",
+                    message_id=deleted_id,
+                    outbox_id=delete_outbox_id,
+                )
+                self.assertTrue(delete_ack["ok"])
+                await receive_stage(
+                    clients[bob_node],
+                    "message_delete",
+                    iteration=index,
+                    stage="recipient_live_delete",
+                    message_id=deleted_id,
+                    outbox_id=delete_outbox_id,
+                )
+                await receive_stage(
+                    clients[mirror_node],
+                    "message_delete",
+                    iteration=index,
+                    stage="same_account_live_delete",
+                    message_id=deleted_id,
+                    outbox_id=delete_outbox_id,
+                )
+                expected_deleted_ids.add(deleted_id)
+
+            if index == iterations // 2:
+                await self.restart_server()
+                clients.clear()
+                await reconnect_everyone()
+
+        for client in tuple(clients.values()):
+            await client.close()
+        clients.clear()
+        await self.restart_server()
+
+        phone = await connect_device(
+            "endurance_alice", alice_nodes[0], delta=False
+        )
+        desktop = await connect_device(
+            "endurance_alice", alice_nodes[1], delta=False
+        )
+        clean_node = "endurance-alice-clean-install"
+        cursors[clean_node] = 0
+        clean = await connect_device(
+            "endurance_alice", clean_node, delta=False
+        )
+        bob = await connect_device("endurance_bob", bob_node, delta=False)
+
+        phone_state = canonical_sync_v2_state(phone.sync)
+        self.assertEqual(phone_state, canonical_sync_v2_state(desktop.sync))
+        self.assertEqual(phone_state, canonical_sync_v2_state(clean.sync))
+        bob_state = canonical_sync_v2_state(bob.sync)
+        self.assertEqual(
+            set(live_message_ids),
+            set(phone_state["direct_messages"]),
+        )
+        self.assertEqual(
+            set(live_message_ids),
+            set(bob_state["direct_messages"]),
+        )
+        self.assertTrue(
+            expected_deleted_ids.isdisjoint(phone_state["direct_messages"])
+        )
+
+        duplicate_messages = self.relay.db.execute(
+            """
+            SELECT message_id, COUNT(*)
+            FROM direct_messages
+            GROUP BY message_id
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        duplicate_operations = self.relay.db.execute(
+            """
+            SELECT account_login, outbox_id, COUNT(*)
+            FROM processed_mutations
+            GROUP BY account_login, outbox_id
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        duplicate_reactions = self.relay.db.execute(
+            """
+            SELECT scope, message_id, reactor_identity, reaction, COUNT(*)
+            FROM server_reactions
+            GROUP BY scope, message_id, reactor_identity, reaction
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        self.assertEqual([], duplicate_messages)
+        self.assertEqual([], duplicate_operations)
+        self.assertEqual([], duplicate_reactions)
 
     async def test_same_account_devices_do_not_stack_identical_reaction(self):
         alice_phone = await self.connect(

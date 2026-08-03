@@ -39,6 +39,55 @@ async def handle_sync_v2_snapshot_request(server, packet, context):
     )
 
 
+async def handle_mutation_status_request(server, packet, context):
+    mutation_reconcile = (
+        server.client_capabilities.get(context.node_id, {}).get(
+            "mutation_reconcile"
+        )
+        is True
+    )
+    if not mutation_reconcile:
+        return False
+
+    login = account_login(server, context.node_id)
+    raw_outbox_ids = packet.get("outbox_ids")
+    if not login or not isinstance(raw_outbox_ids, list):
+        await send_json(
+            context.websocket,
+            {
+                "type": "mutation_status_result",
+                "request_id": packet.get("request_id") or "",
+                "processed_outbox_ids": [],
+                **version_payload(),
+            },
+        )
+        return
+
+    outbox_ids = []
+    seen = set()
+    for value in raw_outbox_ids[:500]:
+        outbox_id = str(value or "").strip()
+        if not outbox_id or outbox_id in seen or len(outbox_id) > 512:
+            continue
+        seen.add(outbox_id)
+        outbox_ids.append(outbox_id)
+
+    processed = [
+        outbox_id
+        for outbox_id in outbox_ids
+        if server.mutation_was_processed(login, outbox_id)
+    ]
+    await send_json(
+        context.websocket,
+        {
+            "type": "mutation_status_result",
+            "request_id": packet.get("request_id") or "",
+            "processed_outbox_ids": processed,
+            **version_payload(),
+        },
+    )
+
+
 async def handle_file_transfer_cancel(server, packet, context):
     file_transfer_v2 = (
         server.client_capabilities.get(context.node_id, {}).get(
@@ -105,6 +154,10 @@ def register_sync_control_commands(registry):
     registry.register(
         "sync_v2_snapshot_request",
         handle_sync_v2_snapshot_request,
+    )
+    registry.register(
+        "mutation_status_request",
+        handle_mutation_status_request,
     )
     registry.register("file_transfer_cancel", handle_file_transfer_cancel)
     registry.register("file_chunk", handle_file_chunk_v2)

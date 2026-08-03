@@ -6,16 +6,24 @@ to interoperate.
 
 ## Negotiation
 
-The client adds this field to `client_hello`:
+The client adds these fields to `client_hello`:
 
 ```json
-{"supports_mutation_ack": true}
+{
+  "supports_mutation_ack": true,
+  "supports_mutation_reconcile": true
+}
 ```
 
 The server advertises support in `server_welcome`:
 
 ```json
-{"capabilities": {"mutation_ack": true}}
+{
+  "capabilities": {
+    "mutation_ack": true,
+    "mutation_reconcile": true
+  }
+}
 ```
 
 Until `server_welcome` arrives, a capable client keeps durable mutations in its
@@ -69,6 +77,36 @@ Native clients store the queue in SQLite. Web clients use SharedPreferences.
 The partition key is normalized server URL plus account login; passwords and
 tokens are not included. Pending entries are replayed after reconnect only once
 capability negotiation has completed.
+
+Each entry moves from `queued` to `sent`. A successful or permanent negative
+ACK removes it atomically; removal is the durable `acked` state. Sent entries
+that remain unacknowledged are retried with bounded exponential backoff while
+the connection remains open.
+
+After reconnect, a capable client first asks which persisted entries have
+already committed:
+
+```json
+{
+  "type": "mutation_status_request",
+  "request_id": "request-id",
+  "outbox_ids": ["outbox-a", "outbox-b"]
+}
+```
+
+The authenticated server checks markers only for that account and returns:
+
+```json
+{
+  "type": "mutation_status_result",
+  "request_id": "request-id",
+  "processed_outbox_ids": ["outbox-a"]
+}
+```
+
+The client removes processed entries and replays only unknown ones. An older
+server falls back to replaying every entry, which remains safe because mutation
+handlers and processed markers are idempotent.
 
 The processed-mutation marker is committed immediately after the authoritative
 mutation commit. A process crash in that narrow interval can repeat a retry, so

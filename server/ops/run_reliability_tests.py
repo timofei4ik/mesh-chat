@@ -30,6 +30,8 @@ RELIABILITY_TESTS = (
     "test_interrupted_delta_replays_same_range_without_cursor_ack",
     "server.tests.test_sync_v2_contract.SyncV2ContractTests."
     "test_two_device_delta_soak_matches_snapshot_after_replays",
+    "server.tests.test_sync_integration.ServerSyncIntegrationTests."
+    "test_two_device_endurance_recovers_from_network_faults",
     "server.tests.test_ops.ServerOperationsTests."
     "test_reliability_audit_detects_media_and_backup_corruption",
     "server.tests.test_ops.ServerOperationsTests."

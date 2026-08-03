@@ -69,6 +69,60 @@ class ChatCacheStore {
 
     final db = await _db();
     final sessionKey = _key(session);
+    final prepared = _prepareThreads(threads, sessionKey);
+    await db.transaction((transaction) async {
+      await _replaceThreads(transaction, sessionKey, prepared);
+      final digest = await _sqliteDigest(transaction, sessionKey);
+      await transaction.rawUpdate(
+        '''
+        UPDATE chat_sync_state
+        SET cache_digest=?, digest_version=?, thread_count=?, updated_at=?
+        WHERE session_key=?
+        ''',
+        [
+          digest,
+          _cacheDigestVersion,
+          prepared.length,
+          DateTime.now().millisecondsSinceEpoch,
+          sessionKey,
+        ],
+      );
+    });
+  }
+
+  Future<void> saveCheckpoint(
+    Session session,
+    Iterable<ChatThread> threads,
+    int cursor,
+  ) async {
+    if (cursor < 0) return;
+    if (kIsWeb) {
+      await _saveLegacy(session, threads);
+      await saveSyncCursor(session, cursor);
+      return;
+    }
+
+    final db = await _db();
+    final sessionKey = _key(session);
+    final prepared = _prepareThreads(threads, sessionKey);
+    await db.transaction((transaction) async {
+      await _replaceThreads(transaction, sessionKey, prepared);
+      final digest = await _sqliteDigest(transaction, sessionKey);
+      await transaction.insert('chat_sync_state', {
+        'session_key': sessionKey,
+        'cursor': cursor,
+        'cache_digest': digest,
+        'digest_version': _cacheDigestVersion,
+        'thread_count': prepared.length,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
+  }
+
+  Map<String, Map<String, Object>> _prepareThreads(
+    Iterable<ChatThread> threads,
+    String sessionKey,
+  ) {
     final prepared = <String, Map<String, Object>>{};
     for (final thread in threads) {
       var trimmed = _trimThread(thread);
@@ -89,47 +143,38 @@ class ChatCacheStore {
         'payload': payload,
       };
     }
-    await db.transaction((transaction) async {
-      final existingRows = await transaction.query(
-        'chat_threads',
-        columns: ['thread_key'],
-        where: 'session_key=?',
-        whereArgs: [sessionKey],
-      );
-      final currentKeys = prepared.keys.toSet();
-      for (final row in existingRows) {
-        final threadKey = row['thread_key']?.toString() ?? '';
-        if (threadKey.isNotEmpty && !currentKeys.contains(threadKey)) {
-          await transaction.delete(
-            'chat_threads',
-            where: 'session_key=? AND thread_key=?',
-            whereArgs: [sessionKey, threadKey],
-          );
-        }
-      }
-      for (final row in prepared.values) {
-        await transaction.insert(
+    return prepared;
+  }
+
+  Future<void> _replaceThreads(
+    DatabaseExecutor executor,
+    String sessionKey,
+    Map<String, Map<String, Object>> prepared,
+  ) async {
+    final existingRows = await executor.query(
+      'chat_threads',
+      columns: ['thread_key'],
+      where: 'session_key=?',
+      whereArgs: [sessionKey],
+    );
+    final currentKeys = prepared.keys.toSet();
+    for (final row in existingRows) {
+      final threadKey = row['thread_key']?.toString() ?? '';
+      if (threadKey.isNotEmpty && !currentKeys.contains(threadKey)) {
+        await executor.delete(
           'chat_threads',
-          row,
-          conflictAlgorithm: ConflictAlgorithm.replace,
+          where: 'session_key=? AND thread_key=?',
+          whereArgs: [sessionKey, threadKey],
         );
       }
-    });
-    final digest = await _sqliteDigest(db, sessionKey);
-    await db.rawUpdate(
-      '''
-      UPDATE chat_sync_state
-      SET cache_digest=?, digest_version=?, thread_count=?, updated_at=?
-      WHERE session_key=?
-      ''',
-      [
-        digest,
-        _cacheDigestVersion,
-        prepared.length,
-        DateTime.now().millisecondsSinceEpoch,
-        sessionKey,
-      ],
-    );
+    }
+    for (final row in prepared.values) {
+      await executor.insert(
+        'chat_threads',
+        row,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
   }
 
   Future<void> clear(Session? session) async {
@@ -445,8 +490,11 @@ class ChatCacheStore {
     }
   }
 
-  Future<String> _sqliteDigest(Database db, String sessionKey) async {
-    final rows = await db.query(
+  Future<String> _sqliteDigest(
+    DatabaseExecutor executor,
+    String sessionKey,
+  ) async {
+    final rows = await executor.query(
       'chat_threads',
       columns: ['thread_key', 'is_group', 'payload'],
       where: 'session_key=?',

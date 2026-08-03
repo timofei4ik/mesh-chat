@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -11,17 +12,25 @@ import 'mutation_outbox_store.dart';
 
 typedef PacketHandler = FutureOr<void> Function(Map<String, dynamic> packet);
 typedef StatusHandler = void Function(String status);
+typedef WebSocketChannelFactory = WebSocketChannel Function(Uri uri);
+typedef ReconnectDelayFactory = Duration Function(int attempt);
 
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '1.0.64';
+  static const appVersion = '1.0.75';
 
   MeshSocket({
     MutationOutboxStore? outboxStore,
     FileTransferOutboxStore? fileTransferStore,
+    WebSocketChannelFactory? channelFactory,
+    Random? reconnectRandom,
+    this.welcomeTimeout = const Duration(seconds: 15),
+    this.reconnectDelayFactory,
   }) : _outboxStore = outboxStore ?? MutationOutboxStore(),
-       _fileTransferStore = fileTransferStore ?? FileTransferOutboxStore();
+       _fileTransferStore = fileTransferStore ?? FileTransferOutboxStore(),
+       _channelFactory = channelFactory ?? WebSocketChannel.connect,
+       _reconnectRandom = reconnectRandom ?? Random();
 
   static const fileTransferChunkBytes = 64 * 1024;
   static const _fileTransferWindow = 4;
@@ -49,13 +58,19 @@ class MeshSocket {
 
   final MutationOutboxStore _outboxStore;
   final FileTransferOutboxStore _fileTransferStore;
+  final WebSocketChannelFactory _channelFactory;
+  final Random _reconnectRandom;
+  final Duration welcomeTimeout;
+  final ReconnectDelayFactory? reconnectDelayFactory;
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
   Timer? _reconnectTimer;
+  Timer? _welcomeTimer;
   bool _closed = false;
   bool _connected = false;
   bool _serverCapabilitiesKnown = false;
   bool _supportsMutationAck = false;
+  bool _supportsMutationReconcile = false;
   bool _supportsFileTransferV2 = false;
   bool _supportsMediaDeliveryV2 = false;
   bool _supportsSyncV2Delta = false;
@@ -71,9 +86,15 @@ class MeshSocket {
   Future<void> _fileOutboxSerial = Future<void>.value();
   final Map<String, Set<int>> _fileChunksInFlight = <String, Set<int>>{};
   Timer? _fileRetryTimer;
+  Timer? _mutationRetryTimer;
+  int _mutationRetryArm = 0;
+  final Map<String, Completer<Set<String>>> _mutationStatusRequests = {};
+  int _connectionGeneration = 0;
+  int _reconnectAttempt = 0;
 
   bool get isConnected => _connected;
   bool get supportsMutationAck => _supportsMutationAck;
+  bool get supportsMutationReconcile => _supportsMutationReconcile;
   bool get supportsFileTransferV2 => _supportsFileTransferV2;
   bool get supportsMediaDeliveryV2 => _supportsMediaDeliveryV2;
   bool get supportsSyncV2Delta => _supportsSyncV2Delta;
@@ -90,25 +111,47 @@ class MeshSocket {
     bool reactivateDevice = false,
     int syncCursor = 0,
   }) async {
+    final generation = ++_connectionGeneration;
     _closed = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _welcomeTimer?.cancel();
+    _welcomeTimer = null;
     _session = session;
     _packetHandler = onPacket;
     _syncCursor = syncCursor < 0 ? 0 : syncCursor;
     _serverCapabilitiesKnown = false;
     _supportsMutationAck = false;
+    _supportsMutationReconcile = false;
     _supportsFileTransferV2 = false;
     _supportsMediaDeliveryV2 = false;
     _supportsSyncV2Delta = false;
     _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();
+    _mutationRetryTimer?.cancel();
+    _mutationRetryArm++;
+    _completeMutationStatusRequests();
     await _subscription?.cancel();
     await _channel?.sink.close();
+    if (!_isCurrentGeneration(generation)) return;
+    _packetSerial = Future<void>.value();
 
     onStatus('Connecting...');
-    final channel = WebSocketChannel.connect(Uri.parse(session.serverUrl));
+    final channel = _channelFactory(Uri.parse(session.serverUrl));
     _channel = channel;
-    await channel.ready.timeout(const Duration(seconds: 10));
+    try {
+      await channel.ready.timeout(const Duration(seconds: 10));
+    } catch (_) {
+      if (_isCurrentConnection(generation, channel)) {
+        _connected = false;
+      }
+      rethrow;
+    }
+    if (!_isCurrentConnection(generation, channel)) {
+      await channel.sink.close();
+      return;
+    }
     _connected = true;
 
     channel.sink.add(
@@ -122,18 +165,34 @@ class MeshSocket {
         ),
       ),
     );
+    _welcomeTimer = Timer(welcomeTimeout, () {
+      if (!_isCurrentConnection(generation, channel) ||
+          _serverCapabilitiesKnown) {
+        return;
+      }
+      onStatus('Connection timeout');
+      unawaited(channel.sink.close());
+    });
 
     _subscription = channel.stream.listen(
       (raw) async {
+        if (!_isCurrentConnection(generation, channel)) return;
         final previousPacket = _packetSerial;
         final currentPacket = Completer<void>();
         _packetSerial = currentPacket.future;
         await previousPacket;
+        if (!_isCurrentConnection(generation, channel)) {
+          if (!currentPacket.isCompleted) currentPacket.complete();
+          return;
+        }
         try {
           final decoded = jsonDecode(raw.toString());
           if (decoded is Map<String, dynamic>) {
             final packetType = decoded['type']?.toString() ?? '';
             if (packetType == 'server_welcome') {
+              _welcomeTimer?.cancel();
+              _welcomeTimer = null;
+              _reconnectAttempt = 0;
               _lastIdentityRecovery =
                   decoded['encryption_recovery']?.toString() ?? '';
               final rawCapabilities = decoded['capabilities'];
@@ -142,6 +201,8 @@ class MeshSocket {
                   : const <String, dynamic>{};
               _serverCapabilitiesKnown = true;
               _supportsMutationAck = capabilities['mutation_ack'] == true;
+              _supportsMutationReconcile =
+                  capabilities['mutation_reconcile'] == true;
               _supportsFileTransferV2 =
                   capabilities['file_transfer_v2'] == true;
               _supportsMediaDeliveryV2 =
@@ -154,6 +215,8 @@ class MeshSocket {
               await _serializeFileOutbox(() => _consumeFileChunkAck(decoded));
             } else if (packetType == 'mutation_ack') {
               await _consumeMutationAck(decoded, onPacket);
+            } else if (packetType == 'mutation_status_result') {
+              _consumeMutationStatusResult(decoded);
             } else {
               await onPacket(decoded);
             }
@@ -173,52 +236,41 @@ class MeshSocket {
               }
             }
             if (packetType == 'server_welcome') {
-              await _flushOutbox();
+              unawaited(_recoverMutationOutbox(generation));
               await _flushFileOutbox();
             }
           }
+        } catch (error, stackTrace) {
+          debugPrint('MeshSocket packet handling failed: $error');
+          debugPrintStack(stackTrace: stackTrace);
         } finally {
           if (!currentPacket.isCompleted) currentPacket.complete();
         }
       },
       onError: (Object error) {
-        _connected = false;
-        _serverCapabilitiesKnown = false;
-        _supportsMutationAck = false;
-        _supportsFileTransferV2 = false;
-        _supportsMediaDeliveryV2 = false;
-        _supportsSyncV2Delta = false;
-        _supportsMultiDeviceState = false;
-        _fileChunksInFlight.clear();
-        _fileRetryTimer?.cancel();
-        onStatus('Connection error');
-        _scheduleReconnect(
+        _handleConnectionLoss(
           session,
           publicKey,
           profile,
           onPacket,
           onStatus,
           deviceName,
+          generation: generation,
+          channel: channel,
+          status: 'Connection error',
         );
       },
       onDone: () {
-        _connected = false;
-        _serverCapabilitiesKnown = false;
-        _supportsMutationAck = false;
-        _supportsFileTransferV2 = false;
-        _supportsMediaDeliveryV2 = false;
-        _supportsSyncV2Delta = false;
-        _supportsMultiDeviceState = false;
-        _fileChunksInFlight.clear();
-        _fileRetryTimer?.cancel();
-        onStatus('Offline');
-        _scheduleReconnect(
+        _handleConnectionLoss(
           session,
           publicKey,
           profile,
           onPacket,
           onStatus,
           deviceName,
+          generation: generation,
+          channel: channel,
+          status: 'Offline',
         );
       },
       cancelOnError: false,
@@ -751,22 +803,68 @@ class MeshSocket {
       await _serializeOutbox(() async {
         await _outboxStore.put(current, entry);
         if (!_connected || !_serverCapabilitiesKnown) return;
-        _sendRaw(packet);
-        if (_supportsMutationAck) {
-          await _outboxStore.markAttempt(current, outboxId);
-        } else {
-          await _outboxStore.delete(current, outboxId);
-        }
+        await _sendOutboxEntry(current, entry);
       });
-    } catch (_) {
+      _scheduleMutationRetry();
+    } catch (error) {
       // Storage failure must not turn a user action into an app-level crash.
       try {
         if (_connected) _sendRaw(packet);
       } catch (_) {}
+      debugPrint('Could not persist mutation $operationId: $error');
     }
   }
 
-  Future<void> _flushOutbox() async {
+  Future<void> _recoverMutationOutbox(int generation) async {
+    final current = _session;
+    if (current == null || !_isCurrentGeneration(generation)) return;
+
+    late List<MutationOutboxEntry> entries;
+    try {
+      await _serializeOutbox(() async {
+        entries = await _outboxStore.load(current);
+      });
+    } catch (_) {
+      return;
+    }
+    if (entries.isEmpty || !_isCurrentGeneration(generation)) return;
+    if (!_supportsMutationReconcile) {
+      await _flushOutbox(force: true);
+      return;
+    }
+
+    final requestId =
+        'mutation-status-${DateTime.now().microsecondsSinceEpoch}-'
+        '${_reconnectRandom.nextInt(1 << 31)}';
+    final completer = Completer<Set<String>>();
+    _mutationStatusRequests[requestId] = completer;
+    final sent = _sendRaw({
+      'type': 'mutation_status_request',
+      'request_id': requestId,
+      'source_node': current.nodeId,
+      'outbox_ids': entries.map((entry) => entry.outboxId).toList(),
+      'protocol_version': protocolVersion,
+    });
+    Set<String> processed = const <String>{};
+    try {
+      if (sent) {
+        processed = await completer.future.timeout(const Duration(seconds: 3));
+      }
+    } catch (_) {
+      // A full replay is safe because the server deduplicates outbox ids.
+    } finally {
+      _mutationStatusRequests.remove(requestId);
+    }
+    if (!_isCurrentGeneration(generation)) return;
+
+    for (final entry in entries) {
+      if (!processed.contains(entry.outboxId)) continue;
+      await _consumeReconciledMutation(current, entry);
+    }
+    await _flushOutbox(force: true);
+  }
+
+  Future<void> _flushOutbox({bool force = false}) async {
     final current = _session;
     if (current == null || !_connected || !_serverCapabilitiesKnown) return;
     if (_flushingOutbox) return;
@@ -774,21 +872,123 @@ class MeshSocket {
     try {
       await _serializeOutbox(() async {
         final entries = await _outboxStore.load(current);
+        final now = DateTime.now().toUtc();
         for (final entry in entries) {
           if (!_connected) break;
-          _sendRaw(entry.packet);
-          if (_supportsMutationAck) {
-            await _outboxStore.markAttempt(current, entry.outboxId);
-          } else {
-            await _outboxStore.delete(current, entry.outboxId);
-          }
+          if (!force && !_mutationRetryDue(entry, now)) continue;
+          await _sendOutboxEntry(current, entry);
         }
       });
     } catch (_) {
       // Entries remain persisted and will be retried on the next reconnect.
     } finally {
       _flushingOutbox = false;
+      _scheduleMutationRetry();
     }
+  }
+
+  Future<void> _sendOutboxEntry(
+    Session current,
+    MutationOutboxEntry entry,
+  ) async {
+    if (!_sendRaw(entry.packet)) {
+      await _outboxStore.markQueued(
+        current,
+        entry.outboxId,
+        error: 'socket_unavailable',
+      );
+      return;
+    }
+    if (_supportsMutationAck) {
+      await _outboxStore.markSent(current, entry.outboxId);
+    } else {
+      await _outboxStore.delete(current, entry.outboxId);
+    }
+  }
+
+  static bool _mutationRetryDue(MutationOutboxEntry entry, DateTime now) {
+    if (entry.state == MutationOutboxState.queued ||
+        entry.lastAttemptAt == null) {
+      return true;
+    }
+    return !now.isBefore(
+      entry.lastAttemptAt!.add(mutationRetryDelayForAttempts(entry.attempts)),
+    );
+  }
+
+  void _scheduleMutationRetry() {
+    _mutationRetryTimer?.cancel();
+    final arm = ++_mutationRetryArm;
+    if (_closed || !_connected || !_supportsMutationAck) return;
+    final current = _session;
+    final generation = _connectionGeneration;
+    if (current == null) return;
+    unawaited(() async {
+      late List<MutationOutboxEntry> entries;
+      try {
+        await _serializeOutbox(() async {
+          entries = await _outboxStore.load(current);
+        });
+      } catch (_) {
+        return;
+      }
+      if (arm != _mutationRetryArm ||
+          entries.isEmpty ||
+          !_isCurrentGeneration(generation) ||
+          !_connected) {
+        return;
+      }
+      _mutationRetryTimer = Timer(const Duration(seconds: 2), () {
+        if (arm != _mutationRetryArm) return;
+        unawaited(_flushOutbox());
+      });
+    }());
+  }
+
+  void _consumeMutationStatusResult(Map<String, dynamic> packet) {
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _mutationStatusRequests[requestId];
+    if (completer == null || completer.isCompleted) return;
+    final rawIds = packet['processed_outbox_ids'];
+    final processed = rawIds is List
+        ? rawIds
+              .map((value) => value?.toString() ?? '')
+              .where((value) => value.isNotEmpty)
+              .toSet()
+        : <String>{};
+    completer.complete(processed);
+  }
+
+  Future<void> _consumeReconciledMutation(
+    Session current,
+    MutationOutboxEntry entry,
+  ) async {
+    var operationComplete = false;
+    await _serializeOutbox(() async {
+      await _outboxStore.delete(current, entry.outboxId);
+      operationComplete = !await _outboxStore.hasOperation(
+        current,
+        entry.operationId,
+      );
+    });
+    final handler = _packetHandler;
+    if (handler == null) return;
+    await handler({
+      'type': 'mutation_ack',
+      'ok': true,
+      'duplicate': true,
+      'reconciled': true,
+      'outbox_id': entry.outboxId,
+      'operation_id': entry.operationId,
+      'packet_type': entry.packet['type'],
+      'packet_id':
+          entry.packet['packet_id'] ??
+          entry.packet['group_message_id'] ??
+          entry.packet['message_id'] ??
+          entry.packet['story_id'] ??
+          '',
+      'operation_complete': operationComplete,
+    });
   }
 
   Future<void> _consumeMutationAck(
@@ -813,6 +1013,7 @@ class MeshSocket {
       }
     }
     await onPacket({...packet, 'operation_complete': operationComplete});
+    _scheduleMutationRetry();
   }
 
   Future<void> _serializeOutbox(Future<void> Function() action) {
@@ -821,8 +1022,15 @@ class MeshSocket {
     return result;
   }
 
-  void _sendRaw(Map<String, dynamic> packet) {
-    _channel?.sink.add(jsonEncode(packet));
+  bool _sendRaw(Map<String, dynamic> packet) {
+    final channel = _channel;
+    if (!_connected || channel == null) return false;
+    try {
+      channel.sink.add(jsonEncode(packet));
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Map<String, dynamic> _helloPacket(
@@ -862,6 +1070,7 @@ class MeshSocket {
       'sync_cursor': _syncCursor,
       'supports_offline_packet_ack': true,
       'supports_mutation_ack': true,
+      'supports_mutation_reconcile': true,
       'supports_file_transfer_v2': true,
       'supports_media_delivery_v2': !kIsWeb,
       'supports_account_live_fanout': true,
@@ -911,16 +1120,87 @@ class MeshSocket {
     }
   }
 
+  static Duration reconnectDelayForAttempt(int attempt, {double jitter = 1}) {
+    final safeAttempt = attempt.clamp(0, 5);
+    final baseSeconds = min(20, 1 << safeAttempt);
+    final safeJitter = jitter.clamp(0.75, 1.25);
+    return Duration(
+      milliseconds: max(250, (baseSeconds * 1000 * safeJitter).round()),
+    );
+  }
+
+  static Duration mutationRetryDelayForAttempts(int attempts) {
+    final exponent = (attempts - 1).clamp(0, 4);
+    return Duration(seconds: min(30, 2 << exponent));
+  }
+
+  bool _isCurrentGeneration(int generation) =>
+      !_closed && generation == _connectionGeneration;
+
+  bool _isCurrentConnection(int generation, WebSocketChannel channel) =>
+      _isCurrentGeneration(generation) && identical(channel, _channel);
+
+  void _handleConnectionLoss(
+    Session session,
+    String publicKey,
+    Profile profile,
+    PacketHandler onPacket,
+    StatusHandler onStatus,
+    String deviceName, {
+    required int generation,
+    required WebSocketChannel channel,
+    required String status,
+  }) {
+    if (!_isCurrentConnection(generation, channel)) return;
+    _connected = false;
+    _serverCapabilitiesKnown = false;
+    _supportsMutationAck = false;
+    _supportsMutationReconcile = false;
+    _supportsFileTransferV2 = false;
+    _supportsMediaDeliveryV2 = false;
+    _supportsSyncV2Delta = false;
+    _supportsMultiDeviceState = false;
+    _fileChunksInFlight.clear();
+    _fileRetryTimer?.cancel();
+    _mutationRetryTimer?.cancel();
+    _mutationRetryArm++;
+    _completeMutationStatusRequests();
+    _welcomeTimer?.cancel();
+    _welcomeTimer = null;
+    onStatus(status);
+    _scheduleReconnect(
+      session,
+      publicKey,
+      profile,
+      onPacket,
+      onStatus,
+      deviceName,
+      generation: generation,
+    );
+  }
+
   void _scheduleReconnect(
     Session session,
     String publicKey,
     Profile profile,
     PacketHandler onPacket,
     StatusHandler onStatus,
-    String deviceName,
-  ) {
-    if (_closed || _reconnectTimer?.isActive == true) return;
-    _reconnectTimer = Timer(const Duration(seconds: 4), () {
+    String deviceName, {
+    required int generation,
+  }) {
+    if (!_isCurrentGeneration(generation) ||
+        _reconnectTimer?.isActive == true) {
+      return;
+    }
+    final attempt = _reconnectAttempt++;
+    final delay =
+        reconnectDelayFactory?.call(attempt) ??
+        reconnectDelayForAttempt(
+          attempt,
+          jitter: 0.85 + (_reconnectRandom.nextDouble() * 0.30),
+        );
+    _reconnectTimer = Timer(delay, () {
+      if (!_isCurrentGeneration(generation)) return;
       connect(
         session: session,
         publicKey: publicKey,
@@ -931,6 +1211,7 @@ class MeshSocket {
         reactivateDevice: false,
         syncCursor: _syncCursor,
       ).catchError((_) {
+        final failedGeneration = _connectionGeneration;
         _scheduleReconnect(
           session,
           publicKey,
@@ -938,6 +1219,7 @@ class MeshSocket {
           onPacket,
           onStatus,
           deviceName,
+          generation: failedGeneration,
         );
       });
     });
@@ -945,21 +1227,36 @@ class MeshSocket {
 
   Future<void> close() async {
     _closed = true;
+    _connectionGeneration++;
     _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _welcomeTimer?.cancel();
+    _welcomeTimer = null;
     await _subscription?.cancel();
     await _channel?.sink.close();
     _channel = null;
     _connected = false;
     _serverCapabilitiesKnown = false;
     _supportsMutationAck = false;
+    _supportsMutationReconcile = false;
     _supportsFileTransferV2 = false;
     _supportsMediaDeliveryV2 = false;
     _supportsSyncV2Delta = false;
     _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();
+    _mutationRetryTimer?.cancel();
+    _mutationRetryArm++;
+    _completeMutationStatusRequests();
     _session = null;
     _packetHandler = null;
+  }
+
+  void _completeMutationStatusRequests() {
+    for (final completer in _mutationStatusRequests.values) {
+      if (!completer.isCompleted) completer.complete(const <String>{});
+    }
+    _mutationStatusRequests.clear();
   }
 }
 

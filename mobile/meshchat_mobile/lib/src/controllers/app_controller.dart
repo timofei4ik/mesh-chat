@@ -2593,9 +2593,11 @@ class AppController extends ChangeNotifier {
           packet['sync_cursor']?.toString() ?? '',
         );
         final current = session;
-        await _saveCache();
         if (current != null && syncCursor != null && syncCursor >= 0) {
-          await _cache.saveSyncCursor(current, syncCursor);
+          await _cache.saveCheckpoint(current, [
+            ...threads.values,
+            ...groups.values,
+          ], syncCursor);
           await _syncCursorStore.save(current, syncCursor);
           _lastAppliedSyncCursor = syncCursor;
           _socket.updateSyncCursor(syncCursor);
@@ -2787,9 +2789,12 @@ class AppController extends ChangeNotifier {
       if (current == null) {
         throw const FormatException('session ended during delta sync');
       }
-      await _saveCache();
-      await _cache.saveSyncCursor(current, batch.targetCursor);
+      await _cache.saveCheckpoint(current, [
+        ...threads.values,
+        ...groups.values,
+      ], batch.targetCursor);
       await _syncCursorStore.save(current, batch.targetCursor);
+      _cacheSavePending = false;
       _lastAppliedSyncCursor = batch.targetCursor;
       _socket.updateSyncCursor(batch.targetCursor);
       _socket.send({
@@ -2813,6 +2818,7 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     } catch (syncError) {
       _applyingSyncDelta = false;
+      _cacheSavePending = false;
       _livePacketsDuringDeltaApply.clear();
       _requestAuthoritativeSnapshot('delta apply failed: $syncError');
     }
@@ -10080,6 +10086,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> _saveCache() {
     _cacheSavePending = true;
+    if (_applyingSyncDelta) return Future<void>.value();
     final existing = _cacheSaveFuture;
     if (existing != null) return existing;
     late final Future<void> future;
@@ -10093,9 +10100,14 @@ class AppController extends ChangeNotifier {
 
   Future<void> _drainCacheSaves() async {
     while (_cacheSavePending) {
+      while (_applyingSyncDelta && _cacheSavePending) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+      if (!_cacheSavePending) break;
       // Message acknowledgements and sync deltas commonly arrive in short
       // bursts. Let the burst settle so it becomes one SQLite transaction.
       await Future<void>.delayed(const Duration(milliseconds: 80));
+      if (_applyingSyncDelta) continue;
       _cacheSavePending = false;
       try {
         await _cache.save(session, [...threads.values, ...groups.values]);
