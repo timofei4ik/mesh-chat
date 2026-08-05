@@ -12,6 +12,7 @@ class CallAlertService {
   static Timer? _vibrationTimer;
   static String _activeCallId = '';
   static int _generation = 0;
+  static Uint8List? _cachedRingtone;
 
   static Future<void> stopAll() async {
     _generation++;
@@ -78,6 +79,8 @@ class CallAlertService {
   }
 
   Uint8List _incomingRingtoneWav() {
+    final cached = _cachedRingtone;
+    if (cached != null) return cached;
     const sampleRate = 22050;
     const seconds = 2.6;
     final samples = (sampleRate * seconds).round();
@@ -128,6 +131,7 @@ class CallAlertService {
       }
       data.setInt16(44 + i * 2, (sample * 32767).round(), Endian.little);
     }
+    _cachedRingtone = bytes;
     return bytes;
   }
 }

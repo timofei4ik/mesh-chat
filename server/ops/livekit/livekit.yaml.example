@@ -1,5 +1,5 @@
-# Prepared SFU control plane. Do not enable in production until the clients
-# negotiate LiveKit rooms behind the `call_sfu_v1` capability.
+# Prepared SFU control plane. Do not enable in production until clients use
+# `call_sfu_access_request` and advertise `media_e2ee_capability=frame-v1`.
 port: 7880
 rtc:
   tcp_port: 7881

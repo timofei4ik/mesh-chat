@@ -24,6 +24,16 @@ void main() {
 
     expect(await crypto.decryptText(encrypted), 'Проверка');
   });
+  test('missing recipient key never falls back to plaintext', () async {
+    final crypto = MeshCrypto();
+    await crypto.initialize('sender', 'password');
+
+    expect(
+      () => crypto.encryptText('', 'must stay private'),
+      throwsA(isA<EncryptionUnavailableException>()),
+    );
+  });
+
   test('wraps group keys and encrypts group content', () async {
     final crypto = MeshCrypto();
     await crypto.initialize('mobile-user', 'mobile-secret');

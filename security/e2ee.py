@@ -17,6 +17,9 @@ BINARY_PREFIX = b"MCBIN1:"
 GROUP_PREFIX = "MCGRP1:"
 GROUP_BINARY_PREFIX = b"MCGBIN1:"
 PRIVATE_KEY_ITERATIONS = 300_000
+PUBLIC_KEY_LENGTH = 32
+NONCE_LENGTH = 12
+MAX_TEXT_ENVELOPE_BYTES = 8 * 1024 * 1024
 
 
 def _encode(data):
@@ -46,7 +49,7 @@ class EncryptionIdentity:
 
     def encrypt_text(self, recipient_public_key, text):
         if not recipient_public_key:
-            return text
+            raise ValueError("Recipient encryption key is unavailable")
 
         payload = {
             "v": 1,
@@ -72,11 +75,15 @@ class EncryptionIdentity:
             return value
 
         try:
+            if len(value) > MAX_TEXT_ENVELOPE_BYTES:
+                raise ValueError("Encrypted message is too large")
             payload = json.loads(
                 _decode(
                     value[len(ENCRYPTED_PREFIX):]
                 ).decode("utf-8")
             )
+            if payload.get("v") != 1:
+                raise ValueError("Unsupported encrypted message version")
 
             for field in ("to", "from"):
                 sealed = payload.get(field)
@@ -205,9 +212,12 @@ class EncryptionIdentity:
         )
 
     def _seal(self, recipient_public_key, plaintext):
+        recipient_bytes = _decode(recipient_public_key)
+        if len(recipient_bytes) != PUBLIC_KEY_LENGTH:
+            raise ValueError("Invalid recipient encryption key")
         ephemeral_private = X25519PrivateKey.generate()
         recipient_key = X25519PublicKey.from_public_bytes(
-            _decode(recipient_public_key)
+            recipient_bytes
         )
         shared_key = ephemeral_private.exchange(recipient_key)
         key = HKDF(
@@ -235,8 +245,18 @@ class EncryptionIdentity:
         }
 
     def _open(self, sealed):
+        ephemeral_bytes = _decode(sealed["e"])
+        nonce = _decode(sealed["n"])
+        ciphertext = _decode(sealed["c"])
+        if (
+            len(ephemeral_bytes) != PUBLIC_KEY_LENGTH
+            or len(nonce) != NONCE_LENGTH
+            or len(ciphertext) < 16
+            or len(ciphertext) > MAX_TEXT_ENVELOPE_BYTES
+        ):
+            raise ValueError("Invalid encrypted message envelope")
         ephemeral_key = X25519PublicKey.from_public_bytes(
-            _decode(sealed["e"])
+            ephemeral_bytes
         )
         shared_key = self.private_key.exchange(ephemeral_key)
         key = HKDF(
@@ -247,8 +267,8 @@ class EncryptionIdentity:
         ).derive(shared_key)
 
         return AESGCM(key).decrypt(
-            _decode(sealed["n"]),
-            _decode(sealed["c"]),
+            nonce,
+            ciphertext,
             b"meshchat-e2ee-v1",
         )
 

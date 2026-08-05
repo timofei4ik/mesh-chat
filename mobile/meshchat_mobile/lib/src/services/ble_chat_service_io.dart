@@ -93,6 +93,7 @@ class BleChatService extends ChangeNotifier {
   Timer? _scanPauseTimer;
   Timer? _scanResumeTimer;
   String _queueOwnerNodeId = '';
+  bool _appForeground = true;
 
   BlePacketHandler? onPacket;
   bool running = false;
@@ -154,6 +155,22 @@ class BleChatService extends ChangeNotifier {
     await startScan();
   }
 
+  Future<void> setAppForeground(bool foreground) async {
+    if (_appForeground == foreground) return;
+    _appForeground = foreground;
+    if (!running) return;
+    if (!foreground) {
+      _cancelScanDutyCycle();
+      _pruneTimer?.cancel();
+      _pruneTimer = null;
+      await stopScan();
+      return;
+    }
+
+    _startPruneTimer();
+    if (!scanning) await startScan();
+  }
+
   Future<void> stop() async {
     _cancelScanDutyCycle();
     _pruneTimer?.cancel();
@@ -173,7 +190,7 @@ class BleChatService extends ChangeNotifier {
   }
 
   Future<void> startScan() async {
-    if (!supported || scanning) return;
+    if (!supported || scanning || !_appForeground) return;
     await _authorizeIfNeeded();
     _clearDisconnectedPeers();
     if (Platform.isWindows) {
@@ -768,8 +785,9 @@ class BleChatService extends ChangeNotifier {
   }
 
   void _startPruneTimer() {
+    if (!_appForeground) return;
     _pruneTimer ??= Timer.periodic(
-      const Duration(seconds: 3),
+      const Duration(seconds: 10),
       (_) => _pruneStalePeers(),
     );
   }

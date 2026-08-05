@@ -180,6 +180,29 @@ TURN_CREDENTIAL_TTL_SECONDS = max(
     int(os.environ.get("MESH_TURN_CREDENTIAL_TTL_SECONDS", "3600")),
 )
 
+CALL_SFU_ENABLED = os.environ.get(
+    "MESH_CALL_SFU_ENABLED",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+CALL_SFU_URL = os.environ.get("MESH_CALL_SFU_URL", "").strip()
+CALL_SFU_API_KEY = os.environ.get("MESH_CALL_SFU_API_KEY", "").strip()
+CALL_SFU_API_SECRET = os.environ.get(
+    "MESH_CALL_SFU_API_SECRET",
+    "",
+).strip()
+CALL_SFU_TOKEN_TTL_SECONDS = max(
+    60,
+    min(
+        3600,
+        int(os.environ.get("MESH_CALL_SFU_TOKEN_TTL_SECONDS", "300")),
+    ),
+)
+CALL_SFU_REQUIRE_E2EE = os.environ.get(
+    "MESH_CALL_SFU_REQUIRE_E2EE",
+    "1",
+).strip().lower() in {"1", "true", "yes", "on"}
+
 SUBSCRIPTION_CHECKOUT_URL = os.environ.get(
     "MESH_SUBSCRIPTION_CHECKOUT_URL",
     ""

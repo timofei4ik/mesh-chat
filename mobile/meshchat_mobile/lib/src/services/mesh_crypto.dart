@@ -3,11 +3,24 @@ import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 
+class EncryptionUnavailableException implements Exception {
+  const EncryptionUnavailableException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class MeshCrypto {
   static const encryptedPrefix = 'MCENC1:';
   static const groupPrefix = 'MCGRP1:';
   static const groupBinaryPrefix = [77, 67, 71, 66, 73, 78, 49, 58];
   static const _iterations = 300000;
+  static const _publicKeyLength = 32;
+  static const _nonceLength = 12;
+  static const _macLength = 16;
+  static const _maxTextEnvelopeBytes = 8 * 1024 * 1024;
   static final _x25519 = X25519();
   static final _aes = AesGcm.with256bits();
   static final _hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
@@ -115,7 +128,16 @@ class MeshCrypto {
       utf8.encode('meshchat-e2ee-recovery-v1:${login.trim().toLowerCase()}');
 
   Future<String> encryptText(String recipientPublicKey, String text) async {
-    if (recipientPublicKey.isEmpty || _keyPair == null) return text;
+    if (_keyPair == null) {
+      throw const EncryptionUnavailableException(
+        'Encryption identity is not initialized',
+      );
+    }
+    if (!_isValidPublicKey(recipientPublicKey)) {
+      throw const EncryptionUnavailableException(
+        'Recipient encryption key is unavailable',
+      );
+    }
     final bytes = utf8.encode(text);
     final payload = {
       'v': 1,
@@ -128,11 +150,17 @@ class MeshCrypto {
   Future<String> decryptText(String value) async {
     if (!value.startsWith(encryptedPrefix) || _keyPair == null) return value;
     try {
+      if (value.length > _maxTextEnvelopeBytes) {
+        throw const FormatException('Encrypted message is too large');
+      }
       final payload =
           jsonDecode(
                 utf8.decode(_decode(value.substring(encryptedPrefix.length))),
               )
               as Map<String, dynamic>;
+      if (payload['v'] != 1) {
+        throw const FormatException('Unsupported encrypted message version');
+      }
       for (final field in const ['to', 'from']) {
         final sealed = payload[field];
         if (sealed is! Map) continue;
@@ -170,6 +198,7 @@ class MeshCrypto {
   }
 
   Future<String> encryptGroupText(List<int> groupKey, String text) async {
+    _validateGroupKey(groupKey);
     final nonce = _randomBytes(12);
     final box = await _aes.encrypt(
       utf8.encode(text),
@@ -184,7 +213,11 @@ class MeshCrypto {
   Future<String> decryptGroupText(List<int>? groupKey, String value) async {
     if (groupKey == null || !value.startsWith(groupPrefix)) return value;
     try {
+      _validateGroupKey(groupKey);
       final payload = _decode(value.substring(groupPrefix.length));
+      if (payload.length < _nonceLength + _macLength) {
+        throw const FormatException('Invalid encrypted group message');
+      }
       final box = SecretBox(
         payload.sublist(12, payload.length - 16),
         nonce: payload.sublist(0, 12),
@@ -206,6 +239,7 @@ class MeshCrypto {
     List<int> groupKey,
     List<int> data,
   ) async {
+    _validateGroupKey(groupKey);
     final nonce = _randomBytes(12);
     final box = await _aes.encrypt(
       data,
@@ -226,7 +260,11 @@ class MeshCrypto {
     List<int> data,
   ) async {
     if (groupKey == null || !_hasPrefix(data, groupBinaryPrefix)) return data;
+    _validateGroupKey(groupKey);
     final payload = data.sublist(groupBinaryPrefix.length);
+    if (payload.length < _nonceLength + _macLength) {
+      throw const FormatException('Invalid encrypted group file');
+    }
     final box = SecretBox(
       payload.sublist(12, payload.length - 16),
       nonce: payload.sublist(0, 12),
@@ -243,6 +281,11 @@ class MeshCrypto {
     String recipientPublicKey,
     List<int> plaintext,
   ) async {
+    if (!_isValidPublicKey(recipientPublicKey)) {
+      throw const EncryptionUnavailableException(
+        'Recipient encryption key is invalid',
+      );
+    }
     final ephemeral = await _x25519.newKeyPair();
     final ephemeralPublic = await ephemeral.extractPublicKey();
     final shared = await _x25519.sharedSecretKey(
@@ -272,10 +315,19 @@ class MeshCrypto {
   }
 
   Future<List<int>> _open(Map<String, dynamic> sealed) async {
+    final ephemeralBytes = _decode(sealed['e']?.toString() ?? '');
+    final nonce = _decode(sealed['n']?.toString() ?? '');
+    final combined = _decode(sealed['c']?.toString() ?? '');
+    if (ephemeralBytes.length != _publicKeyLength ||
+        nonce.length != _nonceLength ||
+        combined.length < _macLength ||
+        combined.length > _maxTextEnvelopeBytes) {
+      throw const FormatException('Invalid encrypted message envelope');
+    }
     final shared = await _x25519.sharedSecretKey(
       keyPair: _keyPair!,
       remotePublicKey: SimplePublicKey(
-        _decode(sealed['e'].toString()),
+        ephemeralBytes,
         type: KeyPairType.x25519,
       ),
     );
@@ -284,10 +336,9 @@ class MeshCrypto {
       nonce: const [],
       info: utf8.encode('meshchat-e2ee-v1'),
     );
-    final combined = _decode(sealed['c'].toString());
     final box = SecretBox(
       combined.sublist(0, combined.length - 16),
-      nonce: _decode(sealed['n'].toString()),
+      nonce: nonce,
       mac: Mac(combined.sublist(combined.length - 16)),
     );
     return _aes.decrypt(
@@ -307,6 +358,21 @@ class MeshCrypto {
   static List<int> _decode(String value) {
     final padding = (4 - value.length % 4) % 4;
     return base64Url.decode(value + ('=' * padding));
+  }
+
+  static bool _isValidPublicKey(String value) {
+    if (value.isEmpty || value.length > 128) return false;
+    try {
+      return _decode(value).length == _publicKeyLength;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static void _validateGroupKey(List<int> key) {
+    if (key.length != 32) {
+      throw const FormatException('Invalid group encryption key');
+    }
   }
 
   static bool _hasPrefix(List<int> data, List<int> prefix) {

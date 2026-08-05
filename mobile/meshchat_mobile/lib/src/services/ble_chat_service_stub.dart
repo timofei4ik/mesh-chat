@@ -47,6 +47,7 @@ class BleChatService extends ChangeNotifier {
   }
 
   Future<void> stop() async {}
+  Future<void> setAppForeground(bool foreground) async {}
   Future<void> startScan() async {}
   Future<void> startWideScan() async {}
   Future<void> stopScan() async {}

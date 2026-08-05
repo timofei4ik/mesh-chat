@@ -42,6 +42,7 @@ class CallService {
   ];
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
   Timer? _statsTimer;
+  bool _collectingStats = false;
   void Function()? onRemoteScreenChanged;
   void Function()? onLocalScreenEnded;
   void Function(CallConnectionPhase phase)? onConnectionStateChanged;
@@ -342,10 +343,10 @@ class CallService {
   }
 
   void _startStats() {
-    _statsTimer ??= Timer.periodic(const Duration(seconds: 2), (_) {
-      _collectQuality();
+    _statsTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_collectQuality());
     });
-    _collectQuality();
+    unawaited(_collectQuality());
   }
 
   void _stopStats() {
@@ -354,11 +355,14 @@ class CallService {
   }
 
   Future<void> _collectQuality() async {
+    if (_collectingStats) return;
     final peerConnection = _peerConnection;
     if (peerConnection == null) return;
-    final reports = await peerConnection.getStats().catchError(
-      (_) => <StatsReport>[],
-    );
+    _collectingStats = true;
+    final reports = await peerConnection
+        .getStats()
+        .catchError((_) => <StatsReport>[])
+        .whenComplete(() => _collectingStats = false);
     if (reports.isEmpty) return;
     final byId = {for (final report in reports) report.id: report};
     StatsReport? selectedPair;

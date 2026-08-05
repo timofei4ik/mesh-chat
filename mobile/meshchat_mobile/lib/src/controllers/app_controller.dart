@@ -1192,11 +1192,11 @@ class AppController extends ChangeNotifier {
     } else {
       unawaited(refreshMeshProSubscription());
     }
-    if (ble.running && !ble.scanning) unawaited(ble.startScan());
+    if (ble.running) unawaited(ble.setAppForeground(true));
   }
 
   Future<void> handleAppPaused() async {
-    if (ble.running) await ble.stopScan();
+    if (ble.running) await ble.setAppForeground(false);
   }
 
   Future<MeshProSubscription> refreshMeshProSubscription() async {
@@ -4484,6 +4484,13 @@ class AppController extends ChangeNotifier {
       return;
     }
 
+    if (thread.profile.publicKey.trim().isEmpty) {
+      addDiagnostic(
+        'e2ee',
+        'Could not edit ${message.id}: recipient key is unavailable',
+      );
+      return;
+    }
     final encryptedText = await _crypto.encryptText(
       thread.profile.publicKey,
       trimmed,
@@ -4887,6 +4894,9 @@ class AppController extends ChangeNotifier {
       }
     } else {
       final recipient = thread.profile;
+      if (recipient.publicKey.trim().isEmpty) {
+        return 'Recipient encryption key is unavailable';
+      }
       final wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
       payloads.add({
         'type': 'chat_message',
@@ -7017,7 +7027,18 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
+    String wireText;
+    try {
+      wireText = await _crypto.encryptText(recipient.publicKey, trimmed);
+    } on EncryptionUnavailableException catch (error) {
+      _replaceMessage(
+        id,
+        (message) => message.copyWith(pending: false, failed: true),
+      );
+      addDiagnostic('e2ee', error.message);
+      notifyListeners();
+      return;
+    }
     _socket.send({
       'type': 'chat_message',
       'packet_id': id,

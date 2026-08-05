@@ -75,6 +75,84 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
         ).decode("ascii")
         self.assertEqual(expected, result[0]["credential"])
 
+    def test_livekit_room_name_does_not_expose_call_id(self):
+        room = server_calls.private_room_name("private-call-id", "secret")
+        self.assertTrue(room.startswith("mesh-"))
+        self.assertNotIn("private-call-id", room)
+
+    async def test_sfu_access_is_closed_when_not_configured(self):
+        server = FakeCallServer()
+        socket = FakeSocket()
+        with patch.object(server_calls, "CALL_SFU_ENABLED", False):
+            handled = await build_command_registry().dispatch(
+                server,
+                {
+                    "type": "call_sfu_access_request",
+                    "request_id": "request-1",
+                    "call_id": "call-1",
+                },
+                ConnectionContext(socket, "caller"),
+            )
+
+        self.assertTrue(handled)
+        self.assertFalse(socket.sent[0]["enabled"])
+        self.assertEqual("p2p", socket.sent[0]["fallback"])
+
+    async def test_sfu_access_uses_short_lived_room_scoped_token(self):
+        server = FakeCallServer()
+        socket = FakeSocket()
+        with (
+            patch.object(server_calls, "CALL_SFU_ENABLED", True),
+            patch.object(server_calls, "CALL_SFU_URL", "wss://sfu.test"),
+            patch.object(server_calls, "CALL_SFU_API_KEY", "api-key"),
+            patch.object(server_calls, "CALL_SFU_API_SECRET", "secret"),
+            patch.object(server_calls, "CALL_SFU_TOKEN_TTL_SECONDS", 300),
+            patch.object(server_calls, "CALL_SFU_REQUIRE_E2EE", True),
+        ):
+            await build_command_registry().dispatch(
+                server,
+                {
+                    "type": "call_sfu_access_request",
+                    "request_id": "request-2",
+                    "call_id": "call-2",
+                    "media_e2ee_capability": "frame-v1",
+                },
+                ConnectionContext(socket, "caller"),
+            )
+
+        result = socket.sent[0]
+        payload_segment = result["token"].split(".")[1]
+        payload_segment += "=" * (-len(payload_segment) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_segment))
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["room"], payload["video"]["room"])
+        self.assertTrue(payload["video"]["roomJoin"])
+        self.assertLessEqual(payload["exp"] - payload["nbf"], 305)
+        self.assertEqual("frame-v1", result["media_e2ee"])
+
+    async def test_sfu_access_falls_back_without_media_e2ee(self):
+        server = FakeCallServer()
+        socket = FakeSocket()
+        with (
+            patch.object(server_calls, "CALL_SFU_ENABLED", True),
+            patch.object(server_calls, "CALL_SFU_URL", "wss://sfu.test"),
+            patch.object(server_calls, "CALL_SFU_API_KEY", "api-key"),
+            patch.object(server_calls, "CALL_SFU_API_SECRET", "secret"),
+            patch.object(server_calls, "CALL_SFU_REQUIRE_E2EE", True),
+        ):
+            await build_command_registry().dispatch(
+                server,
+                {
+                    "type": "call_sfu_access_request",
+                    "request_id": "request-3",
+                    "call_id": "call-3",
+                },
+                ConnectionContext(socket, "caller"),
+            )
+
+        self.assertFalse(socket.sent[0]["enabled"])
+        self.assertEqual("media_e2ee_required", socket.sent[0]["reason"])
+
     async def test_call_signal_routes_without_history_mutation(self):
         server = FakeCallServer()
         target = FakeSocket()
@@ -97,6 +175,21 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
         handled = await build_command_registry().dispatch(
             server,
             {"type": "call_offer", "call_id": "call-1"},
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+        self.assertTrue(handled)
+        self.assertEqual("invalid_call_signal", server.errors[0][0])
+
+    async def test_oversized_call_signal_is_rejected(self):
+        server = FakeCallServer()
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_offer",
+                "destination_node": "callee",
+                "call_id": "call-1",
+                "sdp": "x" * (server_calls._MAX_SDP_LENGTH + 1),
+            },
             ConnectionContext(FakeSocket(), "caller"),
         )
         self.assertTrue(handled)
