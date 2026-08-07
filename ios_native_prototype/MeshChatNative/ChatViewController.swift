@@ -6,7 +6,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let inputField = UITextField()
     private let monitor = FPSMonitor()
-    private let fpsLabel = UILabel()
     private var composerBottom: NSLayoutConstraint!
 
     init(chat: ChatPreview) {
@@ -19,11 +18,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = MeshTheme.background
+        view.addSubview(MeshBackdropView(frame: view.bounds))
         buildHeader()
         buildConversation()
         buildComposer()
 
-        monitor.onUpdate = { [weak self] fps in self?.fpsLabel.text = "\(fps) FPS" }
         monitor.start()
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
     }
@@ -64,11 +63,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         avatar.pinEdges(to: avatarButton)
         avatarButton.addTarget(self, action: #selector(openProfile), for: .touchUpInside)
 
-        fpsLabel.translatesAutoresizingMaskIntoConstraints = false
-        fpsLabel.textColor = MeshTheme.secondaryText
-        fpsLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
-
-        [back, identity, avatarButton, fpsLabel].forEach(header.addSubview)
+        [back, identity, avatarButton].forEach { header.addSubview($0) }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
@@ -86,8 +81,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             avatarButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             avatarButton.widthAnchor.constraint(equalToConstant: 44),
             avatarButton.heightAnchor.constraint(equalToConstant: 44),
-            fpsLabel.trailingAnchor.constraint(equalTo: avatarButton.leadingAnchor, constant: -8),
-            fpsLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
         ])
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
@@ -114,9 +107,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func buildComposer() {
         let composer = UIView()
         composer.translatesAutoresizingMaskIntoConstraints = false
-        composer.backgroundColor = MeshTheme.surface
-        composer.layer.cornerRadius = 24
+        composer.backgroundColor = .clear
         view.addSubview(composer)
+
+        let fieldSurface = UIView()
+        fieldSurface.translatesAutoresizingMaskIntoConstraints = false
+        fieldSurface.backgroundColor = MeshTheme.surface.withAlphaComponent(0.97)
+        fieldSurface.layer.cornerRadius = 23
+        fieldSurface.layer.borderWidth = 1
+        fieldSurface.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        composer.addSubview(fieldSurface)
 
         inputField.translatesAutoresizingMaskIntoConstraints = false
         inputField.placeholder = "Message"
@@ -125,36 +125,50 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         inputField.returnKeyType = .send
         inputField.delegate = self
 
+        fieldSurface.addSubview(inputField)
+
         let attach = UIButton(type: .system)
         attach.translatesAutoresizingMaskIntoConstraints = false
         MeshTheme.setIcon(on: attach, name: "paperclip", fallback: "+")
         attach.tintColor = MeshTheme.secondaryText
+        attach.backgroundColor = MeshTheme.surface.withAlphaComponent(0.97)
+        attach.layer.cornerRadius = 23
+        attach.layer.borderWidth = 1
+        attach.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
 
         let send = UIButton(type: .system)
         send.translatesAutoresizingMaskIntoConstraints = false
-        MeshTheme.setIcon(on: send, name: "arrow.up.circle.fill", fallback: "Send")
+        MeshTheme.setIcon(on: send, name: "mic.fill", fallback: "Mic")
         send.tintColor = MeshTheme.cyan
+        send.backgroundColor = MeshTheme.surface.withAlphaComponent(0.97)
+        send.layer.cornerRadius = 23
+        send.layer.borderWidth = 1
+        send.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
         send.addTarget(self, action: #selector(sendMessage), for: .touchUpInside)
 
-        [attach, inputField, send].forEach(composer.addSubview)
+        [attach, send].forEach { composer.addSubview($0) }
         composerBottom = composer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         NSLayoutConstraint.activate([
             composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             composerBottom,
-            composer.heightAnchor.constraint(equalToConstant: 48),
+            composer.heightAnchor.constraint(equalToConstant: 50),
             tableView.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -6),
-            attach.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: 8),
+            attach.leadingAnchor.constraint(equalTo: composer.leadingAnchor),
             attach.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
-            attach.widthAnchor.constraint(equalToConstant: 34),
-            attach.heightAnchor.constraint(equalToConstant: 34),
-            inputField.leadingAnchor.constraint(equalTo: attach.trailingAnchor, constant: 4),
-            inputField.trailingAnchor.constraint(equalTo: send.leadingAnchor, constant: -4),
-            inputField.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
-            send.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -8),
+            attach.widthAnchor.constraint(equalToConstant: 46),
+            attach.heightAnchor.constraint(equalToConstant: 46),
+            fieldSurface.leadingAnchor.constraint(equalTo: attach.trailingAnchor, constant: 7),
+            fieldSurface.trailingAnchor.constraint(equalTo: send.leadingAnchor, constant: -7),
+            fieldSurface.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
+            fieldSurface.heightAnchor.constraint(equalToConstant: 46),
+            inputField.leadingAnchor.constraint(equalTo: fieldSurface.leadingAnchor, constant: 15),
+            inputField.trailingAnchor.constraint(equalTo: fieldSurface.trailingAnchor, constant: -15),
+            inputField.centerYAnchor.constraint(equalTo: fieldSurface.centerYAnchor),
+            send.trailingAnchor.constraint(equalTo: composer.trailingAnchor),
             send.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
-            send.widthAnchor.constraint(equalToConstant: 36),
-            send.heightAnchor.constraint(equalToConstant: 36),
+            send.widthAnchor.constraint(equalToConstant: 46),
+            send.heightAnchor.constraint(equalToConstant: 46),
         ])
     }
 

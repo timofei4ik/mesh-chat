@@ -68,6 +68,46 @@ final class InitialAvatarView: UIView {
     required init?(coder: NSCoder) { nil }
 }
 
+final class MeshBackdropView: UIView {
+    private let lines = CAShapeLayer()
+    private let dots = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        isUserInteractionEnabled = false
+        backgroundColor = MeshTheme.background
+        lines.fillColor = UIColor.clear.cgColor
+        lines.strokeColor = UIColor.white.withAlphaComponent(0.07).cgColor
+        lines.lineWidth = 0.7
+        dots.fillColor = MeshTheme.cyan.withAlphaComponent(0.25).cgColor
+        layer.addSublayer(lines)
+        layer.addSublayer(dots)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        lines.frame = bounds
+        dots.frame = bounds
+        let points: [CGPoint] = [
+            CGPoint(x: 0.08, y: 0.16), CGPoint(x: 0.27, y: 0.08),
+            CGPoint(x: 0.43, y: 0.27), CGPoint(x: 0.63, y: 0.14),
+            CGPoint(x: 0.86, y: 0.30), CGPoint(x: 0.18, y: 0.53),
+            CGPoint(x: 0.48, y: 0.61), CGPoint(x: 0.78, y: 0.55),
+            CGPoint(x: 0.32, y: 0.84), CGPoint(x: 0.69, y: 0.88),
+        ].map { CGPoint(x: $0.x * bounds.width, y: $0.y * bounds.height) }
+        let path = UIBezierPath()
+        let links = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (5, 8), (8, 9), (7, 9), (2, 6)]
+        links.forEach { pair in path.move(to: points[pair.0]); path.addLine(to: points[pair.1]) }
+        lines.path = path.cgPath
+        let dotPath = UIBezierPath()
+        points.forEach { dotPath.append(UIBezierPath(ovalIn: CGRect(x: $0.x - 1.5, y: $0.y - 1.5, width: 3, height: 3))) }
+        dots.path = dotPath.cgPath
+    }
+}
+
 final class FPSMonitor {
     var onUpdate: ((Int) -> Void)?
     private var displayLink: CADisplayLink?

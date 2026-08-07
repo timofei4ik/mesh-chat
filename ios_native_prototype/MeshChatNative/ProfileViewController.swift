@@ -21,6 +21,7 @@ final class ProfileViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = MeshTheme.background
+        view.addSubview(MeshBackdropView(frame: view.bounds))
         buildHeader()
         buildContent()
     }
@@ -63,7 +64,14 @@ final class ProfileViewController: UIViewController {
         hero.translatesAutoresizingMaskIntoConstraints = false
         hero.backgroundColor = MeshTheme.surface
         hero.layer.cornerRadius = 20
+        hero.layer.borderWidth = 1
+        hero.layer.borderColor = color.withAlphaComponent(0.35).cgColor
+        hero.clipsToBounds = true
         content.addSubview(hero)
+
+        let heroBackdrop = MeshBackdropView(frame: .zero)
+        hero.addSubview(heroBackdrop)
+        heroBackdrop.pinEdges(to: hero)
 
         avatarContainer.translatesAutoresizingMaskIntoConstraints = false
         avatarContainer.backgroundColor = color
