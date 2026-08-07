@@ -94,3 +94,43 @@ workflows:
     artifacts:
       - mobile/meshchat_mobile/build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+
+  ios_native_prototype_unsigned:
+    name: iOS Native UIKit prototype
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Generate native Xcode project
+        script: |
+          cd "$CM_BUILD_DIR/ios_native_prototype"
+          xcodegen generate
+      - name: Build unsigned native app
+        script: |
+          cd "$CM_BUILD_DIR/ios_native_prototype"
+          xcodebuild \
+            -project MeshChatNative.xcodeproj \
+            -scheme MeshChatNative \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+      - name: Package unsigned native IPA
+        script: |
+          cd "$CM_BUILD_DIR/ios_native_prototype"
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/MeshChatNativeLab.app"
+          test -d "$APP_PATH"
+          mkdir -p build/unsigned_ipa/Payload
+          cp -R "$APP_PATH" build/unsigned_ipa/Payload/MeshChatNativeLab.app
+          cd build/unsigned_ipa
+          zip -r MeshChatNativeLab-unsigned.ipa Payload
+    artifacts:
+      - ios_native_prototype/build/DerivedData/Build/Products/Release-iphoneos/MeshChatNativeLab.app
+      - ios_native_prototype/build/unsigned_ipa/MeshChatNativeLab-unsigned.ipa
+      - /tmp/xcodebuild_logs/*.log
