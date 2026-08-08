@@ -2,6 +2,25 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/chat_message.dart';
 
 void main() {
+  test('restores server timestamps without replacing them with login time', () {
+    final sqlUtc = ChatMessage.fromJson({
+      'id': 'group-old',
+      'created_at': '2026-07-04 18:05:06.123',
+    });
+    final unixSeconds = ChatMessage.fromJson({
+      'id': 'channel-old',
+      'sent_at': 1783188306,
+    });
+    final missing = ChatMessage.fromJson({'id': 'legacy-missing-time'});
+
+    expect(sqlUtc.createdAt, DateTime.utc(2026, 7, 4, 18, 5, 6, 123));
+    expect(
+      unixSeconds.createdAt,
+      DateTime.fromMillisecondsSinceEpoch(1783188306000, isUtc: true),
+    );
+    expect(missing.createdAt.millisecondsSinceEpoch, 0);
+  });
+
   test('media delivery metadata survives cache round trip', () {
     final checksum = List<String>.filled(64, 'a').join();
     final source = ChatMessage(

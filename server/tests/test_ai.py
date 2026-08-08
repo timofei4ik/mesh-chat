@@ -44,10 +44,16 @@ class AiRelay(
             raise RuntimeError("provider unavailable")
         return f"Summary: {transcript}"
 
-    async def _request_ai_translation(self, text, target_language):
+    async def _request_ai_translation(
+        self,
+        text,
+        target_language,
+        emojify=False,
+    ):
         if self.fail_provider:
             raise RuntimeError("provider unavailable")
-        return f"{target_language}: {text}"
+        suffix = "+emoji" if emojify else ""
+        return f"{target_language}{suffix}: {text}"
 
     async def _request_ai_transcription(
         self,
@@ -142,6 +148,61 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("friendly: hello there", result["text"])
         self.assertEqual(49, result["remaining"])
 
+    async def test_styled_rewrite_supports_emojify(self):
+        self.relay.grant_subscription("subscriber", days=7)
+        result = await self.relay.rewrite_text_with_ai(
+            "subscriber",
+            "we leave at dawn",
+            "viking+emojify",
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            "viking+emojify: we leave at dawn",
+            result["text"],
+        )
+
+    def test_rewrite_guard_rejects_answers_and_mixed_alphabet_noise(self):
+        source = "приветствую, как дела?"
+        self.assertFalse(
+            server_ai._rewrite_structure_is_preserved(
+                source,
+                "Привет, всё хорошо",
+            )
+        )
+        self.assertFalse(
+            server_ai._rewrite_structure_is_preserved(
+                source,
+                "Привет! Как жизнь тебя trataet?",
+            )
+        )
+        self.assertTrue(
+            server_ai._rewrite_structure_is_preserved(
+                source,
+                "Приветствую! Как идут дела?",
+            )
+        )
+
+    def test_rewrite_guard_rejects_invented_speaker_roles(self):
+        source = "\u043f\u0440\u0438\u0432\u0435\u0442\u0441\u0442\u0432\u0443\u044e, \u043a\u0430\u043a \u0434\u0435\u043b\u0430?"
+        self.assertFalse(
+            server_ai._rewrite_structure_is_preserved(
+                source,
+                "\u0423\u0433\u0430-\u0443\u0433\u0430! \u042f \u0445\u043e\u0440\u043e\u0448\u043e. \u0422\u044b \u043a\u0430\u043a?",
+            )
+        )
+        self.assertFalse(
+            server_ai._rewrite_structure_is_preserved(
+                source,
+                "\u0421\u043e\u043b\u043d\u0446\u0435 \u0441\u0432\u0435\u0442\u0438\u0442. \u041a\u0430\u043a \u0434\u0435\u043b\u0430?",
+            )
+        )
+        self.assertTrue(
+            server_ai._rewrite_structure_is_preserved(
+                source,
+                "\u0417\u0434\u0440\u0430\u0432\u0438\u044f. \u041a\u0430\u043a \u0438\u0434\u0443\u0442 \u0434\u0435\u043b\u0430?",
+            )
+        )
+
     async def test_provider_failure_returns_reserved_quota(self):
         self.relay.grant_subscription("subscriber", days=7)
         self.relay.fail_provider = True
@@ -174,6 +235,15 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("ru: hello", result["text"])
         self.assertEqual("en", result["source_language"])
         self.assertEqual(149, result["remaining"])
+
+        emoji_result = await self.relay.translate_message_with_ai(
+            "subscriber",
+            "hello",
+            "ru",
+            True,
+        )
+        self.assertTrue(emoji_result["ok"])
+        self.assertEqual("ru+emoji: hello", emoji_result["text"])
 
     async def test_translation_releases_quota_after_provider_failure(self):
         self.relay.grant_subscription("subscriber", days=7)

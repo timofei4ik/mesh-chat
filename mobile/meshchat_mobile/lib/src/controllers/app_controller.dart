@@ -1396,6 +1396,7 @@ class AppController extends ChangeNotifier {
   Future<AiTranslationResult> translateMessageWithAi({
     required String text,
     required String targetLanguage,
+    bool emojify = false,
   }) async {
     final current = session;
     final normalizedText = text.trim();
@@ -1435,6 +1436,7 @@ class AppController extends ChangeNotifier {
       'ttl': 5,
       'text': normalizedText,
       'target_language': normalizedTarget,
+      'emojify': emojify,
     });
     return completer.future.timeout(
       const Duration(seconds: 55),
@@ -9122,37 +9124,7 @@ class AppController extends ChangeNotifier {
   }
 
   DateTime _parsePacketDate(Map<String, dynamic> data) {
-    for (final key in const ['created_at', 'timestamp', 'time', 'date']) {
-      final value = data[key];
-      if (value == null) continue;
-      final raw = value.toString().trim();
-      final parsed = _parseWireDate(raw);
-      if (parsed != null) return parsed;
-    }
-    return DateTime.now();
-  }
-
-  DateTime? _parseWireDate(String raw) {
-    if (raw.isEmpty) return null;
-    final parsed = DateTime.tryParse(raw);
-    if (parsed == null) return null;
-    final hasExplicitZone =
-        raw.endsWith('Z') || RegExp(r'[+-]\d\d:?\d\d$').hasMatch(raw);
-    final looksLikeSqlUtc =
-        raw.contains(' ') && !raw.contains('T') && !hasExplicitZone;
-    if (looksLikeSqlUtc) {
-      return DateTime.utc(
-        parsed.year,
-        parsed.month,
-        parsed.day,
-        parsed.hour,
-        parsed.minute,
-        parsed.second,
-        parsed.millisecond,
-        parsed.microsecond,
-      );
-    }
-    return parsed;
+    return parseMessageCreatedAt(data, fallback: DateTime.now().toUtc());
   }
 
   String _hexEncode(Uint8List bytes) {

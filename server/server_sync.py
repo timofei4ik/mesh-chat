@@ -94,6 +94,8 @@ class ServerSyncMixin:
         account_logins,
         mutation_context=None,
     ):
+        if packet.get("type") in {"chat_message", "group_message", "file_chunk"}:
+            packet["created_at"] = self.history_created_at(packet)
         inserted = None
         try:
             with self.atomic_storage_transaction():

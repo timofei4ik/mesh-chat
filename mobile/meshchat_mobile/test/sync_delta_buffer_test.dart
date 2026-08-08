@@ -31,6 +31,7 @@ Map<String, dynamic> eventPacket(
     'operation_id': 'chat_message:$messageId',
     'packet_type': 'chat_message',
     'requires_snapshot': false,
+    'created_at': '2026-07-04 18:05:06.123',
     'payload': {
       'type': 'chat_message',
       'packet_id': messageId,
@@ -78,6 +79,10 @@ void main() {
       'message-b',
       'message-c',
     ]);
+    expect(
+      batch.events.first['sync_event_created_at'],
+      '2026-07-04 18:05:06.123',
+    );
     expect(batch.livePackets.single['message_id'], 'message-live');
     expect(buffer.isActive, isFalse);
   });

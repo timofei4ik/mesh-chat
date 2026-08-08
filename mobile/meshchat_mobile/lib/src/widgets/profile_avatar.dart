@@ -54,6 +54,7 @@ class ProfileAvatar extends StatelessWidget {
     );
     final morph = squareProgress.clamp(0.0, 1.0);
     final decorationScale = meshStudioDecorationAvatarScale(decoration);
+    final decorationFrameScale = meshStudioDecorationFrameScale(decoration);
     final frameOffset = meshStudioDecorationFrameOffset(decoration);
     final avatarRadius = decorated
         ? radius * (decorationScale + (1 - decorationScale) * morph)
@@ -117,14 +118,17 @@ class ProfileAvatar extends StatelessWidget {
                             frameOffset.x * radius,
                             frameOffset.y * radius,
                           ),
-                          child: MeshStudioImage(
-                            source: rasterDecoration,
-                            fallbackAsset: meshStudioBundledDecorationAsset(
-                              decoration,
-                              animated: shouldAnimateDecoration,
+                          child: Transform.scale(
+                            scale: decorationFrameScale,
+                            child: MeshStudioImage(
+                              source: rasterDecoration,
+                              fallbackAsset: meshStudioBundledDecorationAsset(
+                                decoration,
+                                animated: shouldAnimateDecoration,
+                              ),
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.medium,
                             ),
-                            fit: BoxFit.contain,
-                            filterQuality: FilterQuality.medium,
                           ),
                         ),
                       ),

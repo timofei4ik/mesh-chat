@@ -36,6 +36,7 @@ import '../widgets/mesh_painting.dart';
 import '../widgets/message_send_effect.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
+import 'ai_editor_sheet.dart';
 import 'group_info_page.dart';
 import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
@@ -479,28 +480,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           'Fix punctuation or rewrite a draft in a clearer style before sending.',
     );
     if (!allowed || !mounted) return;
-    final style = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => const _AiRewriteSheet(),
-    );
-    if (style == null || !mounted) return;
     setState(() => aiRewriting = true);
     try {
-      final result = await widget.controller.rewriteTextWithAi(
-        text: original,
-        style: style,
+      final rewritten = await showMeshAiEditor(
+        context: context,
+        controller: widget.controller,
+        original: original,
       );
-      if (!mounted) return;
+      if (!mounted || rewritten == null) return;
       input.value = TextEditingValue(
-        text: result.text,
-        selection: TextSelection.collapsed(offset: result.text.length),
+        text: rewritten,
+        selection: TextSelection.collapsed(offset: rewritten.length),
       );
       inputFocus.requestFocus();
-    } on AiRewriteException catch (error) {
-      if (mounted) showSnack(error.message);
-    } catch (_) {
-      if (mounted) showSnack('AI rewrite failed');
     } finally {
       if (mounted) setState(() => aiRewriting = false);
     }
@@ -5331,115 +5323,6 @@ class _ChatRoundButton extends StatelessWidget {
             customBorder: const CircleBorder(),
             child: SizedBox(width: 42, height: 42, child: icon),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AiRewriteSheet extends StatelessWidget {
-  const _AiRewriteSheet();
-
-  static const options =
-      <({String id, String title, String subtitle, IconData icon})>[
-        (
-          id: 'proofread',
-          title: 'Fix punctuation',
-          subtitle: 'Correct spelling and grammar without changing your tone',
-          icon: Icons.spellcheck_rounded,
-        ),
-        (
-          id: 'concise',
-          title: 'Make concise',
-          subtitle: 'Shorten the draft and keep the important details',
-          icon: Icons.compress_rounded,
-        ),
-        (
-          id: 'friendly',
-          title: 'Conversational',
-          subtitle: 'Make it sound natural, warm, and friendly',
-          icon: Icons.sentiment_satisfied_alt_rounded,
-        ),
-        (
-          id: 'business',
-          title: 'Business',
-          subtitle: 'Use a clear and professional tone',
-          icon: Icons.business_center_rounded,
-        ),
-        (
-          id: 'soften',
-          title: 'Make softer',
-          subtitle: 'Reduce tension while preserving the meaning',
-          icon: Icons.spa_outlined,
-        ),
-        (
-          id: 'expand',
-          title: 'Add detail',
-          subtitle: 'Make the thought more complete without inventing facts',
-          icon: Icons.notes_rounded,
-        ),
-      ];
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Container(
-        margin: const EdgeInsets.all(10),
-        padding: const EdgeInsets.fromLTRB(8, 10, 8, 12),
-        decoration: BoxDecoration(
-          color: const Color(0xF516202C),
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: Colors.white12),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF9A6DFF).withValues(alpha: 0.16),
-              blurRadius: 34,
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 42,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(99),
-              ),
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 16, 12, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.auto_awesome_rounded, color: Color(0xFFB28AFF)),
-                  SizedBox(width: 10),
-                  Text(
-                    'Rewrite with Mesh AI',
-                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900),
-                  ),
-                ],
-              ),
-            ),
-            for (final option in options)
-              ListTile(
-                leading: Icon(option.icon, color: const Color(0xFF7DCEFF)),
-                title: Text(
-                  option.title,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                subtitle: Text(
-                  option.subtitle,
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                onTap: () => Navigator.pop(context, option.id),
-              ),
-          ],
         ),
       ),
     );

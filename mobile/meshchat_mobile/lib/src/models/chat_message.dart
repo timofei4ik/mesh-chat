@@ -1,3 +1,66 @@
+DateTime parseMessageCreatedAt(
+  Map<String, dynamic> json, {
+  required DateTime fallback,
+}) {
+  for (final key in const [
+    'created_at',
+    'createdAt',
+    'timestamp',
+    'sent_at',
+    'sentAt',
+    'server_timestamp',
+    'sync_event_created_at',
+    'time',
+    'date',
+  ]) {
+    final value = json[key];
+    if (value == null) continue;
+    if (value is num) {
+      var milliseconds = value.toDouble();
+      if (milliseconds.abs() < 100000000000) milliseconds *= 1000;
+      if (milliseconds.isFinite) {
+        return DateTime.fromMillisecondsSinceEpoch(
+          milliseconds.round(),
+          isUtc: true,
+        );
+      }
+      continue;
+    }
+
+    final raw = value.toString().trim();
+    if (raw.isEmpty) continue;
+    final numeric = num.tryParse(raw);
+    if (numeric != null) {
+      var milliseconds = numeric.toDouble();
+      if (milliseconds.abs() < 100000000000) milliseconds *= 1000;
+      if (milliseconds.isFinite) {
+        return DateTime.fromMillisecondsSinceEpoch(
+          milliseconds.round(),
+          isUtc: true,
+        );
+      }
+    }
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) continue;
+    final hasExplicitZone =
+        raw.endsWith('Z') || RegExp(r'[+-]\d\d:?\d\d$').hasMatch(raw);
+    if (raw.contains(' ') && !raw.contains('T') && !hasExplicitZone) {
+      return DateTime.utc(
+        parsed.year,
+        parsed.month,
+        parsed.day,
+        parsed.hour,
+        parsed.minute,
+        parsed.second,
+        parsed.millisecond,
+        parsed.microsecond,
+      );
+    }
+    return parsed;
+  }
+  return fallback;
+}
+
 class ChatMessage {
   const ChatMessage({
     required this.id,
@@ -151,9 +214,10 @@ class ChatMessage {
       receiverNode: json['receiver_node']?.toString() ?? '',
       text: json['text']?.toString() ?? '',
       senderName: json['sender_name']?.toString() ?? '',
-      createdAt:
-          DateTime.tryParse(json['created_at']?.toString() ?? '') ??
-          DateTime.now(),
+      createdAt: parseMessageCreatedAt(
+        json,
+        fallback: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      ),
       kind: kind,
       fileName: fileName,
       fileData: fileData,

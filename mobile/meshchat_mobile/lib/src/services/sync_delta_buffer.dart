@@ -112,6 +112,9 @@ class SyncDeltaBuffer {
       throw const FormatException('invalid delta event');
     }
     final payload = Map<String, dynamic>.from(rawPayload);
+    if (!payload.containsKey('created_at') && event['created_at'] != null) {
+      payload['sync_event_created_at'] = event['created_at'];
+    }
     if (payload['type']?.toString() != packetType ||
         !_durableEventTypes.contains(packetType)) {
       throw const FormatException('unsupported delta event payload');

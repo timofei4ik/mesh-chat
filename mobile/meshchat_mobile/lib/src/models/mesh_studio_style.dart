@@ -521,8 +521,19 @@ double meshStudioDecorationAvatarScale(String decoration) {
     'camp_moon' ||
     'camp_ember' ||
     'camp_stories' ||
-    'camp_rainlight' => 0.68,
+    'camp_rainlight' => 0.70,
     _ => 0.79,
+  };
+}
+
+double meshStudioDecorationFrameScale(String decoration) {
+  return switch (decoration) {
+    'camp_clouds' ||
+    'camp_moon' ||
+    'camp_ember' ||
+    'camp_stories' ||
+    'camp_rainlight' => 0.92,
+    _ => 1,
   };
 }
 

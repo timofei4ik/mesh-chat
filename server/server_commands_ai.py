@@ -13,7 +13,7 @@ AI_COMMANDS = {
     "ai_message_translation_request": {
         "method": "translate_message_with_ai",
         "response_type": "ai_message_translation_result",
-        "fields": ("text", "target_language"),
+        "fields": ("text", "target_language", "emojify"),
     },
     "ai_chat_summary_request": {
         "method": "summarize_chat_with_ai",

@@ -83,6 +83,8 @@ void main() {
     );
     for (final preset in presets) {
       expect(meshStudioBannerAsset(preset.background), isNotNull);
+      expect(meshStudioDecorationAvatarScale(preset.decoration), 0.70);
+      expect(meshStudioDecorationFrameScale(preset.decoration), 0.92);
       expect(
         meshStudioDecorationAsset(preset.decoration, animated: false),
         endsWith('.png'),

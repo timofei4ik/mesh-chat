@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 try:
     from server.config import DATABASE_BACKEND, DATABASE_URL, DB_PATH
@@ -132,7 +133,49 @@ def _normalize_avatar_decoration(value):
     return AVATAR_DECORATION_ALIASES.get(normalized, "none")
 
 
+def _history_created_at(packet):
+    """Return a validated UTC timestamp without replacing offline send time."""
+    now = datetime.now(timezone.utc)
+    raw = None
+    for key in ("created_at", "timestamp", "sent_at", "time", "date"):
+        value = packet.get(key)
+        if value not in (None, ""):
+            raw = value
+            break
+
+    parsed = None
+    if isinstance(raw, (int, float)):
+        seconds = float(raw)
+        if abs(seconds) >= 100_000_000_000:
+            seconds /= 1000
+        try:
+            parsed = datetime.fromtimestamp(seconds, timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            parsed = None
+    elif raw is not None:
+        text = str(raw).strip()
+        if text:
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                parsed = None
+
+    if parsed is None:
+        parsed = now
+    elif parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    if parsed > now + timedelta(minutes=10):
+        parsed = now
+
+    return parsed.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
 class ServerStorageMixin:
+    def history_created_at(self, packet):
+        return _history_created_at(packet)
+
     def _commit_storage(self):
         if getattr(self, "_storage_transaction_depth", 0) <= 0:
             self.db.commit()
@@ -3797,8 +3840,7 @@ class ServerStorageMixin:
                 size_bytes,
                 created_at
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,
-                   STRFTIME('%Y-%m-%d %H:%M:%f','now'))
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?)
             """,
             (
                 file_id,
@@ -3824,6 +3866,7 @@ class ServerStorageMixin:
                 str(completed_path),
                 sha256,
                 size_bytes,
+                _history_created_at(metadata),
             ),
         )
         self.db.execute(
@@ -4085,10 +4128,7 @@ class ServerStorageMixin:
                     message_effect,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
-                    '%Y-%m-%d %H:%M:%f',
-                    'now'
-                ))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     message_id,
@@ -4102,7 +4142,8 @@ class ServerStorageMixin:
                     packet.get("reply_to_text"),
                     packet.get("chat_kind") or "normal",
                     packet.get("chat_id") or "",
-                    packet.get("message_effect") or "none"
+                    packet.get("message_effect") or "none",
+                    _history_created_at(packet),
                 )
             )
 
@@ -4932,10 +4973,7 @@ class ServerStorageMixin:
                     is_channel_comment,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
-                    '%Y-%m-%d %H:%M:%f',
-                    'now'
-                ))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     message_id,
@@ -4955,7 +4993,8 @@ class ServerStorageMixin:
                         packet.get("is_channel_comment") is True
                         or bool(packet.get("reply_to_message_id"))
                     )
-                    else 0
+                    else 0,
+                    _history_created_at(packet),
                 )
             )
 
@@ -5405,10 +5444,7 @@ class ServerStorageMixin:
                     message_effect,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,STRFTIME(
-                    '%Y-%m-%d %H:%M:%f',
-                    'now'
-                ))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     file_id,
@@ -5431,7 +5467,8 @@ class ServerStorageMixin:
                     first_packet.get("message_kind") or first_packet.get("kind") or "file",
                     first_packet.get("chat_kind") or "normal",
                     first_packet.get("chat_id") or "",
-                    first_packet.get("message_effect") or "none"
+                    first_packet.get("message_effect") or "none",
+                    _history_created_at(first_packet),
                 )
             )
 
