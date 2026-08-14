@@ -1251,6 +1251,25 @@ class ServerStorageMixin:
             """
         )
 
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_group_members_login_group
+            ON server_group_members(login, group_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_group_members_node_group
+            ON server_group_members(node_id, group_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_group_messages_group_created
+            ON server_group_messages(group_id, created_at)
+            """
+        )
+
         reaction_columns = {
             row[1]
             for row in conn.execute(
@@ -1316,6 +1335,12 @@ class ServerStorageMixin:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_server_reactions_message
+            ON server_reactions(message_id, created_at)
+            """
+        )
 
         conn.execute(
             """
@@ -1333,6 +1358,12 @@ class ServerStorageMixin:
             """
             CREATE INDEX IF NOT EXISTS idx_message_read_receipts_reader
             ON message_read_receipts(reader_login, message_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_read_receipts_message_read
+            ON message_read_receipts(message_id, read_at)
             """
         )
 
@@ -1570,8 +1601,20 @@ class ServerStorageMixin:
         )
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_server_pins_message_created
+            ON server_pins(message_id, created_at)
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_server_files_media_id
             ON server_files(media_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_server_files_group_created
+            ON server_files(group_id, created_at)
             """
         )
 

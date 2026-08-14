@@ -74,6 +74,7 @@ class MeshSocket {
   bool _supportsFileTransferV2 = false;
   bool _supportsMediaDeliveryV2 = false;
   bool _supportsSyncV2Delta = false;
+  bool _supportsSyncV2DeltaBatch = false;
   bool _supportsMultiDeviceState = false;
   String _lastIdentityRecovery = '';
   bool _flushingOutbox = false;
@@ -98,6 +99,7 @@ class MeshSocket {
   bool get supportsFileTransferV2 => _supportsFileTransferV2;
   bool get supportsMediaDeliveryV2 => _supportsMediaDeliveryV2;
   bool get supportsSyncV2Delta => _supportsSyncV2Delta;
+  bool get supportsSyncV2DeltaBatch => _supportsSyncV2DeltaBatch;
   bool get supportsMultiDeviceState => _supportsMultiDeviceState;
   String get lastIdentityRecovery => _lastIdentityRecovery;
 
@@ -126,6 +128,7 @@ class MeshSocket {
     _supportsFileTransferV2 = false;
     _supportsMediaDeliveryV2 = false;
     _supportsSyncV2Delta = false;
+    _supportsSyncV2DeltaBatch = false;
     _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();
@@ -208,6 +211,8 @@ class MeshSocket {
               _supportsMediaDeliveryV2 =
                   capabilities['media_delivery_v2'] == true;
               _supportsSyncV2Delta = capabilities['sync_v2_delta'] == true;
+              _supportsSyncV2DeltaBatch =
+                  capabilities['sync_v2_delta_batch'] == true;
               _supportsMultiDeviceState =
                   capabilities['multi_device_state'] == true;
             }
@@ -799,11 +804,21 @@ class MeshSocket {
       packet: packet,
       createdAt: DateTime.now().toUtc(),
     );
+    // A connected server deduplicates by outbox_id. Send immediately and let
+    // the durable local outbox catch up in the same serialized lane. This
+    // avoids making the first post-connect message wait behind cache I/O.
+    final sentImmediately =
+        _connected && _serverCapabilitiesKnown && _sendRaw(packet);
     try {
       await _serializeOutbox(() async {
         await _outboxStore.put(current, entry);
-        if (!_connected || !_serverCapabilitiesKnown) return;
-        await _sendOutboxEntry(current, entry);
+        if (sentImmediately) {
+          await _outboxStore.markSent(current, entry.outboxId);
+          return;
+        }
+        if (_connected && _serverCapabilitiesKnown) {
+          await _sendOutboxEntry(current, entry);
+        }
       });
       _scheduleMutationRetry();
     } catch (error) {
@@ -997,22 +1012,16 @@ class MeshSocket {
   ) async {
     final current = _session;
     final outboxId = packet['outbox_id']?.toString() ?? '';
-    final operationId = packet['operation_id']?.toString() ?? '';
-    var operationComplete = true;
+    // The server emits this only after persistence. Reflect the acknowledgement
+    // in the UI now; the SQLite cleanup can safely complete afterwards.
+    await onPacket({...packet, 'operation_complete': true});
     if (current != null && outboxId.isNotEmpty) {
-      try {
-        await _serializeOutbox(() async {
+      unawaited(
+        _serializeOutbox(() async {
           await _outboxStore.delete(current, outboxId);
-          operationComplete = !await _outboxStore.hasOperation(
-            current,
-            operationId,
-          );
-        });
-      } catch (_) {
-        operationComplete = false;
-      }
+        }).catchError((_) {}),
+      );
     }
-    await onPacket({...packet, 'operation_complete': operationComplete});
     _scheduleMutationRetry();
   }
 
@@ -1067,6 +1076,7 @@ class MeshSocket {
       'supports_sticker_library_chunks': true,
       'supports_sync_v2': true,
       'supports_sync_v2_delta': true,
+      'supports_sync_v2_delta_batch': true,
       'sync_cursor': _syncCursor,
       'supports_offline_packet_ack': true,
       'supports_mutation_ack': true,
@@ -1159,6 +1169,7 @@ class MeshSocket {
     _supportsFileTransferV2 = false;
     _supportsMediaDeliveryV2 = false;
     _supportsSyncV2Delta = false;
+    _supportsSyncV2DeltaBatch = false;
     _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();
@@ -1242,6 +1253,7 @@ class MeshSocket {
     _supportsFileTransferV2 = false;
     _supportsMediaDeliveryV2 = false;
     _supportsSyncV2Delta = false;
+    _supportsSyncV2DeltaBatch = false;
     _supportsMultiDeviceState = false;
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();

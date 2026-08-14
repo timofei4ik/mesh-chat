@@ -24,6 +24,13 @@ def build_parser():
     grant.add_argument("--days", type=int, default=30)
     grant.add_argument("--provider", default="manual")
 
+    lifetime = subparsers.add_parser(
+        "lifetime",
+        help="Grant non-expiring MeshPro with unlimited AI usage",
+    )
+    lifetime.add_argument("--login", required=True)
+    lifetime.add_argument("--product", default="meshpro")
+
     revoke = subparsers.add_parser("revoke", help="Revoke access")
     revoke.add_argument("--login", required=True)
     revoke.add_argument("--product", default="meshpro")
@@ -67,6 +74,11 @@ def main(argv=None):
                 plan_code=args.plan,
                 days=args.days,
                 provider=args.provider,
+            )
+        elif args.command == "lifetime":
+            result = relay.grant_lifetime_subscription(
+                args.login,
+                args.product,
             )
         elif args.command == "revoke":
             result = relay.revoke_subscription(args.login, args.product)

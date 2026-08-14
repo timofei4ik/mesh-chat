@@ -192,6 +192,18 @@ class SubscriptionTests(unittest.TestCase):
             active_entitlements["limits"]["ai_message_translations_month"],
         )
 
+    def test_lifetime_subscription_never_expires_and_has_unlimited_ai(self):
+        status = self.relay.grant_lifetime_subscription("subscriber")
+
+        self.assertTrue(status["active"])
+        self.assertEqual("lifetime", status["plan_code"])
+        self.assertIsNone(status["current_period_end"])
+        self.assertTrue(status["entitlements"]["unlimited_ai"])
+        self.assertEqual(
+            2_147_483_647,
+            status["entitlements"]["limits"]["ai_text_rewrites_month"],
+        )
+
     def test_meshpro_preferences_and_device_revocation_are_server_backed(self):
         self.relay.save_account_device(
             "subscriber",

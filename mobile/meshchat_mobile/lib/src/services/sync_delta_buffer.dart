@@ -124,6 +124,27 @@ class SyncDeltaBuffer {
     active.events.add(payload);
   }
 
+  void addBatch(Map<String, dynamic> packet) {
+    final active = _requireActive();
+    if (packet['sync_id']?.toString() != active.syncId) {
+      throw const FormatException('delta sync id changed');
+    }
+    final rawEvents = packet['events'];
+    if (rawEvents is! List || rawEvents.isEmpty) {
+      throw const FormatException('delta event batch is missing');
+    }
+    for (final rawEvent in rawEvents) {
+      if (rawEvent is! Map) {
+        throw const FormatException('delta event batch is malformed');
+      }
+      addEvent({
+        'type': 'server_sync_delta_event',
+        'sync_id': active.syncId,
+        'event': Map<String, dynamic>.from(rawEvent),
+      });
+    }
+  }
+
   bool shouldBufferLivePacket(Map<String, dynamic> packet) {
     return _active != null && isDurableEventPacket(packet);
   }

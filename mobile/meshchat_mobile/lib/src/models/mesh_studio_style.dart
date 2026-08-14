@@ -532,7 +532,7 @@ double meshStudioDecorationFrameScale(String decoration) {
     'camp_moon' ||
     'camp_ember' ||
     'camp_stories' ||
-    'camp_rainlight' => 0.92,
+    'camp_rainlight' => 0.72,
     _ => 1,
   };
 }

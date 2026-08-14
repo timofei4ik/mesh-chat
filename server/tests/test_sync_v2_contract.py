@@ -376,6 +376,36 @@ class SyncV2ContractTests(unittest.TestCase):
         self.assertIn("alice-phone", live_payload["members"])
         self.assertNotIn("alice-desktop", live_payload["members"])
 
+    def test_delta_batch_preserves_event_order_and_digest(self):
+        self.record_message_event("alice", "message-a")
+        source_cursor = self.relay.sync_v2_cursor("alice")
+        self.record_message_event("alice", "message-b")
+        self.record_message_event("alice", "message-c")
+
+        websocket = CapturingWebSocket()
+        asyncio.run(
+            self.relay.send_account_sync(
+                websocket,
+                "alice",
+                "alice-phone",
+                supports_sync_v2=True,
+                supports_sync_v2_delta=True,
+                supports_sync_v2_delta_batch=True,
+                requested_sync_cursor=source_cursor,
+            )
+        )
+
+        self.assertEqual("server_sync_delta_begin", websocket.sent[0]["type"])
+        self.assertEqual("server_sync_delta_batch", websocket.sent[1]["type"])
+        self.assertEqual(
+            ["message-b", "message-c"],
+            [
+                event["payload"]["packet_id"]
+                for event in websocket.sent[1]["events"]
+            ],
+        )
+        self.assertEqual("server_sync_done", websocket.sent[2]["type"])
+
     def test_cursor_ack_is_per_device_monotonic_and_rejects_future(self):
         self.record_message_event("alice", "message-a")
         self.record_message_event("alice", "message-b")

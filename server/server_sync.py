@@ -16,6 +16,7 @@ SERVER_STICKER_LIBRARY_INLINE_LIMIT = 512 * 1024
 SERVER_STICKER_LIBRARY_SYNC_CHUNK_SIZE = 128 * 1024
 SYNC_V2_EVENT_PAYLOAD_LIMIT = 64 * 1024
 SYNC_V2_MAX_DELTA_EVENTS = 500
+SYNC_V2_DELTA_BATCH_SIZE = 64
 
 
 def sync_v2_delta_digest(events):
@@ -1662,6 +1663,7 @@ class ServerSyncMixin:
         supports_sync_v2_delta=False,
         requested_sync_cursor=0,
         supports_media_delivery_v2=False,
+        supports_sync_v2_delta_batch=False,
     ):
         sync_plan = self.plan_sync_v2_delivery(
             login,
@@ -1701,18 +1703,34 @@ class ServerSyncMixin:
                     ensure_ascii=False,
                 )
             )
-            for event in events:
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "type": "server_sync_delta_event",
-                            "sync_id": sync_id,
-                            "event": event,
-                        },
-                        ensure_ascii=False,
+            if supports_sync_v2_delta_batch:
+                for start in range(0, len(events), SYNC_V2_DELTA_BATCH_SIZE):
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "server_sync_delta_batch",
+                                "sync_id": sync_id,
+                                "events": events[
+                                    start : start + SYNC_V2_DELTA_BATCH_SIZE
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
                     )
-                )
-                await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+            else:
+                for event in events:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "server_sync_delta_event",
+                                "sync_id": sync_id,
+                                "event": event,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    await asyncio.sleep(0)
             await websocket.send(
                 json.dumps(
                     {

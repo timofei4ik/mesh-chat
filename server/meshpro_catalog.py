@@ -362,27 +362,34 @@ def build_meshpro_catalog():
     }
 
 
-def build_meshpro_entitlements(active):
+MESHPRO_UNLIMITED_LIMIT = 2_147_483_647
+
+
+def build_meshpro_entitlements(active, unlimited_ai=False):
     active = bool(active)
+    unlimited_ai = bool(active and unlimited_ai)
     features = {
         feature_id: (
             active and definition["rollout"] == ROLLOUT_AVAILABLE
         )
         for feature_id, definition in _FEATURES.items()
     }
-    limits = {
-        limit_id: (
+    limits = {}
+    for limit_id, definition in _LIMITS.items():
+        value = (
             definition["meshpro"]
             if active and definition["rollout"] == ROLLOUT_AVAILABLE
             else definition["free"]
         )
-        for limit_id, definition in _LIMITS.items()
-    }
+        if unlimited_ai and limit_id.startswith("ai_"):
+            value = MESHPRO_UNLIMITED_LIMIT
+        limits[limit_id] = value
     return {
         "schema_version": MESHPRO_SCHEMA_VERSION,
         "catalog_version": MESHPRO_CATALOG_VERSION,
         "product": MESHPRO_PRODUCT,
         "active": active,
+        "unlimited_ai": unlimited_ai,
         "features": features,
         "limits": limits,
     }

@@ -304,6 +304,25 @@ class AppController extends ChangeNotifier {
   // A 4 MB animated avatar grows by roughly one third when encoded as base64.
   static const _maxProfilePacketBytes = 6 * 1024 * 1024;
 
+  bool _deferNotifications = false;
+  bool _notificationDeferred = false;
+
+  @override
+  void notifyListeners() {
+    if (_deferNotifications) {
+      _notificationDeferred = true;
+      return;
+    }
+    super.notifyListeners();
+  }
+
+  void _flushDeferredNotifications() {
+    _deferNotifications = false;
+    if (!_notificationDeferred) return;
+    _notificationDeferred = false;
+    super.notifyListeners();
+  }
+
   final SessionStore _store = SessionStore();
   final AppSettingsStore _settingsStore = AppSettingsStore();
   final ChatCacheStore _cache = ChatCacheStore();
@@ -2529,6 +2548,14 @@ class AppController extends ChangeNotifier {
       }
       return;
     }
+    if (packetType == 'server_sync_delta_batch') {
+      try {
+        _syncDeltaBuffer.addBatch(packet);
+      } catch (syncError) {
+        _requestAuthoritativeSnapshot('invalid delta event batch: $syncError');
+      }
+      return;
+    }
     if (packetType == 'server_sync_done' && _syncDeltaBuffer.isActive) {
       await _completeDeltaSync(packet);
       return;
@@ -2555,7 +2582,7 @@ class AppController extends ChangeNotifier {
         if (!MeshSocket.isProtocolCompatible(packet)) {
           status = MeshSocket.protocolError(packet);
         } else {
-          status = 'Online';
+          status = 'Syncing messages...';
           addDiagnostic('server', 'Protocol OK, server welcome received');
           _webPushVapidPublicKey =
               packet['web_push_vapid_public_key']?.toString() ?? '';
@@ -2589,6 +2616,7 @@ class AppController extends ChangeNotifier {
       case 'server_users':
         _applyOnlineUsers(packet['users']);
       case 'server_sync':
+        status = 'Syncing messages...';
         await _applySync(packet);
       case 'server_sync_done':
         final syncCursor = int.tryParse(
@@ -2776,6 +2804,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _completeDeltaSync(Map<String, dynamic> packet) async {
+    _deferNotifications = true;
     try {
       final batch = _syncDeltaBuffer.complete(packet);
       final actualDigest = await _syncDeltaDigest(batch.eventEnvelopes);
@@ -2817,12 +2846,13 @@ class AppController extends ChangeNotifier {
       status = 'Online';
       lastSyncAt = DateTime.now();
       addDiagnostic('sync', 'Delta sync applied through ${batch.targetCursor}');
-      notifyListeners();
     } catch (syncError) {
       _applyingSyncDelta = false;
       _cacheSavePending = false;
       _livePacketsDuringDeltaApply.clear();
       _requestAuthoritativeSnapshot('delta apply failed: $syncError');
+    } finally {
+      _flushDeferredNotifications();
     }
   }
 
@@ -4399,6 +4429,26 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> sendMeetingResponse(
+    ChatThread thread,
+    ChatMessage message,
+    String reaction,
+  ) async {
+    const meetingResponses = <String>{'\u2705', '\u{1F6AB}', '\u{1F4CD}'};
+    if (!meetingResponses.contains(reaction) || session == null) return;
+    final ownActor = 'login:${session!.login.trim().toLowerCase()}';
+    final existing = meetingResponses.where(
+      (entry) => (message.reactionActors[entry] ?? const <String>[]).contains(
+        ownActor,
+      ),
+    );
+    if (existing.contains(reaction)) return;
+    // Existing clients persist reactions as append-only events. Keep a single
+    // RSVP per account instead of letting a meeting card diverge locally.
+    if (existing.isNotEmpty) return;
+    await sendReaction(thread, message, reaction);
+  }
+
   Future<void> editMessage(
     ChatThread thread,
     ChatMessage message,
@@ -4414,10 +4464,13 @@ class AppController extends ChangeNotifier {
     if (!isCaption && trimmed.isEmpty) {
       return;
     }
-    _replaceMessage(
+    final updated = _replaceMessage(
       message.id,
       (current) => current.copyWith(text: trimmed, edited: true),
     );
+    if (updated != null) {
+      _refreshReplyPreviews(message.id, _replyPreview(updated));
+    }
     if (thread.isBluetooth) {
       final publicKey = thread.profile.publicKey.trim();
       if (publicKey.isEmpty) {
@@ -5823,10 +5876,13 @@ class AppController extends ChangeNotifier {
     } else {
       text = await _crypto.decryptText(text);
     }
-    _replaceMessage(
+    final updated = _replaceMessage(
       messageId,
       (message) => message.copyWith(text: text, edited: true),
     );
+    if (updated != null) {
+      _refreshReplyPreviews(messageId, _replyPreview(updated));
+    }
   }
 
   Future<void> _applyDeletePacket(Map<String, dynamic> packet) async {
@@ -9419,18 +9475,43 @@ class AppController extends ChangeNotifier {
     thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
   }
 
-  void _replaceMessage(
+  ChatMessage? _replaceMessage(
     String id,
     ChatMessage Function(ChatMessage message) transform,
   ) {
     for (final thread in [...threads.values, ...groups.values]) {
       final index = thread.messages.indexWhere((message) => message.id == id);
       if (index >= 0) {
-        thread.messages[index] = transform(thread.messages[index]);
+        final updated = transform(thread.messages[index]);
+        thread.messages[index] = updated;
         unawaited(_saveCache());
         notifyListeners();
-        return;
+        return updated;
       }
+    }
+    return null;
+  }
+
+  void _refreshReplyPreviews(String replyToMessageId, String preview) {
+    for (final thread in [...threads.values, ...groups.values]) {
+      if (!thread.messages.any((message) => message.id == replyToMessageId)) {
+        continue;
+      }
+      var changed = false;
+      for (var index = 0; index < thread.messages.length; index++) {
+        final message = thread.messages[index];
+        if (message.replyToMessageId != replyToMessageId ||
+            message.replyToText == preview) {
+          continue;
+        }
+        thread.messages[index] = message.copyWith(replyToText: preview);
+        changed = true;
+      }
+      if (changed) {
+        unawaited(_saveCache());
+        notifyListeners();
+      }
+      return;
     }
   }
 
@@ -9470,10 +9551,12 @@ class AppController extends ChangeNotifier {
             : entry.value.length;
         final receipt = {
           'type': 'message_read',
+          'operation_id': 'message_read:${const Uuid().v4()}',
           'packet_id': const Uuid().v4(),
           'protocol_version': MeshSocket.protocolVersion,
           'source_node': myNodeId,
           'destination_node': entry.key,
+          'reader_login': session?.login,
           'message_ids': entry.value.sublist(offset, end),
           'ttl': thread.isBluetooth ? 1 : 5,
         };

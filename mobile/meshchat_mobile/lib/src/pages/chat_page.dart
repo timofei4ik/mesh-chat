@@ -125,6 +125,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool lowEndMode = false;
   Timer? messageSyncTimer;
   late int messageListFingerprint;
+  late int observedMessageCount;
+  late String observedLatestMessageId;
   late int chatChromeFingerprint;
   late int callAlertFingerprint;
 
@@ -237,6 +239,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
     scroll.addListener(handleScroll);
     messageListFingerprint = _computeMessageListFingerprint();
+    observedMessageCount = widget.thread.messages.length;
+    observedLatestMessageId = widget.thread.messages.isEmpty
+        ? ''
+        : widget.thread.messages.last.id;
     chatChromeFingerprint = _computeChatChromeFingerprint();
     callAlertFingerprint = _computeCallAlertFingerprint();
     widget.controller.addListener(syncMessageList);
@@ -1859,12 +1865,35 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void _syncMessageListNow() {
     final nextFingerprint = _computeMessageListFingerprint();
     if (messageListFingerprint == nextFingerprint) return;
+    final nextCount = widget.thread.messages.length;
+    final nextLatestMessageId = widget.thread.messages.isEmpty
+        ? ''
+        : widget.thread.messages.last.id;
+    final receivedNewLatest =
+        nextCount > observedMessageCount ||
+        (nextCount >= observedMessageCount &&
+            nextLatestMessageId.isNotEmpty &&
+            nextLatestMessageId != observedLatestMessageId);
+    final shouldFollow =
+        receivedNewLatest && followLatestMessages && isNearBottom(140);
     messageListFingerprint = nextFingerprint;
+    observedMessageCount = nextCount;
+    observedLatestMessageId = nextLatestMessageId;
     if (messageListScrolling) {
       pendingMessageListRefresh = true;
       return;
     }
     messageListRefresh.value++;
+    if (shouldFollow) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !followLatestMessages || !scroll.hasClients) return;
+        scroll.animateTo(
+          scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+        );
+      });
+    }
   }
 
   int _computeMessageListFingerprint() {
@@ -8456,13 +8485,35 @@ class _MeetingPointPreview extends StatelessWidget {
 
   bool get canEdit => message.senderNode == controller.myNodeId;
 
-  Future<void> setStatus(String reaction) async {
-    if (point.statuses[controller.myNodeId] == reaction) return;
-    await controller.editMessage(
-      thread,
-      message,
-      point.withStatus(controller.myNodeId, reaction).toMessageText(),
-    );
+  Map<String, String> get responseStatuses {
+    final statuses = Map<String, String>.from(point.statuses);
+    const choices = <String>['\u2705', '\u{1F6AB}', '\u{1F4CD}'];
+    for (final reaction in choices) {
+      for (final actor
+          in message.reactionActors[reaction] ?? const <String>[]) {
+        statuses[actor] = reaction;
+      }
+    }
+    return statuses;
+  }
+
+  String statusName(String actor) {
+    if (actor == controller.myNodeId) return 'You';
+    if (actor.startsWith('login:')) {
+      final login = actor.substring('login:'.length);
+      if (login == controller.session?.login.trim().toLowerCase()) return 'You';
+      for (final profile in controller.profiles.values) {
+        if (profile.accountLogin.trim().toLowerCase() == login) {
+          return profile.displayName;
+        }
+      }
+      return '@$login';
+    }
+    return controller.profiles[actor]?.displayName ?? 'Guest';
+  }
+
+  Future<void> setStatus(String reaction) {
+    return controller.sendMeetingResponse(thread, message, reaction);
   }
 
   Future<void> editPoint(BuildContext context) async {
@@ -8554,6 +8605,7 @@ class _MeetingPointPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final statuses = responseStatuses;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 300),
       child: Container(
@@ -8659,17 +8711,15 @@ class _MeetingPointPreview extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            if (point.statuses.isNotEmpty) ...[
+            if (statuses.isNotEmpty) ...[
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
                 children: [
-                  for (final entry in point.statuses.entries)
+                  for (final entry in statuses.entries)
                     _MeetingStatusChip(
                       status: entry.value,
-                      name:
-                          controller.profiles[entry.key]?.displayName ??
-                          (entry.key == controller.myNodeId ? 'You' : 'Guest'),
+                      name: statusName(entry.key),
                     ),
                 ],
               ),
@@ -8682,17 +8732,17 @@ class _MeetingPointPreview extends StatelessWidget {
                 _MeetingPointButton(
                   icon: Icons.check_circle_outline_rounded,
                   label: 'I will come',
-                  onTap: () => setStatus('✅'),
+                  onTap: () => setStatus('\u2705'),
                 ),
                 _MeetingPointButton(
                   icon: Icons.cancel_outlined,
                   label: 'Can not',
-                  onTap: () => setStatus('🚫'),
+                  onTap: () => setStatus('\u{1F6AB}'),
                 ),
                 _MeetingPointButton(
                   icon: Icons.flag_circle_outlined,
                   label: 'Here',
-                  onTap: () => setStatus('📍'),
+                  onTap: () => setStatus('\u{1F4CD}'),
                 ),
                 if (canEdit)
                   _MeetingPointButton(

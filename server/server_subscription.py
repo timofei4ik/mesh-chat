@@ -68,11 +68,15 @@ class ServerSubscriptionMixin:
         self,
         active,
         product=MESHPRO_PRODUCT,
+        plan_code="none",
     ):
         normalized_product = self.normalize_subscription_product(product)
         if normalized_product != MESHPRO_PRODUCT:
             return None
-        return build_meshpro_entitlements(active)
+        return build_meshpro_entitlements(
+            active,
+            unlimited_ai=(str(plan_code or "").strip().lower() == "lifetime"),
+        )
 
     def subscription_status(self, login, product=MESHPRO_PRODUCT):
         normalized_login = (login or "").strip().lower()
@@ -108,6 +112,7 @@ class ServerSubscriptionMixin:
             entitlements = self.subscription_entitlements(
                 False,
                 normalized_product,
+                "none",
             )
             if entitlements is not None:
                 status["entitlements"] = entitlements
@@ -142,6 +147,7 @@ class ServerSubscriptionMixin:
         entitlements = self.subscription_entitlements(
             active,
             normalized_product,
+            row[0] or "none",
         )
         if entitlements is not None:
             result["entitlements"] = entitlements
@@ -218,6 +224,56 @@ class ServerSubscriptionMixin:
                     "provider": normalized_provider,
                 },
                 normalized_event_id,
+            )
+        return self.subscription_status(normalized_login, normalized_product)
+
+    def grant_lifetime_subscription(
+        self,
+        login,
+        product=MESHPRO_PRODUCT,
+    ):
+        normalized_login = (login or "").strip().lower()
+        if not normalized_login:
+            raise ValueError("login is required")
+        normalized_product = self.normalize_subscription_product(product)
+        with self.unit_of_work_factory() as unit_of_work:
+            if not unit_of_work.identity.account_exists(normalized_login):
+                raise ValueError("account does not exist")
+        with self.atomic_storage_transaction():
+            self.db.execute(
+                """
+                INSERT INTO account_subscriptions(
+                    login,
+                    product,
+                    plan_code,
+                    status,
+                    current_period_start,
+                    current_period_end,
+                    cancel_at_period_end,
+                    provider,
+                    updated_at
+                )
+                VALUES(
+                    ?, ?, 'lifetime', 'active', CURRENT_TIMESTAMP,
+                    NULL, 0, 'manual_lifetime', CURRENT_TIMESTAMP
+                )
+                ON CONFLICT(login, product) DO UPDATE SET
+                    plan_code='lifetime',
+                    status='active',
+                    current_period_start=COALESCE(
+                        account_subscriptions.current_period_start,
+                        CURRENT_TIMESTAMP
+                    ),
+                    current_period_end=NULL,
+                    cancel_at_period_end=0,
+                    provider='manual_lifetime',
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (normalized_login, normalized_product),
+            )
+            self.db.execute(
+                "DELETE FROM meshpro_usage WHERE login=?",
+                (normalized_login,),
             )
         return self.subscription_status(normalized_login, normalized_product)
 

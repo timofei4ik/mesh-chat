@@ -100,6 +100,24 @@ void main() {
     expect(buffer.complete(donePacket()).targetCursor, 12);
   });
 
+  test('accepts an ordered delta event batch', () {
+    final buffer = SyncDeltaBuffer();
+    buffer.begin(beginPacket(), localCursor: 10);
+    buffer.addBatch({
+      'type': 'server_sync_delta_batch',
+      'sync_id': 'sync-a',
+      'events': [
+        eventPacket(11, 'message-b')['event'],
+        eventPacket(12, 'message-c')['event'],
+      ],
+    });
+
+    expect(
+      buffer.complete(donePacket()).events.map((event) => event['packet_id']),
+      ['message-b', 'message-c'],
+    );
+  });
+
   test('rejects changed ids, out-of-order events, and incomplete ranges', () {
     final changedId = SyncDeltaBuffer();
     changedId.begin(beginPacket(), localCursor: 10);

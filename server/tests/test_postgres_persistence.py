@@ -123,6 +123,7 @@ class PostgresPersistenceTests(unittest.TestCase):
                 "004_migration_support.sql",
                 "005_multidevice_state.sql",
                 "006_media_identity.sql",
+                "007_sync_query_indexes.sql",
             ],
             [item.name for item in migrations],
         )

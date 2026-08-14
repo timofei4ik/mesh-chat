@@ -268,6 +268,9 @@ async def handle_server_hello(
         "sync_v2_delta": bool(
             packet.get("supports_sync_v2_delta", False)
         ) and delta_enabled,
+        "sync_v2_delta_batch": bool(
+            packet.get("supports_sync_v2_delta_batch", False)
+        ) and delta_enabled,
         "sticker_library_chunks": bool(
             packet.get("supports_sticker_library_chunks", False)
         ),
@@ -328,6 +331,7 @@ async def handle_server_hello(
         "capabilities": {
             "sync_v2": True,
             "sync_v2_delta": delta_enabled,
+            "sync_v2_delta_batch": delta_enabled,
             "offline_packet_ack": True,
             "mutation_ack": True,
             "mutation_reconcile": True,
@@ -380,6 +384,9 @@ async def handle_server_hello(
     sync_v2_delta = bool(
         packet.get("supports_sync_v2_delta", False)
     ) and delta_enabled
+    sync_v2_delta_batch = bool(
+        packet.get("supports_sync_v2_delta_batch", False)
+    ) and sync_v2_delta
     sync_cursor = packet.get("sync_cursor", 0)
     sync_offline_ack = bool(
         packet.get("supports_offline_packet_ack", False)
@@ -398,6 +405,7 @@ async def handle_server_hello(
             sync_v2_delta,
             sync_cursor,
             sync_media_delivery_v2,
+            sync_v2_delta_batch,
         )
         await server.send_user_list()
         await server.flush_offline_packets(
