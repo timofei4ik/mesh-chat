@@ -126,7 +126,7 @@ class _MeetingPointMapPageState extends State<MeetingPointMapPage> {
           permission == LocationPermission.deniedForever) {
         return null;
       }
-      return Geolocator.getCurrentPosition(
+      return await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
           timeLimit: Duration(seconds: 12),

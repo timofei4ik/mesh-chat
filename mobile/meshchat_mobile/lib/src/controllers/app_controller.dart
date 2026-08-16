@@ -7713,7 +7713,7 @@ class AppController extends ChangeNotifier {
         await ble.cancelQueuedMessage(message.id);
         if (message.kind == ChatMessageKind.file ||
             message.kind == ChatMessageKind.sticker) {
-          return sendBluetoothFileToThread(
+          return await sendBluetoothFileToThread(
             thread,
             message.fileName.isEmpty ? message.text : message.fileName,
             _hexDecode(message.fileData),
@@ -7722,7 +7722,7 @@ class AppController extends ChangeNotifier {
             retryingMessage: message,
           );
         }
-        return sendBluetoothMessageToThread(
+        return await sendBluetoothMessageToThread(
           thread,
           message.text,
           retryingMessage: message,
@@ -7734,7 +7734,7 @@ class AppController extends ChangeNotifier {
         final filename = message.fileName.isEmpty
             ? message.text
             : message.fileName;
-        return thread.isGroup
+        return await (thread.isGroup
             ? sendGroupFile(
                 thread,
                 filename,
@@ -7751,7 +7751,7 @@ class AppController extends ChangeNotifier {
                 threadOverride: thread,
                 kind: message.kind,
                 retryingMessage: message,
-              );
+              ));
       }
       if (thread.isGroup) {
         await sendGroupMessage(thread, message.text, retryingMessage: message);
