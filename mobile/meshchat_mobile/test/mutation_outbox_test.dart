@@ -142,6 +142,11 @@ void main() {
       expect(restored.single.outboxId, entry.outboxId);
       expect(restored.single.packet, entry.packet);
       expect(await reader.hasOperation(session, entry.operationId), isTrue);
+      var stats = await reader.stats(session);
+      expect(stats.total, 1);
+      expect(stats.queued, 1);
+      expect(stats.sent, 0);
+      expect(stats.oldestCreatedAt, entry.createdAt);
 
       await reader.markSent(
         session,
@@ -152,6 +157,9 @@ void main() {
       expect(restored.single.attempts, 1);
       expect(restored.single.state, MutationOutboxState.sent);
       expect(restored.single.lastAttemptAt, DateTime.utc(2026, 7, 18, 8));
+      stats = await reader.stats(session);
+      expect(stats.queued, 0);
+      expect(stats.sent, 1);
 
       await reader.markQueued(
         session,
@@ -161,10 +169,13 @@ void main() {
       restored = await MutationOutboxStore().load(session);
       expect(restored.single.state, MutationOutboxState.queued);
       expect(restored.single.lastError, 'socket_unavailable');
+      stats = await reader.stats(session);
+      expect(stats.lastError, 'socket_unavailable');
 
       await reader.delete(session, entry.outboxId);
       expect(await MutationOutboxStore().load(session), isEmpty);
       expect(await reader.hasOperation(session, entry.operationId), isFalse);
+      expect((await reader.stats(session)).total, 0);
     },
   );
 

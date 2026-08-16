@@ -10,7 +10,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent, ScrollDirection;
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
@@ -76,7 +76,8 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
+class _ChatPageState extends State<ChatPage>
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final input = TextEditingController();
   final inputFocus = FocusNode();
   final scroll = ScrollController();
@@ -119,10 +120,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final messageTintRefresh = ValueNotifier<int>(0);
   final messageListRefresh = ValueNotifier<int>(0);
   final chatChromeRefresh = ValueNotifier<int>(0);
+  final messageScrollMotion = ValueNotifier<_ChatScrollMotion>(
+    const _ChatScrollMotion(),
+  );
+  late final AnimationController messageScrollSpring;
   bool messageListScrolling = false;
   bool pendingMessageListRefresh = false;
   bool followLatestMessages = true;
   bool lowEndMode = false;
+  bool messageScrollSpringEnabled = false;
   Timer? messageSyncTimer;
   late int messageListFingerprint;
   late int observedMessageCount;
@@ -192,6 +198,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    messageScrollSpring = AnimationController.unbounded(vsync: this)
+      ..addListener(() {
+        final current = messageScrollMotion.value;
+        final offset = messageScrollSpring.value;
+        if ((current.offset - offset).abs() < 0.01) return;
+        messageScrollMotion.value = current.copyWith(offset: offset);
+      });
     WidgetsBinding.instance.addObserver(this);
     final unreadCount = widget.thread.unread.clamp(
       0,
@@ -256,6 +269,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void didChangeDependencies() {
     super.didChangeDependencies();
     lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
+    final platform = defaultTargetPlatform;
+    messageScrollSpringEnabled =
+        !lowEndMode &&
+        !MediaQuery.disableAnimationsOf(context) &&
+        (platform == TargetPlatform.iOS || platform == TargetPlatform.android);
+    if (!messageScrollSpringEnabled && messageScrollMotion.value.offset != 0) {
+      messageScrollSpring.stop();
+      messageScrollMotion.value = const _ChatScrollMotion();
+    }
   }
 
   @override
@@ -279,6 +301,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     messageTintRefresh.dispose();
     messageListRefresh.dispose();
     chatChromeRefresh.dispose();
+    messageScrollSpring.dispose();
+    messageScrollMotion.dispose();
     recorder.dispose();
     ringbackPlayer?.dispose();
     super.dispose();
@@ -1823,6 +1847,39 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     widget.onReady?.call();
   }
 
+  void updateMessageScrollSpring(ScrollUpdateNotification notification) {
+    if (!messageScrollSpringEnabled || notification.dragDetails == null) {
+      return;
+    }
+    final delta = notification.scrollDelta ?? 0;
+    if (delta.abs() < 0.05) return;
+    final current = messageScrollMotion.value;
+    final target = (delta * 0.42).clamp(-7.0, 7.0);
+    final offset = current.offset * 0.28 + target * 0.72;
+    messageScrollSpring.stop();
+    messageScrollSpring.value = offset;
+    messageScrollMotion.value = _ChatScrollMotion(
+      offset: offset,
+      focalGlobalY: notification.dragDetails!.globalPosition.dy,
+    );
+  }
+
+  void settleMessageScrollSpring() {
+    if (messageScrollMotion.value.offset.abs() < 0.05) {
+      messageScrollSpring.value = 0;
+      messageScrollMotion.value = messageScrollMotion.value.copyWith(offset: 0);
+      return;
+    }
+    messageScrollSpring.value = messageScrollMotion.value.offset;
+    unawaited(
+      messageScrollSpring.animateTo(
+        0,
+        duration: const Duration(milliseconds: 210),
+        curve: Curves.easeOutCubic,
+      ),
+    );
+  }
+
   bool handleInitialUserScroll(ScrollNotification notification) {
     if (notification is ScrollStartNotification) {
       messageListScrolling = true;
@@ -1833,13 +1890,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       initialScrollSettleTimer?.cancel();
       followLatestMessages = isNearBottom();
     }
-    if (notification is ScrollUpdateNotification &&
-        notification.dragDetails != null) {
-      followLatestMessages = isNearBottom();
+    if (notification is ScrollUpdateNotification) {
+      if (notification.dragDetails != null) {
+        followLatestMessages = isNearBottom();
+        updateMessageScrollSpring(notification);
+      } else if (!messageScrollSpring.isAnimating &&
+          messageScrollMotion.value.offset.abs() >= 0.05) {
+        settleMessageScrollSpring();
+      }
     }
     if (notification is ScrollEndNotification) {
       messageListScrolling = false;
       followLatestMessages = isNearBottom();
+      settleMessageScrollSpring();
       messageTintRefresh.value++;
       if (pendingMessageListRefresh) {
         pendingMessageListRefresh = false;
@@ -3449,77 +3512,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       },
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        extendBodyBehindAppBar: true,
-        appBar: AppBar(
-          automaticallyImplyLeading: false,
-          forceMaterialTransparency: true,
-          backgroundColor: Colors.transparent,
-          surfaceTintColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-          elevation: 0,
-          scrolledUnderElevation: 0,
-          centerTitle: true,
-          leadingWidth: 62,
-          leading: Padding(
-            padding: const EdgeInsets.only(left: 8),
-            child: _ChatRoundButton(
-              tooltip: 'Back',
-              icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
-              onPressed: selectingMessages
-                  ? clearMessageSelection
-                  : () {
-                      final onBack = widget.onBack;
-                      if (onBack != null) {
-                        unawaited(onBack());
-                      } else {
-                        Navigator.maybePop(context);
-                      }
-                    },
-            ),
-          ),
-          titleSpacing: 4,
-          title: ValueListenableBuilder<int>(
-            valueListenable: chatChromeRefresh,
-            builder: (context, _, _) {
-              final profile = widget.thread.profile;
-              final isSavedMessages = widget.controller.isSavedMessagesProfile(
-                profile,
-              );
-              final active = widget.controller.isTyping(widget.thread);
-              final subtitle = active
-                  ? widget.controller.activityLabel(widget.thread)
-                  : isChannelCommentThread
-                  ? profile.displayName
-                  : widget.thread.isGroup
-                  ? widget.thread.isChannel
-                        ? '${widget.thread.members.length} subscribers'
-                        : '${widget.thread.members.length} members'
-                  : isSavedMessages
-                  ? 'private notes'
-                  : profile.online
-                  ? 'online'
-                  : 'offline';
-              return _ChatHeaderIdentity(
-                title: isChannelCommentThread
-                    ? 'Comments'
-                    : profile.displayName,
-                subtitle: subtitle,
-                active: active || widget.thread.isGroup || profile.online,
-                onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
-              );
-            },
-          ),
-          actions: <Widget>[
-            ValueListenableBuilder<int>(
-              valueListenable: chatChromeRefresh,
-              builder: (context, _, _) => _ChatHeaderAvatarButton(
-                profile: widget.thread.profile,
-                onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
-              ),
-            ),
-            const SizedBox(width: 8),
-          ],
-        ),
         body: Stack(
           children: [
             Positioned.fill(
@@ -3645,7 +3637,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                   messages[index - 1].createdAt,
                                   message.createdAt,
                                 );
-                            return Column(
+                            final messageRow = Column(
                               children: [
                                 if (showDate)
                                   _DatePill(date: message.createdAt),
@@ -3742,6 +3734,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                     },
                                   ),
                               ],
+                            );
+                            if (!messageScrollSpringEnabled) {
+                              return messageRow;
+                            }
+                            return _ChatScrollSpringLayer(
+                              motion: messageScrollMotion,
+                              child: messageRow,
                             );
                           },
                         ),
@@ -4172,6 +4171,97 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     child: _CallBottomSheet(controller: widget.controller),
                   );
                 },
+              ),
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                bottom: false,
+                child: SizedBox(
+                  height: kToolbarHeight,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 8),
+                          child: _ChatRoundButton(
+                            tooltip: 'Back',
+                            icon: const Icon(
+                              Icons.arrow_back_ios_new_rounded,
+                              size: 18,
+                            ),
+                            onPressed: selectingMessages
+                                ? clearMessageSelection
+                                : () {
+                                    final onBack = widget.onBack;
+                                    if (onBack != null) {
+                                      unawaited(onBack());
+                                    } else {
+                                      Navigator.maybePop(context);
+                                    }
+                                  },
+                          ),
+                        ),
+                      ),
+                      ValueListenableBuilder<int>(
+                        valueListenable: chatChromeRefresh,
+                        builder: (context, _, _) {
+                          final profile = widget.thread.profile;
+                          final isSavedMessages = widget.controller
+                              .isSavedMessagesProfile(profile);
+                          final active = widget.controller.isTyping(
+                            widget.thread,
+                          );
+                          final subtitle = active
+                              ? widget.controller.activityLabel(widget.thread)
+                              : isChannelCommentThread
+                              ? profile.displayName
+                              : widget.thread.isGroup
+                              ? widget.thread.isChannel
+                                    ? '${widget.thread.members.length} subscribers'
+                                    : '${widget.thread.members.length} members'
+                              : isSavedMessages
+                              ? 'private notes'
+                              : profile.online
+                              ? 'online'
+                              : 'offline';
+                          return _ChatHeaderIdentity(
+                            title: isChannelCommentThread
+                                ? 'Comments'
+                                : profile.displayName,
+                            subtitle: subtitle,
+                            active:
+                                active ||
+                                widget.thread.isGroup ||
+                                profile.online,
+                            onTap: widget.thread.isGroup
+                                ? openGroupInfo
+                                : openProfile,
+                          );
+                        },
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ValueListenableBuilder<int>(
+                            valueListenable: chatChromeRefresh,
+                            builder: (context, _, _) => _ChatHeaderAvatarButton(
+                              profile: widget.thread.profile,
+                              onTap: widget.thread.isGroup
+                                  ? openGroupInfo
+                                  : openProfile,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
             InAppMessageBanner(
@@ -5254,6 +5344,94 @@ class _ChatHeaderAvatarButton extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+@immutable
+class _ChatScrollMotion {
+  const _ChatScrollMotion({this.offset = 0, this.focalGlobalY = 0});
+
+  final double offset;
+  final double focalGlobalY;
+
+  _ChatScrollMotion copyWith({double? offset, double? focalGlobalY}) {
+    return _ChatScrollMotion(
+      offset: offset ?? this.offset,
+      focalGlobalY: focalGlobalY ?? this.focalGlobalY,
+    );
+  }
+}
+
+class _ChatScrollSpringLayer extends SingleChildRenderObjectWidget {
+  const _ChatScrollSpringLayer({required this.motion, required super.child});
+
+  final ValueListenable<_ChatScrollMotion> motion;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderChatScrollSpringLayer(motion);
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderChatScrollSpringLayer renderObject,
+  ) {
+    renderObject.motion = motion;
+  }
+}
+
+class _RenderChatScrollSpringLayer extends RenderProxyBox {
+  _RenderChatScrollSpringLayer(ValueListenable<_ChatScrollMotion> motion)
+    : _motion = motion {
+    _motion.addListener(markNeedsPaint);
+  }
+
+  ValueListenable<_ChatScrollMotion> _motion;
+
+  set motion(ValueListenable<_ChatScrollMotion> value) {
+    if (identical(value, _motion)) return;
+    _motion.removeListener(markNeedsPaint);
+    _motion = value;
+    _motion.addListener(markNeedsPaint);
+    markNeedsPaint();
+  }
+
+  double get paintOffset {
+    final value = _motion.value;
+    if (value.offset.abs() < 0.01 || value.focalGlobalY == 0 || !hasSize) {
+      return 0;
+    }
+    final centerY = localToGlobal(Offset(size.width / 2, size.height / 2)).dy;
+    final distance = (centerY - value.focalGlobalY).abs();
+    final resistance = (distance / 720).clamp(0.04, 0.62);
+    return value.offset * resistance;
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    final translation = paintOffset;
+    if (translation.abs() < 0.01) {
+      super.paint(context, offset);
+      return;
+    }
+    context.canvas.save();
+    context.canvas.translate(0, translation);
+    super.paint(context, offset);
+    context.canvas.restore();
+  }
+
+  @override
+  void detach() {
+    _motion.removeListener(markNeedsPaint);
+    super.detach();
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _motion.removeListener(markNeedsPaint);
+    _motion.addListener(markNeedsPaint);
   }
 }
 

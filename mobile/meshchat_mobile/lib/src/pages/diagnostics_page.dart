@@ -16,17 +16,22 @@ class DiagnosticsPage extends StatefulWidget {
 
 class _DiagnosticsPageState extends State<DiagnosticsPage> {
   late Future<CacheStats> statsFuture;
+  late Future<SyncDiagnosticsSnapshot> syncStatsFuture;
 
   @override
   void initState() {
     super.initState();
     statsFuture = widget.controller.cacheStats();
+    syncStatsFuture = widget.controller.syncDiagnostics();
   }
 
   Future<void> refresh() async {
     await widget.controller.handleAppResumed();
     if (!mounted) return;
-    setState(() => statsFuture = widget.controller.cacheStats());
+    setState(() {
+      statsFuture = widget.controller.cacheStats();
+      syncStatsFuture = widget.controller.syncDiagnostics();
+    });
   }
 
   @override
@@ -103,6 +108,104 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                           ? 'Missing'
                           : controller.myNodeId,
                       ok: controller.myNodeId.isNotEmpty,
+                    ),
+                  ],
+                ),
+                _DiagCard(
+                  title: 'Sync v2',
+                  children: [
+                    FutureBuilder<SyncDiagnosticsSnapshot>(
+                      future: syncStatsFuture,
+                      builder: (context, snapshot) {
+                        final sync = snapshot.data;
+                        if (sync == null) {
+                          return const _DiagRow(
+                            label: 'State',
+                            value: 'Reading local sync state',
+                            ok: true,
+                          );
+                        }
+                        final oldest = sync.oldestOutboxEntry;
+                        return Column(
+                          children: [
+                            _DiagRow(
+                              label: 'Event cursor',
+                              value: '${sync.cursor}',
+                              ok: sync.cursor >= 0,
+                            ),
+                            _DiagRow(
+                              label: 'Delta apply',
+                              value: sync.applyingDelta ? 'Applying' : 'Idle',
+                              ok: !sync.applyingDelta,
+                            ),
+                            _DiagRow(
+                              label: 'Live buffer',
+                              value: '${sync.bufferedLivePackets} packets',
+                              ok: sync.bufferedLivePackets == 0,
+                            ),
+                            _DiagRow(
+                              label: 'Outbox',
+                              value:
+                                  '${sync.outboxTotal} total, ${sync.outboxQueued} queued, ${sync.outboxSent} awaiting ack',
+                              ok: sync.outboxQueued == 0,
+                            ),
+                            _DiagRow(
+                              label: 'Oldest item',
+                              value: oldest == null
+                                  ? 'None'
+                                  : _formatDate(oldest.toLocal()),
+                              ok: oldest == null,
+                            ),
+                            _DiagRow(
+                              label: 'UI pending',
+                              value: '${sync.pendingMessages}',
+                              ok: sync.pendingMessages == 0,
+                            ),
+                            _DiagRow(
+                              label: 'Capabilities',
+                              value:
+                                  'delta ${sync.supportsDelta ? 'on' : 'off'}, batch ${sync.supportsDeltaBatch ? 'on' : 'off'}, multi-device ${sync.supportsMultiDeviceState ? 'on' : 'off'}',
+                              ok:
+                                  sync.supportsDelta &&
+                                  sync.supportsMultiDeviceState,
+                            ),
+                            if (sync.outboxError.isNotEmpty)
+                              _DiagRow(
+                                label: 'Outbox error',
+                                value: sync.outboxError,
+                                ok: false,
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              await widget.controller.retryQueuedMessagesNow();
+                              await refresh();
+                            },
+                            icon: const Icon(Icons.outbox_rounded),
+                            label: const Text('Retry outbox'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              widget.controller.requestSafeSyncSnapshot();
+                              setState(
+                                () => syncStatsFuture = widget.controller
+                                    .syncDiagnostics(),
+                              );
+                            },
+                            icon: const Icon(Icons.sync_rounded),
+                            label: const Text('Safe snapshot'),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),

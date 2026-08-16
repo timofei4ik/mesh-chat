@@ -103,6 +103,16 @@ class MeshSocket {
   bool get supportsMultiDeviceState => _supportsMultiDeviceState;
   String get lastIdentityRecovery => _lastIdentityRecovery;
 
+  Future<MutationOutboxStats> mutationOutboxStats() async {
+    final current = _session;
+    if (current == null) return MutationOutboxStats.empty;
+    late MutationOutboxStats result;
+    await _serializeOutbox(() async {
+      result = await _outboxStore.stats(current);
+    });
+    return result;
+  }
+
   Future<void> connect({
     required Session session,
     required String publicKey,
@@ -1012,16 +1022,15 @@ class MeshSocket {
   ) async {
     final current = _session;
     final outboxId = packet['outbox_id']?.toString() ?? '';
-    // The server emits this only after persistence. Reflect the acknowledgement
-    // in the UI now; the SQLite cleanup can safely complete afterwards.
-    await onPacket({...packet, 'operation_complete': true});
+    // The server emits this only after persistence. Complete the local durable
+    // cleanup before exposing the acknowledgement so an immediate restart
+    // cannot replay an operation that the server has already committed.
     if (current != null && outboxId.isNotEmpty) {
-      unawaited(
-        _serializeOutbox(() async {
-          await _outboxStore.delete(current, outboxId);
-        }).catchError((_) {}),
-      );
+      await _serializeOutbox(() async {
+        await _outboxStore.delete(current, outboxId);
+      });
     }
+    await onPacket({...packet, 'operation_complete': true});
     _scheduleMutationRetry();
   }
 

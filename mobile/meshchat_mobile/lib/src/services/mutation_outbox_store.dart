@@ -15,6 +15,24 @@ enum MutationOutboxState {
       value?.toString() == sent.name ? sent : queued;
 }
 
+class MutationOutboxStats {
+  const MutationOutboxStats({
+    required this.total,
+    required this.queued,
+    required this.sent,
+    this.oldestCreatedAt,
+    this.lastError = '',
+  });
+
+  static const empty = MutationOutboxStats(total: 0, queued: 0, sent: 0);
+
+  final int total;
+  final int queued;
+  final int sent;
+  final DateTime? oldestCreatedAt;
+  final String lastError;
+}
+
 class MutationOutboxEntry {
   const MutationOutboxEntry({
     required this.outboxId,
@@ -116,6 +134,24 @@ class MutationOutboxStore {
         )
         .where(_isValid)
         .toList();
+  }
+
+  Future<MutationOutboxStats> stats(Session session) async {
+    final entries = await load(session);
+    if (entries.isEmpty) return MutationOutboxStats.empty;
+    final queued = entries
+        .where((entry) => entry.state == MutationOutboxState.queued)
+        .length;
+    final lastError = entries
+        .map((entry) => entry.lastError.trim())
+        .firstWhere((error) => error.isNotEmpty, orElse: () => '');
+    return MutationOutboxStats(
+      total: entries.length,
+      queued: queued,
+      sent: entries.length - queued,
+      oldestCreatedAt: entries.first.createdAt,
+      lastError: lastError,
+    );
   }
 
   Future<void> put(Session session, MutationOutboxEntry entry) async {

@@ -63,6 +63,36 @@ class DiagnosticEvent {
   final String message;
 }
 
+class SyncDiagnosticsSnapshot {
+  const SyncDiagnosticsSnapshot({
+    required this.cursor,
+    required this.applyingDelta,
+    required this.bufferedLivePackets,
+    required this.pendingMessages,
+    required this.outboxTotal,
+    required this.outboxQueued,
+    required this.outboxSent,
+    required this.supportsDelta,
+    required this.supportsDeltaBatch,
+    required this.supportsMultiDeviceState,
+    this.oldestOutboxEntry,
+    this.outboxError = '',
+  });
+
+  final int cursor;
+  final bool applyingDelta;
+  final int bufferedLivePackets;
+  final int pendingMessages;
+  final int outboxTotal;
+  final int outboxQueued;
+  final int outboxSent;
+  final bool supportsDelta;
+  final bool supportsDeltaBatch;
+  final bool supportsMultiDeviceState;
+  final DateTime? oldestOutboxEntry;
+  final String outboxError;
+}
+
 class AiRewriteResult {
   const AiRewriteResult({required this.text, required this.remaining});
 
@@ -1096,6 +1126,29 @@ class AppController extends ChangeNotifier {
       }
     }
     return count;
+  }
+
+  Future<SyncDiagnosticsSnapshot> syncDiagnostics() async {
+    final outbox = await _socket.mutationOutboxStats();
+    return SyncDiagnosticsSnapshot(
+      cursor: _lastAppliedSyncCursor,
+      applyingDelta: _applyingSyncDelta,
+      bufferedLivePackets: _livePacketsDuringDeltaApply.length,
+      pendingMessages: queuedMessageCount,
+      outboxTotal: outbox.total,
+      outboxQueued: outbox.queued,
+      outboxSent: outbox.sent,
+      oldestOutboxEntry: outbox.oldestCreatedAt,
+      outboxError: outbox.lastError,
+      supportsDelta: _socket.supportsSyncV2Delta,
+      supportsDeltaBatch: _socket.supportsSyncV2DeltaBatch,
+      supportsMultiDeviceState: _socket.supportsMultiDeviceState,
+    );
+  }
+
+  void requestSafeSyncSnapshot() {
+    if (session == null) return;
+    _requestAuthoritativeSnapshot('manual diagnostics snapshot request');
   }
 
   Future<void> retryQueuedMessagesNow() async {
