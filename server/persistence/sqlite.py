@@ -2,6 +2,7 @@ import json
 from contextlib import nullcontext
 
 from .sqlite_billing import SQLiteBillingRepository
+from .moderation import ModerationRepository
 
 
 class SQLiteIdentityRepository:
@@ -1214,6 +1215,7 @@ class SQLiteUnitOfWork:
         self.identity = SQLiteIdentityRepository(connection)
         self.subscriptions = SQLiteSubscriptionRepository(connection)
         self.billing = SQLiteBillingRepository(connection)
+        self.moderation = ModerationRepository(connection)
 
     def __enter__(self):
         if self._write:

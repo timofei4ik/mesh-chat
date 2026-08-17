@@ -230,6 +230,23 @@ BILLING_PORT = int(
     )
 )
 
+MODERATION_HTTP_HOST = os.environ.get(
+    "MESH_MODERATION_HTTP_HOST", "127.0.0.1"
+).strip()
+MODERATION_HTTP_PORT = int(
+    os.environ.get("MESH_MODERATION_HTTP_PORT", "8768")
+)
+MODERATION_ADMIN_ID = (
+    os.environ.get("MESH_MODERATION_ADMIN_ID", "mesh-admin").strip()
+    or "mesh-admin"
+)
+MODERATION_ADMIN_PASSWORD_HASH = os.environ.get(
+    "MESH_MODERATION_ADMIN_PASSWORD_HASH", ""
+).strip()
+MODERATION_SESSION_SECRET = os.environ.get(
+    "MESH_MODERATION_SESSION_SECRET", ""
+).strip()
+
 MEDIA_HTTP_HOST = os.environ.get(
     "MESH_MEDIA_HTTP_HOST",
     "127.0.0.1",

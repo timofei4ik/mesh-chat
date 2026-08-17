@@ -389,10 +389,35 @@ class BillingRepository(Protocol):
         ...
 
 
+class ModerationRepository(Protocol):
+    def create_report(self, report: dict) -> None:
+        ...
+
+    def list_reports(self, status: str = "new", limit: int = 100) -> list:
+        ...
+
+    def report_by_id(self, report_id: str):
+        ...
+
+    def record_decision(
+        self,
+        report_id: str,
+        action_id: str,
+        admin_id: str,
+        action: str,
+        note: str,
+    ) -> bool:
+        ...
+
+    def actions_for_report(self, report_id: str) -> list:
+        ...
+
+
 class UnitOfWork(Protocol):
     identity: IdentityRepository
     subscriptions: SubscriptionRepository
     billing: BillingRepository
+    moderation: ModerationRepository
 
     def __enter__(self) -> "UnitOfWork":
         ...

@@ -422,6 +422,7 @@ class AppController extends ChangeNotifier {
   final Map<String, Completer<String?>> _meshProActivationCompleters = {};
   final Map<String, Completer<String?>> _passwordChangeCompleters = {};
   final Map<String, Completer<String?>> _accountDeleteCompleters = {};
+  final Map<String, Completer<String?>> _moderationReportCompleters = {};
   Completer<Map<String, dynamic>>? _emailVerificationCompleter;
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
@@ -2703,6 +2704,16 @@ class AppController extends ChangeNotifier {
         _handleLookup(packet);
       case 'profile_update_result':
         _handleProfileUpdateResult(packet);
+      case 'moderation_report_result':
+        final requestId = packet['request_id']?.toString() ?? '';
+        final completer = _moderationReportCompleters.remove(requestId);
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(
+            packet['ok'] == true
+                ? null
+                : packet['error']?.toString() ?? 'Could not submit report',
+          );
+        }
       case 'account_password_change_result':
         _handlePasswordChangeResult(packet);
       case 'account_delete_result':
@@ -3299,6 +3310,53 @@ class AppController extends ChangeNotifier {
     const mib = 1024 * 1024;
     final payloadMib = (packetBytes / mib).ceil().clamp(1, 6);
     return Duration(seconds: 15 + payloadMib * 15);
+  }
+
+  Future<String?> reportContent({
+    required String subjectType,
+    required String subjectId,
+    required String reason,
+    String conversationId = '',
+    String targetLogin = '',
+    String details = '',
+    Map<String, dynamic> snapshot = const {},
+  }) async {
+    final current = session;
+    if (current == null) return 'No active session';
+    if (!_socket.isConnected) return 'No server connection';
+    final normalizedSubjectId = subjectId.trim();
+    if (normalizedSubjectId.isEmpty) return 'Invalid report target';
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _moderationReportCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'moderation_report',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'subject_type': subjectType.trim().toLowerCase(),
+        'subject_id': normalizedSubjectId,
+        'conversation_id': conversationId.trim(),
+        'target_login': targetLogin.trim().toLowerCase(),
+        'reason': reason.trim().toLowerCase(),
+        'details': details.trim(),
+        'snapshot': snapshot,
+      });
+    } catch (error) {
+      _moderationReportCompleters.remove(requestId);
+      return 'Could not submit report: $error';
+    }
+    return completer.future.timeout(
+      const Duration(seconds: 12),
+      onTimeout: () {
+        _moderationReportCompleters.remove(requestId);
+        return 'The server did not confirm the report';
+      },
+    );
   }
 
   Future<String?> updateMeshStudioAppearance({

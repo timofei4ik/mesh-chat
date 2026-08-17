@@ -2834,6 +2834,13 @@ class _ChatPageState extends State<ChatPage>
           Icons.delete_forever_outlined,
           destructive: true,
         ),
+      if (!mine)
+        const _MessageActionSpec(
+          'report',
+          'Report',
+          Icons.flag_outlined,
+          destructive: true,
+        ),
       if (canBlock)
         _MessageActionSpec(
           'block',
@@ -2946,6 +2953,10 @@ class _ChatPageState extends State<ChatPage>
       widget.controller.togglePin(widget.thread, message);
       return;
     }
+    if (action == 'report') {
+      await showReportDialog(message);
+      return;
+    }
     if (action == 'block') {
       await widget.controller.toggleBlocked(message.senderNode);
       if (!mounted) return;
@@ -2958,6 +2969,114 @@ class _ChatPageState extends State<ChatPage>
         action.substring('reaction:'.length),
       );
     }
+  }
+
+  Future<void> showReportDialog(ChatMessage message) async {
+    const reasons = <String, String>{
+      'spam': 'Spam',
+      'harassment': 'Harassment',
+      'violence': 'Violence or threats',
+      'sexual': 'Sexual content',
+      'scam': 'Fraud or scam',
+      'other': 'Other',
+    };
+    var selectedReason = reasons.keys.first;
+    final detailsController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.62),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Report message'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'The selected message and its basic chat context will be '
+                    'sent to MeshChat moderation.',
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedReason,
+                    decoration: const InputDecoration(labelText: 'Reason'),
+                    items: reasons.entries
+                        .map(
+                          (entry) => DropdownMenuItem(
+                            value: entry.key,
+                            child: Text(entry.value),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => selectedReason = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: detailsController,
+                    minLines: 2,
+                    maxLines: 5,
+                    maxLength: 1000,
+                    decoration: const InputDecoration(
+                      labelText: 'Additional details',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Send report'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed == true && mounted) {
+      final error = await widget.controller.reportContent(
+        subjectType: message.isChannelComment ? 'comment' : 'message',
+        subjectId: message.id,
+        conversationId: widget.thread.storageKey,
+        targetLogin: widget.thread.profile.accountLogin,
+        reason: selectedReason,
+        details: detailsController.text,
+        snapshot: {
+          'sender_node': message.senderNode,
+          'sender_name': message.senderName,
+          'kind': message.kind.name,
+          'text': message.text,
+          'created_at': message.createdAt.toUtc().toIso8601String(),
+        },
+      );
+      if (error != null && mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Report not sent'),
+            content: Text(error),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+    detailsController.dispose();
   }
 
   Future<void> showMessageTextSelection(String text) async {

@@ -20,6 +20,7 @@ try:
     )
     from server.server_commands_push import register_push_commands
     from server.server_commands_media import register_media_commands
+    from server.server_commands_moderation import register_moderation_commands
     from server.server_commands_subscriptions import (
         register_subscription_commands,
     )
@@ -39,6 +40,7 @@ except ModuleNotFoundError:
     )
     from server_commands_push import register_push_commands
     from server_commands_media import register_media_commands
+    from server_commands_moderation import register_moderation_commands
     from server_commands_subscriptions import (
         register_subscription_commands,
     )
@@ -54,6 +56,7 @@ def build_command_registry():
     register_identity_commands(registry)
     register_automation_commands(registry)
     register_ai_commands(registry)
+    register_moderation_commands(registry)
     register_call_commands(registry)
     return registry
 

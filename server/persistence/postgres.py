@@ -8,6 +8,7 @@ from .sqlite import (
     SQLiteIdentityRepository,
     SQLiteSubscriptionRepository,
 )
+from .moderation import ModerationRepository
 
 
 _REPLACE_CONFLICT_KEYS = {
@@ -452,6 +453,7 @@ class PostgresUnitOfWork:
         self.billing = PostgresBillingRepository(
             connection.raw_connection
         )
+        self.moderation = ModerationRepository(connection)
 
     def __enter__(self):
         self._transaction = (
