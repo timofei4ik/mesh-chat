@@ -378,6 +378,12 @@ def apply_postgres_migrations(connection, migration_dir=None):
     )
     with connection.transaction():
         with connection.cursor() as cursor:
+            # Multiple relay workers may start together after a deployment.
+            # Serialize schema changes for the lifetime of this transaction.
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (0x4D455348,),
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations(
