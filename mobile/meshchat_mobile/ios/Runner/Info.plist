@@ -14,6 +14,17 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.meshchat.mobile</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>meshchat</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleName</key>
 	<string>MeshChat</string>
 	<key>CFBundlePackageType</key>
@@ -27,15 +38,15 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>MeshChat needs microphone access to record voice messages.</string>
+	<string>MeshChat uses the microphone for voice messages and audio or video calls that you start or answer.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>MeshChat needs camera access to scan Bluetooth pairing QR codes.</string>
+	<string>MeshChat uses the camera when you take a photo or video, join a video call, or scan a pairing QR code.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>MeshChat needs photo library access to attach photos and files.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>MeshChat needs permission to save received media when requested.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>MeshChat uses your location only when you share a meeting point in a group.</string>
+	<string>MeshChat uses your location only when you explicitly share your position or choose a meeting point.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>MeshChat needs Bluetooth access to find and chat with nearby devices.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>

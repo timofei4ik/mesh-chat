@@ -95,6 +95,56 @@ workflows:
       - mobile/meshchat_mobile/build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
 
+  ios_app_store:
+    name: iOS App Store release
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.meshchat.mobile
+    scripts:
+      - name: Verify Xcode 26 for native Liquid Glass
+        script: |
+          XCODE_MAJOR="$(xcodebuild -version | awk 'NR == 1 { split($2, version, "."); print version[1] }')"
+          if [ "$XCODE_MAJOR" -lt 26 ]; then
+            echo "MeshChat requires Xcode 26+."
+            exit 1
+          fi
+      - name: Set up App Store signing
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          xcode-project use-profiles
+      - name: Get Flutter packages and analyze
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          flutter pub get
+          flutter analyze
+      - name: Install CocoaPods
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          find ios -name "Podfile" -execdir pod install \;
+      - name: Build App Store IPA
+        script: |
+          cd "$CM_BUILD_DIR/mobile/meshchat_mobile"
+          FIREBASE_DEFINES=""
+          if [ -n "$MESH_FIREBASE_API_KEY" ] && [ -n "$MESH_FIREBASE_IOS_APP_ID" ]; then
+            FIREBASE_DEFINES="--dart-define=MESH_FIREBASE_API_KEY=$MESH_FIREBASE_API_KEY --dart-define=MESH_FIREBASE_IOS_APP_ID=$MESH_FIREBASE_IOS_APP_ID --dart-define=MESH_FIREBASE_IOS_BUNDLE_ID=com.meshchat.mobile --dart-define=MESH_FIREBASE_MESSAGING_SENDER_ID=$MESH_FIREBASE_MESSAGING_SENDER_ID --dart-define=MESH_FIREBASE_PROJECT_ID=$MESH_FIREBASE_PROJECT_ID --dart-define=MESH_FIREBASE_STORAGE_BUCKET=$MESH_FIREBASE_STORAGE_BUCKET"
+          fi
+          flutter build ipa --release \
+            --build-number=$PROJECT_BUILD_NUMBER \
+            --dart-define=MESH_DISTRIBUTION=appstore \
+            --export-options-plist=/Users/builder/export_options.plist \
+            $FIREBASE_DEFINES
+    artifacts:
+      - mobile/meshchat_mobile/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
   ios_native_prototype_unsigned:
     name: iOS Native UIKit prototype
     max_build_duration: 30

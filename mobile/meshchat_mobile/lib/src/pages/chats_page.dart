@@ -15,6 +15,7 @@ import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
+import '../services/store_distribution.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/app_update_banner.dart';
@@ -25,6 +26,7 @@ import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
 import '../widgets/profile_avatar.dart';
+import '../widgets/report_content_dialog.dart';
 import 'bluetooth_nearby_page.dart';
 import 'chat_page.dart';
 import 'diagnostics_page.dart';
@@ -2526,6 +2528,23 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
     );
   }
 
+  Future<void> _reportStory(StoryItem story) async {
+    await showReportContentDialog(
+      context,
+      controller: widget.controller,
+      subjectType: 'story',
+      subjectId: story.id,
+      title: 'Report story',
+      snapshot: {
+        'owner_node': story.ownerNode,
+        'owner_name': story.ownerName,
+        'text': story.text,
+        'media_type': story.mediaType.name,
+        'created_at': story.createdAt.toUtc().toIso8601String(),
+      },
+    );
+  }
+
   Future<void> _showReactionPicker(StoryItem story) async {
     const reactions = <String>['heart', 'fire', 'laugh', 'wow', 'sad', 'clap'];
     final extraAvailable = meshProFeatureEnabled(
@@ -2689,15 +2708,31 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                           color: const Color(0xFF172536),
                           onSelected: (value) {
                             if (value == 'hide') unawaited(_hideAuthor(story));
+                            if (value == 'report') {
+                              unawaited(_reportStory(story));
+                            }
                           },
                           itemBuilder: (context) => const [
-                            PopupMenuItem(
+                            PopupMenuItem<String>(
                               value: 'hide',
                               child: Row(
                                 children: [
                                   Icon(Icons.visibility_off_rounded),
                                   SizedBox(width: 10),
                                   Text('Hide stories'),
+                                ],
+                              ),
+                            ),
+                            PopupMenuItem<String>(
+                              value: 'report',
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.flag_outlined,
+                                    color: Colors.redAccent,
+                                  ),
+                                  SizedBox(width: 10),
+                                  Text('Report story'),
                                 ],
                               ),
                             ),
@@ -4230,22 +4265,34 @@ class _MeshProSettingsCardState extends State<_MeshProSettingsCard> {
               ),
             ],
             const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () =>
-                    showMeshProActivationDialog(context, widget.controller),
-                icon: const Icon(Icons.key_rounded),
-                label: const Text('Enter activation code'),
+            if (StoreDistributionConfig.allowsActivationCodes) ...[
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      showMeshProActivationDialog(context, widget.controller),
+                  icon: const Icon(Icons.key_rounded),
+                  label: const Text('Enter activation code'),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
+            ],
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
                 onPressed: () => showMeshProPaywall(context, widget.controller),
-                icon: const Icon(Icons.open_in_new_rounded),
-                label: Text(active ? 'Extend on Boosty' : 'Buy on Boosty'),
+                icon: Icon(
+                  StoreDistributionConfig.allowsExternalMeshProPurchase
+                      ? Icons.open_in_new_rounded
+                      : Icons.storefront_outlined,
+                ),
+                label: Text(
+                  StoreDistributionConfig.allowsExternalMeshProPurchase
+                      ? (active ? 'Extend on Boosty' : 'Buy on Boosty')
+                      : (active
+                            ? 'MeshPro active'
+                            : 'MeshPro on ${StoreDistributionConfig.storeName}'),
+                ),
               ),
             ),
           ],

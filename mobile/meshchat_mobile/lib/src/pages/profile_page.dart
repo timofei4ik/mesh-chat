@@ -12,6 +12,7 @@ import '../models/profile.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/profile_avatar.dart';
 import '../widgets/profile_effect_background.dart';
+import '../widgets/report_content_dialog.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({
@@ -120,6 +121,20 @@ class ProfilePage extends StatelessWidget {
                     currentController,
                     currentThread,
                     forEveryone: true,
+                  ),
+                  onReport: () => showReportContentDialog(
+                    context,
+                    controller: currentController,
+                    subjectType: 'profile',
+                    subjectId: profile.nodeId,
+                    title: 'Report ${profile.displayName}',
+                    targetLogin: profile.publicUsername,
+                    snapshot: {
+                      'node_id': profile.nodeId,
+                      'display_name': profile.displayName,
+                      'public_username': profile.publicUsername,
+                      'about': profile.about,
+                    },
                   ),
                 ),
             ],
@@ -1036,12 +1051,14 @@ class _ProfileDangerActions extends StatelessWidget {
     required this.onBlock,
     required this.onDeleteLocal,
     required this.onDeleteBoth,
+    required this.onReport,
   });
 
   final bool blocked;
   final VoidCallback onBlock;
   final VoidCallback onDeleteLocal;
   final VoidCallback onDeleteBoth;
+  final VoidCallback onReport;
 
   @override
   Widget build(BuildContext context) {
@@ -1051,6 +1068,11 @@ class _ProfileDangerActions extends StatelessWidget {
           icon: blocked ? Icons.visibility_rounded : Icons.block_rounded,
           label: blocked ? 'Unblock' : 'Block',
           onTap: onBlock,
+        ),
+        _DangerTile(
+          icon: Icons.flag_outlined,
+          label: 'Report user',
+          onTap: onReport,
         ),
         _DangerTile(
           icon: Icons.delete_outline_rounded,

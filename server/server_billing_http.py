@@ -42,6 +42,7 @@ MAX_ORDER_BYTES = 4 * 1024
 ORDER_RATE_LIMIT = 10
 ORDER_RATE_WINDOW_SECONDS = 10 * 60
 STATIC_ROOT = Path(__file__).resolve().parent / "static" / "meshpro"
+LEGAL_ROOT = Path(__file__).resolve().parent / "static" / "legal"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -54,11 +55,9 @@ class BillingHttpServer:
 
     @property
     def enabled(self):
-        return bool(
-            self.relay.manual_billing_configured
-            or self.relay.billing_configured
-            or getattr(self.relay, "boosty_activation_configured", False)
-        )
+        # Public policy, support and account-deletion pages must remain
+        # available even when every payment provider is disabled.
+        return True
 
     async def start(self):
         if not self.enabled:
@@ -92,6 +91,19 @@ class BillingHttpServer:
             self._boosty_activate_script,
         )
         app.router.add_get("/meshpro/logo.png", self._meshpro_logo)
+        app.router.add_get("/meshpro/legal", self._legal_redirect)
+        app.router.add_get("/meshpro/legal/", self._legal_redirect)
+        app.router.add_get("/meshpro/legal/styles.css", self._legal_styles)
+        app.router.add_get("/meshpro/legal/legal.js", self._legal_script)
+        app.router.add_get("/meshpro/legal/{page}", self._legal_page)
+        app.router.add_post(
+            "/meshpro/legal/api/account-deletion",
+            self._legal_account_deletion,
+        )
+        app.router.add_post(
+            "/meshpro/legal/api/support",
+            self._legal_support,
+        )
         app.router.add_get("/billing/boosty/info", self._boosty_info)
         app.router.add_post(
             "/billing/boosty/activate",
@@ -352,6 +364,98 @@ class BillingHttpServer:
             STATIC_ROOT / "logo.png",
             "image/png",
         )
+
+    async def _legal_redirect(self, request):
+        raise web.HTTPPermanentRedirect("/meshpro/legal/privacy")
+
+    async def _legal_styles(self, request):
+        return self._static_response(LEGAL_ROOT / "styles.css", "text/css")
+
+    async def _legal_script(self, request):
+        return self._static_response(
+            LEGAL_ROOT / "legal.js",
+            "application/javascript",
+            cache_control="public, max-age=300",
+        )
+
+    async def _legal_page(self, request):
+        page = str(request.match_info.get("page") or "").strip().lower()
+        allowed = {
+            "privacy", "terms", "community", "support", "account-deletion",
+        }
+        if page not in allowed:
+            raise web.HTTPNotFound()
+        return self._static_response(
+            LEGAL_ROOT / f"{page}.html",
+            "text/html",
+            cache_control="public, max-age=300",
+        )
+
+    async def _legal_account_deletion(self, request):
+        if not self._order_attempt_allowed(request):
+            return self._json_response(
+                {"ok": False, "error": "too_many_attempts"}, status=429
+            )
+        if request.content_length and request.content_length > MAX_ORDER_BYTES:
+            return self._json_response(
+                {"ok": False, "error": "request_too_large"}, status=413
+            )
+        try:
+            payload = await request.json()
+            confirmed = payload.get("confirmation") == "DELETE"
+            if not confirmed:
+                raise ValueError("confirmation_required")
+            ok, reason = self.relay.delete_account(
+                str(payload.get("login") or ""),
+                str(payload.get("password") or ""),
+            )
+        except (ValueError, TypeError) as error:
+            return self._json_response(
+                {"ok": False, "error": str(error)}, status=400
+            )
+        if not ok:
+            return self._json_response(
+                {"ok": False, "error": reason}, status=401
+            )
+        return self._json_response({"ok": True})
+
+    async def _legal_support(self, request):
+        if not self._order_attempt_allowed(request):
+            return self._json_response(
+                {"ok": False, "error": "too_many_attempts"}, status=429
+            )
+        if request.content_length and request.content_length > MAX_ORDER_BYTES:
+            return self._json_response(
+                {"ok": False, "error": "request_too_large"}, status=413
+            )
+        try:
+            payload = await request.json()
+            email = str(payload.get("email") or "").strip()[:254]
+            details = str(payload.get("details") or "").strip()[:2000]
+            if "@" not in email or len(details) < 10:
+                raise ValueError("invalid_request")
+            report_id = str(uuid.uuid4())
+            with self.relay.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.moderation.create_report(
+                    {
+                        "report_id": report_id,
+                        "reporter_login": f"web:{email}"[:128],
+                        "reporter_node": "public-support-form",
+                        "subject_type": "support",
+                        "subject_id": report_id,
+                        "conversation_id": "",
+                        "target_login": "",
+                        "reason": "other",
+                        "details": details,
+                        "snapshot": {"reply_email": email},
+                        "priority": 0,
+                    }
+                )
+        except (ValueError, TypeError) as error:
+            return self._json_response(
+                {"ok": False, "error": str(error)}, status=400
+            )
+        return self._json_response({"ok": True, "request_id": report_id})
 
     async def _manual_qr(self, request):
         if not self.relay.manual_billing_configured:

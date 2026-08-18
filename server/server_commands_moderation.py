@@ -7,7 +7,10 @@ except ModuleNotFoundError:
 
 
 SUBJECT_TYPES = {"message", "comment", "story", "profile", "group", "channel"}
-REASONS = {"spam", "harassment", "violence", "sexual", "scam", "other"}
+REASONS = {
+    "spam", "scam", "harassment", "hate", "violence", "sexual",
+    "illegal", "privacy", "other",
+}
 
 
 async def handle_moderation_report(server, packet, context):

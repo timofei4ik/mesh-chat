@@ -266,7 +266,23 @@ class BillingHttpTests(unittest.IsolatedAsyncioTestCase):
         ) as response:
             result = await response.json()
             self.assertEqual(200, response.status)
-            self.assertTrue(result["result"]["subscription"]["active"])
+        self.assertTrue(result["result"]["subscription"]["active"])
+
+    async def test_public_legal_pages_are_available_without_billing(self):
+        for page, marker in (
+            ("privacy", "Privacy Policy"),
+            ("terms", "Terms of Service"),
+            ("community", "Community Guidelines"),
+            ("support", "Support and Safety"),
+            ("account-deletion", "Delete your account"),
+        ):
+            async with self.session.get(
+                f"{self.base_url}/meshpro/legal/{page}"
+            ) as response:
+                body = await response.text()
+                self.assertEqual(200, response.status)
+                self.assertIn(marker, body)
+                self.assertEqual("DENY", response.headers["X-Frame-Options"])
 
 
 if __name__ == "__main__":

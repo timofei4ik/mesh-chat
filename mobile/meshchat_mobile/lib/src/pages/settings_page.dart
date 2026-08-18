@@ -10,6 +10,7 @@ import '../utils/mesh_page_route.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/profile_avatar.dart';
 import 'bluetooth_nearby_page.dart';
+import 'legal_safety_page.dart';
 import 'mesh_studio_page.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -66,6 +67,13 @@ class SettingsPage extends StatelessWidget {
     Navigator.push(
       context,
       meshPageRoute<void>(builder: (_) => SecurityPage(controller: controller)),
+    );
+  }
+
+  void openLegalSafety(BuildContext context) {
+    Navigator.push(
+      context,
+      meshPageRoute<void>(builder: (_) => const LegalSafetyPage()),
     );
   }
 
@@ -259,6 +267,18 @@ class SettingsPage extends StatelessWidget {
                 subtitle: const Text('Device ID, active devices and blocks'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => openSecurity(context),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.gavel_outlined),
+                title: const Text('Legal & Safety'),
+                subtitle: const Text(
+                  'Privacy, terms, community rules and support',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openLegalSafety(context),
               ),
             ),
           ],

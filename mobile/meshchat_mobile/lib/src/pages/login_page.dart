@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_painting.dart';
@@ -18,6 +20,9 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
+  static const _legalBaseUrl =
+      'https://meshchat-losa.ru/meshpro/legal';
+  static const _acceptedRulesKey = 'accepted_rules_2026_08_18';
   final serverController = TextEditingController(
     text: 'wss://meshchat-losa.ru/ws',
   );
@@ -27,6 +32,43 @@ class _LoginPageState extends State<LoginPage> {
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
   bool obscurePassword = true;
+  bool acceptedRules = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreRulesAcceptance();
+  }
+
+  Future<void> _restoreRulesAcceptance() async {
+    final preferences = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      acceptedRules = preferences.getBool(_acceptedRulesKey) ?? false;
+    });
+  }
+
+  Future<void> _rememberRulesAcceptance() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_acceptedRulesKey, true);
+  }
+
+  Future<void> _openLegalPage(String page) async {
+    await launchUrl(
+      Uri.parse('$_legalBaseUrl/$page'),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  bool _ensureRulesAccepted() {
+    if (acceptedRules) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Accept the Terms and Community Guidelines to continue'),
+      ),
+    );
+    return false;
+  }
 
   @override
   void dispose() {
@@ -40,6 +82,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> submit() async {
+    if (!_ensureRulesAccepted()) return;
     final login = loginController.text.trim();
     final password = passwordController.text;
     if (serverController.text.trim().isEmpty ||
@@ -50,6 +93,8 @@ class _LoginPageState extends State<LoginPage> {
       );
       return;
     }
+
+    await _rememberRulesAcceptance();
 
     final success = await widget.controller.login(
       serverUrl: serverController.text,
@@ -93,6 +138,8 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> quickLogin(Session session) async {
+    if (!_ensureRulesAccepted()) return;
+    await _rememberRulesAcceptance();
     final success = await widget.controller.quickLogin(session);
     if (!success &&
         mounted &&
@@ -291,9 +338,39 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                         ),
                       ),
+                      const SizedBox(height: 12),
+                      CheckboxListTile(
+                        value: acceptedRules,
+                        onChanged: widget.controller.busy
+                            ? null
+                            : (value) => setState(
+                                () => acceptedRules = value ?? false,
+                              ),
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('I agree to the rules'),
+                        subtitle: Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            const Text('I accept the '),
+                            TextButton(
+                              onPressed: () => _openLegalPage('terms'),
+                              child: const Text('Terms'),
+                            ),
+                            const Text(' and '),
+                            TextButton(
+                              onPressed: () => _openLegalPage('community'),
+                              child: const Text('Community Guidelines'),
+                            ),
+                            const Text('.'),
+                          ],
+                        ),
+                      ),
                       const SizedBox(height: 20),
                       FilledButton.icon(
-                        onPressed: widget.controller.busy ? null : submit,
+                        onPressed: widget.controller.busy || !acceptedRules
+                            ? null
+                            : submit,
                         icon: widget.controller.busy
                             ? const SizedBox.square(
                                 dimension: 18,

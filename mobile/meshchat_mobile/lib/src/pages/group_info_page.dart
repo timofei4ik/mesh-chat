@@ -12,6 +12,7 @@ import '../models/chat_thread.dart';
 import '../models/profile.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/profile_avatar.dart';
+import '../widgets/report_content_dialog.dart';
 import 'chat_media_page.dart';
 import 'meeting_point_map_page.dart';
 import 'profile_page.dart';
@@ -243,6 +244,25 @@ class GroupInfoPage extends StatelessWidget {
     if (call != null && call.status != CallStatus.ended && call.collapsed) {
       controller.toggleCallCollapsed();
     }
+  }
+
+  Future<void> reportGroup(BuildContext context) async {
+    await showReportContentDialog(
+      context,
+      controller: controller,
+      subjectType: thread.isChannel ? 'channel' : 'group',
+      subjectId: thread.groupId,
+      conversationId: thread.groupId,
+      targetLogin: thread.ownerNode,
+      title: thread.isChannel ? 'Report channel' : 'Report group',
+      snapshot: {
+        'group_id': thread.groupId,
+        'name': thread.profile.displayName,
+        'about': thread.profile.about,
+        'owner_node': thread.ownerNode,
+        'is_channel': thread.isChannel,
+      },
+    );
   }
 
   Future<void> openMemberMap(BuildContext context) async {
@@ -734,6 +754,25 @@ class GroupInfoPage extends StatelessWidget {
                   );
                 }),
               const SizedBox(height: 14),
+              if (!isOwner) ...[
+                _GroupGlassSurface(
+                  radius: 22,
+                  child: ListTile(
+                    leading: const Icon(
+                      Icons.flag_outlined,
+                      color: Colors.orangeAccent,
+                    ),
+                    title: Text(
+                      thread.isChannel ? 'Report channel' : 'Report group',
+                    ),
+                    subtitle: const Text(
+                      'Send this community to the moderation team',
+                    ),
+                    onTap: () => reportGroup(context),
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
               _GroupGlassSurface(
                 radius: 22,
                 child: ListTile(

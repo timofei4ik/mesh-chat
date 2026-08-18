@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../controllers/app_controller.dart';
+import '../services/store_distribution.dart';
 
 const meshProPurchaseUrl = 'https://boosty.to/meshpro';
 
@@ -34,6 +35,17 @@ String meshProExpiryLabel(AppController controller) {
 }
 
 Future<void> openMeshProPurchase(BuildContext context) async {
+  if (!StoreDistributionConfig.allowsExternalMeshProPurchase) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'MeshPro purchases for this build are managed by '
+          '${StoreDistributionConfig.storeName}.',
+        ),
+      ),
+    );
+    return;
+  }
   final opened = await launchUrl(
     Uri.parse(meshProPurchaseUrl),
     mode: LaunchMode.externalApplication,
@@ -296,19 +308,29 @@ Future<void> showMeshProPaywall(
                       label: const Text('Refresh'),
                     ),
                     const SizedBox(width: 10),
-                    OutlinedButton.icon(
-                      onPressed: () =>
-                          showMeshProActivationDialog(sheetContext, controller),
-                      icon: const Icon(Icons.key_rounded),
-                      label: const Text('Code'),
-                    ),
-                    FilledButton.icon(
-                      onPressed: () => openMeshProPurchase(sheetContext),
-                      icon: const Icon(Icons.open_in_new_rounded),
-                      label: Text(
-                        active ? 'Extend on Boosty' : 'Buy on Boosty',
+                    if (StoreDistributionConfig.allowsActivationCodes)
+                      OutlinedButton.icon(
+                        onPressed: () => showMeshProActivationDialog(
+                          sheetContext,
+                          controller,
+                        ),
+                        icon: const Icon(Icons.key_rounded),
+                        label: const Text('Code'),
                       ),
-                    ),
+                    if (StoreDistributionConfig.allowsExternalMeshProPurchase)
+                      FilledButton.icon(
+                        onPressed: () => openMeshProPurchase(sheetContext),
+                        icon: const Icon(Icons.open_in_new_rounded),
+                        label: Text(
+                          active ? 'Extend on Boosty' : 'Buy on Boosty',
+                        ),
+                      )
+                    else if (!active)
+                      Text(
+                        'MeshPro purchases will be available through '
+                        '${StoreDistributionConfig.storeName}.',
+                        style: const TextStyle(color: Colors.white60),
+                      ),
                   ],
                 ),
               ],
