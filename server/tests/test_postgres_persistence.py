@@ -125,6 +125,7 @@ class PostgresPersistenceTests(unittest.TestCase):
                 "006_media_identity.sql",
                 "007_sync_query_indexes.sql",
                 "008_moderation.sql",
+                "009_moderation_enforcement.sql",
             ],
             [item.name for item in migrations],
         )

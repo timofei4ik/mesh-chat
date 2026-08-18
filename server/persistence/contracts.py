@@ -412,6 +412,36 @@ class ModerationRepository(Protocol):
     def actions_for_report(self, report_id: str) -> list:
         ...
 
+    def append_action(
+        self,
+        report_id: str,
+        action_id: str,
+        admin_id: str,
+        action: str,
+        note: str,
+    ) -> bool:
+        ...
+
+    def create_enforcement(self, enforcement: dict) -> None:
+        ...
+
+    def enforcements_for_report(self, report_id: str) -> list:
+        ...
+
+    def enforcement_by_id(self, enforcement_id: str):
+        ...
+
+    def revoke_enforcement(
+        self,
+        enforcement_id: str,
+        admin_id: str,
+        note: str,
+    ) -> bool:
+        ...
+
+    def account_access(self, login: str) -> dict:
+        ...
+
 
 class UnitOfWork(Protocol):
     identity: IdentityRepository

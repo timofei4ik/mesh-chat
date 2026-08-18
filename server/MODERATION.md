@@ -31,7 +31,10 @@ port 8768 directly. A ready location snippet is in
 submitted by the reporting user. Every decision is appended to
 `moderation_actions`.
 
-This first slice intentionally supports dismissal and escalation only.
-Content hiding, account restrictions and bans must call their domain services;
-they are not represented as working buttons until that enforcement layer is
-implemented.
+The console supports dismissal, escalation, server-authoritative content
+hiding, warnings, temporary account restrictions and account blocks. Content
+hiding emits the same Sync v2 tombstones as user deletion, so open clients and
+reconnecting devices converge on the same state. Account sanctions are stored
+separately from decisions and reversible sanctions can be revoked without
+rewriting the audit log. A hidden item is permanently deleted and is therefore
+not reversible.

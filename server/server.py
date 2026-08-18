@@ -42,6 +42,7 @@ try:
     from server.server_billing import ServerBillingMixin
     from server.server_boosty import ServerBoostyMixin
     from server.server_subscription import ServerSubscriptionMixin
+    from server.server_moderation import ServerModerationMixin
     from server.server_scheduler import ServerSchedulerMixin
     from server.server_wireguard import ServerWireGuardMixin
     from server.server_protocol import (
@@ -104,6 +105,7 @@ except ModuleNotFoundError:
     from server_billing import ServerBillingMixin
     from server_boosty import ServerBoostyMixin
     from server_subscription import ServerSubscriptionMixin
+    from server_moderation import ServerModerationMixin
     from server_scheduler import ServerSchedulerMixin
     from server_wireguard import ServerWireGuardMixin
     from server_protocol import (
@@ -150,7 +152,8 @@ class MeshRelayServer(
     ServerBoostyMixin,
     ServerWireGuardMixin,
     ServerSchedulerMixin,
-    ServerSubscriptionMixin
+    ServerSubscriptionMixin,
+    ServerModerationMixin
 ):
     async def issue_email_challenge_async(
         self,

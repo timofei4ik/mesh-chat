@@ -208,6 +208,19 @@ async def handle_server_hello(
                 node_id,
             )
 
+    if login:
+        moderation_allowed, moderation_reason = (
+            server.moderation_packet_allowed(login, "server_hello")
+        )
+        if not moderation_allowed and moderation_reason == "account_blocked":
+            await server.send_server_error(
+                websocket,
+                "account_blocked",
+                "This account was blocked by moderation",
+            )
+            await websocket.close(code=1008, reason="account blocked")
+            return HandshakeOutcome(node_id, terminate_handler=True)
+
     if auth_check:
         await _send_json(
             websocket,
@@ -541,6 +554,33 @@ async def handle_connection(server, websocket, config):
                     reason="connection was replaced",
                 )
                 return
+
+            connection_login = str(
+                server.service_logins.get(node_id)
+                if is_service_connection
+                else server.client_logins.get(node_id)
+                or ""
+            ).strip().lower()
+            moderation_allowed, moderation_reason = (
+                server.moderation_packet_allowed(
+                    connection_login,
+                    str(packet.get("type") or ""),
+                )
+            )
+            if not moderation_allowed:
+                await server.send_server_error(
+                    websocket,
+                    moderation_reason,
+                    (
+                        "This account was blocked by moderation"
+                        if moderation_reason == "account_blocked"
+                        else "Sending is temporarily restricted by moderation"
+                    ),
+                )
+                if moderation_reason == "account_blocked":
+                    await websocket.close(code=1008, reason="account blocked")
+                    return
+                continue
 
             if (
                 is_service_connection

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 
 class ModerationRepository:
@@ -102,6 +103,107 @@ class ModerationRepository:
             for row in rows
         ]
 
+    def append_action(self, report_id, action_id, admin_id, action, note):
+        exists = self._connection.execute(
+            "SELECT 1 FROM moderation_reports WHERE report_id=?",
+            (report_id,),
+        ).fetchone()
+        if not exists:
+            return False
+        self._connection.execute(
+            """
+            INSERT INTO moderation_actions(
+                action_id, report_id, admin_id, action, note
+            ) VALUES(?,?,?,?,?)
+            """,
+            (action_id, report_id, admin_id, action, note),
+        )
+        return True
+
+    def create_enforcement(self, enforcement):
+        self._connection.execute(
+            """
+            INSERT INTO moderation_enforcements(
+                enforcement_id, report_id, action, subject_type,
+                subject_id, target_login, status, expires_at,
+                reversible, metadata_json, created_by
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                enforcement["enforcement_id"], enforcement["report_id"],
+                enforcement["action"], enforcement["subject_type"],
+                enforcement["subject_id"], enforcement.get("target_login", ""),
+                enforcement.get("status", "active"),
+                enforcement.get("expires_at"),
+                1 if enforcement.get("reversible", True) else 0,
+                json.dumps(
+                    enforcement.get("metadata") or {}, ensure_ascii=False
+                ),
+                enforcement["created_by"],
+            ),
+        )
+
+    def enforcements_for_report(self, report_id):
+        rows = self._connection.execute(
+            """
+            SELECT enforcement_id, report_id, action, subject_type,
+                   subject_id, target_login, status, expires_at,
+                   reversible, metadata_json, created_by, created_at,
+                   revoked_at, revoked_by, revoke_note
+            FROM moderation_enforcements
+            WHERE report_id=? ORDER BY created_at ASC
+            """,
+            (report_id,),
+        ).fetchall()
+        return [self._enforcement_dict(row) for row in rows]
+
+    def enforcement_by_id(self, enforcement_id):
+        row = self._connection.execute(
+            """
+            SELECT enforcement_id, report_id, action, subject_type,
+                   subject_id, target_login, status, expires_at,
+                   reversible, metadata_json, created_by, created_at,
+                   revoked_at, revoked_by, revoke_note
+            FROM moderation_enforcements WHERE enforcement_id=?
+            """,
+            (enforcement_id,),
+        ).fetchone()
+        return self._enforcement_dict(row) if row else None
+
+    def revoke_enforcement(self, enforcement_id, admin_id, note):
+        cursor = self._connection.execute(
+            """
+            UPDATE moderation_enforcements
+            SET status='revoked', revoked_at=CURRENT_TIMESTAMP,
+                revoked_by=?, revoke_note=?
+            WHERE enforcement_id=? AND status='active' AND reversible=1
+            """,
+            (admin_id, note, enforcement_id),
+        )
+        return bool(cursor.rowcount)
+
+    def account_access(self, login):
+        normalized = str(login or "").strip().lower()
+        if not normalized:
+            return {"blocked": False, "restricted": False}
+        rows = self._connection.execute(
+            """
+            SELECT action, expires_at
+            FROM moderation_enforcements
+            WHERE target_login=? AND status='active'
+              AND action IN ('restrict', 'block')
+              AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
+            ORDER BY CASE action WHEN 'block' THEN 0 ELSE 1 END,
+                     created_at DESC
+            """,
+            (normalized,),
+        ).fetchall()
+        actions = {row[0] for row in rows}
+        return {
+            "blocked": "block" in actions,
+            "restricted": "restrict" in actions,
+        }
+
     @staticmethod
     def _report_dict(row):
         try:
@@ -119,4 +221,33 @@ class ModerationRepository:
             "ai_confidence": row[14], "ai_recommendation": row[15],
             "created_at": row[16], "updated_at": row[17],
             "resolved_at": row[18],
+        }
+
+    @staticmethod
+    def _enforcement_dict(row):
+        try:
+            metadata = json.loads(row[9] or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        status = row[6]
+        if status == "active" and row[7]:
+            try:
+                expires_at = datetime.fromisoformat(
+                    str(row[7]).replace("Z", "+00:00")
+                )
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at <= datetime.now(timezone.utc):
+                    status = "expired"
+            except ValueError:
+                pass
+        return {
+            "enforcement_id": row[0], "report_id": row[1],
+            "action": row[2], "subject_type": row[3],
+            "subject_id": row[4], "target_login": row[5],
+            "status": status, "expires_at": row[7],
+            "reversible": bool(row[8]), "metadata": metadata,
+            "created_by": row[10], "created_at": row[11],
+            "revoked_at": row[12], "revoked_by": row[13],
+            "revoke_note": row[14],
         }

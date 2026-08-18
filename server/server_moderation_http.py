@@ -21,6 +21,7 @@ try:
         MODERATION_HTTP_PORT,
         MODERATION_SESSION_SECRET,
     )
+    from server.server_moderation import ModerationEnforcementError
 except ModuleNotFoundError:
     from config import (
         MODERATION_ADMIN_ID,
@@ -29,12 +30,15 @@ except ModuleNotFoundError:
         MODERATION_HTTP_PORT,
         MODERATION_SESSION_SECRET,
     )
+    from server_moderation import ModerationEnforcementError
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static" / "moderation"
 COOKIE_NAME = "mesh_moderation_session"
 SESSION_SECONDS = 8 * 60 * 60
-VALID_ACTIONS = {"keep", "needs_review"}
+VALID_ACTIONS = {
+    "keep", "needs_review", "hide", "warn", "restrict", "block"
+}
 
 
 class ModerationHttpServer:
@@ -65,6 +69,10 @@ class ModerationHttpServer:
         app.router.add_post(
             "/admin/moderation/api/reports/{report_id}/decision",
             self._decision,
+        )
+        app.router.add_post(
+            "/admin/moderation/api/enforcements/{enforcement_id}/undo",
+            self._undo_enforcement,
         )
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
@@ -135,6 +143,11 @@ class ModerationHttpServer:
                 report["actions"] = unit_of_work.moderation.actions_for_report(
                     report["report_id"]
                 )
+                report["enforcements"] = (
+                    unit_of_work.moderation.enforcements_for_report(
+                        report["report_id"]
+                    )
+                )
         return self._json({"ok": True, "reports": reports})
 
     async def _decision(self, request):
@@ -145,13 +158,56 @@ class ModerationHttpServer:
         action = str(payload.get("action") or "").strip().lower()
         if action not in VALID_ACTIONS:
             return self._json({"ok": False, "error": "invalid_action"}, 400)
+        report_id = request.match_info["report_id"]
+        with self.relay.unit_of_work_factory() as unit_of_work:
+            report = unit_of_work.moderation.report_by_id(report_id)
+        if report is None:
+            return self._json({"ok": False, "error": "report_not_found"}, 404)
+        enforcement_id = ""
+        if action in {"hide", "warn", "restrict", "block"}:
+            try:
+                enforcement_id = await self.relay.apply_moderation_enforcement(
+                    report,
+                    action,
+                    session[0],
+                    str(payload.get("note") or "")[:2000],
+                    payload.get("duration_hours", 24),
+                )
+            except ModerationEnforcementError as error:
+                return self._json(
+                    {"ok": False, "error": str(error)}, status=409
+                )
         with self.relay.unit_of_work_factory(write=True) as unit_of_work:
             changed = unit_of_work.moderation.record_decision(
-                request.match_info["report_id"], str(uuid.uuid4()), session[0],
+                report_id, str(uuid.uuid4()), session[0],
                 action, str(payload.get("note") or "")[:2000],
             )
         if not changed:
             return self._json({"ok": False, "error": "report_not_found"}, 404)
+        return self._json({"ok": True, "enforcement_id": enforcement_id})
+
+    async def _undo_enforcement(self, request):
+        session = self._authenticated(request, csrf=True)
+        if session is None:
+            return self._json({"ok": False, "error": "unauthorized"}, 401)
+        payload = await request.json()
+        note = str(payload.get("note") or "")[:2000]
+        try:
+            enforcement = await self.relay.revoke_moderation_enforcement(
+                request.match_info["enforcement_id"],
+                session[0],
+                note,
+            )
+        except ModerationEnforcementError as error:
+            return self._json({"ok": False, "error": str(error)}, 409)
+        with self.relay.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.moderation.append_action(
+                enforcement["report_id"],
+                str(uuid.uuid4()),
+                session[0],
+                f"undo:{enforcement['action']}",
+                note,
+            )
         return self._json({"ok": True})
 
     def _authenticated(self, request, csrf=False):
