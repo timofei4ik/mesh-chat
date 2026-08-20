@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'business_settings.dart';
+
 class AppSettings {
   const AppSettings({
     this.themeMode = ThemeMode.dark,
@@ -29,6 +31,7 @@ class AppSettings {
     ],
     this.meshProHdAudio = true,
     this.meshProEnhancedNoiseSuppression = true,
+    this.businessSettings = const BusinessSettings(),
     this.blockedNodeIds = const [],
     this.deletedGroupIds = const [],
     this.deletedMessageIds = const [],
@@ -56,6 +59,7 @@ class AppSettings {
   final List<String> quickReactions;
   final bool meshProHdAudio;
   final bool meshProEnhancedNoiseSuppression;
+  final BusinessSettings businessSettings;
   final List<String> blockedNodeIds;
   final List<String> deletedGroupIds;
   final List<String> deletedMessageIds;
@@ -83,6 +87,7 @@ class AppSettings {
     List<String>? quickReactions,
     bool? meshProHdAudio,
     bool? meshProEnhancedNoiseSuppression,
+    BusinessSettings? businessSettings,
     List<String>? blockedNodeIds,
     List<String>? deletedGroupIds,
     List<String>? deletedMessageIds,
@@ -115,6 +120,7 @@ class AppSettings {
       meshProEnhancedNoiseSuppression:
           meshProEnhancedNoiseSuppression ??
           this.meshProEnhancedNoiseSuppression,
+      businessSettings: businessSettings ?? this.businessSettings,
       blockedNodeIds: blockedNodeIds ?? this.blockedNodeIds,
       deletedGroupIds: deletedGroupIds ?? this.deletedGroupIds,
       deletedMessageIds: deletedMessageIds ?? this.deletedMessageIds,

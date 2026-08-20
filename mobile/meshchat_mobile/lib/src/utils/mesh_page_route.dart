@@ -13,6 +13,7 @@ Route<T> meshPageRoute<T>({
   required WidgetBuilder builder,
   RouteSettings? settings,
   bool preserveLiquidGlass = false,
+  bool fullWidthSlide = false,
 }) {
   final mobile =
       !kIsWeb &&
@@ -20,7 +21,9 @@ Route<T> meshPageRoute<T>({
           defaultTargetPlatform == TargetPlatform.android);
   if (mobile) {
     return _MeshCupertinoPageRoute<T>(
-      builder: (context) => _MeshRoutePerformanceGate(child: builder(context)),
+      builder: (context) => fullWidthSlide
+          ? RepaintBoundary(child: builder(context))
+          : _MeshRoutePerformanceGate(child: builder(context)),
       settings: settings,
       allowSnapshotting: true,
       preserveLiquidGlass: preserveLiquidGlass,
@@ -29,26 +32,37 @@ Route<T> meshPageRoute<T>({
 
   return PageRouteBuilder<T>(
     settings: settings,
-    transitionDuration: const Duration(milliseconds: 210),
-    reverseTransitionDuration: const Duration(milliseconds: 180),
-    pageBuilder: (context, animation, secondaryAnimation) =>
-        _MeshRoutePerformanceGate(child: builder(context)),
+    transitionDuration: const Duration(milliseconds: 285),
+    reverseTransitionDuration: const Duration(milliseconds: 255),
+    pageBuilder: (context, animation, secondaryAnimation) => fullWidthSlide
+        ? RepaintBoundary(child: builder(context))
+        : _MeshRoutePerformanceGate(child: builder(context)),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
       final offset =
           Tween<Offset>(
-            begin: const Offset(0.025, 0),
+            begin: Offset(fullWidthSlide ? 1 : 0.025, 0),
             end: Offset.zero,
           ).animate(
             CurvedAnimation(
               parent: animation,
-              curve: Curves.easeOutCubic,
-              reverseCurve: Curves.easeInCubic,
+              curve: Curves.easeInOutCubic,
+              reverseCurve: Curves.easeInOutCubic,
             ),
           );
       return SlideTransition(position: offset, child: child);
     },
   );
 }
+
+Route<T> meshSettingsPageRoute<T>({
+  required WidgetBuilder builder,
+  RouteSettings? settings,
+}) => meshPageRoute<T>(
+  builder: builder,
+  settings: settings,
+  preserveLiquidGlass: true,
+  fullWidthSlide: true,
+);
 
 class _MeshRoutePerformanceGate extends StatelessWidget {
   const _MeshRoutePerformanceGate({required this.child});

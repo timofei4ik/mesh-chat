@@ -4,10 +4,12 @@ import 'package:flutter/services.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/app_settings.dart';
+import '../models/business_settings.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_socket.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/meshpro_gate.dart';
+import '../widgets/mesh_settings_surface.dart';
 import '../widgets/profile_avatar.dart';
 import 'bluetooth_nearby_page.dart';
 import 'legal_safety_page.dart';
@@ -18,71 +20,65 @@ class SettingsPage extends StatelessWidget {
 
   final AppController controller;
 
+  Route<T> settingsRoute<T>(WidgetBuilder builder) {
+    return meshSettingsPageRoute<T>(
+      builder: (context) => MeshSettingsSurface(child: builder(context)),
+    );
+  }
+
   void openStorage(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => StorageCachePage(controller: controller),
-      ),
+      settingsRoute<void>((_) => StorageCachePage(controller: controller)),
     );
   }
 
   void openAbout(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => AboutDiagnosticsPage(controller: controller),
-      ),
+      settingsRoute<void>((_) => AboutDiagnosticsPage(controller: controller)),
     );
   }
 
   void openConnection(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => ConnectionStatusPage(controller: controller),
-      ),
+      settingsRoute<void>((_) => ConnectionStatusPage(controller: controller)),
     );
   }
 
   void openActiveDevices(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => ActiveDevicesPage(controller: controller),
-      ),
+      settingsRoute<void>((_) => ActiveDevicesPage(controller: controller)),
     );
   }
 
   void openBlockedUsers(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => BlockedUsersPage(controller: controller),
-      ),
+      settingsRoute<void>((_) => BlockedUsersPage(controller: controller)),
     );
   }
 
   void openSecurity(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(builder: (_) => SecurityPage(controller: controller)),
+      settingsRoute<void>((_) => SecurityPage(controller: controller)),
     );
   }
 
   void openLegalSafety(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(builder: (_) => const LegalSafetyPage()),
+      settingsRoute<void>((_) => const LegalSafetyPage()),
     );
   }
 
   void openBluetoothNearby(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => BluetoothNearbyPage(controller: controller),
-      ),
+      settingsRoute<void>((_) => BluetoothNearbyPage(controller: controller)),
     );
   }
 
@@ -98,9 +94,7 @@ class SettingsPage extends StatelessWidget {
     if (!allowed || !context.mounted) return;
     await Navigator.push<bool>(
       context,
-      meshPageRoute<bool>(
-        builder: (_) => MeshStudioPage(controller: controller),
-      ),
+      settingsRoute<bool>((_) => MeshStudioPage(controller: controller)),
     );
   }
 
@@ -116,9 +110,25 @@ class SettingsPage extends StatelessWidget {
     if (!allowed || !context.mounted) return;
     await Navigator.push<void>(
       context,
-      meshPageRoute<void>(
-        builder: (_) => MeshProPreferencesPage(controller: controller),
+      settingsRoute<void>(
+        (_) => MeshProPreferencesPage(controller: controller),
       ),
+    );
+  }
+
+  Future<void> openBusinessTools(BuildContext context) async {
+    final allowed = await requireMeshPro(
+      context,
+      controller,
+      featureId: 'business_tools',
+      title: 'MeshChat Business',
+      description:
+          'Quick replies, greeting messages and working-hours automation.',
+    );
+    if (!allowed || !context.mounted) return;
+    await Navigator.push<void>(
+      context,
+      settingsRoute<void>((_) => BusinessSettingsPage(controller: controller)),
     );
   }
 
@@ -153,6 +163,21 @@ class SettingsPage extends StatelessWidget {
                 leading: const CircleAvatar(child: Icon(Icons.person_outline)),
                 title: Text(session?.login ?? 'No account'),
                 subtitle: Text(session?.serverUrl ?? ''),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(
+                  Icons.business_center_outlined,
+                  color: Color(0xFF67E8C4),
+                ),
+                title: const Text('MeshChat Business'),
+                subtitle: const Text(
+                  'Quick replies, greetings and working hours',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => openBusinessTools(context),
               ),
             ),
             const SizedBox(height: 12),
@@ -230,8 +255,6 @@ class SettingsPage extends StatelessWidget {
             const SizedBox(height: 12),
             _NotificationSettings(controller: controller),
             const SizedBox(height: 12),
-            _ThemeSettings(controller: controller),
-            const SizedBox(height: 12),
             _PrivacySettings(controller: controller),
             const SizedBox(height: 12),
             _MediaSettings(controller: controller),
@@ -283,6 +306,383 @@ class SettingsPage extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class BusinessSettingsPage extends StatefulWidget {
+  const BusinessSettingsPage({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<BusinessSettingsPage> createState() => _BusinessSettingsPageState();
+}
+
+class _BusinessSettingsPageState extends State<BusinessSettingsPage> {
+  late BusinessSettings settings;
+  bool saving = false;
+  String error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    settings = widget.controller.appSettings.businessSettings;
+  }
+
+  String formatMinutes(int value) {
+    final hours = (value ~/ 60).toString().padLeft(2, '0');
+    final minutes = (value % 60).toString().padLeft(2, '0');
+    return '$hours:$minutes';
+  }
+
+  Future<int?> pickMinutes(int current) async {
+    final value = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: current ~/ 60, minute: current % 60),
+    );
+    return value == null ? null : value.hour * 60 + value.minute;
+  }
+
+  Future<void> editMessage({required bool greeting}) async {
+    final controller = TextEditingController(
+      text: greeting ? settings.greetingText : settings.awayText,
+    );
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(greeting ? 'Greeting message' : 'Away message'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 500,
+          minLines: 3,
+          maxLines: 7,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Use'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || value == null || value.isEmpty) return;
+    setState(() {
+      settings = greeting
+          ? settings.copyWith(greetingText: value)
+          : settings.copyWith(awayText: value);
+    });
+  }
+
+  Future<void> editQuickReply(int? index) async {
+    final existing = index == null ? null : settings.quickReplies[index];
+    final shortcut = TextEditingController(text: existing?.shortcut ?? '');
+    final message = TextEditingController(text: existing?.text ?? '');
+    final value = await showDialog<BusinessQuickReply>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(index == null ? 'New quick reply' : 'Edit quick reply'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: shortcut,
+              autofocus: true,
+              maxLength: 32,
+              decoration: const InputDecoration(
+                labelText: 'Shortcut',
+                prefixText: '/',
+                hintText: 'hello',
+              ),
+            ),
+            TextField(
+              controller: message,
+              maxLength: 1000,
+              minLines: 2,
+              maxLines: 6,
+              decoration: const InputDecoration(labelText: 'Message'),
+            ),
+          ],
+        ),
+        actions: [
+          if (index != null)
+            TextButton(
+              onPressed: () => Navigator.pop(
+                context,
+                const BusinessQuickReply(shortcut: '', text: ''),
+              ),
+              child: const Text('Remove'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final normalizedShortcut = shortcut.text.trim().replaceFirst(
+                RegExp(r'^/+'),
+                '',
+              );
+              final normalizedText = message.text.trim();
+              if (normalizedShortcut.isEmpty || normalizedText.isEmpty) return;
+              Navigator.pop(
+                context,
+                BusinessQuickReply(
+                  shortcut: normalizedShortcut,
+                  text: normalizedText,
+                ),
+              );
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    shortcut.dispose();
+    message.dispose();
+    if (!mounted || value == null) return;
+    final replies = [...settings.quickReplies];
+    if (index != null) replies.removeAt(index);
+    if (value.shortcut.isNotEmpty && value.text.isNotEmpty) {
+      replies.insert(index?.clamp(0, replies.length) ?? replies.length, value);
+    }
+    setState(() => settings = settings.copyWith(quickReplies: replies));
+  }
+
+  Future<void> save() async {
+    if (saving) return;
+    setState(() {
+      saving = true;
+      error = '';
+    });
+    final result = await widget.controller.updateMeshProPreferences(
+      businessSettings: settings,
+    );
+    if (!mounted) return;
+    setState(() {
+      saving = false;
+      error = result ?? '';
+    });
+    if (result == null) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('MeshChat Business'),
+        actions: [
+          IconButton(
+            tooltip: 'Save',
+            onPressed: saving ? null : save,
+            icon: saving
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_rounded),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          SwitchListTile(
+            title: const Text('Business mode'),
+            subtitle: const Text(
+              'Enable quick replies and encrypted client-side automation',
+            ),
+            secondary: const Icon(Icons.business_center_outlined),
+            value: settings.enabled,
+            onChanged: (value) =>
+                setState(() => settings = settings.copyWith(enabled: value)),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('Greeting'),
+                  subtitle: Text(settings.greetingText),
+                  value: settings.greetingEnabled,
+                  onChanged: (value) => setState(
+                    () => settings = settings.copyWith(greetingEnabled: value),
+                  ),
+                  secondary: IconButton(
+                    tooltip: 'Edit greeting',
+                    onPressed: () => editMessage(greeting: true),
+                    icon: const Icon(Icons.edit_outlined),
+                  ),
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  title: const Text('Away message'),
+                  subtitle: Text(settings.awayText),
+                  value: settings.awayEnabled,
+                  onChanged: (value) => setState(
+                    () => settings = settings.copyWith(awayEnabled: value),
+                  ),
+                  secondary: IconButton(
+                    tooltip: 'Edit away message',
+                    onPressed: () => editMessage(greeting: false),
+                    icon: const Icon(Icons.edit_outlined),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Working hours',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (var day = 1; day <= 7; day++)
+                        FilterChip(
+                          label: Text(dayLabels[day - 1]),
+                          selected: settings.workdays.contains(day),
+                          onSelected: (selected) {
+                            final days = [...settings.workdays];
+                            selected ? days.add(day) : days.remove(day);
+                            days.sort();
+                            setState(
+                              () =>
+                                  settings = settings.copyWith(workdays: days),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            final value = await pickMinutes(
+                              settings.workdayStartMinutes,
+                            );
+                            if (value != null && mounted) {
+                              setState(
+                                () => settings = settings.copyWith(
+                                  workdayStartMinutes: value,
+                                ),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.login_rounded),
+                          label: Text(
+                            'From ${formatMinutes(settings.workdayStartMinutes)}',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            final value = await pickMinutes(
+                              settings.workdayEndMinutes,
+                            );
+                            if (value != null && mounted) {
+                              setState(
+                                () => settings = settings.copyWith(
+                                  workdayEndMinutes: value,
+                                ),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.logout_rounded),
+                          label: Text(
+                            'Until ${formatMinutes(settings.workdayEndMinutes)}',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Quick replies',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Add quick reply',
+                        onPressed: settings.quickReplies.length >= 20
+                            ? null
+                            : () => editQuickReply(null),
+                        icon: const Icon(Icons.add_rounded),
+                      ),
+                    ],
+                  ),
+                  if (settings.quickReplies.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('Add templates such as /hello or /price.'),
+                    ),
+                  for (
+                    var index = 0;
+                    index < settings.quickReplies.length;
+                    index++
+                  )
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.quickreply_outlined),
+                      title: Text('/${settings.quickReplies[index].shortcut}'),
+                      subtitle: Text(
+                        settings.quickReplies[index].text,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(Icons.edit_outlined),
+                      onTap: () => editQuickReply(index),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(
+                error,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -1210,90 +1610,6 @@ class _NotificationSettings extends StatelessWidget {
   }
 }
 
-class _ThemeSettings extends StatelessWidget {
-  const _ThemeSettings({required this.controller});
-
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final settings = controller.appSettings;
-    const accents = [
-      Color(0xFF42A5F5),
-      Color(0xFF2EAD68),
-      Color(0xFFE85D75),
-      Color(0xFFFFB020),
-      Color(0xFF9B6DFF),
-    ];
-    return Card(
-      child: Column(
-        children: [
-          const ListTile(
-            leading: Icon(Icons.palette_outlined),
-            title: Text('Theme'),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<ThemeMode>(
-                segments: const [
-                  ButtonSegment(
-                    value: ThemeMode.system,
-                    label: Text('System'),
-                    icon: Icon(Icons.brightness_auto_outlined),
-                  ),
-                  ButtonSegment(
-                    value: ThemeMode.dark,
-                    label: Text('Dark'),
-                    icon: Icon(Icons.dark_mode_outlined),
-                  ),
-                  ButtonSegment(
-                    value: ThemeMode.light,
-                    label: Text('Light'),
-                    icon: Icon(Icons.light_mode_outlined),
-                  ),
-                ],
-                selected: {settings.themeMode},
-                onSelectionChanged: (value) => controller.updateAppSettings(
-                  settings.copyWith(themeMode: value.first),
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-            child: Row(
-              children: [
-                const Text('Accent'),
-                const Spacer(),
-                for (final color in accents)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(16),
-                      onTap: () => controller.updateAppSettings(
-                        settings.copyWith(accentColor: color),
-                      ),
-                      child: CircleAvatar(
-                        radius: 14,
-                        backgroundColor: color,
-                        child:
-                            settings.accentColor.toARGB32() == color.toARGB32()
-                            ? const Icon(Icons.check, size: 16)
-                            : null,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _MediaSettings extends StatelessWidget {
   const _MediaSettings({required this.controller});
 
@@ -1547,11 +1863,7 @@ class SecurityPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final session = controller.session;
     return Scaffold(
-      backgroundColor: const Color(0xFF07111E),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: const Text('Security'),
-      ),
+      appBar: AppBar(title: const Text('Security')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -1616,8 +1928,10 @@ class SecurityPage extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.push(
                 context,
-                meshPageRoute<void>(
-                  builder: (_) => ActiveDevicesPage(controller: controller),
+                meshSettingsPageRoute<void>(
+                  builder: (_) => MeshSettingsSurface(
+                    child: ActiveDevicesPage(controller: controller),
+                  ),
                 ),
               ),
             ),
@@ -1635,9 +1949,10 @@ class SecurityPage extends StatelessWidget {
                   ? null
                   : () => Navigator.push(
                       context,
-                      meshPageRoute<void>(
-                        builder: (_) =>
-                            ChangePasswordPage(controller: controller),
+                      meshSettingsPageRoute<void>(
+                        builder: (_) => MeshSettingsSurface(
+                          child: ChangePasswordPage(controller: controller),
+                        ),
                       ),
                     ),
             ),
@@ -1655,8 +1970,10 @@ class SecurityPage extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.push(
                 context,
-                meshPageRoute<void>(
-                  builder: (_) => BlockedUsersPage(controller: controller),
+                meshSettingsPageRoute<void>(
+                  builder: (_) => MeshSettingsSurface(
+                    child: BlockedUsersPage(controller: controller),
+                  ),
                 ),
               ),
             ),
@@ -1753,11 +2070,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF07111E),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: const Text('Change password'),
-      ),
+      appBar: AppBar(title: const Text('Change password')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

@@ -178,6 +178,45 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
             ConnectionContext(FakeSocket(), "caller"),
         )
         self.assertTrue(handled)
+
+    async def test_live_caption_is_ephemeral_and_not_pushed(self):
+        server = FakeCallServer()
+        target = FakeSocket()
+        server.clients["callee"] = target
+
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_caption",
+                "destination_node": "callee",
+                "call_id": "call-1",
+                "caption_id": "caption-1",
+                "text": "Hello from the call",
+                "final": False,
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual("call_caption", target.sent[0]["type"])
+        self.assertEqual("caller", target.sent[0]["source_node"])
+        self.assertEqual([], server.pushes)
+
+    async def test_oversized_live_caption_is_rejected(self):
+        server = FakeCallServer()
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_caption",
+                "destination_node": "callee",
+                "call_id": "call-1",
+                "caption_id": "caption-1",
+                "text": "x" * 801,
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
         self.assertEqual("invalid_call_signal", server.errors[0][0])
 
     async def test_oversized_call_signal_is_rejected(self):

@@ -39,6 +39,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MeshChat uses the microphone for voice messages and audio or video calls that you start or answer.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>MeshChat uses speech recognition only when you enable live captions during a call.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>MeshChat uses the camera when you take a photo or video, join a video call, or scan a pairing QR code.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

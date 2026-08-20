@@ -228,6 +228,16 @@ class SubscriptionTests(unittest.TestCase):
             ["heart", "ok", "heart"],
             True,
             True,
+            {
+                "enabled": True,
+                "away_enabled": True,
+                "away_text": "Back tomorrow",
+                "workdays": [1, 2, 2, 9],
+                "quick_replies": [
+                    {"shortcut": "/hello", "text": "Hello there"},
+                    {"shortcut": "hello", "text": "Duplicate"},
+                ],
+            },
         )
         self.assertTrue(ok)
         self.assertEqual("ok", reason)
@@ -235,6 +245,29 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual(["heart", "ok"], preferences["quick_reactions"])
         self.assertTrue(preferences["hd_audio"])
         self.assertTrue(preferences["enhanced_noise_suppression"])
+        self.assertTrue(preferences["business"]["enabled"])
+        self.assertEqual("Back tomorrow", preferences["business"]["away_text"])
+        self.assertEqual([1, 2], preferences["business"]["workdays"])
+        self.assertEqual(
+            [{"shortcut": "hello", "text": "Hello there"}],
+            preferences["business"]["quick_replies"],
+        )
+
+        # Older clients do not send the business field. Their preference update
+        # must not reset settings saved by a newer device.
+        ok, reason = self.relay.save_meshpro_preferences(
+            "subscriber",
+            ["heart"],
+            False,
+            False,
+        )
+        self.assertTrue(ok)
+        self.assertEqual("ok", reason)
+        self.assertTrue(
+            self.relay.get_meshpro_preferences("subscriber")["business"][
+                "enabled"
+            ]
+        )
 
         ok, reason = self.relay.update_account_device(
             "subscriber",

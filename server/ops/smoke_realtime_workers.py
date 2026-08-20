@@ -67,7 +67,7 @@ async def _wait_for_packet(websocket, packet_type, timeout=8):
     return await asyncio.wait_for(read(), timeout)
 
 
-async def run(uri, connection_count):
+async def run(uri, connection_count, direct_pubsub=False):
     if not REDIS_URL:
         raise RuntimeError("MESH_REDIS_URL is not configured")
     suffix = secrets.token_hex(5)
@@ -112,6 +112,64 @@ async def run(uri, connection_count):
         worker_ids = sorted(worker_nodes)
         source_node = worker_nodes[worker_ids[0]][0]
         destination_node = worker_nodes[worker_ids[1]][0]
+        if direct_pubsub:
+            destination_presence = await redis.hgetall(
+                f"{REDIS_PREFIX}:presence:client:{destination_node}"
+            )
+            direct_call_id = f"smoke-direct-{suffix}"
+            subscribers = await redis.publish(
+                f"{REDIS_PREFIX}:worker:{destination_presence['worker_id']}",
+                json.dumps(
+                    {
+                        "action": "deliver",
+                        "node_id": destination_node,
+                        "kind": "client",
+                        "session_id": destination_presence["session_id"],
+                        "required_capability": "",
+                        "packet": {
+                            "type": "call_offer",
+                            "source_node": source_node,
+                            "destination_node": destination_node,
+                            "call_id": direct_call_id,
+                            "sdp": "realtime-direct-smoke",
+                        },
+                    }
+                ),
+            )
+            if not subscribers:
+                raise RuntimeError("destination worker has no pub/sub subscriber")
+            direct_delivered = await _wait_for_packet(
+                sockets[destination_node],
+                "call_offer",
+            )
+            if direct_delivered.get("call_id") != direct_call_id:
+                raise RuntimeError("direct pub/sub packet identity changed")
+
+        message_id = f"smoke-message-{suffix}"
+        await sockets[source_node].send(
+            json.dumps(
+                {
+                    "type": "chat_message",
+                    "packet_id": message_id,
+                    "operation_id": f"chat_message:{message_id}",
+                    "outbox_id": (
+                        f"chat_message:{message_id}|{destination_node}|"
+                    ),
+                    "protocol_version": PROTOCOL_VERSION,
+                    "source_node": source_node,
+                    "destination_node": destination_node,
+                    "sender": login,
+                    "message": "realtime-smoke-message",
+                    "ttl": 5,
+                }
+            )
+        )
+        delivered_message = await _wait_for_packet(
+            sockets[destination_node],
+            "chat_message",
+        )
+        if delivered_message.get("packet_id") != message_id:
+            raise RuntimeError("cross-worker message identity changed")
         call_id = f"smoke-call-{suffix}"
         await sockets[source_node].send(
             json.dumps(
@@ -158,7 +216,7 @@ async def run(uri, connection_count):
             },
             "source_worker": worker_ids[0],
             "destination_worker": worker_ids[1],
-            "packets": ["call_offer", "call_end"],
+            "packets": ["chat_message", "call_offer", "call_end"],
         }
         print(json.dumps(result, sort_keys=True))
     finally:
@@ -174,8 +232,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--uri", default="wss://meshchat-losa.ru/ws")
     parser.add_argument("--connections", type=int, default=12)
+    parser.add_argument("--direct-pubsub", action="store_true")
     args = parser.parse_args()
-    asyncio.run(run(args.uri, max(4, args.connections)))
+    asyncio.run(
+        run(
+            args.uri,
+            max(4, args.connections),
+            direct_pubsub=args.direct_pubsub,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -350,6 +350,15 @@ Future<bool> requireMeshPro(
   required String description,
 }) async {
   if (meshProFeatureEnabled(controller, featureId)) return true;
+  // Entitlements can change server-side without a client update. Refresh once
+  // before showing the paywall so newly rolled-out features open immediately.
+  try {
+    await controller.refreshMeshProSubscription();
+  } catch (_) {
+    // The paywall remains the useful fallback while offline.
+  }
+  if (!context.mounted) return false;
+  if (meshProFeatureEnabled(controller, featureId)) return true;
   await showMeshProPaywall(
     context,
     controller,
@@ -467,6 +476,16 @@ const _meshProBenefitSections = <Widget>[
       'Voice transcription and chat summaries',
       'OCR for images and documents',
       'Smart reply suggestions from chat context',
+      'Semantic memory for each conversation',
+    ],
+  ),
+  _PaywallFeatureSection(
+    icon: Icons.business_center_rounded,
+    title: 'MeshChat Business',
+    features: [
+      'Reusable quick replies in every chat',
+      'Greeting and away messages',
+      'Configurable working days and hours',
     ],
   ),
   _PaywallFeatureSection(

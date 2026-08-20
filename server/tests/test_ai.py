@@ -7,6 +7,23 @@ from pathlib import Path
 from server import server_ai, server_storage, server_subscription, server_sync
 
 
+class TranscriptionHallucinationTests(unittest.TestCase):
+    def test_filters_common_silence_hallucinations(self):
+        for phrase in (
+            "Продолжение следует...",
+            "ДО НОВЫХ ВСТРЕЧ!",
+            "Thank you.",
+            "Добавил субтитры DimaTorzok",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(server_ai._is_transcription_hallucination(phrase))
+
+    def test_keeps_normal_speech(self):
+        self.assertFalse(
+            server_ai._is_transcription_hallucination("Привет, как дела?")
+        )
+
+
 class AiRelay(
     server_storage.ServerStorageMixin,
     server_subscription.ServerSubscriptionMixin,
@@ -60,6 +77,7 @@ class AiRelay(
         audio_bytes,
         filename,
         content_type,
+        language_hint="",
     ):
         if self.fail_transcription:
             raise RuntimeError("provider unavailable")
@@ -159,6 +177,53 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             "viking+emojify: we leave at dawn",
             result["text"],
+        )
+
+    def test_style_examples_match_the_source_language(self):
+        russian = server_ai._rewrite_style_example("viking", "russian")
+        english = server_ai._rewrite_style_example("viking", "english")
+
+        self.assertIn("Здравия", russian)
+        self.assertIn("Hail", english)
+
+    def test_greeting_question_may_make_implicit_addressee_explicit(self):
+        self.assertTrue(
+            server_ai._rewrite_structure_is_preserved(
+                "Привет, как дела?",
+                "Здравия тебе! Крепок ли дух, как идут дела?",
+            )
+        )
+        self.assertFalse(
+            server_ai._rewrite_structure_is_preserved(
+                "Привет, как дела?",
+                "Я отлично себя чувствую!",
+            )
+        )
+
+    async def test_lifetime_ai_does_not_consume_a_counter(self):
+        self.relay.grant_lifetime_subscription("subscriber")
+
+        first = await self.relay.rewrite_text_with_ai(
+            "subscriber",
+            "hello there",
+            "friendly",
+        )
+        second = await self.relay.rewrite_text_with_ai(
+            "subscriber",
+            "hello again",
+            "friendly",
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertGreater(first["remaining"], 2_000_000_000)
+        self.assertEqual(
+            0,
+            self.relay.meshpro_usage_count(
+                "subscriber",
+                "ai_text_rewrite",
+                datetime.now(timezone.utc).strftime("%Y-%m"),
+            ),
         )
 
     def test_rewrite_guard_rejects_answers_and_mixed_alphabet_noise(self):
@@ -346,6 +411,7 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
             "voice_75s.m4a",
             encoded,
             75,
+            "en",
         )
         self.assertTrue(result["ok"])
         self.assertEqual("Hello from the voice message", result["text"])
@@ -552,6 +618,35 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
             '{"replies":["Yes", "Yes", "Later", "Tell me more"]}'
         )
         self.assertEqual(["Yes", "Later", "Tell me more"], parsed)
+
+    def test_chat_completion_output_supports_provider_shapes(self):
+        self.assertEqual(
+            "plain response",
+            self.relay._extract_ai_output({"output_text": "plain response"}),
+        )
+        self.assertEqual(
+            "joined response",
+            self.relay._extract_ai_output(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": [
+                                    {"type": "text", "text": "joined "},
+                                    {"type": "text", "text": "response"},
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ),
+        )
+        self.assertEqual(
+            "",
+            self.relay._extract_ai_output(
+                {"choices": [{"message": {"reasoning": "internal only"}}]}
+            ),
+        )
 
     async def test_usage_reservation_supports_multiple_units_atomically(self):
         period = datetime.now(timezone.utc).strftime("%Y-%m")

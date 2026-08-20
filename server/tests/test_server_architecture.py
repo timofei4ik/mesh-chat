@@ -159,7 +159,7 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
         commands = server_commands.build_command_registry()
         controls = server_commands.build_control_command_registry()
 
-        self.assertEqual(41, len(commands.packet_types))
+        self.assertEqual(42, len(commands.packet_types))
         self.assertIn("meshpro_activation_request", commands.packet_types)
         self.assertEqual(9, len(controls.packet_types))
         self.assertIn("mutation_status_request", controls.packet_types)

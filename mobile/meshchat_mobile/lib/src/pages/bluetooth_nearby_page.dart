@@ -9,6 +9,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../controllers/app_controller.dart';
 import '../services/ble_chat_service.dart';
+import '../utils/mesh_page_route.dart';
+import '../widgets/mesh_settings_surface.dart';
 import 'chat_page.dart';
 
 class BluetoothNearbyPage extends StatefulWidget {
@@ -184,7 +186,10 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
   Future<void> scanPairQr() async {
     final raw = await Navigator.push<String>(
       context,
-      MaterialPageRoute(builder: (_) => const _BluetoothQrScannerPage()),
+      meshSettingsPageRoute<String>(
+        builder: (_) =>
+            const MeshSettingsSurface(child: _BluetoothQrScannerPage()),
+      ),
     );
     if (raw == null || raw.trim().isEmpty) return;
     try {

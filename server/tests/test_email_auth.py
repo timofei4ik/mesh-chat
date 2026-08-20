@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from server import server as server_module
 from server import server_auth, server_email_auth, server_storage
@@ -202,6 +203,56 @@ class EmailAuthTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertEqual("email_2fa_update_required", response["code"])
+
+    def test_resend_https_fallback_delivers_when_smtp_is_blocked(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        requests = []
+
+        def capture_request(request, timeout):
+            requests.append((request, timeout))
+            return FakeResponse()
+
+        with (
+            patch.object(server_email_auth, "SMTP_HOST", "smtp.resend.com"),
+            patch.object(server_email_auth, "SMTP_FROM_EMAIL", "codes@example.com"),
+            patch.object(server_email_auth, "SMTP_PASSWORD", "re_test_key"),
+            patch.object(
+                server_email_auth,
+                "SMTP_USERNAME",
+                "resend",
+            ),
+            patch.object(
+                server_email_auth,
+                "RESEND_API_KEY",
+                "",
+            ),
+            patch.object(
+                server_email_auth.ServerEmailAuthMixin,
+                "_send_email_over_smtp",
+                side_effect=TimeoutError("blocked"),
+            ),
+            patch.object(server_email_auth, "urlopen", capture_request),
+        ):
+            server_email_auth.ServerEmailAuthMixin.send_email_verification_code(
+                self.relay,
+                "person@example.com",
+                "123456",
+                "registration",
+            )
+
+        self.assertEqual(1, len(requests))
+        request, timeout = requests[0]
+        self.assertEqual(15, timeout)
+        self.assertEqual("Bearer re_test_key", request.get_header("Authorization"))
+        self.assertIn(b"123456", request.data)
 
     def test_account_delete_removes_account_and_owned_group(self):
         self.relay.authenticate_account(

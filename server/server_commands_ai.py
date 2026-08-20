@@ -38,6 +38,7 @@ AI_COMMANDS = {
             "filename",
             "audio_base64",
             "duration_seconds",
+            "transcription_language",
         ),
         "response_fields": ("message_id",),
     },

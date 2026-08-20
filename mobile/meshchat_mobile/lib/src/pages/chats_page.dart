@@ -20,6 +20,7 @@ import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
+import '../widgets/mesh_settings_surface.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/mesh_performance_scope.dart';
 import '../widgets/meshpro_badge.dart';
@@ -429,7 +430,10 @@ class ChatsPage extends StatelessWidget {
   void openSettings(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(builder: (_) => SettingsPage(controller: controller)),
+      meshSettingsPageRoute<void>(
+        builder: (_) =>
+            MeshSettingsSurface(child: SettingsPage(controller: controller)),
+      ),
     );
   }
 
@@ -445,8 +449,10 @@ class ChatsPage extends StatelessWidget {
   void openBluetoothNearby(BuildContext context) {
     Navigator.push(
       context,
-      meshPageRoute<void>(
-        builder: (_) => BluetoothNearbyPage(controller: controller),
+      meshSettingsPageRoute<void>(
+        builder: (_) => MeshSettingsSurface(
+          child: BluetoothNearbyPage(controller: controller),
+        ),
       ),
     );
   }

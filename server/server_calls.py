@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections import OrderedDict
 
@@ -58,6 +59,7 @@ CALL_SIGNAL_PACKET_TYPES = frozenset(
         "call_screen_offer",
         "call_screen_answer",
         "call_screen_stop",
+        "call_caption",
     }
 )
 
@@ -70,6 +72,8 @@ _MAX_NODE_ID_LENGTH = 256
 _MAX_OPERATION_ID_LENGTH = 256
 _MAX_SDP_LENGTH = 2 * 1024 * 1024
 _MAX_ICE_CANDIDATE_LENGTH = 16 * 1024
+_MAX_CAPTION_ID_LENGTH = 128
+_MAX_CAPTION_TEXT_LENGTH = 800
 
 
 def _claim_operation(operation_id, now=None):
@@ -123,6 +127,21 @@ def validate_call_signal(packet):
         json.dumps(candidate, separators=(",", ":"), ensure_ascii=False)
     ) > _MAX_ICE_CANDIDATE_LENGTH:
         return "Invalid or oversized ICE candidate"
+    if str(packet.get("type") or "") == "call_caption":
+        caption_id = str(packet.get("caption_id") or "").strip()
+        text = str(packet.get("text") or "").strip()
+        translation = packet.get("translation", "")
+        translation_language = str(
+            packet.get("translation_language") or ""
+        ).strip().lower()
+        if not _valid_identifier(caption_id, _MAX_CAPTION_ID_LENGTH):
+            return "Invalid caption_id"
+        if not text or len(text) > _MAX_CAPTION_TEXT_LENGTH:
+            return "Invalid or oversized caption text"
+        if not isinstance(translation, str) or len(translation) > _MAX_CAPTION_TEXT_LENGTH:
+            return "Invalid or oversized caption translation"
+        if translation_language and not re.fullmatch(r"[a-z]{2,3}", translation_language):
+            return "Invalid caption translation language"
     return ""
 
 
@@ -159,7 +178,8 @@ async def route_call_signal(server, packet):
 
     signaling = getattr(server, "call_signaling", None)
     if signaling is not None and await signaling.submit(packet):
-        await server.send_web_push_for_packet(destination_node, packet)
+        if str(packet.get("type") or "") != "call_caption":
+            await server.send_web_push_for_packet(destination_node, packet)
         return True
 
     delivered_nodes = set()
@@ -203,7 +223,8 @@ async def route_call_signal(server, packet):
                 continue
             delivered = await deliver(target_node) or delivered
 
-    await server.send_web_push_for_packet(destination_node, packet)
+    if str(packet.get("type") or "") != "call_caption":
+        await server.send_web_push_for_packet(destination_node, packet)
     return delivered
 
 

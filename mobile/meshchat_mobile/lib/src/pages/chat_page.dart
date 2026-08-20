@@ -737,6 +737,58 @@ class _ChatPageState extends State<ChatPage>
     inputFocus.requestFocus();
   }
 
+  Future<void> showReplyTools() async {
+    final business = widget.controller.appSettings.businessSettings;
+    if (!business.hasQuickReplies) {
+      await showSmartReplies();
+      return;
+    }
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 460),
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            children: [
+              const ListTile(
+                leading: Icon(Icons.business_center_outlined),
+                title: Text('Quick replies'),
+                subtitle: Text('MeshChat Business'),
+              ),
+              for (final reply in business.quickReplies)
+                ListTile(
+                  leading: const Icon(Icons.bolt_rounded),
+                  title: Text('/${reply.shortcut}'),
+                  subtitle: Text(
+                    reply.text,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, reply.text),
+                ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.auto_awesome_rounded),
+                title: const Text('AI smart replies'),
+                subtitle: const Text('Generate replies from recent context'),
+                onTap: () => Navigator.pop(sheetContext, '__ai__'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || selected == null) return;
+    if (selected == '__ai__') {
+      await showSmartReplies();
+      return;
+    }
+    useSmartReply(selected);
+  }
+
   Future<void> showPersonMemory() async {
     if (aiPersonMemoryLoading) return;
     final allowed = await requireMeshPro(
@@ -4113,11 +4165,11 @@ class _ChatPageState extends State<ChatPage>
                                                           )
                                                         : IconButton(
                                                             tooltip:
-                                                                'Smart replies',
+                                                                'Reply tools',
                                                             onPressed:
                                                                 aiSmartRepliesLoading
                                                                 ? null
-                                                                : showSmartReplies,
+                                                                : showReplyTools,
                                                             visualDensity:
                                                                 VisualDensity
                                                                     .compact,
@@ -4508,6 +4560,24 @@ class _CallBanner extends StatelessWidget {
           onPressed: controller.toggleCallSpeaker,
           icon: Icon(call.speakerOn ? Icons.volume_up : Icons.hearing),
         ),
+        if (controller.canStartCallCaptions)
+          IconButton.filledTonal(
+            tooltip: controller.callCaptionsEnabled
+                ? 'Turn captions off'
+                : 'Turn captions on',
+            onPressed: () async {
+              final error = await controller.toggleCallCaptions();
+              if (error == null || !context.mounted) return;
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text(error)));
+            },
+            icon: Icon(
+              controller.callCaptionsEnabled
+                  ? Icons.closed_caption_rounded
+                  : Icons.closed_caption_off_rounded,
+            ),
+          ),
         FilledButton.tonalIcon(
           onPressed: controller.endCall,
           icon: const Icon(Icons.call_end_rounded),
@@ -4639,6 +4709,11 @@ class _CallBottomSheet extends StatelessWidget {
             ],
             const SizedBox(height: 18),
             _CallEqualizer(accent: accent),
+            if (controller.callCaptionsEnabled ||
+                controller.callCaptionLines.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _CallCaptions(controller: controller),
+            ],
             const SizedBox(height: 24),
             if (incoming)
               Row(
@@ -4692,6 +4767,19 @@ class _CallBottomSheet extends StatelessWidget {
                     onPressed: () =>
                         _showAudioDevicePicker(context, input: false),
                   ),
+                  if (controller.canStartCallCaptions)
+                    _CallGlassButton(
+                      tooltip: controller.callCaptionsEnabled
+                          ? 'Turn captions off'
+                          : 'Turn captions on',
+                      icon: controller.callCaptionsEnabled
+                          ? Icons.closed_caption_rounded
+                          : Icons.closed_caption_off_rounded,
+                      accent: controller.callCaptionsEnabled
+                          ? Colors.cyanAccent
+                          : Colors.white70,
+                      onPressed: () => _toggleCaptions(context),
+                    ),
                   if (controller.canShareCallScreen)
                     _CallGlassButton(
                       tooltip: call.screenSharing
@@ -4731,6 +4819,12 @@ class _CallBottomSheet extends StatelessWidget {
 
   Future<void> _toggleScreenShare(BuildContext context) async {
     final error = await controller.toggleCallScreenShare();
+    if (error == null || !context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _toggleCaptions(BuildContext context) async {
+    final error = await controller.toggleCallCaptions();
     if (error == null || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
   }
@@ -5006,6 +5100,421 @@ class _CallMeshLogoPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _CallCaptions extends StatelessWidget {
+  const _CallCaptions({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = controller.callCaptionLines.reversed
+        .take(3)
+        .toList()
+        .reversed
+        .toList();
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      child: Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(minHeight: 54),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 11),
+        decoration: BoxDecoration(
+          color: const Color(0xFF081522).withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.20)),
+        ),
+        child: lines.isEmpty
+            ? _CaptionStatus(controller: controller)
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var index = 0; index < lines.length; index++)
+                    _CaptionLyricLine(
+                      line: lines[index],
+                      highlighted: index == lines.length - 1,
+                    ),
+                  const SizedBox(height: 6),
+                  if (controller.canStartCallCaptions)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                      onPressed: () => _showTranslationSettings(context),
+                      style: TextButton.styleFrom(
+                        foregroundColor:
+                            controller.callCaptionTranslationEnabled
+                            ? Colors.cyanAccent
+                            : Colors.white60,
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                      ),
+                      icon: Icon(
+                        controller.callCaptionTranslationEnabled
+                            ? Icons.translate_rounded
+                            : Icons.translate_outlined,
+                        size: 16,
+                      ),
+                      label: Text(
+                        controller.callCaptionTranslationEnabled
+                            ? 'Translate to ${_languageLabel(controller.callCaptionTargetLanguage)}'
+                            : 'Live translation',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      ),
+                    ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  Future<void> _showTranslationSettings(BuildContext context) async {
+    const languages = <String, String>{
+      'Russian': 'ru',
+      'English': 'en',
+      'Spanish': 'es',
+      'German': 'de',
+      'French': 'fr',
+      'Italian': 'it',
+    };
+    const sourceLanguages = <String, String>{
+      'Russian': 'ru',
+      'English': 'en',
+      'German': 'de',
+      'Spanish': 'es',
+      'French': 'fr',
+      'Italian': 'it',
+      'Automatic': 'auto',
+    };
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: MeshLiquidGlass(
+            forceFlutterSurface: true,
+            radius: 24,
+            accent: Colors.cyanAccent,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+              child: AnimatedBuilder(
+                animation: controller,
+                builder: (context, _) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Caption languages',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Set the language you speak and the language to show below it.',
+                      style: TextStyle(color: Colors.white60, fontSize: 12),
+                    ),
+                    const SizedBox(height: 14),
+                    _CaptionLanguageSettingRow(
+                      icon: Icons.record_voice_over_rounded,
+                      title: 'Language you speak',
+                      value: _languageLabel(controller.callCaptionSourceLanguage),
+                      onTap: () => _showLanguagePicker(
+                        sheetContext,
+                        title: 'Language you speak',
+                        languages: sourceLanguages,
+                        selected: controller.callCaptionSourceLanguage,
+                        onSelected: controller.setCallCaptionSourceLanguage,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _CaptionLanguageSettingRow(
+                      icon: Icons.translate_rounded,
+                      title: 'Translate captions to',
+                      value: controller.callCaptionTranslationEnabled
+                          ? _languageLabel(controller.callCaptionTargetLanguage)
+                          : 'Off',
+                      onTap: () => _showLanguagePicker(
+                        sheetContext,
+                        title: 'Translate captions to',
+                        languages: languages,
+                        selected: controller.callCaptionTranslationEnabled
+                            ? controller.callCaptionTargetLanguage
+                            : 'off',
+                        allowOff: true,
+                        onSelected: (code) => controller
+                            .setCallCaptionTranslation(
+                              enabled: code != 'off',
+                              targetLanguage: code == 'off' ? null : code,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _languageLabel(String code) => switch (code) {
+    'auto' => 'Automatic',
+    'ru' => 'Russian',
+    'en' => 'English',
+    'de' => 'German',
+    'es' => 'Spanish',
+    'fr' => 'French',
+    'it' => 'Italian',
+    _ => code,
+  };
+
+  Future<void> _showLanguagePicker(
+    BuildContext context, {
+    required String title,
+    required Map<String, String> languages,
+    required String selected,
+    required ValueChanged<String> onSelected,
+    bool allowOff = false,
+  }) async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (pickerContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: MeshLiquidGlass(
+            forceFlutterSurface: true,
+            radius: 22,
+            accent: Colors.cyanAccent,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 8),
+                  if (allowOff)
+                    ListTile(
+                      leading: const Icon(Icons.block_rounded),
+                      title: const Text('Off'),
+                      trailing: selected == 'off'
+                          ? const Icon(Icons.check_rounded, color: Colors.cyanAccent)
+                          : null,
+                      onTap: () => Navigator.of(pickerContext).pop('off'),
+                    ),
+                  for (final entry in languages.entries)
+                    ListTile(
+                      title: Text(entry.key),
+                      trailing: selected == entry.value
+                          ? const Icon(Icons.check_rounded, color: Colors.cyanAccent)
+                          : null,
+                      onTap: () => Navigator.of(pickerContext).pop(entry.value),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (picked != null) onSelected(picked);
+  }
+}
+
+class _CaptionLanguageSettingRow extends StatelessWidget {
+  const _CaptionLanguageSettingRow({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String value;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.white.withValues(alpha: 0.055),
+    borderRadius: BorderRadius.circular(14),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: Colors.cyanAccent),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            Text(value, style: const TextStyle(color: Colors.white70)),
+            const SizedBox(width: 5),
+            const Icon(Icons.chevron_right_rounded, color: Colors.white54),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _CaptionStatus extends StatelessWidget {
+  const _CaptionStatus({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(
+          Icons.closed_caption_rounded,
+          size: 17,
+          color: Colors.cyanAccent,
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            controller.callCaptionStatus,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+        ),
+        if (controller.canStartCallCaptions) ...[
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Live translation',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _CallCaptions(
+              controller: controller,
+            )._showTranslationSettings(context),
+            icon: Icon(
+              controller.callCaptionTranslationEnabled
+                  ? Icons.translate_rounded
+                  : Icons.translate_outlined,
+              size: 18,
+              color: controller.callCaptionTranslationEnabled
+                  ? Colors.cyanAccent
+                  : Colors.white60,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _CaptionLyricLine extends StatelessWidget {
+  const _CaptionLyricLine({required this.line, required this.highlighted});
+
+  final CallCaptionLine line;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    final key =
+        '${line.sourceNode}:${line.id}:${line.text}:${line.translation}';
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(key),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 360),
+      curve: Curves.easeOutCubic,
+      builder: (context, progress, child) => Opacity(
+        opacity: 0.35 + (0.65 * progress),
+        child: Transform.translate(
+          offset: Offset(0, (1 - progress) * 10),
+          child: child,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              style: TextStyle(
+                color: highlighted ? Colors.white : Colors.white70,
+                fontSize: highlighted ? 16 : 13,
+                fontWeight: highlighted ? FontWeight.w700 : FontWeight.w500,
+                height: 1.18,
+              ),
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: '${line.speaker}: ',
+                      style: const TextStyle(color: Colors.cyanAccent),
+                    ),
+                    TextSpan(text: line.text),
+                  ],
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 260),
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0, 0.16),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: child,
+                ),
+              ),
+              child: line.translation.trim().isNotEmpty
+                  ? Padding(
+                      key: ValueKey('translation-$key'),
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(
+                        line.translation,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: highlighted
+                              ? Colors.cyanAccent.withValues(alpha: 0.92)
+                              : Colors.cyanAccent.withValues(alpha: 0.70),
+                          fontSize: highlighted ? 13 : 12,
+                          height: 1.18,
+                        ),
+                      ),
+                    )
+                  : line.translating
+                  ? Padding(
+                      key: ValueKey('translating-$key'),
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(
+                        'Translating...',
+                        style: TextStyle(
+                          color: Colors.cyanAccent.withValues(alpha: 0.65),
+                          fontSize: 11,
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _CallGlassButton extends StatelessWidget {

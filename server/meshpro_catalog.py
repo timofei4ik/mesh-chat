@@ -2,7 +2,7 @@ from copy import deepcopy
 
 
 MESHPRO_SCHEMA_VERSION = 1
-MESHPRO_CATALOG_VERSION = "2026-07-16.10"
+MESHPRO_CATALOG_VERSION = "2026-08-18.1"
 MESHPRO_PRODUCT = "meshpro"
 
 ROLLOUT_AVAILABLE = "available"
@@ -58,6 +58,11 @@ _FEATURES = {
     "per_chat_theme": {
         "application": "meshchat",
         "category": "appearance",
+        "rollout": ROLLOUT_AVAILABLE,
+    },
+    "business_tools": {
+        "application": "meshchat",
+        "category": "organization",
         "rollout": ROLLOUT_AVAILABLE,
     },
     "custom_message_bubbles": {

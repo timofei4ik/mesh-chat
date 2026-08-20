@@ -30,7 +30,10 @@ class CallService {
 
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
-  RTCVideoRenderer? _remoteAudioRenderer;
+  // Native WebRTC plays remote audio through the peer connection's audio
+  // session. Creating a video texture solely for audio breaks on some Android
+  // emulators and can abort an otherwise valid audio call.
+  MediaStream? _remoteAudioStream;
   RTCVideoRenderer? _remoteScreenRenderer;
   MediaStream? _screenStream;
   RTCRtpSender? _screenSender;
@@ -78,7 +81,6 @@ class CallService {
       return;
     }
     await Helper.selectAudioOutput(deviceId).catchError((_) {});
-    await _remoteAudioRenderer?.audioOutput(deviceId).catchError((_) => false);
   }
 
   String get selectedAudioInputId => _selectedAudioInputId;
@@ -202,14 +204,14 @@ class CallService {
     _stopStats();
     await _stopScreenMedia();
     await _stopMediaTracks();
-    _remoteAudioRenderer?.srcObject = null;
-    await _remoteAudioRenderer?.dispose();
     _remoteScreenRenderer?.srcObject = null;
-    await _remoteScreenRenderer?.dispose();
-    await _localStream?.dispose();
-    await _peerConnection?.close();
-    await _peerConnection?.dispose();
-    _remoteAudioRenderer = null;
+    // Some Android emulators reject disposing a stale video texture. Audio
+    // calls must still be able to start after that renderer has failed.
+    await _remoteScreenRenderer?.dispose().catchError((_) {});
+    await _localStream?.dispose().catchError((_) {});
+    await _peerConnection?.close().catchError((_) {});
+    await _peerConnection?.dispose().catchError((_) {});
+    _remoteAudioStream = null;
     _remoteScreenRenderer = null;
     _localStream = null;
     _peerConnection = null;
@@ -225,14 +227,12 @@ class CallService {
     _stopStats();
     await _stopScreenMedia();
     await _stopMediaTracks();
-    _remoteAudioRenderer?.srcObject = null;
-    await _remoteAudioRenderer?.dispose();
     _remoteScreenRenderer?.srcObject = null;
-    await _remoteScreenRenderer?.dispose();
-    await _localStream?.dispose();
-    await _peerConnection?.close();
-    await _peerConnection?.dispose();
-    _remoteAudioRenderer = null;
+    await _remoteScreenRenderer?.dispose().catchError((_) {});
+    await _localStream?.dispose().catchError((_) {});
+    await _peerConnection?.close().catchError((_) {});
+    await _peerConnection?.dispose().catchError((_) {});
+    _remoteAudioStream = null;
     _remoteScreenRenderer = null;
     _localStream = null;
     _peerConnection = null;
@@ -275,14 +275,13 @@ class CallService {
     peerConnection.onTrack = (event) {
       if (event.streams.isEmpty) return;
       if (event.track.kind == 'audio') {
-        _attachRemoteAudio(event.streams.first);
+        unawaited(_attachRemoteAudio(event.streams.first));
       } else if (event.track.kind == 'video') {
-        _attachRemoteScreen(event.streams.first);
+        unawaited(_attachRemoteScreen(event.streams.first));
       }
     };
     peerConnection.onAddStream = (stream) {
-      _attachRemoteAudio(stream);
-      _attachRemoteScreen(stream);
+      unawaited(_attachRemoteAudio(stream));
     };
     peerConnection.onConnectionState = _handleConnectionState;
     peerConnection.onIceConnectionState = (state) {
@@ -553,17 +552,13 @@ class CallService {
     for (final track in stream.getAudioTracks()) {
       track.enabled = true;
     }
-    final renderer = _remoteAudioRenderer ?? RTCVideoRenderer();
-    if (_remoteAudioRenderer == null) {
-      await renderer.initialize();
-      _remoteAudioRenderer = renderer;
-    }
-    renderer.srcObject = stream;
+    _remoteAudioStream = stream;
     await _activateCallAudio();
+    // Helper.selectAudioOutput is the supported native output API. It works
+    // without a video renderer, including on Android devices with no texture
+    // renderer implementation (such as BlueStacks).
     if (_selectedAudioOutputId.isNotEmpty) {
-      await renderer
-          .audioOutput(_selectedAudioOutputId)
-          .catchError((_) => false);
+      await Helper.selectAudioOutput(_selectedAudioOutputId).catchError((_) {});
     }
     await setSpeakerEnabled(_speakerEnabled).catchError((_) {});
   }
@@ -601,7 +596,7 @@ class CallService {
   Future<void> _stopMediaTracks() async {
     final streams = <MediaStream>[];
     final localStream = _localStream;
-    final remoteStream = _remoteAudioRenderer?.srcObject;
+    final remoteStream = _remoteAudioStream;
     if (localStream != null) streams.add(localStream);
     if (remoteStream != null) streams.add(remoteStream);
     for (final stream in streams) {

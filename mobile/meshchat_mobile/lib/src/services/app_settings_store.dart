@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
+import '../models/business_settings.dart';
 
 class AppSettingsStore {
   Future<AppSettings> load() async {
@@ -33,6 +36,9 @@ class AppSettingsStore {
       meshProHdAudio: prefs.getBool('meshpro_hd_audio') ?? true,
       meshProEnhancedNoiseSuppression:
           prefs.getBool('meshpro_enhanced_noise_suppression') ?? true,
+      businessSettings: BusinessSettings.fromJson(
+        _decodeJson(prefs.getString('meshpro_business_settings')),
+      ),
       blockedNodeIds: prefs.getStringList('blocked_node_ids') ?? const [],
       deletedGroupIds: prefs.getStringList('deleted_group_ids') ?? const [],
       deletedMessageIds: prefs.getStringList('deleted_message_ids') ?? const [],
@@ -81,6 +87,10 @@ class AppSettingsStore {
       'meshpro_enhanced_noise_suppression',
       settings.meshProEnhancedNoiseSuppression,
     );
+    await prefs.setString(
+      'meshpro_business_settings',
+      jsonEncode(settings.businessSettings.toJson()),
+    );
     await prefs.setStringList('blocked_node_ids', settings.blockedNodeIds);
     await prefs.setStringList('deleted_group_ids', settings.deletedGroupIds);
     await prefs.setStringList(
@@ -94,5 +104,14 @@ class AppSettingsStore {
       (mode) => mode.name == value,
       orElse: () => ThemeMode.dark,
     );
+  }
+
+  Object? _decodeJson(String? value) {
+    if (value == null || value.isEmpty) return null;
+    try {
+      return jsonDecode(value);
+    } on FormatException {
+      return null;
+    }
   }
 }

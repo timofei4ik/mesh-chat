@@ -134,6 +134,7 @@ class FakeCommandServer:
         quick_reactions,
         hd_audio,
         enhanced_noise_suppression,
+        business=None,
     ):
         self.calls.append(
             (
@@ -142,6 +143,7 @@ class FakeCommandServer:
                 quick_reactions,
                 hd_audio,
                 enhanced_noise_suppression,
+                business,
             )
         )
         return True, "ok"

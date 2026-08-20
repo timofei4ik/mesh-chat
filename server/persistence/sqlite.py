@@ -729,6 +729,45 @@ class SQLiteSubscriptionRepository:
             ),
         )
 
+    def grant_lifetime(self, login, product):
+        self._connection.execute(
+            """
+            INSERT INTO account_subscriptions(
+                login,
+                product,
+                plan_code,
+                status,
+                current_period_start,
+                current_period_end,
+                cancel_at_period_end,
+                provider,
+                updated_at
+            )
+            VALUES(
+                ?, ?, 'lifetime', 'active', CURRENT_TIMESTAMP,
+                NULL, 0, 'manual_lifetime', CURRENT_TIMESTAMP
+            )
+            ON CONFLICT(login, product) DO UPDATE SET
+                plan_code='lifetime',
+                status='active',
+                current_period_start=COALESCE(
+                    account_subscriptions.current_period_start,
+                    CURRENT_TIMESTAMP
+                ),
+                current_period_end=NULL,
+                cancel_at_period_end=0,
+                provider='manual_lifetime',
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (self._login(login), product),
+        )
+
+    def clear_usage(self, login):
+        self._connection.execute(
+            "DELETE FROM meshpro_usage WHERE login=?",
+            (self._login(login),),
+        )
+
     def revoke(self, login, products):
         normalized_products = tuple(products)
         if not normalized_products:

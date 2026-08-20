@@ -1,5 +1,6 @@
 import base64
 import binascii
+import asyncio
 from datetime import datetime, timezone
 import json
 import math
@@ -10,12 +11,14 @@ try:
     from server.config import (
         AI_API_KEY,
         AI_API_URL,
+        AI_FALLBACK_MODELS,
         AI_MAX_AUDIO_BYTES,
         AI_MAX_IMAGE_BYTES,
         AI_MAX_INPUT_CHARS,
         AI_MAX_SUMMARY_CHARS,
         AI_MODEL,
         AI_TIMEOUT_SECONDS,
+        AI_TRANSCRIPTION_DEFAULT_LANGUAGE,
         AI_TRANSCRIPTION_API_URL,
         AI_TRANSCRIPTION_MODEL,
         AI_VISION_MODEL,
@@ -24,12 +27,14 @@ except ModuleNotFoundError:
     from config import (
         AI_API_KEY,
         AI_API_URL,
+        AI_FALLBACK_MODELS,
         AI_MAX_AUDIO_BYTES,
         AI_MAX_IMAGE_BYTES,
         AI_MAX_INPUT_CHARS,
         AI_MAX_SUMMARY_CHARS,
         AI_MODEL,
         AI_TIMEOUT_SECONDS,
+        AI_TRANSCRIPTION_DEFAULT_LANGUAGE,
         AI_TRANSCRIPTION_API_URL,
         AI_TRANSCRIPTION_MODEL,
         AI_VISION_MODEL,
@@ -42,32 +47,39 @@ AI_REWRITE_STYLES = {
         "meaning, language, tone, formatting, names, and emoji."
     ),
     "concise": (
-        "Make the message shorter and clearer without losing important "
-        "details. Preserve its language."
+        "Rewrite the message noticeably: remove repetition, compress the "
+        "sentence structure, and use direct wording. Keep every important "
+        "detail and preserve its language."
     ),
     "friendly": (
-        "Rewrite the message in a natural, warm, conversational style. "
-        "Preserve its language and meaning."
+        "Rewrite the message noticeably in a warm, relaxed, conversational "
+        "voice. Change the wording and rhythm, using natural everyday "
+        "phrasing appropriate to its language, while preserving meaning."
     ),
     "business": (
-        "Rewrite the message in a concise professional business style. "
+        "Rewrite the message noticeably in a concise professional business "
+        "style. Use formal vocabulary, clear structure, and a courteous tone. "
         "Preserve its language and factual meaning."
     ),
     "soften": (
-        "Make the message calmer, more tactful, and less confrontational. "
-        "Preserve its language and intent."
+        "Rewrite the message noticeably to sound calmer, empathetic, tactful, "
+        "and less confrontational. Change blunt wording into considerate "
+        "phrasing while preserving its language and intent."
     ),
     "expand": (
-        "Make the message a little more detailed and coherent without "
-        "inventing facts. Preserve its language."
+        "Rewrite the message into a more complete and coherent version. Add "
+        "helpful connective wording and clarity, but never invent facts. "
+        "Preserve its language."
     ),
     "biblical": (
-        "Rewrite the message with solemn biblical cadence and restrained "
-        "archaic imagery, while preserving its exact meaning and language."
+        "Transform the wording unmistakably into a solemn biblical cadence: "
+        "use elevated, restrained archaic phrasing and parallel rhythm natural "
+        "to the source language. Preserve the exact meaning and speech act."
     ),
     "viking": (
-        "Rewrite the message like a concise Norse saga: bold, rugged, and "
-        "honorable, while preserving its meaning and language."
+        "Transform the wording unmistakably into a concise Norse-saga voice: "
+        "bold, rugged, honorable, and rhythmic. Use fitting saga-like words "
+        "without inventing events. Preserve its meaning and language."
     ),
     "prehistoric": (
         "Rewrite the message in a restrained prehistoric storytelling style "
@@ -81,12 +93,14 @@ AI_REWRITE_STYLES = {
         "идут дела?', never an answer or an unrelated scene description."
     ),
     "tribal": (
-        "Rewrite the message in a rhythmic oral-storytelling style with "
-        "respectful nature imagery. Preserve its meaning and language."
+        "Transform the wording noticeably into rhythmic oral storytelling "
+        "with restrained, respectful nature imagery. Do not stereotype or "
+        "invent facts. Preserve its meaning and language."
     ),
     "zen": (
-        "Rewrite the message in a calm, minimal, reflective style. Preserve "
-        "its meaning and language."
+        "Transform the wording noticeably into a calm, minimal, reflective "
+        "style with clean pauses and simple phrasing. Preserve its meaning "
+        "and language."
     ),
 }
 
@@ -106,6 +120,60 @@ def _rewrite_style_instruction(style):
             "them naturally and never replace important words or facts."
         )
     return instruction
+
+
+def _rewrite_style_example(style, language_mode):
+    base_style, _ = _rewrite_style_parts(style)
+    examples = {
+        "friendly": {
+            "russian": "Example: 'Привет, как дела?' -> 'Привет! Как ты, всё хорошо?',",
+            "english": "Example: 'Hello, how are you?' -> 'Hey! How are things going?',",
+        },
+        "business": {
+            "russian": (
+                "Example: 'Привет, как дела?' -> 'Здравствуйте. Подскажите, "
+                "пожалуйста, как у вас дела?',"
+            ),
+            "english": (
+                "Example: 'Hello, how are you?' -> 'Hello. Could you please "
+                "let me know how things are going?',"
+            ),
+        },
+        "biblical": {
+            "russian": "Example: 'Привет, как дела?' -> 'Мир тебе. Как идут твои дела?',",
+            "english": "Example: 'Hello, how are you?' -> 'Peace be with you. How fare you?',",
+        },
+        "viking": {
+            "russian": (
+                "Example: 'Привет, как дела?' -> 'Здравия тебе! Крепок ли "
+                "дух, как идут дела?',"
+            ),
+            "english": (
+                "Example: 'Hello, how are you?' -> 'Hail! Is your spirit "
+                "strong, and how fare you?',"
+            ),
+        },
+        "prehistoric": {
+            "russian": "Example: 'Привет, как дела?' -> 'Здравия. Как идут дела?',",
+            "english": "Example: 'Hello, how are you?' -> 'Greetings. Things go well?',",
+        },
+        "tribal": {
+            "russian": (
+                "Example: 'Привет, как дела?' -> 'Приветствую тебя. Как "
+                "течёт твой путь, всё ли ладно?',"
+            ),
+            "english": (
+                "Example: 'Hello, how are you?' -> 'I greet you. How does "
+                "your path flow; is all well?',"
+            ),
+        },
+        "zen": {
+            "russian": "Example: 'Привет, как дела?' -> 'Привет. Как дела в этот миг?',",
+            "english": "Example: 'Hello, how are you?' -> 'Hello. How are you in this moment?',",
+        },
+    }
+    style_examples = examples.get(base_style, {})
+    return style_examples.get(language_mode, "")
 
 AI_TRANSLATION_LANGUAGES = {
     "ru": "Russian",
@@ -272,7 +340,13 @@ def _rewrite_structure_is_preserved(source, output):
     # A rewrite may restyle implicit wording, but it must not invent a new
     # speaker or addressee. This also rejects provider answers such as
     # "I am fine. How about you?" for an input question like "How are things?".
-    if _speaker_roles(output_text) - _speaker_roles(source_text):
+    added_roles = _speaker_roles(output_text) - _speaker_roles(source_text)
+    if (
+        "second" in added_roles
+        and ("?" in source_text or _contains_greeting(source_text))
+    ):
+        added_roles.remove("second")
+    if added_roles:
         return False
     if _contains_greeting(source_text) and not _contains_greeting(output_text):
         return False
@@ -304,6 +378,64 @@ def _rewrite_is_preserved(source, output):
         source,
         output,
     ) and _rewrite_structure_is_preserved(source, output)
+
+
+def _provider_error_code(error):
+    message = f"{type(error).__name__}: {error}".lower()
+    if "http 401" in message or "http 403" in message:
+        return "provider_auth_error"
+    if "http 429" in message:
+        return "provider_rate_limited"
+    if any(f"http {status}" in message for status in (500, 502, 503, 504)):
+        return "provider_overloaded"
+    if "http 400" in message or "http 404" in message:
+        return "provider_model_error"
+    if "timeout" in message:
+        return "provider_timeout"
+    return "provider_error"
+
+
+def _normalize_transcription_language(value):
+    language = str(value or "").strip().lower().split("-", 1)[0]
+    if re.fullmatch(r"[a-z]{2,3}", language):
+        return language
+    return ""
+
+
+def _transcription_matches_language(text, language):
+    normalized = str(text or "").strip()
+    if not normalized or not language:
+        return bool(normalized)
+    letters = [character for character in normalized if character.isalpha()]
+    if not letters:
+        return False
+    if language == "ru":
+        cyrillic = sum("\u0400" <= character <= "\u052f" for character in letters)
+        return cyrillic / len(letters) >= 0.55
+    if language == "en":
+        latin = sum(character.isascii() and character.isalpha() for character in letters)
+        return latin / len(letters) >= 0.55
+    return True
+
+
+_TRANSCRIPTION_HALLUCINATIONS = {
+    "продолжение следует",
+    "до новых встреч",
+    "спасибо за просмотр",
+    "thank you",
+    "thanks for watching",
+}
+
+
+def _is_transcription_hallucination(text):
+    normalized = re.sub(r"[.!?…]+$", "", str(text or "").strip().lower())
+    normalized = re.sub(r"\s+", " ", normalized)
+    return (
+        normalized in _TRANSCRIPTION_HALLUCINATIONS
+        or "добавил субтитры" in normalized
+        or "added subtitles" in normalized
+        or "dimatorzok" in normalized
+    )
 
 
 class ServerAiMixin:
@@ -371,7 +503,7 @@ class ServerAiMixin:
                 period_key,
             )
             print("AI rewrite failed:", type(error).__name__, str(error)[:200])
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         used = self.meshpro_usage_count(
             normalized_login,
@@ -455,7 +587,7 @@ class ServerAiMixin:
                 type(error).__name__,
                 str(error)[:200],
             )
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         source_mode = _language_mode(normalized_text)
         source_language = {
@@ -516,7 +648,7 @@ class ServerAiMixin:
                 period_key,
             )
             print("AI summary failed:", type(error).__name__, str(error)[:200])
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         used = self.meshpro_usage_count(
             normalized_login,
@@ -576,7 +708,7 @@ class ServerAiMixin:
                 period_key,
             )
             print("AI person memory failed:", type(error).__name__, str(error)[:200])
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         used = self.meshpro_usage_count(
             normalized_login,
@@ -628,7 +760,7 @@ class ServerAiMixin:
                 period_key,
             )
             print("AI call summary failed:", type(error).__name__, str(error)[:200])
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         used = self.meshpro_usage_count(
             normalized_login,
@@ -648,6 +780,7 @@ class ServerAiMixin:
         filename,
         audio_base64,
         duration_seconds=0,
+        transcription_language="",
     ):
         normalized_login = str(login or "").strip().lower()
         normalized_message_id = str(message_id or "").strip()
@@ -730,10 +863,19 @@ class ServerAiMixin:
             }
 
         try:
+            requested_language = str(transcription_language or "").strip()
+            language_hint = (
+                ""
+                if requested_language.lower() == "auto"
+                else _normalize_transcription_language(
+                    requested_language or AI_TRANSCRIPTION_DEFAULT_LANGUAGE
+                )
+            )
             transcript = await self._request_ai_transcription(
                 audio_bytes,
                 safe_filename,
                 AI_AUDIO_CONTENT_TYPES[extension],
+                language_hint,
             )
         except Exception as error:
             self.release_meshpro_usage(
@@ -747,7 +889,19 @@ class ServerAiMixin:
                 type(error).__name__,
                 str(error)[:200],
             )
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
+
+        if _is_transcription_hallucination(transcript.get("text", "")) or not _transcription_matches_language(
+            transcript.get("text", ""),
+            language_hint,
+        ):
+            self.release_meshpro_usage(
+                normalized_login,
+                "ai_voice_transcription",
+                period_key,
+                amount=reserved_minutes,
+            )
+            return {"ok": False, "error": "no_speech_detected"}
 
         actual_duration = max(
             0.0,
@@ -886,7 +1040,7 @@ class ServerAiMixin:
                 period_key,
             )
             print("AI OCR failed:", type(error).__name__, str(error)[:200])
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         language = _language_mode(text) if text else ""
         self.save_ai_image_ocr(
@@ -955,7 +1109,7 @@ class ServerAiMixin:
                 type(error).__name__,
                 str(error)[:200],
             )
-            return {"ok": False, "error": "provider_error"}
+            return {"ok": False, "error": _provider_error_code(error)}
 
         used = self.meshpro_usage_count(
             normalized_login,
@@ -1105,7 +1259,16 @@ class ServerAiMixin:
             "temperature": 0.0,
             "max_tokens": 3000,
         }
-        timeout = aiohttp.ClientTimeout(total=AI_TIMEOUT_SECONDS)
+        if (
+            "groq.com" in AI_API_URL.lower()
+            and AI_VISION_MODEL == "qwen/qwen3.6-27b"
+        ):
+            payload["reasoning_effort"] = "none"
+            payload["include_reasoning"] = False
+        timeout = aiohttp.ClientTimeout(
+            total=min(AI_TIMEOUT_SECONDS, 25),
+            connect=min(AI_TIMEOUT_SECONDS, 6),
+        )
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 AI_API_URL,
@@ -1279,6 +1442,7 @@ class ServerAiMixin:
         audio_bytes,
         filename,
         content_type,
+        language_hint="",
     ):
         import aiohttp
 
@@ -1295,6 +1459,23 @@ class ServerAiMixin:
         form.add_field("model", AI_TRANSCRIPTION_MODEL)
         form.add_field("response_format", "verbose_json")
         form.add_field("temperature", "0")
+        if language_hint == "ru":
+            transcription_prompt = (
+                "Точно расшифруй только реально произнесенную русскую речь. "
+                "При тишине, фоновом шуме или неразборчивом звуке верни пустой "
+                "текст. Никогда не придумывай фразы 'Продолжение следует', "
+                "'До новых встреч', 'Спасибо за просмотр' или 'Добавил субтитры'."
+            )
+        else:
+            transcription_prompt = (
+                "Accurately transcribe only speech that is actually audible. "
+                "Return empty text for silence, background noise, or unclear "
+                "audio. Never invent phrases such as 'Thank you', 'Thanks for "
+                "watching', 'To be continued', or application captions."
+            )
+        form.add_field("prompt", transcription_prompt)
+        if language_hint:
+            form.add_field("language", language_hint)
         timeout = aiohttp.ClientTimeout(total=AI_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
@@ -1396,7 +1577,14 @@ class ServerAiMixin:
                         "every fact, name, number, URL, mention, and who does "
                         "what. Return only the rewritten message, "
                         "without quotes, labels, markdown fences, or comments. "
+                        "Except for proofreading, the result must be visibly "
+                        "different from the source: change vocabulary and "
+                        "sentence rhythm enough that the selected style is "
+                        "immediately recognizable. Do not merely add emoji or "
+                        "swap one word. "
                         + _rewrite_style_instruction(style)
+                        + " "
+                        + _rewrite_style_example(style, language_mode)
                         + " LANGUAGE CONSTRAINT: "
                         + _language_instruction(
                             language_mode,
@@ -1406,7 +1594,7 @@ class ServerAiMixin:
                 },
                 {"role": "user", "content": text},
             ],
-            temperature=0.08 if strict_language else 0.14,
+            temperature=0.18 if strict_language else 0.32,
             max_tokens=1800,
         )
 
@@ -1421,24 +1609,80 @@ class ServerAiMixin:
         headers = {"Content-Type": "application/json"}
         if AI_API_KEY:
             headers["Authorization"] = f"Bearer {AI_API_KEY}"
-        payload = {
-            "model": AI_MODEL,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        timeout = aiohttp.ClientTimeout(total=AI_TIMEOUT_SECONDS)
+        timeout = aiohttp.ClientTimeout(
+            total=min(AI_TIMEOUT_SECONDS, 25),
+            connect=min(AI_TIMEOUT_SECONDS, 6),
+        )
+        models = tuple(dict.fromkeys((AI_MODEL, *AI_FALLBACK_MODELS)))
+        last_error = None
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                AI_API_URL,
-                headers=headers,
-                json=payload,
-            ) as response:
-                if response.status < 200 or response.status >= 300:
-                    detail = (await response.text())[:300]
-                    raise RuntimeError(f"HTTP {response.status}: {detail}")
-                result = await response.json()
+            for model_index, model in enumerate(models):
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if "groq.com" in AI_API_URL.lower():
+                    if model.startswith("openai/gpt-oss-"):
+                        payload["reasoning_effort"] = "low"
+                        payload["include_reasoning"] = False
+                    elif model == "qwen/qwen3.6-27b":
+                        payload["reasoning_effort"] = "none"
+                        payload["include_reasoning"] = False
+                for attempt in range(2):
+                    try:
+                        async with session.post(
+                            AI_API_URL,
+                            headers=headers,
+                            json=payload,
+                        ) as response:
+                            if 200 <= response.status < 300:
+                                result = await response.json()
+                                output = self._extract_ai_output(result)
+                                if output:
+                                    return output
+                                last_error = RuntimeError(
+                                    f"AI provider returned an empty response "
+                                    f"for {model}"
+                                )
+                                break
+                            detail = (await response.text())[:300]
+                            last_error = RuntimeError(
+                                f"HTTP {response.status} for {model}: {detail}"
+                            )
+                            if response.status in {401, 403}:
+                                raise last_error
+                            retryable = response.status in {
+                                408,
+                                409,
+                                429,
+                                500,
+                                502,
+                                503,
+                                504,
+                            }
+                            if retryable and attempt == 0:
+                                await asyncio.sleep(0.6)
+                                continue
+                            break
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                        # A network timeout affects every model on the same
+                        # provider. Fail quickly instead of multiplying a
+                        # 25-second outage by all fallback model IDs.
+                        raise error
+                if last_error is None:
+                    break
+                if model_index + 1 < len(models):
+                    continue
+                raise last_error
 
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("AI provider returned an empty response")
+
+    @staticmethod
+    def _extract_ai_output(result):
         output = result.get("output_text")
         if not output:
             choices = result.get("choices")
@@ -1451,6 +1695,4 @@ class ServerAiMixin:
                 for item in output
             )
         output = str(output or "").strip()
-        if not output:
-            raise RuntimeError("AI provider returned an empty response")
         return output

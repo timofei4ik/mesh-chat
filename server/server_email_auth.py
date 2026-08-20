@@ -4,8 +4,11 @@ import hmac
 import re
 import secrets
 import smtplib
+import json
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 try:
     from server.config import (
@@ -13,6 +16,7 @@ try:
         EMAIL_2FA_MAX_ATTEMPTS,
         EMAIL_2FA_RESEND_SECONDS,
         EMAIL_2FA_SECRET,
+        RESEND_API_KEY,
         SMTP_FROM_EMAIL,
         SMTP_FROM_NAME,
         SMTP_HOST,
@@ -28,6 +32,7 @@ except ModuleNotFoundError:
         EMAIL_2FA_MAX_ATTEMPTS,
         EMAIL_2FA_RESEND_SECONDS,
         EMAIL_2FA_SECRET,
+        RESEND_API_KEY,
         SMTP_FROM_EMAIL,
         SMTP_FROM_NAME,
         SMTP_HOST,
@@ -259,6 +264,23 @@ class ServerEmailAuthMixin:
             f"The code expires in {EMAIL_2FA_CODE_TTL_SECONDS // 60} minutes.\n\n"
             "If you did not request this code, ignore this email."
         )
+        # The VPS provider blocks outbound SMTP on both 465 and 587. Prefer
+        # Resend's HTTPS API when this deployment is backed by Resend instead
+        # of waiting for an SMTP timeout on every code request.
+        if self._resend_api_key():
+            self._send_email_with_resend_api(email, message)
+            return
+        self._send_email_over_smtp(message)
+
+    @staticmethod
+    def _resend_api_key():
+        if RESEND_API_KEY:
+            return RESEND_API_KEY
+        if SMTP_HOST.strip().lower() == "smtp.resend.com":
+            return SMTP_PASSWORD.strip()
+        return ""
+
+    def _send_email_over_smtp(self, message):
         smtp_class = smtplib.SMTP_SSL if SMTP_USE_SSL else smtplib.SMTP
         with smtp_class(SMTP_HOST, SMTP_PORT, timeout=15) as client:
             if SMTP_USE_TLS and not SMTP_USE_SSL:
@@ -266,3 +288,39 @@ class ServerEmailAuthMixin:
             if SMTP_USERNAME:
                 client.login(SMTP_USERNAME, SMTP_PASSWORD)
             client.send_message(message)
+
+    def _send_email_with_resend_api(self, email, message):
+        sender = formataddr((SMTP_FROM_NAME or "MeshChat", SMTP_FROM_EMAIL))
+        payload = json.dumps(
+            {
+                "from": sender,
+                "to": [email],
+                "subject": str(message["Subject"]),
+                "text": message.get_content(),
+            }
+        ).encode("utf-8")
+        request = Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self._resend_api_key()}",
+                "Content-Type": "application/json",
+                "User-Agent": "MeshChat-Mailer/1.0",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(
+                        f"Resend API returned HTTP {response.status}"
+                    )
+        except HTTPError as error:
+            # Keep the provider's public diagnostic in the server log. It
+            # makes DNS/sender-permission failures actionable without ever
+            # logging the delivery key or recipient list.
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(
+                f"Resend API returned HTTP {error.code}: {detail}"
+            ) from error

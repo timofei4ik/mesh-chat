@@ -239,42 +239,12 @@ class ServerSubscriptionMixin:
         with self.unit_of_work_factory() as unit_of_work:
             if not unit_of_work.identity.account_exists(normalized_login):
                 raise ValueError("account does not exist")
-        with self.atomic_storage_transaction():
-            self.db.execute(
-                """
-                INSERT INTO account_subscriptions(
-                    login,
-                    product,
-                    plan_code,
-                    status,
-                    current_period_start,
-                    current_period_end,
-                    cancel_at_period_end,
-                    provider,
-                    updated_at
-                )
-                VALUES(
-                    ?, ?, 'lifetime', 'active', CURRENT_TIMESTAMP,
-                    NULL, 0, 'manual_lifetime', CURRENT_TIMESTAMP
-                )
-                ON CONFLICT(login, product) DO UPDATE SET
-                    plan_code='lifetime',
-                    status='active',
-                    current_period_start=COALESCE(
-                        account_subscriptions.current_period_start,
-                        CURRENT_TIMESTAMP
-                    ),
-                    current_period_end=NULL,
-                    cancel_at_period_end=0,
-                    provider='manual_lifetime',
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (normalized_login, normalized_product),
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.subscriptions.grant_lifetime(
+                normalized_login,
+                normalized_product,
             )
-            self.db.execute(
-                "DELETE FROM meshpro_usage WHERE login=?",
-                (normalized_login,),
-            )
+            unit_of_work.subscriptions.clear_usage(normalized_login)
         return self.subscription_status(normalized_login, normalized_product)
 
     def revoke_subscription(self, login, product=MESHPRO_PRODUCT):

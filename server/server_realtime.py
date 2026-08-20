@@ -164,7 +164,7 @@ class RealtimeCoordinator:
         previous_worker = previous.get("worker_id")
         previous_session = previous.get("session_id")
         if (
-            previous_worker
+            previous_worker == self.worker_id
             and previous_session
             and previous_session != session_id
         ):

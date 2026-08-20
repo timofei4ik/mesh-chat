@@ -1724,6 +1724,14 @@ class ServerStorageMixin:
         normalized_period = str(period_key or "").strip()
         normalized_limit = max(0, int(limit or 0))
         normalized_amount = max(1, int(amount or 1))
+        # Lifetime MeshPro is genuinely unlimited. Do not turn "unlimited"
+        # into a very large counter that can be exhausted or corrupted.
+        if normalized_limit >= 2_000_000_000:
+            return bool(
+                normalized_login
+                and normalized_feature
+                and normalized_period
+            )
         if (
             not normalized_login
             or not normalized_feature
@@ -2023,10 +2031,23 @@ class ServerStorageMixin:
                 quick_reactions_json TEXT NOT NULL DEFAULT '[]',
                 hd_audio INTEGER NOT NULL DEFAULT 1,
                 enhanced_noise_suppression INTEGER NOT NULL DEFAULT 1,
+                business_json TEXT NOT NULL DEFAULT '{}',
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        if not isinstance(conn, PostgresCompatibilityConnection):
+            meshpro_preference_columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(account_meshpro_preferences)"
+                )
+            }
+            if "business_json" not in meshpro_preference_columns:
+                conn.execute(
+                    "ALTER TABLE account_meshpro_preferences "
+                    "ADD COLUMN business_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
         conn.execute(
             """
@@ -2783,6 +2804,7 @@ class ServerStorageMixin:
         quick_reactions,
         hd_audio,
         enhanced_noise_suppression,
+        business=None,
     ):
         login = str(login or "").strip().lower()
         if not login:
@@ -2826,6 +2848,16 @@ class ServerStorageMixin:
             login,
             "call_noise_suppression_plus",
         )
+        existing_business = self.get_meshpro_preferences(login).get(
+            "business", {}
+        )
+        normalized_business = self._normalize_business_preferences(
+            existing_business if business is None else business
+        )
+        if normalized_business.get("enabled") and not (
+            self.subscription_feature_enabled(login, "business_tools")
+        ):
+            return False, "meshpro_required"
         self.db.execute(
             """
             INSERT INTO account_meshpro_preferences(
@@ -2833,13 +2865,15 @@ class ServerStorageMixin:
                 quick_reactions_json,
                 hd_audio,
                 enhanced_noise_suppression,
+                business_json,
                 updated_at
             )
-            VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+            VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
             ON CONFLICT(login) DO UPDATE SET
                 quick_reactions_json=excluded.quick_reactions_json,
                 hd_audio=excluded.hd_audio,
                 enhanced_noise_suppression=excluded.enhanced_noise_suppression,
+                business_json=excluded.business_json,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -2847,6 +2881,7 @@ class ServerStorageMixin:
                 json.dumps(normalized_reactions, ensure_ascii=False),
                 1 if normalized_hd_audio else 0,
                 1 if normalized_noise else 0,
+                json.dumps(normalized_business, ensure_ascii=False),
             ),
         )
         self._commit_storage()
@@ -2863,6 +2898,7 @@ class ServerStorageMixin:
             ],
             "hd_audio": True,
             "enhanced_noise_suppression": True,
+            "business": self._normalize_business_preferences({}),
         }
         if not login:
             return defaults
@@ -2870,7 +2906,8 @@ class ServerStorageMixin:
             """
             SELECT quick_reactions_json,
                    hd_audio,
-                   enhanced_noise_suppression
+                   enhanced_noise_suppression,
+                   business_json
             FROM account_meshpro_preferences
             WHERE login=?
             LIMIT 1
@@ -2885,6 +2922,10 @@ class ServerStorageMixin:
             reactions = []
         if not isinstance(reactions, list):
             reactions = []
+        try:
+            business = json.loads(row[3] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            business = {}
         normalized = []
         for item in reactions:
             reaction = str(item or "").strip()
@@ -2894,6 +2935,73 @@ class ServerStorageMixin:
             "quick_reactions": normalized or defaults["quick_reactions"],
             "hd_audio": bool(row[1]),
             "enhanced_noise_suppression": bool(row[2]),
+            "business": self._normalize_business_preferences(business),
+        }
+
+    @staticmethod
+    def _normalize_business_preferences(raw):
+        raw = raw if isinstance(raw, dict) else {}
+
+        def clean_text(key, fallback=""):
+            value = str(raw.get(key) or fallback).strip()
+            return value[:500]
+
+        def clean_minutes(key, fallback):
+            try:
+                value = int(raw.get(key, fallback))
+            except (TypeError, ValueError):
+                value = fallback
+            return max(0, min(value, 1439))
+
+        workdays = []
+        for item in raw.get("workdays", [1, 2, 3, 4, 5]):
+            try:
+                day = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= day <= 7 and day not in workdays:
+                workdays.append(day)
+        if not workdays:
+            workdays = [1, 2, 3, 4, 5]
+
+        replies = []
+        seen_shortcuts = set()
+        for item in raw.get("quick_replies", []):
+            if not isinstance(item, dict):
+                continue
+            shortcut = str(item.get("shortcut") or "").strip().lstrip("/")[:32]
+            text = str(item.get("text") or "").strip()[:1000]
+            normalized_shortcut = shortcut.lower()
+            if (
+                not shortcut
+                or not text
+                or normalized_shortcut in seen_shortcuts
+            ):
+                continue
+            seen_shortcuts.add(normalized_shortcut)
+            replies.append({"shortcut": shortcut, "text": text})
+            if len(replies) >= 20:
+                break
+
+        return {
+            "enabled": raw.get("enabled") is True,
+            "greeting_enabled": raw.get("greeting_enabled") is True,
+            "greeting_text": clean_text(
+                "greeting_text", "Hello! Thanks for your message."
+            ),
+            "away_enabled": raw.get("away_enabled") is True,
+            "away_text": clean_text(
+                "away_text",
+                "I am away right now and will reply during working hours.",
+            ),
+            "workday_start_minutes": clean_minutes(
+                "workday_start_minutes", 9 * 60
+            ),
+            "workday_end_minutes": clean_minutes(
+                "workday_end_minutes", 18 * 60
+            ),
+            "workdays": workdays,
+            "quick_replies": replies,
         }
 
     def save_chat_preferences(

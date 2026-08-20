@@ -273,7 +273,7 @@ class BillingHttpTests(unittest.IsolatedAsyncioTestCase):
             ("privacy", "Privacy Policy"),
             ("terms", "Terms of Service"),
             ("community", "Community Guidelines"),
-            ("support", "Support and Safety"),
+            ("support", "Support & Safety"),
             ("account-deletion", "Delete your account"),
         ):
             async with self.session.get(

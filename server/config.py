@@ -421,15 +421,43 @@ AI_API_KEY = os.environ.get(
     "",
 ).strip()
 
-AI_MODEL = os.environ.get(
-    "MESH_AI_MODEL",
-    "",
-).strip()
+_AI_DEPRECATED_TEXT_MODELS = {
+    "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+    "qwen/qwen3-32b": "openai/gpt-oss-120b",
+    "meta-llama/llama-4-scout-17b-16e-instruct": "openai/gpt-oss-120b",
+}
 
-AI_VISION_MODEL = os.environ.get(
+_configured_ai_model = os.environ.get(
+    "MESH_AI_MODEL",
+    "openai/gpt-oss-20b",
+).strip() or "openai/gpt-oss-20b"
+AI_MODEL = _AI_DEPRECATED_TEXT_MODELS.get(
+    _configured_ai_model,
+    _configured_ai_model,
+)
+
+AI_FALLBACK_MODELS = tuple(
+    model
+    for model in dict.fromkeys(
+        _AI_DEPRECATED_TEXT_MODELS.get(item.strip(), item.strip())
+        for item in os.environ.get(
+            "MESH_AI_FALLBACK_MODELS",
+            "openai/gpt-oss-120b,qwen/qwen3.6-27b",
+        ).split(",")
+        if item.strip()
+    )
+    if model and model != AI_MODEL
+)
+
+_configured_vision_model = os.environ.get(
     "MESH_AI_VISION_MODEL",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-).strip()
+    "qwen/qwen3.6-27b",
+).strip() or "qwen/qwen3.6-27b"
+AI_VISION_MODEL = {
+    "meta-llama/llama-4-scout-17b-16e-instruct": "qwen/qwen3.6-27b",
+    "qwen/qwen3-32b": "qwen/qwen3.6-27b",
+}.get(_configured_vision_model, _configured_vision_model)
 
 AI_TIMEOUT_SECONDS = max(
     5,
@@ -469,8 +497,16 @@ if not AI_TRANSCRIPTION_API_URL and AI_API_URL:
 
 AI_TRANSCRIPTION_MODEL = os.environ.get(
     "MESH_AI_TRANSCRIPTION_MODEL",
-    "whisper-large-v3-turbo",
+    # Prefer the accuracy-oriented multilingual model for live captions.
+    # The turbo variant is cheaper, but drops more words in longer Russian
+    # phrases and noisy call audio.
+    "whisper-large-v3",
 ).strip()
+
+AI_TRANSCRIPTION_DEFAULT_LANGUAGE = os.environ.get(
+    "MESH_AI_TRANSCRIPTION_DEFAULT_LANGUAGE",
+    "ru",
+).strip().lower()
 
 AI_MAX_AUDIO_BYTES = max(
     256 * 1024,
@@ -489,6 +525,7 @@ SMTP_USE_TLS = os.environ.get("MESH_SMTP_USE_TLS", "1").strip().lower() in {
 SMTP_USE_SSL = os.environ.get("MESH_SMTP_USE_SSL", "0").strip().lower() in {
     "1", "true", "yes", "on"
 }
+RESEND_API_KEY = os.environ.get("MESH_RESEND_API_KEY", "").strip()
 EMAIL_2FA_SECRET = os.environ.get(
     "MESH_EMAIL_2FA_SECRET",
     os.environ.get("MESH_SERVER_TOKEN", ""),

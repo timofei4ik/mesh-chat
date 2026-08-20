@@ -179,6 +179,7 @@ async def handle_meshpro_preferences_update(server, packet, context):
         packet.get("quick_reactions"),
         packet.get("hd_audio") is True,
         packet.get("enhanced_noise_suppression") is True,
+        packet.get("business"),
     )
     preferences = server.get_meshpro_preferences(preference_login)
     if ok:

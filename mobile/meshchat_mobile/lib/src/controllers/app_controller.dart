@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/app_settings.dart';
+import '../models/business_settings.dart';
 import '../models/meshpro_subscription.dart';
 import '../models/profile.dart';
 import '../models/scheduled_message.dart';
@@ -19,6 +20,7 @@ import '../models/story_item.dart';
 import '../services/app_settings_store.dart';
 import '../services/ble_chat_service.dart';
 import '../services/call_alert_service.dart';
+import '../services/call_caption_service.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
 import '../services/mesh_crypto.dart';
@@ -99,6 +101,19 @@ class AiRewriteResult {
   final String text;
   final int remaining;
 }
+
+String _aiFailureMessage(String code, String fallback) => switch (code) {
+  'provider_auth_error' =>
+    'The AI provider rejected the server key. The server administrator must update it.',
+  'provider_rate_limited' =>
+    'The AI provider is busy. Please try again in a moment.',
+  'provider_overloaded' =>
+    'The AI model is temporarily overloaded. Please try again shortly.',
+  'provider_model_error' =>
+    'The configured AI model is unavailable. The server must switch models.',
+  'provider_timeout' => 'The AI provider did not respond in time.',
+  _ => fallback,
+};
 
 class AiTranslationResult {
   const AiTranslationResult({
@@ -233,6 +248,48 @@ class AiPersonMemoryException implements Exception {
   String toString() => message;
 }
 
+class CallCaptionLine {
+  const CallCaptionLine({
+    required this.id,
+    required this.sourceNode,
+    required this.speaker,
+    required this.text,
+    required this.isFinal,
+    required this.updatedAt,
+    this.translation = '',
+    this.translating = false,
+  });
+
+  final String id;
+  final String sourceNode;
+  final String speaker;
+  final String text;
+  final bool isFinal;
+  final DateTime updatedAt;
+  final String translation;
+  final bool translating;
+
+  CallCaptionLine copyWith({
+    String? speaker,
+    String? text,
+    bool? isFinal,
+    DateTime? updatedAt,
+    String? translation,
+    bool? translating,
+  }) {
+    return CallCaptionLine(
+      id: id,
+      sourceNode: sourceNode,
+      speaker: speaker ?? this.speaker,
+      text: text ?? this.text,
+      isFinal: isFinal ?? this.isFinal,
+      updatedAt: updatedAt ?? this.updatedAt,
+      translation: translation ?? this.translation,
+      translating: translating ?? this.translating,
+    );
+  }
+}
+
 class ActiveCall {
   const ActiveCall({
     required this.callId,
@@ -365,6 +422,7 @@ class AppController extends ChangeNotifier {
   final MeshCrypto _crypto = MeshCrypto();
   final BleChatService ble = BleChatService();
   final CallService _calls = CallService();
+  final CallCaptionService _callCaptionService = CallCaptionService();
   final Map<String, CallService> _groupCalls = {};
   List<Map<String, dynamic>> _callIceServers = const [];
   final NotificationService _notifications = NotificationService();
@@ -429,6 +487,17 @@ class AppController extends ChangeNotifier {
   Timer? _callTicker;
   Timer? _callPhaseTimeout;
   Timer? _callReconnectTimer;
+  Timer? _callCaptionSendTimer;
+  final List<CallCaptionLine> _callCaptionLines = [];
+  final Set<String> _callCaptionTranslationsInFlight = {};
+  String _callCaptionStatus = 'Captions off';
+  String _activeCaptionId = '';
+  String _pendingCaptionText = '';
+  bool _pendingCaptionFinal = false;
+  bool callCaptionsEnabled = false;
+  bool callCaptionTranslationEnabled = false;
+  String callCaptionTargetLanguage = 'ru';
+  String callCaptionSourceLanguage = 'ru';
   final Set<String> _finishedCallIds = {};
   Timer? _softResyncTimer;
   final Map<int, String> _stickerLibrarySyncChunks = {};
@@ -458,10 +527,15 @@ class AppController extends ChangeNotifier {
   bool _cacheSavePending = false;
   final Map<String, int> _draftVersions = {};
   final Map<String, bool> _archiveStates = {};
+  final Map<String, DateTime> _businessAutoReplyAt = {};
   NotificationTarget? _pendingNotificationTarget;
   ChatThread? incomingPreviewThread;
   ChatMessage? incomingPreviewMessage;
   int incomingPreviewVersion = 0;
+
+  List<CallCaptionLine> get callCaptionLines =>
+      List<CallCaptionLine>.unmodifiable(_callCaptionLines);
+  String get callCaptionStatus => _callCaptionStatus;
 
   AppController() {
     _notifications.onAndroidPushToken = _handleAndroidPushToken;
@@ -1462,7 +1536,10 @@ class AppController extends ChangeNotifier {
       'unauthorized': 'Sign in again to use AI tools',
     };
     completer.completeError(
-      AiRewriteException(code, messages[code] ?? 'AI rewrite failed'),
+      AiRewriteException(
+        code,
+        messages[code] ?? _aiFailureMessage(code, 'AI rewrite failed'),
+      ),
     );
   }
 
@@ -1550,7 +1627,10 @@ class AppController extends ChangeNotifier {
       'unauthorized': 'Sign in again to use translation',
     };
     completer.completeError(
-      AiTranslationException(code, messages[code] ?? 'Translation failed'),
+      AiTranslationException(
+        code,
+        messages[code] ?? _aiFailureMessage(code, 'Translation failed'),
+      ),
     );
   }
 
@@ -2055,7 +2135,10 @@ class AppController extends ChangeNotifier {
       'unauthorized': 'Sign in again to use AI tools',
     };
     completer.completeError(
-      AiSummaryException(code, messages[code] ?? 'Could not create summary'),
+      AiSummaryException(
+        code,
+        messages[code] ?? _aiFailureMessage(code, 'Could not create summary'),
+      ),
     );
   }
 
@@ -2092,7 +2175,7 @@ class AppController extends ChangeNotifier {
     completer.completeError(
       AiTranscriptionException(
         code,
-        messages[code] ?? 'Voice transcription failed',
+        messages[code] ?? _aiFailureMessage(code, 'Voice transcription failed'),
       ),
     );
   }
@@ -2125,7 +2208,10 @@ class AppController extends ChangeNotifier {
       'unauthorized': 'Sign in again to use AI tools',
     };
     completer.completeError(
-      AiOcrException(code, messages[code] ?? 'Text extraction failed'),
+      AiOcrException(
+        code,
+        messages[code] ?? _aiFailureMessage(code, 'Text extraction failed'),
+      ),
     );
   }
 
@@ -2171,7 +2257,8 @@ class AppController extends ChangeNotifier {
     completer.completeError(
       AiSmartRepliesException(
         code,
-        messages[code] ?? 'Could not generate smart replies',
+        messages[code] ??
+            _aiFailureMessage(code, 'Could not generate smart replies'),
       ),
     );
   }
@@ -2202,7 +2289,8 @@ class AppController extends ChangeNotifier {
     completer.completeError(
       AiPersonMemoryException(
         code,
-        messages[code] ?? 'Could not search chat memory',
+        messages[code] ??
+            _aiFailureMessage(code, 'Could not search chat memory'),
       ),
     );
   }
@@ -2847,6 +2935,8 @@ class AppController extends ChangeNotifier {
         await _handleCallScreenAnswer(packet);
       case 'call_screen_stop':
         await _handleCallScreenStop(packet);
+      case 'call_caption':
+        _handleCallCaption(packet);
     }
     notifyListeners();
   }
@@ -4355,6 +4445,7 @@ class AppController extends ChangeNotifier {
       meshProHdAudio: data['hd_audio'] == true,
       meshProEnhancedNoiseSuppression:
           data['enhanced_noise_suppression'] == true,
+      businessSettings: BusinessSettings.fromJson(data['business']),
     );
     appSettings = updated;
     await _settingsStore.save(updated);
@@ -6220,6 +6311,7 @@ class AppController extends ChangeNotifier {
     if (activeCall != null && activeCall!.status != CallStatus.ended) {
       return 'Another call is already active';
     }
+    await _stopCallCaptions(clearLines: true);
     final hdAudio = _meshProCallFeatureEnabled(
       'call_hd_audio',
       appSettings.meshProHdAudio,
@@ -6239,6 +6331,9 @@ class AppController extends ChangeNotifier {
     );
     _setActiveCall(call);
     notifyListeners();
+    // TURN credentials arrive asynchronously after the socket welcome. Ensure
+    // a personal call receives the same relay configuration as group calls.
+    _calls.setIceServers(_callIceServers);
     final offerSdp = await _calls
         .startOutgoing(
           onIceCandidate: (candidate) => _sendCallIce(call, candidate),
@@ -6283,6 +6378,7 @@ class AppController extends ChangeNotifier {
     if (activeCall != null && activeCall!.status != CallStatus.ended) {
       return 'Another call is already active';
     }
+    await _stopCallCaptions(clearLines: true);
     final recipients = thread.members
         .where((nodeId) => nodeId.isNotEmpty && nodeId != myNodeId)
         .toSet()
@@ -6379,6 +6475,7 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    _calls.setIceServers(_callIceServers);
     final answerSdp = await _calls
         .acceptIncoming(
           remoteOfferSdp: call.remoteOfferSdp,
@@ -6447,6 +6544,15 @@ class AppController extends ChangeNotifier {
     for (final service in _groupCalls.values) {
       await service.setMuted(muted).catchError((_) {});
     }
+    if (callCaptionsEnabled) {
+      if (muted) {
+        await _callCaptionService.stop();
+        _callCaptionStatus = 'Paused while muted';
+      } else {
+        await _startCallCaptions();
+      }
+      notifyListeners();
+    }
   }
 
   Future<void> toggleCallSpeaker() async {
@@ -6461,6 +6567,381 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<String?> toggleCallCaptions() async {
+    final call = activeCall;
+    if (call == null || call.status == CallStatus.ended) {
+      return 'Start a call before enabling captions';
+    }
+    if (callCaptionsEnabled) {
+      await _stopCallCaptions(clearLines: false);
+      notifyListeners();
+      return null;
+    }
+    if (!await _refreshMeshProFeature('ai_voice_transcription')) {
+      return 'Live captions require MeshPro';
+    }
+    callCaptionsEnabled = true;
+    if (call.localMuted) {
+      _callCaptionStatus = 'Paused while muted';
+      notifyListeners();
+      return null;
+    }
+    final error = await _startCallCaptions();
+    if (error != null) {
+      callCaptionsEnabled = false;
+      _callCaptionStatus = 'Captions unavailable';
+    }
+    notifyListeners();
+    return error;
+  }
+
+  void setCallCaptionTranslation({
+    required bool enabled,
+    String? targetLanguage,
+  }) {
+    final previousTarget = callCaptionTargetLanguage;
+    callCaptionTranslationEnabled = enabled;
+    if (targetLanguage != null && targetLanguage.trim().isNotEmpty) {
+      callCaptionTargetLanguage = targetLanguage.trim();
+    }
+    final targetChanged = previousTarget != callCaptionTargetLanguage;
+    if (!enabled || targetChanged) {
+      for (var index = 0; index < _callCaptionLines.length; index++) {
+        final caption = _callCaptionLines[index];
+        if (caption.translating || targetChanged) {
+          _callCaptionLines[index] = caption.copyWith(
+            translation: targetChanged ? '' : caption.translation,
+            translating: false,
+          );
+        }
+      }
+    } else {
+      for (final caption in _callCaptionLines) {
+        if (caption.isFinal) unawaited(_translateCallCaption(caption));
+      }
+    }
+    notifyListeners();
+  }
+
+  void setCallCaptionSourceLanguage(String language) {
+    final normalized = language.trim().toLowerCase();
+    if (!const {'auto', 'ru', 'en', 'de', 'es', 'fr', 'it'}.contains(
+      normalized,
+    )) {
+      return;
+    }
+    callCaptionSourceLanguage = normalized;
+    notifyListeners();
+  }
+
+  Future<String?> _startCallCaptions() {
+    return _callCaptionService.start(
+      onResult: _handleLocalCallCaption,
+      onStatus: (status) {
+        if (!callCaptionsEnabled && status != 'Captions off') return;
+        _callCaptionStatus = status;
+        notifyListeners();
+      },
+      onWindowsAudioChunk: _transcribeLiveCallCaptionAudio,
+    );
+  }
+
+  Future<String?> _transcribeLiveCallCaptionAudio(
+    Uint8List wavBytes,
+    Duration duration,
+  ) async {
+    final current = session;
+    final call = activeCall;
+    if (current == null ||
+        call == null ||
+        call.status == CallStatus.ended ||
+        !_socket.isConnected ||
+        wavBytes.isEmpty) {
+      return null;
+    }
+    final requestId = const Uuid().v4();
+    final completer = Completer<AiTranscriptionResult>();
+    _aiTranscriptionCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'ai_voice_transcription_request',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        // Live caption chunks intentionally never match a persisted message.
+        'message_id': 'call-caption-${call.callId}-$requestId',
+        'filename': 'live-caption.wav',
+        'audio_base64': base64Encode(wavBytes),
+        'duration_seconds': duration.inMilliseconds / 1000,
+        'transcription_language': callCaptionSourceLanguage,
+      });
+    } catch (_) {
+      _aiTranscriptionCompleters.remove(requestId);
+      return null;
+    }
+    try {
+      final result = await completer.future.timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          _aiTranscriptionCompleters.remove(requestId);
+          throw const AiTranscriptionException(
+            'timeout',
+            'Live caption request timed out',
+          );
+        },
+      );
+      return result.text.trim().isEmpty ? null : result.text.trim();
+    } on AiTranscriptionException {
+      return null;
+    }
+  }
+
+  Future<void> _stopCallCaptions({required bool clearLines}) async {
+    callCaptionsEnabled = false;
+    _callCaptionSendTimer?.cancel();
+    _callCaptionSendTimer = null;
+    _pendingCaptionText = '';
+    _pendingCaptionFinal = false;
+    _activeCaptionId = '';
+    _callCaptionTranslationsInFlight.clear();
+    await _callCaptionService.stop();
+    _callCaptionStatus = 'Captions off';
+    if (clearLines) _callCaptionLines.clear();
+  }
+
+  void _handleLocalCallCaption(String text, bool isFinal, double confidence) {
+    final call = activeCall;
+    if (!callCaptionsEnabled ||
+        call == null ||
+        call.status == CallStatus.ended ||
+        text.trim().isEmpty) {
+      return;
+    }
+    _activeCaptionId = _activeCaptionId.isEmpty
+        ? const Uuid().v4()
+        : _activeCaptionId;
+    final captionId = _activeCaptionId;
+    final caption = CallCaptionLine(
+      id: captionId,
+      sourceNode: myNodeId,
+      speaker: 'You',
+      text: text.trim(),
+      isFinal: isFinal,
+      updatedAt: DateTime.now(),
+    );
+    _upsertCallCaption(caption);
+    if (isFinal) {
+      // Translate with the speaker's entitlement as well. The translated
+      // update is relayed with the same caption id, so listeners without
+      // MeshPro still receive the translation selected by the speaker.
+      unawaited(_translateCallCaption(caption, relayToPeers: true));
+    }
+    _pendingCaptionText = text.trim();
+    _pendingCaptionFinal = isFinal;
+    if (isFinal) {
+      _callCaptionSendTimer?.cancel();
+      _callCaptionSendTimer = null;
+      _sendPendingCallCaption(captionId);
+      _activeCaptionId = '';
+    } else {
+      _callCaptionSendTimer ??= Timer(const Duration(milliseconds: 220), () {
+        _callCaptionSendTimer = null;
+        _sendPendingCallCaption(captionId);
+      });
+    }
+    notifyListeners();
+  }
+
+  void _sendPendingCallCaption(String captionId) {
+    final call = activeCall;
+    final text = _pendingCaptionText.trim();
+    if (!callCaptionsEnabled ||
+        call == null ||
+        call.status == CallStatus.ended ||
+        text.isEmpty) {
+      return;
+    }
+    _sendCallCaptionPacket(
+      captionId: captionId,
+      text: text,
+      isFinal: _pendingCaptionFinal,
+    );
+  }
+
+  void _sendCallCaptionPacket({
+    required String captionId,
+    required String text,
+    required bool isFinal,
+    String translation = '',
+    String translationLanguage = '',
+  }) {
+    final call = activeCall;
+    if (!callCaptionsEnabled ||
+        call == null ||
+        call.status == CallStatus.ended ||
+        text.trim().isEmpty) {
+      return;
+    }
+    final destinations = call.isGroup
+        ? <String>{
+            call.peer.nodeId,
+            ...call.groupMembers,
+            ...call.connectedNodes,
+          }
+        : <String>{call.peer.nodeId};
+    destinations.removeWhere((node) => node.isEmpty || node == myNodeId);
+    for (final destination in destinations) {
+      _socket.send({
+        'type': 'call_caption',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': destination,
+        'ttl': 5,
+        'call_id': call.callId,
+        'caption_id': captionId,
+        'speaker': ownProfile.displayName,
+        'text': text,
+        'final': isFinal,
+        'source_language': callCaptionSourceLanguage,
+        if (translation.trim().isNotEmpty) 'translation': translation.trim(),
+        if (translationLanguage.trim().isNotEmpty)
+          'translation_language': translationLanguage.trim(),
+        if (call.isGroup) 'group_id': call.groupId,
+      });
+    }
+  }
+
+  void _handleCallCaption(Map<String, dynamic> packet) {
+    final call = activeCall;
+    if (call == null || call.status == CallStatus.ended) return;
+    if (packet['call_id']?.toString() != call.callId) return;
+    final source = packet['source_node']?.toString() ?? '';
+    final captionId = packet['caption_id']?.toString() ?? '';
+    final text = packet['text']?.toString().trim() ?? '';
+    final providedTranslation = packet['translation']?.toString().trim() ?? '';
+    if (source.isEmpty ||
+        source == myNodeId ||
+        captionId.isEmpty ||
+        text.isEmpty) {
+      return;
+    }
+    final profile = profiles[source];
+    final caption = CallCaptionLine(
+      id: captionId,
+      sourceNode: source,
+      speaker: profile?.displayName.trim().isNotEmpty == true
+          ? profile!.displayName
+          : packet['speaker']?.toString().trim().isNotEmpty == true
+          ? packet['speaker'].toString().trim()
+          : 'Participant',
+      text: text,
+      isFinal: packet['final'] == true,
+      updatedAt: DateTime.now(),
+      // A MeshPro speaker may attach a ready translation. It is intentionally
+      // visible to every participant, including listeners without MeshPro.
+      translation: providedTranslation.isNotEmpty ? providedTranslation : '',
+    );
+    _upsertCallCaption(caption);
+    if (caption.isFinal &&
+        caption.translation.isEmpty &&
+        _hasMeshProFeature('ai_message_translation')) {
+      // Fallback for calls where the speaker did not request a translation.
+      unawaited(_translateCallCaption(caption));
+    }
+    notifyListeners();
+  }
+
+  void _upsertCallCaption(CallCaptionLine caption) {
+    final index = _callCaptionLines.indexWhere(
+      (item) => item.id == caption.id && item.sourceNode == caption.sourceNode,
+    );
+    if (index < 0) {
+      _callCaptionLines.add(caption);
+    } else {
+      _callCaptionLines[index] = caption;
+    }
+    // Keep final captions visible long enough for the separate AI translation
+    // response to return on a busy provider.
+    _callCaptionLines.removeWhere(
+      (item) => DateTime.now().difference(item.updatedAt).inSeconds > 75,
+    );
+    while (_callCaptionLines.length > 6) {
+      _callCaptionLines.removeAt(0);
+    }
+  }
+
+  Future<void> _translateCallCaption(
+    CallCaptionLine caption, {
+    bool relayToPeers = false,
+  }) async {
+    if (!callCaptionTranslationEnabled ||
+        !caption.isFinal ||
+        caption.text.trim().isEmpty) {
+      return;
+    }
+    final targetLanguage = callCaptionTargetLanguage;
+    final requestKey =
+        '$caption.sourceNode:${caption.id}:${caption.text}:$targetLanguage';
+    if (!_callCaptionTranslationsInFlight.add(requestKey)) return;
+    _replaceCallCaption(
+      caption.sourceNode,
+      caption.id,
+      (current) => current.copyWith(translating: true),
+    );
+    notifyListeners();
+    try {
+      final result = await translateMessageWithAi(
+        text: caption.text,
+        targetLanguage: targetLanguage,
+      );
+      if (!callCaptionTranslationEnabled ||
+          targetLanguage != callCaptionTargetLanguage) {
+        return;
+      }
+      _replaceCallCaption(caption.sourceNode, caption.id, (current) {
+        if (current.text != caption.text) return current;
+        return current.copyWith(
+          translation: result.text.trim(),
+          translating: false,
+        );
+      });
+      final translatedText = result.text.trim();
+      if (relayToPeers && translatedText.isNotEmpty) {
+        _sendCallCaptionPacket(
+          captionId: caption.id,
+          text: caption.text,
+          isFinal: true,
+          translation: translatedText,
+          translationLanguage: targetLanguage,
+        );
+      }
+    } on AiTranslationException {
+      _replaceCallCaption(
+        caption.sourceNode,
+        caption.id,
+        (current) => current.copyWith(translating: false),
+      );
+    } finally {
+      _callCaptionTranslationsInFlight.remove(requestKey);
+      notifyListeners();
+    }
+  }
+
+  void _replaceCallCaption(
+    String sourceNode,
+    String captionId,
+    CallCaptionLine Function(CallCaptionLine caption) update,
+  ) {
+    final index = _callCaptionLines.indexWhere(
+      (item) => item.id == captionId && item.sourceNode == sourceNode,
+    );
+    if (index >= 0) _callCaptionLines[index] = update(_callCaptionLines[index]);
+  }
+
   bool get canShareCallScreen {
     final call = activeCall;
     return call != null &&
@@ -6468,6 +6949,13 @@ class AppController extends ChangeNotifier {
         !call.isGroup &&
         meshProSubscription.isActiveNow &&
         meshProSubscription.entitlements.hasFeature('call_screen_share');
+  }
+
+  bool get canStartCallCaptions {
+    final call = activeCall;
+    return call != null &&
+        call.status != CallStatus.ended &&
+        _hasMeshProFeature('ai_voice_transcription');
   }
 
   Widget buildRemoteCallScreen() => _calls.remoteScreenView();
@@ -6572,6 +7060,7 @@ class AppController extends ChangeNotifier {
   void clearEndedCall() {
     if (activeCall?.status != CallStatus.ended) return;
     unawaited(CallAlertService.stopAll());
+    unawaited(_stopCallCaptions(clearLines: true));
     _setActiveCall(null);
     notifyListeners();
   }
@@ -6659,6 +7148,7 @@ class AppController extends ChangeNotifier {
       });
       return;
     }
+    await _stopCallCaptions(clearLines: true);
     final senderProfile =
         profiles[sender] ??
         Profile(
@@ -6820,6 +7310,7 @@ class AppController extends ChangeNotifier {
   }) async {
     if (_finishedCallIds.contains(call.callId)) return;
     _finishedCallIds.add(call.callId);
+    await _stopCallCaptions(clearLines: true);
     _callPhaseTimeout?.cancel();
     _callReconnectTimer?.cancel();
     _callPhaseTimeout = null;
@@ -7132,6 +7623,8 @@ class AppController extends ChangeNotifier {
     ChatMessage? replyTo,
     ChatThread? threadOverride,
     ChatMessage? retryingMessage,
+    String? messageId,
+    bool businessAutoReply = false,
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null) return;
@@ -7144,7 +7637,7 @@ class AppController extends ChangeNotifier {
       if (sendError != null) addDiagnostic('bluetooth', sendError);
       return;
     }
-    final id = retryingMessage?.id ?? const Uuid().v4();
+    final id = retryingMessage?.id ?? messageId ?? const Uuid().v4();
     final messageEffect =
         retryingMessage?.messageEffect ?? _outgoingMessageEffect;
     final replyToMessageId =
@@ -7222,6 +7715,7 @@ class AppController extends ChangeNotifier {
       'reply_to_message_id': replyToMessageId,
       'reply_to_text': replyToText,
       'message_effect': messageEffect,
+      if (businessAutoReply) 'business_auto_reply': true,
     });
     if (!_socket.supportsMutationAck) {
       _replaceMessage(id, (message) => message.copyWith(pending: false));
@@ -8507,12 +9001,61 @@ class AppController extends ChangeNotifier {
           );
         }
         _publishIncomingPreview(thread, message);
+        unawaited(
+          _maybeSendBusinessAutoReply(packet, profile, thread, message),
+        );
       }
       unawaited(_saveCache());
     }
     if (!sentByMe) {
       await _sendDeliveryReceipt(packet, sender, id);
     }
+  }
+
+  Future<void> _maybeSendBusinessAutoReply(
+    Map<String, dynamic> packet,
+    Profile sender,
+    ChatThread thread,
+    ChatMessage incoming,
+  ) async {
+    final business = appSettings.businessSettings;
+    if (!business.enabled || packet['business_auto_reply'] == true) return;
+    if (!meshProSubscription.entitlements.hasFeature('business_tools')) return;
+    if (thread.isGroup ||
+        thread.isBluetooth ||
+        isSavedMessagesProfile(sender)) {
+      return;
+    }
+    final age = DateTime.now().difference(incoming.createdAt.toLocal()).abs();
+    if (age > const Duration(minutes: 2)) return;
+
+    final now = DateTime.now();
+    final outsideHours = !business.isWithinWorkingHours(now);
+    final mode = outsideHours && business.awayEnabled
+        ? 'away'
+        : business.greetingEnabled
+        ? 'greeting'
+        : '';
+    if (mode.isEmpty) return;
+    final text = mode == 'away' ? business.awayText : business.greetingText;
+    if (text.trim().isEmpty) return;
+
+    final login = sender.accountLogin.trim().toLowerCase();
+    final throttleKey = '$mode:${login.isEmpty ? sender.nodeId : login}';
+    final lastSent = _businessAutoReplyAt[throttleKey];
+    final cooldown = mode == 'away'
+        ? const Duration(hours: 4)
+        : const Duration(days: 7);
+    if (lastSent != null && now.difference(lastSent) < cooldown) return;
+    _businessAutoReplyAt[throttleKey] = now;
+
+    await sendMessage(
+      sender,
+      text,
+      threadOverride: thread,
+      messageId: 'business-$mode-${incoming.id}',
+      businessAutoReply: true,
+    );
   }
 
   Future<void> _receiveFileManifest(
@@ -9717,6 +10260,7 @@ class AppController extends ChangeNotifier {
     List<String>? quickReactions,
     bool? hdAudio,
     bool? enhancedNoiseSuppression,
+    BusinessSettings? businessSettings,
   }) async {
     if (session == null) return 'Sign in first';
     if (!meshProSubscription.isActiveNow) return 'MeshPro is required';
@@ -9751,6 +10295,7 @@ class AppController extends ChangeNotifier {
       'enhanced_noise_suppression':
           enhancedNoiseSuppression ??
           appSettings.meshProEnhancedNoiseSuppression,
+      'business': (businessSettings ?? appSettings.businessSettings).toJson(),
       'ttl': 5,
     });
     return completer.future.timeout(
@@ -10415,6 +10960,7 @@ class AppController extends ChangeNotifier {
     _softResyncTimer = null;
     _incomingPreviewTimer = null;
     unawaited(CallAlertService.stopAll());
+    _callCaptionService.dispose();
     unawaited(_endCallMedia());
     unawaited(_proximityScreen.dispose());
     ble.removeListener(_handleBluetoothStateChanged);
