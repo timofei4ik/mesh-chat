@@ -1,12 +1,12 @@
 {
-  "catalogVersion": 31,
-  "updatedAt": "2026-08-17T00:00:00Z",
+  "catalogVersion": 32,
+  "updatedAt": "2026-08-20T00:00:00Z",
   "apps": [
     {
       "id": "meshchat",
       "name": "MeshChat",
       "tagline": "Messenger",
-      "version": "1.0.80",
+      "version": "1.0.84",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -18,11 +18,11 @@
       "windowsUrl": "https://meshchat-losa.ru/downloads/MeshChat-Windows.zip",
       "windowsExecutable": "MeshChat.exe",
       "androidPackage": "com.meshchat.meshchat_mobile",
-      "build": 183,
+      "build": 187,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-08-16T00:00:00Z",
+      "updated_at": "2026-08-20T00:00:00Z",
       "webUrl": "https://meshchat-losa.ru/downloads/MeshChat-Web.zip"
     },
     {

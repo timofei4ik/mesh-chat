@@ -37,6 +37,7 @@ SYNC_V2_EVENT_PACKET_TYPES = frozenset(
         "message_reaction",
         "message_read",
         "draft_update",
+        "chat_state_update",
         "group_message",
         "group_update",
         "group_member_leave",
@@ -1484,6 +1485,7 @@ class ServerSyncMixin:
             """
             SELECT chat_key,
                    draft_text,
+                   archived,
                    version,
                    updated_at
             FROM account_chat_state
@@ -1496,8 +1498,9 @@ class ServerSyncMixin:
             {
                 "chat_key": row[0],
                 "draft": row[1] or "",
-                "version": int(row[2] or 0),
-                "updated_at": row[3],
+                "archived": bool(row[2]),
+                "version": int(row[3] or 0),
+                "updated_at": row[4],
             }
             for row in cursor.fetchall()
         ]

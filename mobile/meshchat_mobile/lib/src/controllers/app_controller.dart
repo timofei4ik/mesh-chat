@@ -23,6 +23,7 @@ import '../services/call_alert_service.dart';
 import '../services/call_caption_service.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
+import '../services/firebase_telemetry_service.dart';
 import '../services/mesh_crypto.dart';
 import '../services/mesh_socket.dart';
 import '../services/read_state_reconciler.dart';
@@ -453,6 +454,7 @@ class AppController extends ChangeNotifier {
   bool busy = false;
   String status = 'Offline';
   DateTime? lastSyncAt;
+  DateTime? _syncStartedAt;
   String? error;
   bool emailBindingRequired = false;
   String pendingEmailChallengeId = '';
@@ -487,6 +489,7 @@ class AppController extends ChangeNotifier {
   Timer? _callTicker;
   Timer? _callPhaseTimeout;
   Timer? _callReconnectTimer;
+  final Map<String, int> _callReconnectAttempts = {};
   Timer? _callCaptionSendTimer;
   final List<CallCaptionLine> _callCaptionLines = [];
   final Set<String> _callCaptionTranslationsInFlight = {};
@@ -526,6 +529,7 @@ class AppController extends ChangeNotifier {
   Future<void>? _cacheSaveFuture;
   bool _cacheSavePending = false;
   final Map<String, int> _draftVersions = {};
+  final Map<String, int> _archiveVersions = {};
   final Map<String, bool> _archiveStates = {};
   final Map<String, DateTime> _businessAutoReplyAt = {};
   NotificationTarget? _pendingNotificationTarget;
@@ -1338,6 +1342,11 @@ class AppController extends ChangeNotifier {
       await _connect();
     } else {
       unawaited(refreshMeshProSubscription());
+      final lastSync = lastSyncAt;
+      if (lastSync == null ||
+          DateTime.now().difference(lastSync) > const Duration(seconds: 20)) {
+        _scheduleSoftResync('App resumed: requesting missed delta events');
+      }
     }
     if (ble.running) unawaited(ble.setAppForeground(true));
   }
@@ -2715,6 +2724,7 @@ class AppController extends ChangeNotifier {
 
     switch (packet['type']) {
       case 'server_welcome':
+        _syncStartedAt = DateTime.now();
         _syncDeltaBuffer.abort();
         _applyingSyncDelta = false;
         _livePacketsDuringDeltaApply.clear();
@@ -2782,6 +2792,7 @@ class AppController extends ChangeNotifier {
         }
         status = 'Online';
         lastSyncAt = DateTime.now();
+        _recordSyncLatency('snapshot');
         addDiagnostic('sync', 'Sync received');
         notifyListeners();
       case 'mutation_ack':
@@ -2874,6 +2885,8 @@ class AppController extends ChangeNotifier {
         _applyReadPacket(packet);
       case 'draft_update':
         _applyDraftUpdate(packet);
+      case 'chat_state_update':
+        _applyChatStateUpdate(packet);
       case 'message_reaction':
       case 'group_reaction':
         _applyReactionPacket(packet);
@@ -2999,6 +3012,7 @@ class AppController extends ChangeNotifier {
       }
       status = 'Online';
       lastSyncAt = DateTime.now();
+      _recordSyncLatency('delta');
       addDiagnostic('sync', 'Delta sync applied through ${batch.targetCursor}');
     } catch (syncError) {
       _applyingSyncDelta = false;
@@ -3016,6 +3030,19 @@ class AppController extends ChangeNotifier {
     return digest.bytes
         .map((value) => value.toRadixString(16).padLeft(2, '0'))
         .join();
+  }
+
+  void _recordSyncLatency(String mode) {
+    final startedAt = _syncStartedAt;
+    _syncStartedAt = null;
+    if (startedAt == null) return;
+    unawaited(
+      FirebaseTelemetryService.recordLatency(
+        'account_sync_latency',
+        DateTime.now().difference(startedAt),
+        attributes: {'mode': mode, 'platform': defaultTargetPlatform.name},
+      ),
+    );
   }
 
   Object? _canonicalSyncJson(Object? value) {
@@ -4922,11 +4949,26 @@ class AppController extends ChangeNotifier {
 
   void toggleThreadArchive(ChatThread thread) {
     thread.archived = !thread.archived;
-    final key = thread.storageKey;
+    final key = chatPreferenceKey(thread);
     final current = session;
     if (key.isNotEmpty && current != null) {
       _archiveStates[key] = thread.archived;
       unawaited(_cache.saveArchiveStates(current, _archiveStates));
+      if (!thread.isBluetooth &&
+          _socket.isConnected &&
+          _socket.supportsMultiDeviceState) {
+        _socket.send({
+          'type': 'chat_state_update',
+          'packet_id': const Uuid().v4(),
+          'operation_id': 'chat_state_update:${const Uuid().v4()}',
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': myNodeId,
+          'destination_node': 'SERVER',
+          'chat_key': key,
+          'archived': thread.archived,
+          'ttl': 1,
+        });
+      }
     }
     unawaited(_saveCache());
     notifyListeners();
@@ -6204,7 +6246,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _applyArchiveState(ChatThread thread) {
-    final key = thread.storageKey;
+    final key = chatPreferenceKey(thread);
     if (key.isEmpty) return;
     final archived = _archiveStates[key];
     if (archived != null) thread.archived = archived;
@@ -6688,6 +6730,7 @@ class AppController extends ChangeNotifier {
       _aiTranscriptionCompleters.remove(requestId);
       return null;
     }
+    final startedAt = DateTime.now();
     try {
       final result = await completer.future.timeout(
         const Duration(seconds: 25),
@@ -6698,6 +6741,16 @@ class AppController extends ChangeNotifier {
             'Live caption request timed out',
           );
         },
+      );
+      unawaited(
+        FirebaseTelemetryService.recordLatency(
+          'call_caption_latency',
+          DateTime.now().difference(startedAt),
+          attributes: {
+            'platform': defaultTargetPlatform.name,
+            'source_language': callCaptionSourceLanguage,
+          },
+        ),
       );
       return result.text.trim().isEmpty ? null : result.text.trim();
     } on AiTranscriptionException {
@@ -6726,15 +6779,31 @@ class AppController extends ChangeNotifier {
         text.trim().isEmpty) {
       return;
     }
+    final normalizedText = text.trim();
+    final previous = _callCaptionLines.isEmpty ? null : _callCaptionLines.last;
+    final canContinuePrevious =
+        isFinal &&
+        previous != null &&
+        previous.sourceNode == myNodeId &&
+        previous.isFinal &&
+        DateTime.now().difference(previous.updatedAt) <
+            const Duration(seconds: 7) &&
+        previous.text.length < 180;
+    final mergedText = canContinuePrevious
+        ? _mergeCaptionSegments(previous.text, normalizedText)
+        : normalizedText;
+    if (canContinuePrevious && mergedText == previous.text) return;
     _activeCaptionId = _activeCaptionId.isEmpty
-        ? const Uuid().v4()
+        ? canContinuePrevious && mergedText != previous.text
+              ? previous.id
+              : const Uuid().v4()
         : _activeCaptionId;
     final captionId = _activeCaptionId;
     final caption = CallCaptionLine(
       id: captionId,
       sourceNode: myNodeId,
       speaker: 'You',
-      text: text.trim(),
+      text: mergedText,
       isFinal: isFinal,
       updatedAt: DateTime.now(),
     );
@@ -6745,7 +6814,7 @@ class AppController extends ChangeNotifier {
       // MeshPro still receive the translation selected by the speaker.
       unawaited(_translateCallCaption(caption, relayToPeers: true));
     }
-    _pendingCaptionText = text.trim();
+    _pendingCaptionText = mergedText;
     _pendingCaptionFinal = isFinal;
     if (isFinal) {
       _callCaptionSendTimer?.cancel();
@@ -7321,6 +7390,7 @@ class AppController extends ChangeNotifier {
     _callReconnectTimer?.cancel();
     _callPhaseTimeout = null;
     _callReconnectTimer = null;
+    _callReconnectAttempts.clear();
     unawaited(CallAlertService.stopAll());
     unawaited(_notifications.cancelCall(call.callId));
     if (broadcast) _sendCallEnd(call, reason);
@@ -7345,6 +7415,19 @@ class AppController extends ChangeNotifier {
         _callReconnectTimer?.cancel();
         _callReconnectTimer = null;
         final connectedNode = nodeId.isEmpty ? call.peer.nodeId : nodeId;
+        _callReconnectAttempts.remove(connectedNode);
+        unawaited(
+          FirebaseTelemetryService.recordLatency(
+            'call_connection_latency',
+            DateTime.now().difference(call.startedAt),
+            attributes: {
+              'group': call.isGroup.toString(),
+              'route': call.networkRoute.isEmpty
+                  ? 'negotiating'
+                  : call.networkRoute,
+            },
+          ),
+        );
         _setActiveCall(
           call.copyWith(
             status: CallStatus.active,
@@ -7406,7 +7489,23 @@ class AppController extends ChangeNotifier {
 
   void _scheduleCallReconnect(String callId, String nodeId) {
     _callReconnectTimer?.cancel();
-    _callReconnectTimer = Timer(const Duration(seconds: 2), () async {
+    final key = nodeId.isEmpty ? activeCall?.peer.nodeId ?? '' : nodeId;
+    final attempt = (_callReconnectAttempts[key] ?? 0) + 1;
+    _callReconnectAttempts[key] = attempt;
+    final delaySeconds = switch (attempt) {
+      1 => 1,
+      2 => 3,
+      _ => 7,
+    };
+    if (attempt == 1 && _socket.isConnected) {
+      _socket.send({
+        'type': 'call_ice_servers_request',
+        'request_id': const Uuid().v4(),
+        'source_node': myNodeId,
+        'protocol_version': MeshSocket.protocolVersion,
+      });
+    }
+    _callReconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
       final call = activeCall;
       if (call == null ||
           call.callId != callId ||
@@ -10058,8 +10157,73 @@ class AppController extends ChangeNotifier {
     if (rawStates is! List) return;
     for (final raw in rawStates) {
       if (raw is! Map) continue;
-      _applyDraftUpdate(Map<String, dynamic>.from(raw));
+      final state = Map<String, dynamic>.from(raw);
+      _applyDraftUpdate(state);
+      _applyChatStateUpdate(state);
     }
+  }
+
+  void _applyChatStateUpdate(Map<String, dynamic> packet) {
+    final packetLogin = packet['login']?.toString().trim().toLowerCase() ?? '';
+    final currentLogin = session?.login.trim().toLowerCase() ?? '';
+    if (packetLogin.isNotEmpty &&
+        currentLogin.isNotEmpty &&
+        packetLogin != currentLogin) {
+      return;
+    }
+    final chatKey = packet['chat_key']?.toString().trim() ?? '';
+    final version = int.tryParse(packet['version']?.toString() ?? '') ?? 0;
+    if (chatKey.isEmpty ||
+        packet['archived'] is! bool ||
+        version < (_archiveVersions[chatKey] ?? 0)) {
+      return;
+    }
+    final archived = packet['archived'] == true;
+    _archiveVersions[chatKey] = version;
+    _archiveStates[chatKey] = archived;
+    var changed = false;
+    for (final thread in <ChatThread>[
+      ...threads.values.where((item) => chatPreferenceKey(item) == chatKey),
+      ...groups.values.where((item) => chatPreferenceKey(item) == chatKey),
+    ]) {
+      if (thread.archived == archived) continue;
+      thread.archived = archived;
+      changed = true;
+    }
+    final current = session;
+    if (current != null) {
+      unawaited(_cache.saveArchiveStates(current, _archiveStates));
+    }
+    if (!changed) return;
+    unawaited(_saveCache());
+    notifyListeners();
+  }
+
+  String _mergeCaptionSegments(String previous, String incoming) {
+    final left = previous.trim();
+    final right = incoming.trim();
+    if (left.isEmpty) return right;
+    if (right.isEmpty || left == right || left.endsWith(right)) return left;
+    if (right.startsWith(left)) return right;
+
+    final leftWords = left.split(RegExp(r'\s+'));
+    final rightWords = right.split(RegExp(r'\s+'));
+    final maxOverlap = min(6, min(leftWords.length, rightWords.length));
+    var overlap = 0;
+    for (var size = maxOverlap; size > 0; size--) {
+      final leftTail = leftWords
+          .sublist(leftWords.length - size)
+          .join(' ')
+          .toLowerCase();
+      final rightHead = rightWords.sublist(0, size).join(' ').toLowerCase();
+      if (leftTail == rightHead) {
+        overlap = size;
+        break;
+      }
+    }
+    final suffix = rightWords.sublist(overlap).join(' ');
+    if (suffix.isEmpty) return left;
+    return '$left $suffix';
   }
 
   void _applyDraftUpdate(Map<String, dynamic> packet) {
@@ -10725,6 +10889,7 @@ class AppController extends ChangeNotifier {
     _draftCacheSaveTimer?.cancel();
     _draftCacheSaveTimer = null;
     _draftVersions.clear();
+    _archiveVersions.clear();
     _archiveStates.clear();
     _incomingPreviewTimer?.cancel();
     _softResyncTimer?.cancel();
@@ -10876,16 +11041,22 @@ class AppController extends ChangeNotifier {
     _archiveStates
       ..clear()
       ..addAll(await _cache.loadArchiveStates(current));
-    if (_archiveStates.isEmpty) {
-      for (final thread in [...threads.values, ...groups.values]) {
-        final key = thread.storageKey;
-        if (key.isNotEmpty && thread.archived) {
-          _archiveStates[key] = true;
-        }
+    var archiveKeysMigrated = false;
+    for (final thread in [...threads.values, ...groups.values]) {
+      final key = chatPreferenceKey(thread);
+      if (key.isEmpty) continue;
+      final legacyKey = thread.storageKey;
+      final legacyValue = _archiveStates[legacyKey];
+      if (!_archiveStates.containsKey(key) && legacyValue != null) {
+        _archiveStates[key] = legacyValue;
+        archiveKeysMigrated = true;
+      } else if (!_archiveStates.containsKey(key) && thread.archived) {
+        _archiveStates[key] = true;
+        archiveKeysMigrated = true;
       }
-      if (_archiveStates.isNotEmpty) {
-        await _cache.saveArchiveStates(current, _archiveStates);
-      }
+    }
+    if (archiveKeysMigrated) {
+      await _cache.saveArchiveStates(current, _archiveStates);
     }
     _applyArchiveStatesToThreads();
   }

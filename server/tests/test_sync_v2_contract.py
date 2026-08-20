@@ -250,6 +250,7 @@ class SyncV2ContractTests(unittest.TestCase):
                 {
                     "chat_key": "direct:bob",
                     "draft": "answer from the desktop",
+                    "archived": False,
                     "version": 2,
                     "updated_at": target_snapshot["chat_states"][0][
                         "updated_at"

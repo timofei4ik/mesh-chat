@@ -345,12 +345,22 @@ class ServerStorageMixin:
                 login TEXT NOT NULL,
                 chat_key TEXT NOT NULL,
                 draft_text TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
                 version INTEGER NOT NULL DEFAULT 1,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(login, chat_key)
             )
             """
         )
+        account_chat_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(account_chat_state)")
+        }
+        if "archived" not in account_chat_columns:
+            conn.execute(
+                "ALTER TABLE account_chat_state "
+                "ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+            )
 
         conn.execute(
             """
@@ -4557,6 +4567,47 @@ class ServerStorageMixin:
             ).fetchone()
             packet["login"] = source_login
             packet["draft"] = draft_text
+            packet["version"] = int(version_row[0] if version_row else 1)
+            self._commit_storage()
+
+        elif packet_type == "chat_state_update":
+
+            source_node = str(packet.get("source_node") or "").strip()
+            source_login = str(
+                self.get_login_by_node(source_node) or ""
+            ).strip().lower()
+            chat_key = str(packet.get("chat_key") or "").strip()
+            if not source_node or not source_login or not chat_key or len(chat_key) > 512:
+                return False
+
+            archived = 1 if packet.get("archived") is True else 0
+            self.db.execute(
+                """
+                INSERT INTO account_chat_state(
+                    login,
+                    chat_key,
+                    archived,
+                    version,
+                    updated_at
+                )
+                VALUES(?,?,?,1,CURRENT_TIMESTAMP)
+                ON CONFLICT(login, chat_key) DO UPDATE SET
+                    archived=excluded.archived,
+                    version=account_chat_state.version+1,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (source_login, chat_key, archived),
+            )
+            version_row = self.db.execute(
+                """
+                SELECT version
+                FROM account_chat_state
+                WHERE login=? AND chat_key=?
+                """,
+                (source_login, chat_key),
+            ).fetchone()
+            packet["login"] = source_login
+            packet["archived"] = bool(archived)
             packet["version"] = int(version_row[0] if version_row else 1)
             self._commit_storage()
 

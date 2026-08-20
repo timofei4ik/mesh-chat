@@ -15,6 +15,7 @@ DELTA_SHADOW_EVENT_TYPES = frozenset(
         "message_reaction",
         "message_read",
         "draft_update",
+        "chat_state_update",
         "group_message",
         "group_update",
         "group_member_leave",
@@ -221,6 +222,7 @@ def canonical_sync_v2_state(snapshot):
         if chat_key:
             state["chat_states"][chat_key] = {
                 "draft": _text(item.get("draft")),
+                "archived": item.get("archived") is True,
                 "version": int(item.get("version") or 0),
             }
     for item in snapshot.get("stories") or []:
@@ -434,8 +436,19 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
         elif packet_type == "draft_update":
             chat_key = _text(payload.get("chat_key"))
             if chat_key:
+                previous = state["chat_states"].get(chat_key, {})
                 state["chat_states"][chat_key] = {
                     "draft": _text(payload.get("draft")),
+                    "archived": previous.get("archived") is True,
+                    "version": int(payload.get("version") or 0),
+                }
+        elif packet_type == "chat_state_update":
+            chat_key = _text(payload.get("chat_key"))
+            if chat_key:
+                previous = state["chat_states"].get(chat_key, {})
+                state["chat_states"][chat_key] = {
+                    "draft": _text(previous.get("draft")),
+                    "archived": payload.get("archived") is True,
                     "version": int(payload.get("version") or 0),
                 }
         elif packet_type == "story_update":

@@ -25,7 +25,9 @@ class _CaptionAudioChunk {
 
 class CallCaptionService {
   final SpeechToText _speech = SpeechToText();
-  final AudioRecorder _recorder = AudioRecorder();
+  AudioRecorder? _recorderInstance;
+
+  AudioRecorder get _recorder => _recorderInstance ??= AudioRecorder();
 
   bool _enabled = false;
   bool _initialized = false;
@@ -46,9 +48,10 @@ class CallCaptionService {
 
   static const _serverAudioSampleRate = 16000;
   static const _serverAudioChannels = 1;
-  // A six-second phrase gives Whisper enough surrounding context for quieter
-  // and longer sentences without exceeding the provider's live-call budget.
-  static const _serverAudioChunkDuration = Duration(seconds: 6);
+  // Four seconds keeps enough context for Whisper while noticeably reducing
+  // the delay before the first caption. Requests are queued, so rotating the
+  // recorder never interrupts the next audio segment.
+  static const _serverAudioChunkDuration = Duration(seconds: 4);
 
   bool get enabled => _enabled;
 
@@ -171,7 +174,7 @@ class CallCaptionService {
       },
     );
     _serverAudioChunkTimer = Timer.periodic(
-      const Duration(seconds: 4),
+      const Duration(seconds: 3),
       (_) => _flushIosServerAudioChunk(),
     );
     _onStatus?.call('Listening');
@@ -470,7 +473,11 @@ class CallCaptionService {
     _restartTimer?.cancel();
     _restartTimer = null;
     unawaited(_stopServerAudioCaptions());
-    unawaited(_recorder.dispose().catchError((_) {}));
+    final recorder = _recorderInstance;
+    _recorderInstance = null;
+    if (recorder != null) {
+      unawaited(recorder.dispose().catchError((_) {}));
+    }
     unawaited(_speech.cancel().catchError((_) {}));
   }
 }

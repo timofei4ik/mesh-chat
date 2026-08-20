@@ -81,6 +81,21 @@ class FirebaseTelemetryService {
     );
   }
 
+  static Future<void> recordLatency(
+    String name,
+    Duration duration, {
+    Map<String, String> attributes = const {},
+  }) async {
+    if (!_ready) return;
+    final trace = FirebasePerformance.instance.newTrace(name);
+    for (final entry in attributes.entries) {
+      trace.putAttribute(entry.key, entry.value);
+    }
+    trace.setMetric('duration_ms', duration.inMilliseconds);
+    await trace.start();
+    await trace.stop();
+  }
+
   static void _installErrorHandlers() {
     final previousFlutterHandler = FlutterError.onError;
     FlutterError.onError = (details) {

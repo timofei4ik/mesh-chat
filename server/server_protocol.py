@@ -39,6 +39,7 @@ ACCOUNT_LIVE_FANOUT_PACKET_TYPES = frozenset(
         "message_reaction",
         "message_read",
         "draft_update",
+        "chat_state_update",
         "group_message",
         "group_update",
         "group_member_leave",
