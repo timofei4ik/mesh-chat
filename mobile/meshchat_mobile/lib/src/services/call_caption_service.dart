@@ -34,6 +34,8 @@ class CallCaptionService {
   bool _transcribingServerAudio = false;
   Timer? _restartTimer;
   Timer? _serverAudioChunkTimer;
+  StreamSubscription<Uint8List>? _iosAudioStreamSubscription;
+  BytesBuilder _iosAudioBuffer = BytesBuilder(copy: false);
   DateTime? _serverAudioChunkStartedAt;
   String? _serverAudioChunkPath;
   final ListQueue<_CaptionAudioChunk> _queuedServerAudio =
@@ -70,15 +72,15 @@ class CallCaptionService {
   Future<String?> start({
     required CallCaptionResultCallback onResult,
     required CallCaptionStatusCallback onStatus,
-    CallCaptionAudioTranscriber? onWindowsAudioChunk,
+    CallCaptionAudioTranscriber? onServerAudioChunk,
   }) async {
     if (_enabled) return null;
     _onResult = onResult;
     _onStatus = onStatus;
-    _serverAudioTranscriber = onWindowsAudioChunk;
+    _serverAudioTranscriber = onServerAudioChunk;
     _onStatus?.call('Starting captions...');
     try {
-      if ((Platform.isWindows || Platform.isAndroid) &&
+      if ((Platform.isWindows || Platform.isAndroid || Platform.isIOS) &&
           _serverAudioTranscriber != null) {
         return _startServerAudioCaptions();
       }
@@ -127,6 +129,9 @@ class CallCaptionService {
     }
     _enabled = true;
     try {
+      if (Platform.isIOS) {
+        return _startIosServerAudioCaptions();
+      }
       await _startServerAudioChunk();
       _serverAudioChunkTimer = Timer.periodic(
         _serverAudioChunkDuration,
@@ -141,9 +146,95 @@ class CallCaptionService {
     }
   }
 
+  Future<String?> _startIosServerAudioCaptions() async {
+    // WebRTC owns AVAudioSession during a call. Letting the record plugin
+    // reconfigure or deactivate it can mute the call after every chunk.
+    await _recorder.ios?.manageAudioSession(false);
+    _iosAudioBuffer = BytesBuilder(copy: false);
+    _serverAudioChunkStartedAt = DateTime.now();
+    final stream = await _recorder.startStream(
+      const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 48000,
+        numChannels: _serverAudioChannels,
+        autoGain: true,
+        echoCancel: true,
+        noiseSuppress: true,
+      ),
+    );
+    _iosAudioStreamSubscription = stream.listen(
+      (bytes) {
+        if (_enabled && bytes.isNotEmpty) _iosAudioBuffer.add(bytes);
+      },
+      onError: (_) {
+        if (_enabled) _onStatus?.call('Captions unavailable');
+      },
+    );
+    _serverAudioChunkTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => _flushIosServerAudioChunk(),
+    );
+    _onStatus?.call('Listening');
+    return null;
+  }
+
+  void _flushIosServerAudioChunk() {
+    if (!_enabled || _serverAudioTranscriber == null) return;
+    final pcmBytes = _iosAudioBuffer.takeBytes();
+    _iosAudioBuffer = BytesBuilder(copy: false);
+    if (pcmBytes.isEmpty) return;
+    final duration = Duration(
+      microseconds:
+          (pcmBytes.length * Duration.microsecondsPerSecond) ~/
+          (48000 * _serverAudioChannels * 2),
+    );
+    final wavBytes = _pcm16ToWav(
+      pcmBytes,
+      sampleRate: 48000,
+      channels: _serverAudioChannels,
+    );
+    if (_containsSpeech(wavBytes)) {
+      _queueServerAudioForTranscription(wavBytes, duration);
+    }
+    _serverAudioChunkStartedAt = DateTime.now();
+    _onStatus?.call('Listening');
+  }
+
+  Uint8List _pcm16ToWav(
+    Uint8List pcmBytes, {
+    required int sampleRate,
+    required int channels,
+  }) {
+    const bitsPerSample = 16;
+    final header = ByteData(44);
+    void writeAscii(int offset, String value) {
+      for (var index = 0; index < value.length; index++) {
+        header.setUint8(offset + index, value.codeUnitAt(index));
+      }
+    }
+
+    final byteRate = sampleRate * channels * bitsPerSample ~/ 8;
+    final blockAlign = channels * bitsPerSample ~/ 8;
+    writeAscii(0, 'RIFF');
+    header.setUint32(4, 36 + pcmBytes.length, Endian.little);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    header.setUint32(16, 16, Endian.little);
+    header.setUint16(20, 1, Endian.little);
+    header.setUint16(22, channels, Endian.little);
+    header.setUint32(24, sampleRate, Endian.little);
+    header.setUint32(28, byteRate, Endian.little);
+    header.setUint16(32, blockAlign, Endian.little);
+    header.setUint16(34, bitsPerSample, Endian.little);
+    writeAscii(36, 'data');
+    header.setUint32(40, pcmBytes.length, Endian.little);
+    return Uint8List.fromList([...header.buffer.asUint8List(), ...pcmBytes]);
+  }
+
   Future<void> _startServerAudioChunk() async {
     final directory = await getTemporaryDirectory();
-    final path = '${directory.path}${Platform.pathSeparator}'
+    final path =
+        '${directory.path}${Platform.pathSeparator}'
         'meshchat-caption-${DateTime.now().microsecondsSinceEpoch}.wav';
     await _recorder.start(
       const RecordConfig(
@@ -206,10 +297,7 @@ class CallCaptionService {
     }
   }
 
-  void _queueServerAudioForTranscription(
-    Uint8List bytes,
-    Duration duration,
-  ) {
+  void _queueServerAudioForTranscription(Uint8List bytes, Duration duration) {
     if (_transcribingServerAudio) {
       // Never overwrite earlier speech while a provider response is pending.
       // A short bounded queue absorbs network jitter without growing forever.
@@ -282,7 +370,8 @@ class CallCaptionService {
     final view = ByteData.sublistView(bytes);
     var offset = 12;
     while (offset + 8 <= bytes.length) {
-      final isData = bytes[offset] == 0x64 &&
+      final isData =
+          bytes[offset] == 0x64 &&
           bytes[offset + 1] == 0x61 &&
           bytes[offset + 2] == 0x74 &&
           bytes[offset + 3] == 0x61;
@@ -301,6 +390,9 @@ class CallCaptionService {
     _serverAudioChunkPath = null;
     _serverAudioChunkStartedAt = null;
     _queuedServerAudio.clear();
+    await _iosAudioStreamSubscription?.cancel();
+    _iosAudioStreamSubscription = null;
+    _iosAudioBuffer = BytesBuilder(copy: false);
     if (await _recorder.isRecording()) {
       try {
         final recordedPath = await _recorder.stop();

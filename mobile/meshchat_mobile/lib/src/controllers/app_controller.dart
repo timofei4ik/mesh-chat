@@ -6625,9 +6625,15 @@ class AppController extends ChangeNotifier {
 
   void setCallCaptionSourceLanguage(String language) {
     final normalized = language.trim().toLowerCase();
-    if (!const {'auto', 'ru', 'en', 'de', 'es', 'fr', 'it'}.contains(
-      normalized,
-    )) {
+    if (!const {
+      'auto',
+      'ru',
+      'en',
+      'de',
+      'es',
+      'fr',
+      'it',
+    }.contains(normalized)) {
       return;
     }
     callCaptionSourceLanguage = normalized;
@@ -6642,7 +6648,7 @@ class AppController extends ChangeNotifier {
         _callCaptionStatus = status;
         notifyListeners();
       },
-      onWindowsAudioChunk: _transcribeLiveCallCaptionAudio,
+      onServerAudioChunk: _transcribeLiveCallCaptionAudio,
     );
   }
 
