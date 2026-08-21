@@ -1493,6 +1493,213 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ).fetchone()
         )
 
+    async def test_non_member_cannot_inject_group_message_or_key_envelope(self):
+        owner = await self.connect("protected_group_owner")
+        member = await self.connect("protected_group_member")
+        outsider = await self.connect(
+            "protected_group_outsider",
+            supports_mutation_ack=True,
+        )
+        group_id = "e2ee-protected-group"
+
+        await self.send_and_receive(
+            owner,
+            member,
+            "group_update",
+            group_id=group_id,
+            group_name="E2EE protected group",
+            members=[owner.node_id, member.node_id],
+            owner_node=owner.node_id,
+            admins=[],
+            is_channel=False,
+        )
+
+        packet_id = str(uuid.uuid4())
+        operation_id = f"group_message:{packet_id}"
+        await outsider.send(
+            {
+                "type": "group_message",
+                "packet_id": packet_id,
+                "group_message_id": packet_id,
+                "operation_id": operation_id,
+                "outbox_id": f"{operation_id}|{member.node_id}|",
+                "protocol_version": 5,
+                "source_node": outsider.node_id,
+                "destination_node": member.node_id,
+                "sender": outsider.login,
+                "group_id": group_id,
+                "group_name": "E2EE protected group",
+                "members": [owner.node_id, member.node_id],
+                "message": "MCGRP1:forged",
+                "group_key_id": "forged-key",
+                "group_key_envelope": "forged-envelope",
+                "ttl": 5,
+            }
+        )
+
+        ack = await outsider.receive_type("mutation_ack")
+        self.assertFalse(ack["ok"])
+        self.assertEqual("unauthorized_group_management", ack["reason"])
+        self.assertIsNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_group_messages WHERE message_id=?",
+                (packet_id,),
+            ).fetchone()
+        )
+        self.assertIsNone(
+            self.relay.db.execute(
+                """
+                SELECT 1
+                FROM server_group_keys
+                WHERE group_id=? AND key_id='forged-key'
+                """,
+                (group_id,),
+            ).fetchone()
+        )
+
+    async def test_member_cannot_delete_another_members_group_message_state(self):
+        owner = await self.connect("protected_delete_owner")
+        member = await self.connect(
+            "protected_delete_member",
+            supports_mutation_ack=True,
+        )
+        group_id = "protected-delete-group"
+        message_id = "protected-owner-message"
+
+        await self.send_and_receive(
+            owner,
+            member,
+            "group_update",
+            group_id=group_id,
+            group_name="Protected deletion",
+            members=[owner.node_id, member.node_id],
+            owner_node=owner.node_id,
+            admins=[],
+            is_channel=False,
+        )
+        stored_group = self.relay.db.execute(
+            "SELECT owner_node, members_json FROM server_groups WHERE group_id=?",
+            (group_id,),
+        ).fetchone()
+        self.assertIsNotNone(stored_group)
+        self.assertIn(owner.node_id, json.loads(stored_group[1]))
+        await self.send_and_receive(
+            owner,
+            member,
+            "group_message",
+            packet_id=message_id,
+            group_message_id=message_id,
+            group_id=group_id,
+            group_name="Protected deletion",
+            members=[owner.node_id, member.node_id],
+            message="MCGRP1:owner-message",
+        )
+        await self.send_and_receive(
+            member,
+            owner,
+            "group_reaction",
+            group_id=group_id,
+            group_message_id=message_id,
+            message_id=message_id,
+            reaction="heart",
+        )
+
+        packet_id = str(uuid.uuid4())
+        operation_id = f"group_message_delete:{packet_id}"
+        await member.send(
+            {
+                "type": "group_message_delete",
+                "packet_id": packet_id,
+                "group_message_id": message_id,
+                "operation_id": operation_id,
+                "outbox_id": f"{operation_id}|{owner.node_id}|",
+                "protocol_version": 5,
+                "source_node": member.node_id,
+                "destination_node": owner.node_id,
+                "group_id": group_id,
+                "ttl": 5,
+            }
+        )
+
+        ack = await member.receive_type("mutation_ack")
+        self.assertFalse(ack["ok"])
+        self.assertEqual("rejected", ack["reason"])
+        self.assertIsNotNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_group_messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        )
+        self.assertIsNotNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_reactions WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        )
+
+    async def test_recipient_cannot_delete_senders_direct_message_state(self):
+        sender = await self.connect("protected_direct_sender")
+        recipient = await self.connect(
+            "protected_direct_recipient",
+            supports_mutation_ack=True,
+        )
+        message_id = "protected-direct-message"
+
+        await self.send_and_receive(
+            sender,
+            recipient,
+            "chat_message",
+            packet_id=message_id,
+            message="encrypted-direct-payload",
+        )
+        self.relay.db.execute(
+            """
+            INSERT INTO server_reactions(
+                scope, message_id, reactor_node,
+                reactor_login, reactor_identity, reaction
+            ) VALUES('direct', ?, ?, ?, ?, 'heart')
+            """,
+            (
+                message_id,
+                recipient.node_id,
+                recipient.login,
+                f"login:{recipient.login}",
+            ),
+        )
+        self.relay.db.commit()
+
+        packet_id = str(uuid.uuid4())
+        operation_id = f"message_delete:{packet_id}"
+        await recipient.send(
+            {
+                "type": "message_delete",
+                "packet_id": packet_id,
+                "message_id": message_id,
+                "operation_id": operation_id,
+                "outbox_id": f"{operation_id}|{sender.node_id}|",
+                "protocol_version": 5,
+                "source_node": recipient.node_id,
+                "destination_node": sender.node_id,
+                "ttl": 5,
+            }
+        )
+
+        ack = await recipient.receive_type("mutation_ack")
+        self.assertFalse(ack["ok"])
+        self.assertEqual("rejected", ack["reason"])
+        self.assertIsNotNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM direct_messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        )
+        self.assertIsNotNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM server_reactions WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        )
+
     async def test_offline_queue_only_keeps_non_syncable_events(self):
         alice = await self.connect("queue_alice")
         bob = await self.connect("queue_bob")

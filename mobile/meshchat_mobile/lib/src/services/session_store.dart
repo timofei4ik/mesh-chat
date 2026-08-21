@@ -4,28 +4,45 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/session.dart';
+import 'session_secret_store.dart';
 
 class SessionStore {
+  SessionStore({SessionSecretStore? secretStore})
+    : _secretStore = secretStore ?? PlatformSessionSecretStore();
+
   static const _recentKey = 'recent_sessions';
   static const _maxRecent = 8;
+  static const _secretPrefix = 'meshchat.session.v1';
+
+  final SessionSecretStore _secretStore;
 
   Future<Session?> load() async {
     final prefs = await SharedPreferences.getInstance();
     final serverUrl = _normalizeServerUrl(prefs.getString('server_url') ?? '');
     final login = (prefs.getString('login') ?? '').trim().toLowerCase();
-    final password = prefs.getString('password') ?? '';
-    if (serverUrl.isEmpty || login.isEmpty || password.isEmpty) return null;
+    if (serverUrl.isEmpty || login.isEmpty) return null;
+    final secrets = await _readSecrets(
+      serverUrl,
+      login,
+      legacyPassword: prefs.getString('password') ?? '',
+      legacyServerToken: prefs.getString('server_token') ?? '',
+      legacyIdentityRecovery: prefs.getString('identity_recovery') ?? '',
+    );
+    final password = secrets.password;
+    if (password.isEmpty) return null;
+
+    await _removeLegacyCurrentSecrets(prefs);
 
     final nodeId = await _nodeIdFor(prefs, serverUrl, login);
     return Session(
       serverUrl: serverUrl,
-      serverToken: prefs.getString('server_token') ?? '',
+      serverToken: secrets.serverToken,
       login: login,
       password: password,
       publicUsername: prefs.getString('public_username') ?? login,
       nodeId: nodeId,
       email: prefs.getString('email') ?? '',
-      identityRecovery: prefs.getString('identity_recovery') ?? '',
+      identityRecovery: secrets.identityRecovery,
     );
   }
 
@@ -36,21 +53,32 @@ class SessionStore {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! List) return const [];
-      return decoded
-          .whereType<Map>()
-          .map((item) => _sessionFromJson(Map<String, dynamic>.from(item)))
-          .whereType<Session>()
-          .fold<List<Session>>([], (items, session) {
-            final exists = items.any(
-              (item) =>
-                  _normalizeServerUrl(item.serverUrl) ==
-                      _normalizeServerUrl(session.serverUrl) &&
-                  item.login.toLowerCase() == session.login.toLowerCase(),
-            );
-            if (!exists) items.add(session);
-            return items;
-          })
-          .toList();
+      final sessions = <Session>[];
+      var containedLegacySecrets = false;
+      for (final item in decoded.whereType<Map>()) {
+        final json = Map<String, dynamic>.from(item);
+        containedLegacySecrets =
+            containedLegacySecrets ||
+            json.containsKey('password') ||
+            json.containsKey('server_token') ||
+            json.containsKey('identity_recovery');
+        final session = await _sessionFromJson(json);
+        if (session == null) continue;
+        final exists = sessions.any(
+          (existing) =>
+              _normalizeServerUrl(existing.serverUrl) ==
+                  _normalizeServerUrl(session.serverUrl) &&
+              existing.login.toLowerCase() == session.login.toLowerCase(),
+        );
+        if (!exists) sessions.add(session);
+      }
+      if (containedLegacySecrets) {
+        await prefs.setString(
+          _recentKey,
+          jsonEncode(sessions.map(_sessionToJson).toList()),
+        );
+      }
+      return sessions;
     } catch (_) {
       await prefs.remove(_recentKey);
       return const [];
@@ -91,14 +119,13 @@ class SessionStore {
 
   Future<void> saveCurrent(Session session) async {
     final prefs = await SharedPreferences.getInstance();
+    await _writeSecrets(session);
     await prefs.setString('server_url', session.serverUrl);
-    await prefs.setString('server_token', session.serverToken);
     await prefs.setString('login', session.login);
-    await prefs.setString('password', session.password);
     await prefs.setString('public_username', session.publicUsername);
     await prefs.setString('node_id', session.nodeId);
     await prefs.setString('email', session.email);
-    await prefs.setString('identity_recovery', session.identityRecovery);
+    await _removeLegacyCurrentSecrets(prefs);
     await prefs.setString(
       _nodeKey(session.serverUrl, session.login),
       session.nodeId,
@@ -117,6 +144,13 @@ class SessionStore {
         )
         .toList();
     final next = [session, ...filtered].take(_maxRecent).toList();
+    await _writeSecrets(session);
+    final retainedAccounts = next.map(_accountKeyForSession).toSet();
+    for (final evicted in recent) {
+      if (!retainedAccounts.contains(_accountKeyForSession(evicted))) {
+        await _deleteSecrets(evicted.serverUrl, evicted.login);
+      }
+    }
     await prefs.setString(
       _recentKey,
       jsonEncode(next.map(_sessionToJson).toList()),
@@ -134,6 +168,7 @@ class SessionStore {
               item.login.toLowerCase() != session.login.toLowerCase(),
         )
         .toList();
+    await _deleteSecrets(session.serverUrl, session.login);
     await prefs.setString(
       _recentKey,
       jsonEncode(next.map(_sessionToJson).toList()),
@@ -143,11 +178,9 @@ class SessionStore {
   Future<void> clear() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('server_url');
-    await prefs.remove('server_token');
     await prefs.remove('login');
-    await prefs.remove('password');
     await prefs.remove('public_username');
-    await prefs.remove('identity_recovery');
+    await _removeLegacyCurrentSecrets(prefs);
     await prefs.remove('email');
   }
 
@@ -198,36 +231,144 @@ class SessionStore {
   Map<String, dynamic> _sessionToJson(Session session) {
     return {
       'server_url': session.serverUrl,
-      'server_token': session.serverToken,
       'login': session.login,
-      'password': session.password,
       'public_username': session.publicUsername,
       'node_id': session.nodeId,
       'email': session.email,
-      'identity_recovery': session.identityRecovery,
     };
   }
 
-  Session? _sessionFromJson(Map<String, dynamic> json) {
+  Future<Session?> _sessionFromJson(Map<String, dynamic> json) async {
     final serverUrl = _normalizeServerUrl(json['server_url']?.toString() ?? '');
     final login = (json['login']?.toString() ?? '').trim().toLowerCase();
-    final password = json['password']?.toString() ?? '';
     final nodeId = json['node_id']?.toString() ?? '';
-    if (serverUrl.isEmpty ||
-        login.isEmpty ||
-        password.isEmpty ||
-        nodeId.isEmpty) {
+    if (serverUrl.isEmpty || login.isEmpty || nodeId.isEmpty) {
       return null;
     }
+    final secrets = await _readSecrets(
+      serverUrl,
+      login,
+      legacyPassword: json['password']?.toString() ?? '',
+      legacyServerToken: json['server_token']?.toString() ?? '',
+      legacyIdentityRecovery: json['identity_recovery']?.toString() ?? '',
+    );
+    if (secrets.password.isEmpty) return null;
     return Session(
       serverUrl: serverUrl,
-      serverToken: json['server_token']?.toString() ?? '',
+      serverToken: secrets.serverToken,
       login: login,
-      password: password,
+      password: secrets.password,
       publicUsername: json['public_username']?.toString() ?? login,
       nodeId: nodeId,
       email: json['email']?.toString() ?? '',
-      identityRecovery: json['identity_recovery']?.toString() ?? '',
+      identityRecovery: secrets.identityRecovery,
     );
   }
+
+  Future<_SessionSecrets> _readSecrets(
+    String serverUrl,
+    String login, {
+    String legacyPassword = '',
+    String legacyServerToken = '',
+    String legacyIdentityRecovery = '',
+  }) async {
+    var password = await _secretStore.read(
+      _secretKey(serverUrl, login, 'password'),
+    );
+    var serverToken = await _secretStore.read(
+      _secretKey(serverUrl, login, 'server_token'),
+    );
+    var identityRecovery = await _secretStore.read(
+      _secretKey(serverUrl, login, 'identity_recovery'),
+    );
+
+    if ((password ?? '').isEmpty && legacyPassword.isNotEmpty) {
+      password = legacyPassword;
+      await _secretStore.write(
+        _secretKey(serverUrl, login, 'password'),
+        legacyPassword,
+      );
+    }
+    if ((serverToken ?? '').isEmpty && legacyServerToken.isNotEmpty) {
+      serverToken = legacyServerToken;
+      await _secretStore.write(
+        _secretKey(serverUrl, login, 'server_token'),
+        legacyServerToken,
+      );
+    }
+    if ((identityRecovery ?? '').isEmpty && legacyIdentityRecovery.isNotEmpty) {
+      identityRecovery = legacyIdentityRecovery;
+      await _secretStore.write(
+        _secretKey(serverUrl, login, 'identity_recovery'),
+        legacyIdentityRecovery,
+      );
+    }
+
+    return _SessionSecrets(
+      password: password ?? '',
+      serverToken: serverToken ?? '',
+      identityRecovery: identityRecovery ?? '',
+    );
+  }
+
+  Future<void> _writeSecrets(Session session) async {
+    await _writeOrDelete(
+      _secretKey(session.serverUrl, session.login, 'password'),
+      session.password,
+    );
+    await _writeOrDelete(
+      _secretKey(session.serverUrl, session.login, 'server_token'),
+      session.serverToken,
+    );
+    await _writeOrDelete(
+      _secretKey(session.serverUrl, session.login, 'identity_recovery'),
+      session.identityRecovery,
+    );
+  }
+
+  Future<void> _writeOrDelete(String key, String value) {
+    return value.isEmpty
+        ? _secretStore.delete(key)
+        : _secretStore.write(key, value);
+  }
+
+  Future<void> _deleteSecrets(String serverUrl, String login) async {
+    for (final name in const [
+      'password',
+      'server_token',
+      'identity_recovery',
+    ]) {
+      await _secretStore.delete(_secretKey(serverUrl, login, name));
+    }
+  }
+
+  Future<void> _removeLegacyCurrentSecrets(SharedPreferences prefs) async {
+    await prefs.remove('password');
+    await prefs.remove('server_token');
+    await prefs.remove('identity_recovery');
+  }
+
+  String _secretKey(String serverUrl, String login, String name) {
+    final account = base64Url.encode(
+      utf8.encode(
+        '${_normalizeServerUrl(serverUrl)}|${login.trim().toLowerCase()}',
+      ),
+    );
+    return '$_secretPrefix.$account.$name';
+  }
+
+  String _accountKeyForSession(Session session) =>
+      '${_normalizeServerUrl(session.serverUrl)}|${session.login.toLowerCase()}';
+}
+
+class _SessionSecrets {
+  const _SessionSecrets({
+    required this.password,
+    required this.serverToken,
+    required this.identityRecovery,
+  });
+
+  final String password;
+  final String serverToken;
+  final String identityRecovery;
 }

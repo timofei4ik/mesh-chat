@@ -21,6 +21,7 @@
         android:label="MeshChat"
         android:name=".MeshChatApplication"
         android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
         android:usesCleartextTraffic="true">
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"

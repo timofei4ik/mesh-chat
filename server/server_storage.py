@@ -3420,17 +3420,29 @@ class ServerStorageMixin:
             "type"
         )
 
-        if packet_type not in (
-            "group_update",
-            "group_delete",
-            "group_pin",
-            "group_member_leave"
-        ):
-            return True
+        group_content_types = (
+            "group_message",
+            "group_message_edit",
+            "group_message_delete",
+            "group_reaction",
+        )
 
         group_id = packet.get(
             "group_id"
         )
+        is_group_content = (
+            packet_type in group_content_types
+            or (packet_type == "file_chunk" and bool(group_id))
+        )
+
+        if packet_type not in (
+            "group_update",
+            "group_delete",
+            "group_pin",
+            "group_member_leave",
+            *group_content_types,
+        ) and not is_group_content:
+            return True
 
         source_node = packet.get(
             "source_node"
@@ -3439,6 +3451,22 @@ class ServerStorageMixin:
         owner_node, admins = self.get_group_roles(
             group_id
         )
+
+        if owner_node and is_group_content:
+            source_login = self.get_login_by_node(source_node) or ""
+            source_is_member = self.db.execute(
+                """
+                SELECT 1
+                FROM server_group_members
+                WHERE group_id=?
+                  AND (node_id=? OR (login!='' AND login=?))
+                LIMIT 1
+                """,
+                (group_id, source_node, source_login),
+            ).fetchone() is not None
+            if not source_is_member:
+                return False
+            return True
 
         if packet_type == "group_member_leave":
             return (
@@ -4957,7 +4985,7 @@ class ServerStorageMixin:
 
             sender_login = self.get_login_by_node(sender_node) or ""
 
-            self.db.execute(
+            message_cursor = self.db.execute(
                 """
                 UPDATE direct_messages
                 SET message=?
@@ -4975,7 +5003,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.execute(
+            file_cursor = self.db.execute(
                 """
                 UPDATE server_files
                 SET caption=?
@@ -4992,6 +5020,9 @@ class ServerStorageMixin:
                     sender_login
                 )
             )
+
+            if message_cursor.rowcount <= 0 and file_cursor.rowcount <= 0:
+                return False
 
             self._commit_storage()
 
@@ -5010,7 +5041,7 @@ class ServerStorageMixin:
 
             sender_login = self.get_login_by_node(sender_node) or ""
 
-            self.db.execute(
+            message_cursor = self.db.execute(
                 """
                 DELETE FROM direct_messages
                 WHERE message_id=?
@@ -5026,6 +5057,20 @@ class ServerStorageMixin:
                 )
             )
 
+            deleted_files = self._delete_server_files(
+                """
+                file_id=?
+                AND (
+                    sender_node=?
+                    OR (sender_login!='' AND sender_login=?)
+                )
+                """,
+                (message_id, sender_node, sender_login),
+            )
+
+            if message_cursor.rowcount <= 0 and deleted_files <= 0:
+                return False
+
             self.db.execute(
                 """
                 DELETE FROM server_reactions
@@ -5035,17 +5080,6 @@ class ServerStorageMixin:
                 (
                     message_id,
                 )
-            )
-
-            self._delete_server_files(
-                """
-                file_id=?
-                AND (
-                    sender_node=?
-                    OR (sender_login!='' AND sender_login=?)
-                )
-                """,
-                (message_id, sender_node, sender_login),
             )
 
             self.db.execute(
@@ -5475,7 +5509,7 @@ class ServerStorageMixin:
 
             sender_login = self.get_login_by_node(sender_node) or ""
 
-            self.db.execute(
+            message_cursor = self.db.execute(
                 """
                 UPDATE server_group_messages
                 SET message=?,
@@ -5495,7 +5529,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.execute(
+            file_cursor = self.db.execute(
                 """
                 UPDATE server_files
                 SET caption=?,
@@ -5515,6 +5549,9 @@ class ServerStorageMixin:
                 )
             )
 
+            if message_cursor.rowcount <= 0 and file_cursor.rowcount <= 0:
+                return False
+
             self._commit_storage()
 
         elif packet_type == "group_message_delete":
@@ -5532,7 +5569,7 @@ class ServerStorageMixin:
 
             sender_login = self.get_login_by_node(sender_node) or ""
 
-            self.db.execute(
+            message_cursor = self.db.execute(
                 """
                 DELETE FROM server_group_messages
                 WHERE message_id=?
@@ -5548,17 +5585,7 @@ class ServerStorageMixin:
                 )
             )
 
-            self.db.execute(
-                """
-                DELETE FROM server_reactions
-                WHERE message_id=?
-                """,
-                (
-                    message_id,
-                )
-            )
-
-            self._delete_server_files(
+            deleted_files = self._delete_server_files(
                 """
                 file_id=?
                 AND (
@@ -5567,6 +5594,19 @@ class ServerStorageMixin:
                 )
                 """,
                 (message_id, sender_node, sender_login),
+            )
+
+            if message_cursor.rowcount <= 0 and deleted_files <= 0:
+                return False
+
+            self.db.execute(
+                """
+                DELETE FROM server_reactions
+                WHERE message_id=?
+                """,
+                (
+                    message_id,
+                )
             )
 
             self.db.execute(
