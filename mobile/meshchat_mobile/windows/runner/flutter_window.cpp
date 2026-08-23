@@ -1,5 +1,7 @@
 #include "flutter_window.h"
 
+#include <shellapi.h>
+
 #include <optional>
 #include <string>
 
@@ -11,6 +13,21 @@ namespace {
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kOpenMeshChatCommand = 40001;
 constexpr UINT kExitMeshChatCommand = 40002;
+
+bool OpenMeshHub() {
+  HKEY key = nullptr;
+  constexpr wchar_t kProtocolKey[] =
+      L"Software\\Classes\\meshhub\\shell\\open\\command";
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kProtocolKey, 0, KEY_READ, &key) !=
+      ERROR_SUCCESS) {
+    return false;
+  }
+  RegCloseKey(key);
+  const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(
+      nullptr, L"open", L"meshhub://app/meshchat", nullptr, nullptr,
+      SW_SHOWNORMAL));
+  return result > 32;
+}
 
 }  // namespace
 
@@ -46,6 +63,10 @@ bool FlutterWindow::OnCreate() {
         if (call.method_name() == "show") {
           RestoreFromTray();
           result->Success();
+          return;
+        }
+        if (call.method_name() == "openMeshHub") {
+          result->Success(flutter::EncodableValue(OpenMeshHub()));
           return;
         }
         if (call.method_name() == "setCloseToTray") {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/app_update_service.dart';
@@ -16,6 +17,7 @@ class AppUpdateBanner extends StatefulWidget {
 
 class _AppUpdateBannerState extends State<AppUpdateBanner>
     with WidgetsBindingObserver {
+  static const _windowChannel = MethodChannel('meshchat/window');
   final service = AppUpdateService();
   MeshChatUpdateInfo? update;
   DateTime? lastCheck;
@@ -58,6 +60,20 @@ class _AppUpdateBannerState extends State<AppUpdateBanner>
   }
 
   Future<void> _openMeshHub() async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+      try {
+        final opened = await _windowChannel.invokeMethod<bool>('openMeshHub');
+        if (opened == true) return;
+      } catch (_) {
+        // Fall through to the direct MeshHub download.
+      }
+      await launchUrl(
+        Uri.parse('https://meshchat-losa.ru/downloads/MeshHub-Windows.zip'),
+        mode: LaunchMode.externalApplication,
+      );
+      return;
+    }
+
     final deepLink = Uri.parse('meshhub://app/meshchat');
     try {
       if (await launchUrl(deepLink, mode: LaunchMode.externalApplication)) {
