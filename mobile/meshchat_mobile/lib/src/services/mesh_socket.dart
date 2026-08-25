@@ -14,11 +14,13 @@ typedef PacketHandler = FutureOr<void> Function(Map<String, dynamic> packet);
 typedef StatusHandler = void Function(String status);
 typedef WebSocketChannelFactory = WebSocketChannel Function(Uri uri);
 typedef ReconnectDelayFactory = Duration Function(int attempt);
+typedef DeliveryTraceHandler =
+    FutureOr<void> Function(Map<String, dynamic> trace);
 
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '1.0.75';
+  static const appVersion = '1.0.87';
 
   MeshSocket({
     MutationOutboxStore? outboxStore,
@@ -82,9 +84,11 @@ class MeshSocket {
   int _syncCursor = 0;
   Session? _session;
   PacketHandler? _packetHandler;
+  DeliveryTraceHandler? _deliveryTraceHandler;
   Future<void> _packetSerial = Future<void>.value();
   Future<void> _outboxSerial = Future<void>.value();
   Future<void> _fileOutboxSerial = Future<void>.value();
+  Future<void> _startupRecovery = Future<void>.value();
   final Map<String, Set<int>> _fileChunksInFlight = <String, Set<int>>{};
   Timer? _fileRetryTimer;
   Timer? _mutationRetryTimer;
@@ -119,6 +123,7 @@ class MeshSocket {
     required Profile profile,
     required PacketHandler onPacket,
     required StatusHandler onStatus,
+    DeliveryTraceHandler? onDeliveryTrace,
     String deviceName = '',
     bool reactivateDevice = false,
     int syncCursor = 0,
@@ -131,6 +136,7 @@ class MeshSocket {
     _welcomeTimer = null;
     _session = session;
     _packetHandler = onPacket;
+    _deliveryTraceHandler = onDeliveryTrace;
     _syncCursor = syncCursor < 0 ? 0 : syncCursor;
     _serverCapabilitiesKnown = false;
     _supportsMutationAck = false;
@@ -140,6 +146,7 @@ class MeshSocket {
     _supportsSyncV2Delta = false;
     _supportsSyncV2DeltaBatch = false;
     _supportsMultiDeviceState = false;
+    _startupRecovery = Future<void>.value();
     _fileChunksInFlight.clear();
     _fileRetryTimer?.cancel();
     _mutationRetryTimer?.cancel();
@@ -251,8 +258,10 @@ class MeshSocket {
               }
             }
             if (packetType == 'server_welcome') {
-              unawaited(_recoverMutationOutbox(generation));
-              await _flushFileOutbox();
+              _startupRecovery = () async {
+                await _recoverMutationOutbox(generation);
+                await _flushFileOutbox();
+              }();
             }
           }
         } catch (error, stackTrace) {
@@ -419,6 +428,12 @@ class MeshSocket {
         chunkSize: fileTransferChunkBytes,
       );
     });
+    await _trace(
+      operationId: operationId,
+      packetId: fileId,
+      stage: 'persisted',
+      detail: 'file_transfer',
+    );
     await _emitFileProgress(
       fileId: fileId,
       operationId: operationId,
@@ -527,7 +542,7 @@ class MeshSocket {
         for (final index in candidates) {
           if (!_connected) break;
           final sent = await _sendFileTransferChunk(entry, index, v2: true);
-          if (!sent) {
+          if (sent == null) {
             await _fileTransferStore.markFailed(
               current,
               entry.transferId,
@@ -542,6 +557,7 @@ class MeshSocket {
             );
             break;
           }
+          if (!sent) break;
           inFlight.add(index);
         }
         await _fileTransferStore.markAttempt(current, entry.transferId);
@@ -563,7 +579,8 @@ class MeshSocket {
   ) async {
     for (var index = 0; index < entry.totalChunks; index++) {
       if (!_connected) return;
-      if (!await _sendFileTransferChunk(entry, index, v2: false)) {
+      final sent = await _sendFileTransferChunk(entry, index, v2: false);
+      if (sent == null) {
         await _fileTransferStore.markFailed(
           current,
           entry.transferId,
@@ -571,6 +588,7 @@ class MeshSocket {
         );
         return;
       }
+      if (!sent) return;
       await _emitFileProgress(
         fileId: entry.fileId,
         operationId: entry.operationId,
@@ -598,14 +616,14 @@ class MeshSocket {
     }
   }
 
-  Future<bool> _sendFileTransferChunk(
+  Future<bool?> _sendFileTransferChunk(
     FileTransferOutboxEntry entry,
     int index, {
     required bool v2,
   }) async {
     final bytes = await _fileTransferStore.readChunk(entry, index);
-    if (bytes.isEmpty) return false;
-    _sendRaw({
+    if (bytes.isEmpty) return null;
+    return _sendRaw({
       ...entry.packet,
       'type': 'file_chunk',
       'packet_id': '${entry.transferId}:$index',
@@ -621,7 +639,6 @@ class MeshSocket {
         'chunk_size_bytes': entry.chunkSize,
       },
     });
-    return true;
   }
 
   Future<void> _consumeFileChunkAck(Map<String, dynamic> packet) async {
@@ -652,6 +669,14 @@ class MeshSocket {
         failed: !retryable,
         reason: reason,
       );
+      if (!retryable) {
+        await _trace(
+          operationId: entry.operationId,
+          packetId: entry.fileId,
+          stage: 'failed',
+          detail: reason,
+        );
+      }
       if (retryable) _scheduleFileRetry();
       return;
     }
@@ -682,6 +707,12 @@ class MeshSocket {
       complete: operationComplete,
     );
     if (operationComplete) {
+      await _trace(
+        operationId: entry.operationId,
+        packetId: entry.fileId,
+        stage: 'server_committed',
+        detail: 'file_transfer',
+      );
       await _fileTransferStore.deleteOperation(current, entry.operationId);
       final hasPendingTransfer = (await _fileTransferStore.load(
         current,
@@ -794,6 +825,11 @@ class MeshSocket {
   }
 
   Future<void> _queueMutation(Map<String, dynamic> originalPacket) async {
+    try {
+      await _startupRecovery;
+    } catch (_) {
+      // Recovery failures leave durable rows queued for the normal retry path.
+    }
     final current = _session;
     if (current == null) {
       _sendRaw(originalPacket);
@@ -814,18 +850,18 @@ class MeshSocket {
       packet: packet,
       createdAt: DateTime.now().toUtc(),
     );
-    // A connected server deduplicates by outbox_id. Send immediately and let
-    // the durable local outbox catch up in the same serialized lane. This
-    // avoids making the first post-connect message wait behind cache I/O.
-    final sentImmediately =
-        _connected && _serverCapabilitiesKnown && _sendRaw(packet);
     try {
       await _serializeOutbox(() async {
+        // Persist before exposing the mutation to the network. If the process
+        // dies after the socket write but before this row exists, a missing
+        // ACK would otherwise leave nothing to reconcile or replay.
         await _outboxStore.put(current, entry);
-        if (sentImmediately) {
-          await _outboxStore.markSent(current, entry.outboxId);
-          return;
-        }
+        await _trace(
+          operationId: operationId,
+          packetId: packet['packet_id']?.toString() ?? '',
+          stage: 'persisted',
+          detail: packet['type']?.toString() ?? '',
+        );
         if (_connected && _serverCapabilitiesKnown) {
           await _sendOutboxEntry(current, entry);
         }
@@ -929,6 +965,12 @@ class MeshSocket {
     } else {
       await _outboxStore.delete(current, entry.outboxId);
     }
+    await _trace(
+      operationId: entry.operationId,
+      packetId: entry.packet['packet_id']?.toString() ?? '',
+      stage: 'sent',
+      detail: entry.packet['type']?.toString() ?? '',
+    );
   }
 
   static bool _mutationRetryDue(MutationOutboxEntry entry, DateTime now) {
@@ -998,6 +1040,12 @@ class MeshSocket {
     });
     final handler = _packetHandler;
     if (handler == null) return;
+    await _trace(
+      operationId: entry.operationId,
+      packetId: entry.packet['packet_id']?.toString() ?? '',
+      stage: 'server_committed',
+      detail: 'reconciled',
+    );
     await handler({
       'type': 'mutation_ack',
       'ok': true,
@@ -1030,6 +1078,12 @@ class MeshSocket {
         await _outboxStore.delete(current, outboxId);
       });
     }
+    await _trace(
+      operationId: packet['operation_id']?.toString() ?? '',
+      packetId: packet['packet_id']?.toString() ?? '',
+      stage: packet['ok'] == false ? 'failed' : 'server_committed',
+      detail: packet['packet_type']?.toString() ?? '',
+    );
     await onPacket({...packet, 'operation_complete': true});
     _scheduleMutationRetry();
   }
@@ -1048,6 +1102,27 @@ class MeshSocket {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<void> _trace({
+    required String operationId,
+    required String packetId,
+    required String stage,
+    String detail = '',
+  }) async {
+    final handler = _deliveryTraceHandler;
+    if (handler == null || operationId.isEmpty) return;
+    try {
+      await handler({
+        'operation_id': operationId,
+        'packet_id': packetId,
+        'stage': stage,
+        'detail': detail,
+        'time': DateTime.now().toUtc().toIso8601String(),
+      });
+    } catch (_) {
+      // Delivery diagnostics must never block or fail message transport.
     }
   }
 

@@ -44,7 +44,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.86",
+      "version": "1.0.87",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -57,15 +57,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 189,
+      "build": 190,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-08-23T00:00:00Z",
+      "updated_at": "2026-08-25T00:00:00Z",
       "release": {
-        "title": "Reliable updates",
-        "publishedAt": "2026-08-23",
-        "notes": ["MeshHub opens directly from the update banner", "Faster server synchronization", "More stable call recovery", "Improved multi-device reads and reactions"]
+        "title": "Reliable delivery",
+        "publishedAt": "2026-08-25",
+        "notes": ["Incoming files resume safely after interruption", "Startup synchronization no longer races new messages", "Delivery stages are available in diagnostics", "More reliable retries without duplicate mutations"]
       }
     },
     {

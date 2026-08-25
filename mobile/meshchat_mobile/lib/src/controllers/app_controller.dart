@@ -23,12 +23,15 @@ import '../services/call_alert_service.dart';
 import '../services/call_caption_service.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
+import '../services/delivery_trace_store.dart';
 import '../services/firebase_telemetry_service.dart';
+import '../services/incoming_file_staging_store.dart';
 import '../services/mesh_crypto.dart';
 import '../services/mesh_socket.dart';
 import '../services/read_state_reconciler.dart';
 import '../services/media_cache_service.dart';
 import '../services/notification_service.dart';
+import '../services/mutation_outbox_store.dart';
 import '../services/own_profile_store.dart';
 import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
@@ -516,8 +519,12 @@ class AppController extends ChangeNotifier {
   final List<Map<String, dynamic>> _livePacketsDuringDeltaApply = [];
   Timer? _incomingPreviewTimer;
   final List<DiagnosticEvent> diagnostics = [];
+  final List<DeliveryTraceEvent> deliveryTraces = [];
   final List<GroupJoinRequest> groupJoinRequests = [];
   final Map<String, _IncomingFile> _incomingFiles = {};
+  final DeliveryTraceStore _deliveryTraceStore = DeliveryTraceStore();
+  final IncomingFileStagingStore _incomingFileStagingStore =
+      IncomingFileStagingStore();
   final Map<String, Completer<Map<String, dynamic>>> _mediaDownloadCompleters =
       {};
   final Map<String, Future<bool>> _mediaDownloadsInFlight = {};
@@ -564,6 +571,18 @@ class AppController extends ChangeNotifier {
     if (diagnostics.length > 80) {
       diagnostics.removeRange(80, diagnostics.length);
     }
+  }
+
+  void _recordDeliveryTrace(Map<String, dynamic> raw) {
+    final current = session;
+    if (current == null) return;
+    final event = DeliveryTraceEvent.fromJson(raw);
+    if (event.operationId.isEmpty || event.stage.isEmpty) return;
+    deliveryTraces.insert(0, event);
+    if (deliveryTraces.length > 240) {
+      deliveryTraces.removeRange(240, deliveryTraces.length);
+    }
+    unawaited(_deliveryTraceStore.record(current, event));
   }
 
   bool get hasSession => session != null;
@@ -2653,6 +2672,9 @@ class AppController extends ChangeNotifier {
     _syncDeltaBuffer.abort();
     _applyingSyncDelta = false;
     _livePacketsDuringDeltaApply.clear();
+    deliveryTraces
+      ..clear()
+      ..addAll(await _deliveryTraceStore.load(current));
     await _socket.connect(
       session: current,
       publicKey: _crypto.publicKey,
@@ -2661,6 +2683,7 @@ class AppController extends ChangeNotifier {
       reactivateDevice: reactivateDevice,
       syncCursor: syncCursor,
       onPacket: _handlePacket,
+      onDeliveryTrace: _recordDeliveryTrace,
       onStatus: (value) {
         status = value;
         addDiagnostic('server', value);
@@ -9313,22 +9336,54 @@ class AppController extends ChangeNotifier {
         chunkIndex == null ||
         totalChunks == null ||
         totalChunks <= 0 ||
+        totalChunks > IncomingFileStagingStore.maximumChunkCount ||
+        chunkIndex < 0 ||
+        chunkIndex >= totalChunks ||
         data.isEmpty) {
       return;
     }
 
-    final incoming = _incomingFiles.putIfAbsent(
-      fileId,
-      () => _IncomingFile(packet, totalChunks),
-    );
-    incoming.chunks[chunkIndex] = data;
-    if (incoming.chunks.length < incoming.totalChunks) return;
+    final currentSession = session;
+    if (currentSession == null) return;
+    final stagingSessionKey = MutationOutboxStore.sessionKey(currentSession);
+    var incoming = _incomingFiles[fileId];
+    if (incoming == null || incoming.totalChunks != totalChunks) {
+      if (incoming != null) {
+        await _incomingFileStagingStore.delete(stagingSessionKey, fileId);
+      }
+      incoming = _IncomingFile(packet, totalChunks);
+      _incomingFiles[fileId] = incoming;
+    }
+    late final Uint8List chunkBytes;
+    try {
+      chunkBytes = _hexDecode(data);
+    } catch (error) {
+      addDiagnostic('file', 'Rejected malformed file chunk: $error');
+      await _discardIncomingFile(stagingSessionKey, fileId);
+      return;
+    }
+    Uint8List? assembledBytes;
+    try {
+      assembledBytes = await _incomingFileStagingStore.putChunk(
+        sessionKey: stagingSessionKey,
+        fileId: fileId,
+        chunkIndex: chunkIndex,
+        totalChunks: totalChunks,
+        bytes: chunkBytes,
+      );
+    } catch (error) {
+      addDiagnostic('file', 'Could not stage incoming file $fileId: $error');
+      await _discardIncomingFile(stagingSessionKey, fileId);
+      return;
+    }
+    if (assembledBytes == null) return;
+    final fullData = _hexEncode(assembledBytes);
 
     final first = incoming.firstPacket;
     final groupId = first['group_id']?.toString() ?? '';
     if (groupId.isNotEmpty) {
       if (appSettings.deletedGroupIds.contains(groupId)) {
-        _incomingFiles.remove(fileId);
+        await _discardIncomingFile(stagingSessionKey, fileId);
         return;
       }
       final group = _ensureGroupThread(
@@ -9350,17 +9405,20 @@ class AppController extends ChangeNotifier {
           ? first['sender_node'].toString()
           : first['source_node']?.toString() ?? '';
       if (isBlocked(sender)) {
-        _incomingFiles.remove(fileId);
+        await _discardIncomingFile(stagingSessionKey, fileId);
         return;
       }
-      final fullData = List<String>.generate(
-        incoming.totalChunks,
-        (index) => incoming.chunks[index] ?? '',
-      ).join();
       if (!await _verifyIncomingFilePayload(first, fullData)) {
-        _incomingFiles.remove(fileId);
+        await _discardIncomingFile(stagingSessionKey, fileId);
         return;
       }
+      _recordDeliveryTrace({
+        'operation_id': first['operation_id'] ?? 'file_transfer:$fileId',
+        'packet_id': fileId,
+        'stage': 'media_verified',
+        'detail': 'group',
+        'time': DateTime.now().toUtc().toIso8601String(),
+      });
       final decryptedName = await _crypto.decryptGroupText(
         _groupKeyForPacket(groupId, first['group_key_id']?.toString() ?? ''),
         filename,
@@ -9444,8 +9502,15 @@ class AppController extends ChangeNotifier {
         _publishIncomingPreview(group, message);
       }
       await _saveCache();
+      _recordDeliveryTrace({
+        'operation_id': first['operation_id'] ?? 'file_transfer:$fileId',
+        'packet_id': fileId,
+        'stage': 'recipient_persisted',
+        'detail': 'group',
+        'time': DateTime.now().toUtc().toIso8601String(),
+      });
       notifyListeners();
-      _incomingFiles.remove(fileId);
+      await _discardIncomingFile(stagingSessionKey, fileId);
       return;
     }
 
@@ -9453,7 +9518,7 @@ class AppController extends ChangeNotifier {
         ? first['sender_node'].toString()
         : first['source_node']?.toString() ?? '';
     if (isBlocked(sender)) {
-      _incomingFiles.remove(fileId);
+      await _discardIncomingFile(stagingSessionKey, fileId);
       return;
     }
     final receiver = first['receiver_node']?.toString().isNotEmpty == true
@@ -9471,11 +9536,11 @@ class AppController extends ChangeNotifier {
         (receiverLogin.isNotEmpty && receiverLogin == myLogin);
     final peerId = sentByMe ? receiver : sender;
     if (!sentByMe && !receivedByMe) {
-      _incomingFiles.remove(fileId);
+      await _discardIncomingFile(stagingSessionKey, fileId);
       return;
     }
     if (peerId.isEmpty || peerId == myNodeId) {
-      _incomingFiles.remove(fileId);
+      await _discardIncomingFile(stagingSessionKey, fileId);
       return;
     }
 
@@ -9496,14 +9561,17 @@ class AppController extends ChangeNotifier {
     profiles[peerId] = _mergeProfile(profile);
     _applyProfileToThreads(profiles[peerId]!);
     final thread = _ensurePacketThread(profiles[peerId]!, first);
-    final fullData = List<String>.generate(
-      incoming.totalChunks,
-      (index) => incoming.chunks[index] ?? '',
-    ).join();
     if (!await _verifyIncomingFilePayload(first, fullData)) {
-      _incomingFiles.remove(fileId);
+      await _discardIncomingFile(stagingSessionKey, fileId);
       return;
     }
+    _recordDeliveryTrace({
+      'operation_id': first['operation_id'] ?? 'file_transfer:$fileId',
+      'packet_id': fileId,
+      'stage': 'media_verified',
+      'detail': 'direct',
+      'time': DateTime.now().toUtc().toIso8601String(),
+    });
     final message = ChatMessage(
       id: fileId,
       senderNode: sentByMe ? myNodeId : sender,
@@ -9555,10 +9623,26 @@ class AppController extends ChangeNotifier {
       _publishIncomingPreview(thread, message);
     }
     await _saveCache();
+    _recordDeliveryTrace({
+      'operation_id': first['operation_id'] ?? 'file_transfer:$fileId',
+      'packet_id': fileId,
+      'stage': 'recipient_persisted',
+      'detail': 'direct',
+      'time': DateTime.now().toUtc().toIso8601String(),
+    });
     notifyListeners();
-    _incomingFiles.remove(fileId);
+    await _discardIncomingFile(stagingSessionKey, fileId);
     if (!fromSync && !sentByMe) {
       await _sendDeliveryReceipt(first, sender, fileId);
+    }
+  }
+
+  Future<void> _discardIncomingFile(String sessionKey, String fileId) async {
+    _incomingFiles.remove(fileId);
+    try {
+      await _incomingFileStagingStore.delete(sessionKey, fileId);
+    } catch (error) {
+      addDiagnostic('file', 'Could not clear staged file $fileId: $error');
     }
   }
 
@@ -10093,11 +10177,14 @@ class AppController extends ChangeNotifier {
 
   void _markDelivered(String id) {
     if (id.isEmpty) return;
-    _replaceMessage(
+    final updated = _replaceMessage(
       id,
       (message) =>
           message.copyWith(delivered: true, pending: false, failed: false),
     );
+    if (updated != null) {
+      _recordMessageDeliveryStage(id, updated, 'recipient_received');
+    }
   }
 
   void _applyReadPacket(Map<String, dynamic> packet) {
@@ -10131,8 +10218,44 @@ class AppController extends ChangeNotifier {
       if (threadChanged) _recomputeUnread(thread);
     }
     if (!changed) return;
+    for (final id in targets) {
+      for (final thread in [...threads.values, ...groups.values]) {
+        final index = thread.messages.indexWhere((message) => message.id == id);
+        if (index < 0) continue;
+        _recordMessageDeliveryStage(
+          id,
+          thread.messages[index],
+          'recipient_read',
+        );
+        break;
+      }
+    }
     unawaited(_saveCache());
     notifyListeners();
+  }
+
+  void _recordMessageDeliveryStage(
+    String id,
+    ChatMessage message,
+    String stage,
+  ) {
+    final isFile = message.kind != ChatMessageKind.text;
+    var groupMessage = false;
+    if (!isFile) {
+      groupMessage = groups.values.any(
+        (thread) => thread.messages.any((candidate) => candidate.id == id),
+      );
+    }
+    final operationId = isFile
+        ? 'file_transfer:$id'
+        : '${groupMessage ? 'group_message' : 'chat_message'}:$id';
+    _recordDeliveryTrace({
+      'operation_id': operationId,
+      'packet_id': id,
+      'stage': stage,
+      'detail': message.kind.name,
+      'time': DateTime.now().toUtc().toIso8601String(),
+    });
   }
 
   void _applyReadReceipts(Object? rawReceipts) {
@@ -11220,7 +11343,6 @@ class _IncomingFile {
 
   final Map<String, dynamic> firstPacket;
   final int totalChunks;
-  final Map<int, String> chunks = {};
 }
 
 class _GroupKey {

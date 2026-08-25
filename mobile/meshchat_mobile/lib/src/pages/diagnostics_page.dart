@@ -326,6 +326,30 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                             ),
                         ],
                 ),
+                _DiagCard(
+                  title: 'Delivery journal',
+                  children: controller.deliveryTraces.isEmpty
+                      ? const [
+                          _DiagRow(
+                            label: 'Delivery',
+                            value: 'No operations recorded yet',
+                            ok: true,
+                          ),
+                        ]
+                      : [
+                          for (final event in controller.deliveryTraces.take(
+                            12,
+                          ))
+                            _DiagRow(
+                              label: event.stage,
+                              value:
+                                  '${_formatDate(event.time.toLocal())}  '
+                                  '${event.operationId}'
+                                  '${event.detail.isEmpty ? '' : '  ${event.detail}'}',
+                              ok: event.stage != 'failed',
+                            ),
+                        ],
+                ),
                 const SizedBox(height: 10),
                 FilledButton.icon(
                   onPressed: refresh,

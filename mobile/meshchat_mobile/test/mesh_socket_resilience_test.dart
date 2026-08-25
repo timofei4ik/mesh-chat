@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
 import 'package:meshchat_mobile/src/models/session.dart';
 import 'package:meshchat_mobile/src/services/app_database_path.dart';
+import 'package:meshchat_mobile/src/services/file_transfer_outbox_store.dart';
+import 'package:meshchat_mobile/src/services/file_transfer_payload_store.dart';
 import 'package:meshchat_mobile/src/services/mesh_socket.dart';
 import 'package:meshchat_mobile/src/services/mutation_outbox_store.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -301,6 +304,143 @@ void main() {
     expect(messagePackets, 2);
     expect(await MutationOutboxStore().load(session), isEmpty);
   });
+
+  test('durable mutation is persisted before its socket write', () async {
+    var messagePackets = 0;
+    final server = await _LocalWebSocketServer.start((socket, packet) {
+      switch (packet['type']) {
+        case 'server_hello':
+          socket.add(jsonEncode(_welcomePacket()));
+        case 'chat_message':
+          messagePackets++;
+          socket.add(
+            jsonEncode({
+              'type': 'mutation_ack',
+              'ok': true,
+              'outbox_id': packet['outbox_id'],
+              'operation_id': packet['operation_id'],
+              'packet_type': packet['type'],
+              'packet_id': packet['packet_id'],
+            }),
+          );
+      }
+    });
+    addTearDown(server.close);
+
+    final persistenceGate = Completer<void>();
+    final store = _DelayedMutationOutboxStore(persistenceGate.future);
+    final session = _session(server.url, 'persist-before-send');
+    final welcome = Completer<void>();
+    final ack = Completer<void>();
+    final socket = MeshSocket(outboxStore: store);
+    addTearDown(socket.close);
+    await socket.connect(
+      session: session,
+      publicKey: 'public-key',
+      profile: _profile('persist-before-send'),
+      onPacket: (packet) {
+        if (packet['type'] == 'server_welcome' && !welcome.isCompleted) {
+          welcome.complete();
+        }
+        if (packet['type'] == 'mutation_ack' && !ack.isCompleted) {
+          ack.complete();
+        }
+      },
+      onStatus: (_) {},
+    );
+    await welcome.future.timeout(const Duration(seconds: 2));
+
+    socket.send(_chatPacket(session, 'persist-before-send-message'));
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(messagePackets, 0);
+
+    persistenceGate.complete();
+    await ack.future.timeout(const Duration(seconds: 2));
+    expect(messagePackets, 1);
+    expect(await store.load(session), isEmpty);
+  });
+
+  test('file transfer resumes after disconnect before chunk ack', () async {
+    var fileChunks = 0;
+    final server = await _LocalWebSocketServer.start((socket, packet) {
+      switch (packet['type']) {
+        case 'server_hello':
+          socket.add(jsonEncode(_welcomePacket()));
+        case 'file_chunk':
+          fileChunks++;
+          if (fileChunks == 1) {
+            unawaited(socket.close());
+            return;
+          }
+          socket.add(
+            jsonEncode({
+              'type': 'file_chunk_ack',
+              'ok': true,
+              'transfer_id': packet['transfer_id'],
+              'operation_id': packet['operation_id'],
+              'file_id': packet['file_id'],
+              'chunk_index': packet['chunk_index'],
+              'complete': true,
+            }),
+          );
+      }
+    });
+    addTearDown(server.close);
+
+    final suffix = DateTime.now().microsecondsSinceEpoch.toString();
+    final session = _session(server.url, 'file-resume-$suffix');
+    final payloadStore = _MemoryFileTransferPayloadStore();
+    final fileStore = FileTransferOutboxStore(
+      databaseName: 'socket_file_resume_$suffix.db',
+      payloadStore: payloadStore,
+    );
+    final complete = Completer<void>();
+    final welcome = Completer<void>();
+    final socket = MeshSocket(
+      fileTransferStore: fileStore,
+      reconnectDelayFactory: (_) => const Duration(milliseconds: 10),
+    );
+    addTearDown(socket.close);
+    await socket.connect(
+      session: session,
+      publicKey: 'public-key',
+      profile: _profile('file-resume-$suffix'),
+      onPacket: (packet) {
+        if (packet['type'] == 'server_welcome' && !welcome.isCompleted) {
+          welcome.complete();
+        }
+        if (packet['type'] == 'file_transfer_progress' &&
+            packet['complete'] == true &&
+            !complete.isCompleted) {
+          complete.complete();
+        }
+      },
+      onStatus: (_) {},
+    );
+    await welcome.future.timeout(const Duration(seconds: 2));
+
+    await socket.queueFileTransfer(
+      transferId: 'transfer-$suffix',
+      operationId: 'file_transfer:file-$suffix',
+      bytes: Uint8List.fromList(List<int>.generate(4096, (i) => i % 251)),
+      packet: {
+        'type': 'file_chunk',
+        'file_id': 'file-$suffix',
+        'filename': 'resume.bin',
+        'source_node': session.nodeId,
+        'destination_node': 'peer-node',
+      },
+    );
+
+    await complete.future.timeout(const Duration(seconds: 3));
+    expect(fileChunks, 2);
+    await _waitUntilAsync(
+      () async => (await fileStore.load(session)).isEmpty,
+      timeout: const Duration(seconds: 2),
+    );
+    expect(await fileStore.load(session), isEmpty);
+    expect(payloadStore.payloads, isEmpty);
+  });
 }
 
 Map<String, dynamic> _welcomePacket({bool reconcile = false}) => {
@@ -410,5 +550,51 @@ class _LocalWebSocketServer {
       await socket.close();
     }
     await _server.close(force: true);
+  }
+}
+
+class _DelayedMutationOutboxStore extends MutationOutboxStore {
+  _DelayedMutationOutboxStore(this.gate);
+
+  final Future<void> gate;
+
+  @override
+  Future<void> put(Session session, MutationOutboxEntry entry) async {
+    await gate;
+    await super.put(session, entry);
+  }
+}
+
+class _MemoryFileTransferPayloadStore extends FileTransferPayloadStore {
+  final Map<String, Uint8List> payloads = <String, Uint8List>{};
+
+  @override
+  Future<String> write(
+    String sessionKey,
+    String transferId,
+    Uint8List bytes,
+  ) async {
+    final reference = '$sessionKey|$transferId';
+    payloads[reference] = Uint8List.fromList(bytes);
+    return reference;
+  }
+
+  @override
+  Future<Uint8List> readChunk(String reference, int offset, int length) async {
+    final bytes = payloads[reference];
+    if (bytes == null || offset < 0 || offset >= bytes.length || length <= 0) {
+      return Uint8List(0);
+    }
+    final end = (offset + length).clamp(0, bytes.length);
+    return Uint8List.fromList(bytes.sublist(offset, end));
+  }
+
+  @override
+  Future<bool> exists(String reference) async =>
+      payloads.containsKey(reference);
+
+  @override
+  Future<void> delete(String reference) async {
+    payloads.remove(reference);
   }
 }
