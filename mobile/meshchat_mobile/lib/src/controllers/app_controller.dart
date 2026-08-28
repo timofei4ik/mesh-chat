@@ -13,6 +13,7 @@ import '../models/app_settings.dart';
 import '../models/business_settings.dart';
 import '../models/meshpro_subscription.dart';
 import '../models/profile.dart';
+import '../models/poll_item.dart';
 import '../models/scheduled_message.dart';
 import '../models/session.dart';
 import '../models/sticker_pack.dart';
@@ -319,6 +320,8 @@ class ActiveCall {
     this.enhancedNoiseSuppression = false,
     this.screenSharing = false,
     this.remoteScreenSharing = false,
+    this.handoffSourceNode = '',
+    this.handoffFromCallId = '',
   });
 
   final String callId;
@@ -344,6 +347,8 @@ class ActiveCall {
   final bool enhancedNoiseSuppression;
   final bool screenSharing;
   final bool remoteScreenSharing;
+  final String handoffSourceNode;
+  final String handoffFromCallId;
 
   ActiveCall copyWith({
     CallStatus? status,
@@ -359,6 +364,8 @@ class ActiveCall {
     String? networkRoute,
     bool? screenSharing,
     bool? remoteScreenSharing,
+    String? handoffSourceNode,
+    String? handoffFromCallId,
   }) {
     return ActiveCall(
       callId: callId,
@@ -384,6 +391,8 @@ class ActiveCall {
       enhancedNoiseSuppression: enhancedNoiseSuppression,
       screenSharing: screenSharing ?? this.screenSharing,
       remoteScreenSharing: remoteScreenSharing ?? this.remoteScreenSharing,
+      handoffSourceNode: handoffSourceNode ?? this.handoffSourceNode,
+      handoffFromCallId: handoffFromCallId ?? this.handoffFromCallId,
     );
   }
 }
@@ -440,6 +449,7 @@ class AppController extends ChangeNotifier {
   final Map<String, StoryItem> stories = {};
   final List<StoryItem> storyArchive = [];
   final List<ScheduledMessageItem> scheduledMessages = [];
+  final Map<String, PollItem> pollsByMessageId = {};
   final Set<String> hiddenStoryOwners = {};
   final Map<String, DateTime> typingUntil = {};
   final Map<String, String> activityKinds = {};
@@ -476,6 +486,7 @@ class AppController extends ChangeNotifier {
   final Map<String, Completer<AiPersonMemoryResult>> _aiPersonMemoryCompleters =
       {};
   final Map<String, Completer<String?>> _scheduledMessageCompleters = {};
+  final Map<String, Completer<String?>> _pollCompleters = {};
   final Map<String, Completer<String?>> _chatPreferenceCompleters = {};
   bool _lookupSendRequest = true;
   Completer<String?>? _profileUpdateCompleter;
@@ -1594,12 +1605,9 @@ class AppController extends ChangeNotifier {
         'Connect to the server to translate messages',
       );
     }
-    if (!await _refreshMeshProFeature('ai_message_translation')) {
-      throw const AiTranslationException(
-        'meshpro_required',
-        'Message translation requires MeshPro',
-      );
-    }
+    // The server is authoritative for entitlement and quota checks. A stale
+    // local subscription snapshot must not prevent an otherwise valid request.
+    await _refreshMeshProFeature('ai_message_translation');
 
     final requestId = const Uuid().v4();
     final completer = Completer<AiTranslationResult>();
@@ -2530,6 +2538,7 @@ class AppController extends ChangeNotifier {
       }
       pendingEmailChallengeId = '';
       pendingEmailMasked = '';
+      candidate = await _adoptCanonicalLogin(candidate, diagnostics.data);
       emailBindingRequired = diagnostics.data['email_binding_required'] == true;
       candidate = await _adoptServerIdentityRecovery(candidate);
       await _socket.close();
@@ -2573,6 +2582,7 @@ class AppController extends ChangeNotifier {
       }
       pendingEmailChallengeId = '';
       pendingEmailMasked = '';
+      candidate = await _adoptCanonicalLogin(candidate, diagnostics.data);
       emailBindingRequired = diagnostics.data['email_binding_required'] == true;
       candidate = await _adoptServerIdentityRecovery(candidate);
       await _socket.close();
@@ -2616,6 +2626,28 @@ class AppController extends ChangeNotifier {
         'Could not unlock the encrypted message history on this device',
       );
     }
+  }
+
+  Future<Session> _adoptCanonicalLogin(
+    Session candidate,
+    Map<String, dynamic> diagnostics,
+  ) async {
+    final canonicalLogin = diagnostics['login']
+        ?.toString()
+        .trim()
+        .toLowerCase();
+    if (canonicalLogin == null ||
+        canonicalLogin.isEmpty ||
+        canonicalLogin == candidate.login.toLowerCase()) {
+      return candidate;
+    }
+    final alias = candidate;
+    final updated = candidate.copyWith(login: canonicalLogin);
+    await _store.removeRecent(alias);
+    await _store.saveCurrent(updated);
+    await _store.saveRecent(updated);
+    await _initializeCryptoForSession(updated);
+    return updated;
   }
 
   Future<Session> _adoptServerIdentityRecovery(Session current) async {
@@ -2945,6 +2977,10 @@ class AppController extends ChangeNotifier {
         _applyScheduledMessages(packet['items']);
       case 'scheduled_message_sent':
         _handleScheduledMessageSent(packet);
+      case 'poll_result':
+        _handlePollResult(packet);
+      case 'poll_update':
+        _applyPoll(packet['poll']);
       case 'chat_request':
         _acceptChatRequest(packet);
       case 'group_join_request':
@@ -2965,6 +3001,10 @@ class AppController extends ChangeNotifier {
         await _handleCallRestartOffer(packet);
       case 'call_restart_answer':
         await _handleCallRestartAnswer(packet);
+      case 'call_handoff_request':
+        await _handleCallHandoffRequest(packet);
+      case 'call_handoff_accept':
+        await _handleCallHandoffAccept(packet);
       case 'call_screen_offer':
         await _handleCallScreenOffer(packet);
       case 'call_screen_answer':
@@ -3367,6 +3407,7 @@ class AppController extends ChangeNotifier {
     _applyChatPreferences(packet['chat_preferences']);
     await _applyMeshProPreferences(packet['meshpro_preferences']);
     _applyScheduledMessages(packet['scheduled_messages']);
+    _applyPolls(packet['polls']);
     _applyArchiveStatesToThreads();
     await _repairCachedGroups();
     await _repairCachedMessages();
@@ -5344,6 +5385,148 @@ class AppController extends ChangeNotifier {
     _scheduleSoftResync('Scheduled message sent: refreshing history');
   }
 
+  PollItem? pollForMessage(String messageId) => pollsByMessageId[messageId];
+
+  Future<String?> createPoll(
+    ChatThread thread, {
+    required String question,
+    required List<String> options,
+    bool isQuiz = false,
+    int? correctOption,
+    String explanation = '',
+    bool allowsMultiple = false,
+    bool isAnonymous = true,
+  }) async {
+    final trimmedQuestion = question.trim();
+    final normalizedOptions = options
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (!thread.isGroup) return 'Polls are available in groups and channels';
+    if (!_socket.isConnected) return 'No server connection';
+    if (trimmedQuestion.isEmpty || normalizedOptions.length < 2) {
+      return 'Add a question and at least two options';
+    }
+    if (normalizedOptions.length > 10) {
+      return 'A poll can have up to 10 options';
+    }
+    if (isQuiz &&
+        (correctOption == null ||
+            correctOption < 0 ||
+            correctOption >= normalizedOptions.length)) {
+      return 'Choose the correct answer';
+    }
+    final messageId = await sendGroupMessage(thread, trimmedQuestion);
+    if (messageId == null) return 'Could not send the poll';
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _pollCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'poll_create',
+      'packet_id': const Uuid().v4(),
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'message_id': messageId,
+      'group_id': thread.groupId,
+      'question': trimmedQuestion,
+      'options': normalizedOptions,
+      'is_quiz': isQuiz,
+      'correct_option': correctOption,
+      'explanation': explanation.trim(),
+      'allows_multiple': allowsMultiple,
+      'is_anonymous': isAnonymous,
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 12),
+      onTimeout: () => 'Server did not confirm the poll',
+    );
+    _pollCompleters.remove(requestId);
+    return result;
+  }
+
+  Future<String?> votePoll(PollItem poll, Set<int> selectedOptions) async {
+    if (!_socket.isConnected) return 'No server connection';
+    if (poll.isClosed) return 'This poll is closed';
+    if (selectedOptions.isEmpty) return 'Choose an option';
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _pollCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'poll_vote',
+      'packet_id': const Uuid().v4(),
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'poll_id': poll.id,
+      'selected_options': selectedOptions.toList(growable: false),
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => 'Server did not confirm the vote',
+    );
+    _pollCompleters.remove(requestId);
+    return result;
+  }
+
+  Future<String?> closePoll(PollItem poll) async {
+    if (!_socket.isConnected) return 'No server connection';
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _pollCompleters[requestId] = completer;
+    _socket.send({
+      'type': 'poll_close',
+      'packet_id': const Uuid().v4(),
+      'request_id': requestId,
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': 'SERVER',
+      'ttl': 5,
+      'poll_id': poll.id,
+    });
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => 'Server did not confirm closing the poll',
+    );
+    _pollCompleters.remove(requestId);
+    return result;
+  }
+
+  void _handlePollResult(Map<String, dynamic> packet) {
+    if (packet['poll'] is Map) _applyPoll(packet['poll'], notify: false);
+    final requestId = packet['request_id']?.toString() ?? '';
+    final completer = _pollCompleters[requestId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(
+        packet['ok'] == true
+            ? null
+            : packet['reason']?.toString() ?? 'Poll update failed',
+      );
+    }
+    notifyListeners();
+  }
+
+  void _applyPoll(dynamic rawPoll, {bool notify = true}) {
+    if (rawPoll is! Map) return;
+    final poll = PollItem.fromJson(Map<String, dynamic>.from(rawPoll));
+    if (poll.id.isEmpty || poll.messageId.isEmpty) return;
+    pollsByMessageId[poll.messageId] = poll;
+    if (notify) notifyListeners();
+  }
+
+  void _applyPolls(dynamic rawPolls) {
+    if (rawPolls is! List) return;
+    pollsByMessageId.clear();
+    for (final raw in rawPolls) {
+      _applyPoll(raw, notify: false);
+    }
+  }
+
   Future<String?> publishStory({
     required String text,
     required String imageData,
@@ -6367,7 +6550,10 @@ class AppController extends ChangeNotifier {
         meshProSubscription.entitlements.hasFeature(featureId);
   }
 
-  Future<String?> startCall(Profile recipient) async {
+  Future<String?> startCall(
+    Profile recipient, {
+    String handoffFromCallId = '',
+  }) async {
     if (session == null) return 'No active session';
     if (isSavedMessagesProfile(recipient)) return 'Cannot call Saved Messages';
     if (recipient.nodeId.isEmpty || recipient.nodeId == myNodeId) {
@@ -6431,6 +6617,8 @@ class AppController extends ChangeNotifier {
       'hd_audio': hdAudio,
       'enhanced_noise_suppression': enhancedNoiseSuppression,
       'sdp': offerSdp,
+      if (handoffFromCallId.isNotEmpty)
+        'handoff_from_call_id': handoffFromCallId,
     });
     return null;
   }
@@ -6532,6 +6720,25 @@ class AppController extends ChangeNotifier {
     final call = activeCall;
     if (session == null || call == null || !call.incoming) return;
     unawaited(CallAlertService.stopAll());
+    if (call.handoffSourceNode.isNotEmpty) {
+      _socket.send({
+        'type': 'call_handoff_accept',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': call.handoffSourceNode,
+        'ttl': 5,
+        'call_id': call.handoffFromCallId,
+      });
+      final peer = call.peer;
+      final previousCallId = call.handoffFromCallId;
+      _setActiveCall(null);
+      final error = await startCall(peer, handoffFromCallId: previousCallId);
+      if (error != null) {
+        addDiagnostic('call', 'Call handoff failed: $error');
+      }
+      return;
+    }
     if (call.remoteOfferSdp.isEmpty) {
       _sendCallEnd(call, 'bad_offer');
       _setActiveCall(
@@ -7214,6 +7421,87 @@ class AppController extends ChangeNotifier {
     });
   }
 
+  Future<String?> requestCallHandoff(String targetNode) async {
+    final call = activeCall;
+    final current = session;
+    if (call == null || call.status != CallStatus.active) {
+      return 'No active call to transfer';
+    }
+    if (call.isGroup) return 'Group call transfer is not available yet';
+    if (targetNode.isEmpty || targetNode == myNodeId) {
+      return 'Choose another device';
+    }
+    if (!_socket.isConnected || current == null) return 'No server connection';
+    _socket.send({
+      'type': 'call_handoff_request',
+      'packet_id': const Uuid().v4(),
+      'protocol_version': MeshSocket.protocolVersion,
+      'source_node': myNodeId,
+      'destination_node': targetNode,
+      'ttl': 5,
+      'call_id': call.callId,
+      'sender': current.login,
+      'peer_node': call.peer.nodeId,
+      'peer_name': call.peer.displayName,
+      'peer_login': call.peer.accountLogin,
+      'peer_username': call.peer.publicUsername,
+      'requested_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    return null;
+  }
+
+  Future<void> _handleCallHandoffRequest(Map<String, dynamic> packet) async {
+    final source = packet['source_node']?.toString() ?? '';
+    final callId = packet['call_id']?.toString() ?? '';
+    final peerNode = packet['peer_node']?.toString() ?? '';
+    if (source.isEmpty || callId.isEmpty || peerNode.isEmpty) return;
+    final current = activeCall;
+    if (current != null && current.status != CallStatus.ended) return;
+    final peer =
+        profiles[peerNode] ??
+        Profile(
+          nodeId: peerNode,
+          displayName: packet['peer_name']?.toString() ?? 'Active call',
+          accountLogin: packet['peer_login']?.toString() ?? '',
+          publicUsername: packet['peer_username']?.toString() ?? '',
+        );
+    _setActiveCall(
+      ActiveCall(
+        callId: 'handoff:$callId',
+        peer: peer,
+        status: CallStatus.ringing,
+        incoming: true,
+        startedAt: DateTime.now(),
+        handoffSourceNode: source,
+        handoffFromCallId: callId,
+      ),
+    );
+    notifyListeners();
+    unawaited(
+      _showCallNotification(
+        title: peer.displayName,
+        body: 'Move active call to this device',
+        callId: 'handoff:$callId',
+        sourceNode: source,
+        groupId: '',
+      ),
+    );
+  }
+
+  Future<void> _handleCallHandoffAccept(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (call == null || packet['call_id']?.toString() != call.callId) return;
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    final current = activeCall;
+    if (current == null || current.callId != call.callId) return;
+    await _finishCall(
+      current,
+      reason: 'moved to another device',
+      historyReason: 'transferred',
+      broadcast: false,
+    );
+  }
+
   Future<void> _handleCallOffer(Map<String, dynamic> packet) async {
     final sender = packet['source_node']?.toString() ?? '';
     if (sender.isEmpty || sender == myNodeId) return;
@@ -7233,18 +7521,29 @@ class AppController extends ChangeNotifier {
     }
     final groupId = packet['group_id']?.toString() ?? '';
     final groupName = packet['group_name']?.toString() ?? '';
+    final handoffFromCallId = packet['handoff_from_call_id']?.toString() ?? '';
+    final replacingCurrentCall =
+        handoffFromCallId.isNotEmpty && activeCall?.callId == handoffFromCallId;
     if (activeCall != null && activeCall!.status != CallStatus.ended) {
-      _socket.send({
-        'type': 'call_end',
-        'packet_id': const Uuid().v4(),
-        'protocol_version': MeshSocket.protocolVersion,
-        'source_node': myNodeId,
-        'destination_node': sender,
-        'ttl': 5,
-        'call_id': packet['call_id']?.toString() ?? '',
-        'reason': 'busy',
-      });
-      return;
+      if (replacingCurrentCall) {
+        await _finishCall(
+          activeCall!,
+          reason: 'continued on another device',
+          broadcast: false,
+        );
+      } else {
+        _socket.send({
+          'type': 'call_end',
+          'packet_id': const Uuid().v4(),
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': myNodeId,
+          'destination_node': sender,
+          'ttl': 5,
+          'call_id': packet['call_id']?.toString() ?? '',
+          'reason': 'busy',
+        });
+        return;
+      }
     }
     await _stopCallCaptions(clearLines: true);
     final senderProfile =
@@ -7295,6 +7594,7 @@ class AppController extends ChangeNotifier {
         groupId: groupId,
       ),
     );
+    if (replacingCurrentCall) await acceptCall();
   }
 
   Future<void> _handleCallAnswer(Map<String, dynamic> packet) async {
@@ -10735,7 +11035,7 @@ class AppController extends ChangeNotifier {
       'email': email.trim().toLowerCase(),
       'protocol_version': MeshSocket.protocolVersion,
     });
-    return completer.future.timeout(
+    final result = await completer.future.timeout(
       const Duration(seconds: 20),
       onTimeout: () {
         _emailVerificationCompleter = null;
@@ -10745,6 +11045,18 @@ class AppController extends ChangeNotifier {
         };
       },
     );
+    if (result['ok'] == true && result['complete'] == true) {
+      emailBindingRequired = false;
+      final current = session;
+      if (current != null) {
+        final updated = current.copyWith(email: email.trim().toLowerCase());
+        session = updated;
+        await _store.saveCurrent(updated);
+        await _store.saveRecent(updated);
+      }
+      notifyListeners();
+    }
+    return result;
   }
 
   Future<Map<String, dynamic>> confirmEmailBinding({
@@ -10990,6 +11302,7 @@ class AppController extends ChangeNotifier {
     stories.clear();
     storyArchive.clear();
     scheduledMessages.clear();
+    pollsByMessageId.clear();
     stickerLibrary = const StickerLibrary();
     hiddenStoryOwners.clear();
     typingUntil.clear();
@@ -11088,6 +11401,10 @@ class AppController extends ChangeNotifier {
       if (!completer.isCompleted) completer.complete('Signed out');
     }
     _scheduledMessageCompleters.clear();
+    for (final completer in _pollCompleters.values) {
+      if (!completer.isCompleted) completer.complete('Signed out');
+    }
+    _pollCompleters.clear();
     for (final completer in _chatPreferenceCompleters.values) {
       if (!completer.isCompleted) completer.complete('Signed out');
     }

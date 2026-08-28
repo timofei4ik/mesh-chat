@@ -151,6 +151,11 @@ async def handle_server_hello(
             )
             return HandshakeOutcome(node_id, terminate_handler=True)
     elif config.require_login or login or password or service:
+        login = await server.resolve_account_login(
+            login,
+            password,
+            packet.get("email"),
+        )
         email_ok, email_error, verified_email = (
             await server.authorize_email_2fa(
                 packet,
@@ -236,6 +241,7 @@ async def handle_server_hello(
                     server.email_binding_required(login) if login else False
                 ),
                 "email": server.mask_email(server.account_email(login)),
+                "login": str(login or "").strip().lower(),
                 **version_payload(),
             },
         )
@@ -355,11 +361,13 @@ async def handle_server_hello(
             "email_2fa": True,
             "call_ice_servers": True,
             "call_signaling_v2": True,
+            "call_handoff_v1": True,
             "call_sfu_v1": False,
         },
         **version_payload(),
     }
     if login:
+        welcome["login"] = normalized_login
         welcome["subscription"] = server.subscription_status(
             normalized_login,
             "meshpro",

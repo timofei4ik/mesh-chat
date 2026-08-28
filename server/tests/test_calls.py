@@ -283,6 +283,31 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertEqual("call_restart_offer", target.sent[0]["type"])
 
+    async def test_handoff_targets_only_the_selected_account_device(self):
+        server = FakeCallServer()
+        server.client_logins.update(
+            {"caller-2": "alice", "caller-3": "alice"}
+        )
+        selected = FakeSocket()
+        other = FakeSocket()
+        server.clients["caller-2"] = selected
+        server.clients["caller-3"] = other
+
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_handoff_request",
+                "destination_node": "caller-2",
+                "call_id": "call-handoff",
+                "peer_node": "callee",
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(1, len(selected.sent))
+        self.assertEqual([], other.sent)
+
     async def test_dedicated_signaling_bypasses_local_socket_and_keeps_push(self):
         server = FakeCallServer()
         server.call_signaling = FakeSignalingPublisher()

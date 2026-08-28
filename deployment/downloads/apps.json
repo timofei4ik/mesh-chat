@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 36,
-  "updatedAt": "2026-08-23T00:00:00Z",
+  "catalogVersion": 37,
+  "updatedAt": "2026-08-29T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-polls-natural-summaries",
+      "appId": "meshchat",
+      "badge": "New",
+      "title": "Polls, natural summaries and safer chats",
+      "summary": "Create polls and quizzes in groups and channels, catch up with a natural unread-message recap and jump back to its sources. Voice messages now combine transcription with a short summary, suspicious links and requests are highlighted, and an active personal call can move to another online device.",
+      "publishedAt": "2026-08-29"
+    },
     {
       "id": "meshchat-live-captions",
       "appId": "meshchat",
@@ -44,7 +52,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.87",
+      "version": "1.0.89",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -57,15 +65,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 190,
+      "build": 192,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-08-25T00:00:00Z",
+      "updated_at": "2026-08-29T00:00:00Z",
       "release": {
-        "title": "Reliable delivery",
-        "publishedAt": "2026-08-25",
-        "notes": ["Incoming files resume safely after interruption", "Startup synchronization no longer races new messages", "Delivery stages are available in diagnostics", "More reliable retries without duplicate mutations"]
+        "title": "Polls and smarter catch-up",
+        "publishedAt": "2026-08-29",
+        "notes": ["Polls and quizzes in groups and channels with live synchronized results", "Unread summaries are now a natural retelling with links to source messages", "Voice transcription can be condensed into a short summary", "Suspicious links, code requests and urgent payment messages are highlighted", "Personal calls can move between online devices", "Message translation now relies on the server entitlement state instead of stale client cache"]
       }
     },
     {

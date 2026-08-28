@@ -129,6 +129,8 @@ class SQLiteChatSyncDeletionOwner:
         AccountDataPolicy("chat_sync", "server_group_members"),
         AccountDataPolicy("chat_sync", "server_group_keys"),
         AccountDataPolicy("chat_sync", "server_group_messages"),
+        AccountDataPolicy("chat_sync", "server_polls"),
+        AccountDataPolicy("chat_sync", "server_poll_votes"),
         AccountDataPolicy("chat_sync", "server_chat_deletes"),
         AccountDataPolicy("chat_sync", "server_reactions"),
         AccountDataPolicy("chat_sync", "server_pins"),
@@ -146,7 +148,17 @@ class SQLiteChatSyncDeletionOwner:
 
     def delete_account(self, context):
         for group_id in context.owned_group_ids:
+            self._connection.execute(
+                """
+                DELETE FROM server_poll_votes
+                WHERE poll_id IN (
+                    SELECT poll_id FROM server_polls WHERE group_id=?
+                )
+                """,
+                (group_id,),
+            )
             for table in (
+                "server_polls",
                 "server_group_keys",
                 "server_group_messages",
                 "server_group_members",
@@ -184,6 +196,14 @@ class SQLiteChatSyncDeletionOwner:
         )
         self._connection.execute(
             "DELETE FROM server_group_keys WHERE member_login=?",
+            (context.login,),
+        )
+        self._connection.execute(
+            "DELETE FROM server_poll_votes WHERE voter_login=?",
+            (context.login,),
+        )
+        self._connection.execute(
+            "DELETE FROM server_polls WHERE creator_login=?",
             (context.login,),
         )
         self._connection.execute(

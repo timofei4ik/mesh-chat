@@ -44,6 +44,7 @@ try:
     from server.server_subscription import ServerSubscriptionMixin
     from server.server_moderation import ServerModerationMixin
     from server.server_scheduler import ServerSchedulerMixin
+    from server.server_polls import ServerPollsMixin
     from server.server_wireguard import ServerWireGuardMixin
     from server.server_protocol import (
         APP_VERSION,
@@ -107,6 +108,7 @@ except ModuleNotFoundError:
     from server_subscription import ServerSubscriptionMixin
     from server_moderation import ServerModerationMixin
     from server_scheduler import ServerSchedulerMixin
+    from server_polls import ServerPollsMixin
     from server_wireguard import ServerWireGuardMixin
     from server_protocol import (
         APP_VERSION,
@@ -152,6 +154,7 @@ class MeshRelayServer(
     ServerBoostyMixin,
     ServerWireGuardMixin,
     ServerSchedulerMixin,
+    ServerPollsMixin,
     ServerSubscriptionMixin,
     ServerModerationMixin
 ):
@@ -327,6 +330,7 @@ class MeshRelayServer(
             stream_maxlen=CALL_SIGNALING_STREAM_MAXLEN,
         )
         self.db = self.open_db()
+        self.initialize_poll_storage()
         self.initialize_media_delivery()
         self.account_deletion_orchestrator = (
             build_sqlite_account_deletion_orchestrator(

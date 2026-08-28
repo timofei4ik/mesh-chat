@@ -60,6 +60,8 @@ CALL_SIGNAL_PACKET_TYPES = frozenset(
         "call_screen_answer",
         "call_screen_stop",
         "call_caption",
+        "call_handoff_request",
+        "call_handoff_accept",
     }
 )
 
@@ -211,7 +213,11 @@ async def route_call_signal(server, packet):
     delivered = await deliver(destination_node)
     source_node = str(packet.get("source_node") or "").strip()
     destination_login = server.get_login_by_node(destination_node)
-    if destination_login:
+    exact_device_signal = str(packet.get("type") or "") in {
+        "call_handoff_request",
+        "call_handoff_accept",
+    }
+    if destination_login and not exact_device_signal:
         resolver = getattr(server, "get_realtime_account_nodes", None)
         target_nodes = (
             await resolver(destination_login)

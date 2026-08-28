@@ -1635,6 +1635,8 @@ class ServerSyncMixin:
             if callable(schedule_lister)
             else []
         )
+        poll_lister = getattr(self, "polls_for_account", None)
+        polls = poll_lister(login) if callable(poll_lister) else []
 
         return {
             "type": "server_sync",
@@ -1649,6 +1651,7 @@ class ServerSyncMixin:
             "chat_preferences": self.get_chat_preferences(login),
             "meshpro_preferences": self.get_meshpro_preferences(login),
             "scheduled_messages": scheduled_messages,
+            "polls": polls,
             "sticker_library": sticker_library,
             "reactions": reactions,
             "pins": pins,

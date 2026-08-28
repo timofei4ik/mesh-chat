@@ -97,6 +97,39 @@ class ServerEmailAuthMixin:
         )
         return secrets.compare_digest(candidate, row[1])
 
+    async def resolve_account_login(self, identifier, password, email=""):
+        """Resolve legacy sign-in identifiers without weakening authentication."""
+        normalized_identifier = str(identifier or "").strip().lower().lstrip("@")
+        if not normalized_identifier or not password:
+            return normalized_identifier
+        if self.account_exists(normalized_identifier):
+            return normalized_identifier
+
+        normalized_email = self.normalize_email(email)
+        with self.unit_of_work_factory() as unit_of_work:
+            candidates = [
+                unit_of_work.identity.public_username_owner(
+                    normalized_identifier,
+                ),
+                (
+                    unit_of_work.identity.email_owner(normalized_email)
+                    if normalized_email
+                    else None
+                ),
+            ]
+        checked = set()
+        for candidate in candidates:
+            normalized_candidate = str(candidate or "").strip().lower()
+            if not normalized_candidate or normalized_candidate in checked:
+                continue
+            checked.add(normalized_candidate)
+            if await self.verify_account_password_async(
+                normalized_candidate,
+                password,
+            ):
+                return normalized_candidate
+        return normalized_identifier
+
     def is_email_device_trusted(self, login, node_id):
         with self.unit_of_work_factory() as unit_of_work:
             return unit_of_work.identity.is_email_device_trusted(

@@ -132,6 +132,43 @@ class EmailAuthTests(unittest.TestCase):
             )
         )
 
+    def test_existing_account_can_be_resolved_by_username_or_verified_email(self):
+        created, reason = self.relay.authenticate_account(
+            "legacy-login",
+            "password123",
+            "phone",
+            "Legacy",
+            public_username="legacy_name",
+            email="legacy@example.com",
+            email_verified=True,
+        )
+        self.assertTrue(created, reason)
+
+        by_username = asyncio.run(
+            self.relay.resolve_account_login(
+                "@legacy_name",
+                "password123",
+            )
+        )
+        by_email = asyncio.run(
+            self.relay.resolve_account_login(
+                "mistyped-login",
+                "password123",
+                "legacy@example.com",
+            )
+        )
+        wrong_password = asyncio.run(
+            self.relay.resolve_account_login(
+                "mistyped-login",
+                "wrong-password",
+                "legacy@example.com",
+            )
+        )
+
+        self.assertEqual("legacy-login", by_username)
+        self.assertEqual("legacy-login", by_email)
+        self.assertEqual("mistyped-login", wrong_password)
+
     def test_new_registration_requires_code_before_account_creation(self):
         packet = {
             "supports_email_2fa": True,

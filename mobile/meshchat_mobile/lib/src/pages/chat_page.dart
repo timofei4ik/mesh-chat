@@ -24,6 +24,7 @@ import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../models/profile.dart';
+import '../models/poll_item.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../utils/mesh_page_route.dart';
@@ -42,7 +43,7 @@ import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, file, sticker, shareLocation }
+enum _AttachAction { photo, file, sticker, poll, shareLocation }
 
 class _ScheduleDraft {
   const _ScheduleDraft({
@@ -565,9 +566,49 @@ class _ChatPageState extends State<ChatPage>
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 520),
             child: SingleChildScrollView(
-              child: SelectableText(
-                result.text,
-                style: const TextStyle(height: 1.45),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SelectableText(
+                    result.text,
+                    style: const TextStyle(height: 1.45),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Source messages',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  for (final message in messages.reversed.take(6))
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(
+                        Icons.subdirectory_arrow_right_rounded,
+                        size: 18,
+                      ),
+                      title: Text(
+                        message.text.trim().isNotEmpty
+                            ? message.text.trim()
+                            : message.transcription.trim().isNotEmpty
+                            ? message.transcription.trim()
+                            : message.fileName,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        WidgetsBinding.instance.addPostFrameCallback(
+                          (_) => jumpToMessageById(message.id),
+                        );
+                      },
+                    ),
+                ],
               ),
             ),
           ),
@@ -1465,6 +1506,13 @@ class _ChatPageState extends State<ChatPage>
                   ),
                   if (widget.thread.isGroup)
                     _GlassSheetAction(
+                      icon: Icons.poll_rounded,
+                      title: 'Poll or quiz',
+                      subtitle: 'Ask the group and see live results',
+                      onTap: () => Navigator.pop(context, _AttachAction.poll),
+                    ),
+                  if (widget.thread.isGroup)
+                    _GlassSheetAction(
                       icon: Icons.my_location_rounded,
                       title: 'Share my location',
                       subtitle: 'Show your latest place on the group map',
@@ -1484,9 +1532,207 @@ class _ChatPageState extends State<ChatPage>
       await attachFile();
     } else if (action == _AttachAction.sticker) {
       await showStickerPanel();
+    } else if (action == _AttachAction.poll) {
+      await showPollComposer();
     } else if (action == _AttachAction.shareLocation) {
       await shareMyLocation();
     }
+  }
+
+  Future<void> showPollComposer() async {
+    if (!widget.thread.isGroup || !canPostToThread) {
+      showSnack(channelWriteBlockedMessage);
+      return;
+    }
+    final question = TextEditingController();
+    final options = [TextEditingController(), TextEditingController()];
+    var isQuiz = false;
+    var allowsMultiple = false;
+    var isAnonymous = true;
+    int? correctOption;
+    final submit = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.viewInsetsOf(context).bottom,
+          ),
+          child: SafeArea(
+            top: false,
+            child: _ChatGlassSurface(
+              radius: 28,
+              useNativeGlass: true,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.86,
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'New poll',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: question,
+                        autofocus: true,
+                        maxLength: 500,
+                        minLines: 1,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Question',
+                          prefixIcon: Icon(Icons.help_outline_rounded),
+                        ),
+                      ),
+                      for (var index = 0; index < options.length; index++) ...[
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: options[index],
+                          maxLength: 160,
+                          decoration: InputDecoration(
+                            labelText: 'Option ${index + 1}',
+                            prefixIcon: isQuiz
+                                ? IconButton(
+                                    tooltip: 'Mark as correct',
+                                    onPressed: () => setSheetState(
+                                      () => correctOption = index,
+                                    ),
+                                    icon: Icon(
+                                      correctOption == index
+                                          ? Icons.radio_button_checked_rounded
+                                          : Icons
+                                                .radio_button_unchecked_rounded,
+                                      color: correctOption == index
+                                          ? Colors.greenAccent
+                                          : null,
+                                    ),
+                                  )
+                                : const Icon(Icons.circle_outlined),
+                            suffixIcon: options.length > 2
+                                ? IconButton(
+                                    tooltip: 'Remove option',
+                                    onPressed: () {
+                                      final removed = options.removeAt(index);
+                                      removed.dispose();
+                                      if (correctOption == index) {
+                                        correctOption = null;
+                                      } else if ((correctOption ?? -1) >
+                                          index) {
+                                        correctOption = correctOption! - 1;
+                                      }
+                                      setSheetState(() {});
+                                    },
+                                    icon: const Icon(Icons.close_rounded),
+                                  )
+                                : null,
+                          ),
+                        ),
+                      ],
+                      if (options.length < 10)
+                        TextButton.icon(
+                          onPressed: () => setSheetState(
+                            () => options.add(TextEditingController()),
+                          ),
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Add option'),
+                        ),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        value: isQuiz,
+                        onChanged: (value) => setSheetState(() {
+                          isQuiz = value;
+                          allowsMultiple = false;
+                          if (!value) correctOption = null;
+                        }),
+                        secondary: const Icon(Icons.quiz_rounded),
+                        title: const Text('Quiz mode'),
+                        subtitle: const Text('One option is marked as correct'),
+                      ),
+                      if (!isQuiz)
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          value: allowsMultiple,
+                          onChanged: (value) =>
+                              setSheetState(() => allowsMultiple = value),
+                          secondary: const Icon(Icons.checklist_rounded),
+                          title: const Text('Multiple answers'),
+                        ),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        value: isAnonymous,
+                        onChanged: (value) =>
+                            setSheetState(() => isAnonymous = value),
+                        secondary: const Icon(Icons.visibility_off_rounded),
+                        title: const Text('Anonymous voting'),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            final filled = options
+                                .where((item) => item.text.trim().isNotEmpty)
+                                .length;
+                            if (question.text.trim().isEmpty || filled < 2) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Add a question and at least two options',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+                            if (isQuiz && correctOption == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Choose the correct answer'),
+                                ),
+                              );
+                              return;
+                            }
+                            Navigator.pop(context, true);
+                          },
+                          icon: const Icon(Icons.send_rounded),
+                          label: Text(isQuiz ? 'Create quiz' : 'Create poll'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final questionText = question.text;
+    final optionTexts = options
+        .map((item) => item.text)
+        .toList(growable: false);
+    question.dispose();
+    for (final option in options) {
+      option.dispose();
+    }
+    if (submit != true || !mounted) return;
+    final error = await widget.controller.createPoll(
+      widget.thread,
+      question: questionText,
+      options: optionTexts,
+      isQuiz: isQuiz,
+      correctOption: correctOption,
+      allowsMultiple: allowsMultiple,
+      isAnonymous: isAnonymous,
+    );
+    if (mounted && error != null) showSnack(error);
   }
 
   Future<void> sendAttachment(String filename, Uint8List bytes) async {
@@ -2820,6 +3066,11 @@ class _ChatPageState extends State<ChatPage>
         'Save to Saved Messages',
         Icons.bookmark_add_outlined,
       ),
+      const _MessageActionSpec(
+        'remind',
+        'Remind me',
+        Icons.alarm_add_rounded,
+      ),
       if (canCopyText)
         const _MessageActionSpec('copy', 'Copy', Icons.copy_rounded),
       if (canCopyText)
@@ -2966,6 +3217,10 @@ class _ChatPageState extends State<ChatPage>
       if (error != null) showSnack(error);
       return;
     }
+    if (action == 'remind') {
+      await createMessageReminder(message);
+      return;
+    }
     if (action == 'translate') {
       await showTranslationSheet(message);
       return;
@@ -3021,6 +3276,48 @@ class _ChatPageState extends State<ChatPage>
         action.substring('reaction:'.length),
       );
     }
+  }
+
+  Future<void> createMessageReminder(ChatMessage message) async {
+    final now = DateTime.now();
+    final day = await showDatePicker(
+      context: context,
+      initialDate: now.add(const Duration(days: 1)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 366)),
+    );
+    if (day == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(
+        now.add(const Duration(hours: 1)),
+      ),
+    );
+    if (time == null || !mounted) return;
+    final start = DateTime(
+      day.year,
+      day.month,
+      day.day,
+      time.hour,
+      time.minute,
+    );
+    final source = message.text.trim().isNotEmpty
+        ? message.text.trim()
+        : message.transcription.trim().isNotEmpty
+        ? message.transcription.trim()
+        : message.fileName;
+    final suggestion = _ContextSuggestion._calendarSuggestion(
+      label: 'Create reminder',
+      detail: _contextDateLabel(start),
+      title: source.isEmpty ? 'MeshChat message' : source,
+      start: start,
+      icon: Icons.alarm_add_rounded,
+    );
+    final opened = await launchUrl(
+      suggestion.uri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) showSnack('Could not open calendar');
   }
 
   Future<void> showReportDialog(ChatMessage message) async {
@@ -4793,6 +5090,12 @@ class _CallBottomSheet extends StatelessWidget {
                           : Colors.white70,
                       onPressed: () => _toggleScreenShare(context),
                     ),
+                  if (active && !call.isGroup)
+                    _CallGlassButton(
+                      tooltip: 'Move to another device',
+                      icon: Icons.devices_rounded,
+                      onPressed: () => _showCallHandoffPicker(context),
+                    ),
                 ],
               ),
               const SizedBox(height: 22),
@@ -4825,6 +5128,75 @@ class _CallBottomSheet extends StatelessWidget {
 
   Future<void> _toggleCaptions(BuildContext context) async {
     final error = await controller.toggleCallCaptions();
+    if (error == null || !context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  Future<void> _showCallHandoffPicker(BuildContext context) async {
+    final devices = await controller.loadActiveDevices();
+    if (!context.mounted) return;
+    final available = devices
+        .where(
+          (device) =>
+              device.online &&
+              !device.revoked &&
+              device.nodeId != controller.myNodeId,
+        )
+        .toList(growable: false);
+    if (available.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No other online devices found')),
+      );
+      return;
+    }
+    final target = await showModalBottomSheet<ActiveDevice>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        top: false,
+        child: _ChatGlassSurface(
+          radius: 28,
+          useNativeGlass: true,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 14, 10, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: Text(
+                    'Move call to',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                for (final device in available)
+                  ListTile(
+                    leading: const Icon(Icons.devices_rounded),
+                    title: Text(
+                      device.deviceName.trim().isNotEmpty
+                          ? device.deviceName
+                          : device.displayName.trim().isNotEmpty
+                          ? device.displayName
+                          : 'MeshChat device',
+                    ),
+                    subtitle: Text(
+                      device.appVersion.isEmpty
+                          ? 'Online'
+                          : 'Online - ${device.appVersion}',
+                    ),
+                    trailing: const Icon(Icons.arrow_forward_ios_rounded),
+                    onTap: () => Navigator.pop(context, device),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (target == null) return;
+    final error = await controller.requestCallHandoff(target.nodeId);
     if (error == null || !context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
   }
@@ -5142,30 +5514,30 @@ class _CallCaptions extends StatelessWidget {
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton.icon(
-                      onPressed: () => _showTranslationSettings(context),
-                      style: TextButton.styleFrom(
-                        foregroundColor:
-                            controller.callCaptionTranslationEnabled
-                            ? Colors.cyanAccent
-                            : Colors.white60,
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
+                        onPressed: () => _showTranslationSettings(context),
+                        style: TextButton.styleFrom(
+                          foregroundColor:
+                              controller.callCaptionTranslationEnabled
+                              ? Colors.cyanAccent
+                              : Colors.white60,
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
                         ),
-                      ),
-                      icon: Icon(
-                        controller.callCaptionTranslationEnabled
-                            ? Icons.translate_rounded
-                            : Icons.translate_outlined,
-                        size: 16,
-                      ),
-                      label: Text(
-                        controller.callCaptionTranslationEnabled
-                            ? 'Translate to ${_languageLabel(controller.callCaptionTargetLanguage)}'
-                            : 'Live translation',
-                        style: const TextStyle(fontSize: 11),
-                      ),
+                        icon: Icon(
+                          controller.callCaptionTranslationEnabled
+                              ? Icons.translate_rounded
+                              : Icons.translate_outlined,
+                          size: 16,
+                        ),
+                        label: Text(
+                          controller.callCaptionTranslationEnabled
+                              ? 'Translate to ${_languageLabel(controller.callCaptionTargetLanguage)}'
+                              : 'Live translation',
+                          style: const TextStyle(fontSize: 11),
+                        ),
                       ),
                     ),
                 ],
@@ -5226,7 +5598,9 @@ class _CallCaptions extends StatelessWidget {
                     _CaptionLanguageSettingRow(
                       icon: Icons.record_voice_over_rounded,
                       title: 'Language you speak',
-                      value: _languageLabel(controller.callCaptionSourceLanguage),
+                      value: _languageLabel(
+                        controller.callCaptionSourceLanguage,
+                      ),
                       onTap: () => _showLanguagePicker(
                         sheetContext,
                         title: 'Language you speak',
@@ -5250,8 +5624,8 @@ class _CallCaptions extends StatelessWidget {
                             ? controller.callCaptionTargetLanguage
                             : 'off',
                         allowOff: true,
-                        onSelected: (code) => controller
-                            .setCallCaptionTranslation(
+                        onSelected: (code) =>
+                            controller.setCallCaptionTranslation(
                               enabled: code != 'off',
                               targetLanguage: code == 'off' ? null : code,
                             ),
@@ -5301,14 +5675,20 @@ class _CallCaptions extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                  Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
                   const SizedBox(height: 8),
                   if (allowOff)
                     ListTile(
                       leading: const Icon(Icons.block_rounded),
                       title: const Text('Off'),
                       trailing: selected == 'off'
-                          ? const Icon(Icons.check_rounded, color: Colors.cyanAccent)
+                          ? const Icon(
+                              Icons.check_rounded,
+                              color: Colors.cyanAccent,
+                            )
                           : null,
                       onTap: () => Navigator.of(pickerContext).pop('off'),
                     ),
@@ -5316,7 +5696,10 @@ class _CallCaptions extends StatelessWidget {
                     ListTile(
                       title: Text(entry.key),
                       trailing: selected == entry.value
-                          ? const Icon(Icons.check_rounded, color: Colors.cyanAccent)
+                          ? const Icon(
+                              Icons.check_rounded,
+                              color: Colors.cyanAccent,
+                            )
                           : null,
                       onTap: () => Navigator.of(pickerContext).pop(entry.value),
                     ),
@@ -5358,7 +5741,10 @@ class _CaptionLanguageSettingRow extends StatelessWidget {
             Icon(icon, size: 20, color: Colors.cyanAccent),
             const SizedBox(width: 11),
             Expanded(
-              child: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+              child: Text(
+                title,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
             ),
             Text(value, style: const TextStyle(color: Colors.white70)),
             const SizedBox(width: 5),
@@ -8378,12 +8764,16 @@ class _MessageBubbleBody extends StatelessWidget {
     final time = message.createdAt.toLocal();
     final meetingPoint = _MeetingPoint.fromMessageText(message.text);
     final sharedLocation = _SharedLocation.fromMessageText(message.text);
+    final poll = controller.pollForMessage(message.id);
     final groupPresentation = _groupMessagePresentation(
       controller: controller,
       thread: thread,
       message: message,
       mine: mine,
     );
+    final safetyWarning = mine
+        ? null
+        : _suspiciousMessageWarning(groupPresentation.text);
     final baseBubbleColor = _chatBubbleColor(thread.themeId, mine);
     final verticalShade = ((0.54 - positionTint) * 0.20).clamp(-0.07, 0.10);
     final bubbleColor = verticalShade >= 0
@@ -8392,7 +8782,8 @@ class _MessageBubbleBody extends StatelessWidget {
     final inlineMetadata =
         message.kind == ChatMessageKind.text &&
         meetingPoint == null &&
-        sharedLocation == null;
+        sharedLocation == null &&
+        poll == null;
     final metadata = _MessageMetadata(message: message, mine: mine, time: time);
     if (message.kind == ChatMessageKind.sticker) {
       return Column(
@@ -8553,6 +8944,10 @@ class _MessageBubbleBody extends StatelessWidget {
                 _ReplyQuote(text: message.replyToText, onTap: onReplyQuoteTap),
                 const SizedBox(height: 6),
               ],
+              if (safetyWarning != null) ...[
+                _MessageSafetyWarning(text: safetyWarning),
+                const SizedBox(height: 7),
+              ],
               if (inlineMetadata)
                 Column(
                   mainAxisSize: MainAxisSize.min,
@@ -8571,7 +8966,9 @@ class _MessageBubbleBody extends StatelessWidget {
                   ],
                 )
               else
-                message.kind == ChatMessageKind.sticker
+                poll != null
+                    ? _PollMessageCard(controller: controller, poll: poll)
+                    : message.kind == ChatMessageKind.sticker
                     ? _StickerMessagePreview(
                         message: message,
                         imageBytes: imageBytes,
@@ -8652,6 +9049,311 @@ class _MessageBubbleBody extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+String? _suspiciousMessageWarning(String source) {
+  final text = source.trim();
+  if (text.isEmpty) return null;
+  final lower = text.toLowerCase();
+  final links = RegExp(
+    r'(?:(?:https?://)|(?:www\.))[^\s<>]+',
+    caseSensitive: false,
+  ).allMatches(text);
+  var riskyLink = false;
+  for (final match in links) {
+    final raw = match.group(0)!.replaceFirst(RegExp(r'^www\.'), 'https://');
+    final uri = Uri.tryParse(raw);
+    final host = uri?.host.toLowerCase() ?? '';
+    if (host.startsWith('xn--') ||
+        host.split('.').any((part) => part.startsWith('xn--')) ||
+        RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(host) ||
+        (uri?.userInfo.isNotEmpty ?? false)) {
+      riskyLink = true;
+      break;
+    }
+  }
+  final asksForSecret = RegExp(
+    r'(код\s+(?:из\s+)?(?:смс|sms)|парол|password|verification\s+code|seed\s+phrase|секретн\w*\s+фраз)',
+    caseSensitive: false,
+  ).hasMatch(lower);
+  final asksForMoney = RegExp(
+    r'(срочно|urgent|немедленно).{0,55}(перевед|оплат|деньг|карт|pay|money|transfer)',
+    caseSensitive: false,
+  ).hasMatch(lower);
+  final hasLink = links.isNotEmpty;
+  if (riskyLink) {
+    return 'Suspicious link. Check the address before opening it.';
+  }
+  if (asksForSecret) {
+    return 'Never share passwords or verification codes in chat.';
+  }
+  if (asksForMoney && hasLink) {
+    return 'This urgent payment request may be unsafe. Verify the sender another way.';
+  }
+  return null;
+}
+
+class _MessageSafetyWarning extends StatelessWidget {
+  const _MessageSafetyWarning({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFB020).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: const Color(0xFFFFB020).withValues(alpha: 0.38),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.gpp_maybe_rounded,
+            size: 18,
+            color: Color(0xFFFFC857),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.3,
+                color: Color(0xFFFFD98A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PollMessageCard extends StatefulWidget {
+  const _PollMessageCard({required this.controller, required this.poll});
+
+  final AppController controller;
+  final PollItem poll;
+
+  @override
+  State<_PollMessageCard> createState() => _PollMessageCardState();
+}
+
+class _PollMessageCardState extends State<_PollMessageCard> {
+  late Set<int> selected = {...widget.poll.selectedOptions};
+  bool submitting = false;
+
+  @override
+  void didUpdateWidget(covariant _PollMessageCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.poll.selectedOptions != widget.poll.selectedOptions ||
+        oldWidget.poll.id != widget.poll.id) {
+      selected = {...widget.poll.selectedOptions};
+    }
+  }
+
+  Future<void> submit() async {
+    if (submitting || selected.isEmpty) return;
+    setState(() => submitting = true);
+    final error = await widget.controller.votePoll(widget.poll, selected);
+    if (!mounted) return;
+    setState(() => submitting = false);
+    if (error != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final poll = widget.poll;
+    final maxCount = poll.counts.fold<int>(0, math.max);
+    final hasVoted = poll.selectedOptions.isNotEmpty;
+    final canClose =
+        poll.creatorLogin.isNotEmpty &&
+        poll.creatorLogin == widget.controller.session?.login.toLowerCase();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 250, maxWidth: 310),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                poll.isQuiz ? Icons.quiz_rounded : Icons.poll_rounded,
+                size: 18,
+                color: Colors.lightBlueAccent,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  poll.isQuiz ? 'Quiz' : 'Poll',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: Colors.lightBlueAccent,
+                  ),
+                ),
+              ),
+              if (poll.isClosed)
+                const Text(
+                  'Closed',
+                  style: TextStyle(fontSize: 11, color: Colors.white54),
+                )
+              else if (canClose)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Close poll',
+                  onPressed: () => widget.controller.closePoll(poll),
+                  icon: const Icon(Icons.lock_outline_rounded, size: 18),
+                ),
+            ],
+          ),
+          Text(
+            poll.question,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 10),
+          for (var index = 0; index < poll.options.length; index++) ...[
+            _PollOption(
+              label: poll.options[index],
+              count: index < poll.counts.length ? poll.counts[index] : 0,
+              maxCount: maxCount,
+              selected: selected.contains(index),
+              showResult: hasVoted || poll.isClosed,
+              isCorrect: poll.isQuiz && poll.correctOption == index,
+              isWrongSelection:
+                  poll.isQuiz &&
+                  hasVoted &&
+                  selected.contains(index) &&
+                  poll.correctOption != index,
+              onTap: poll.isClosed || submitting
+                  ? null
+                  : () {
+                      setState(() {
+                        if (poll.allowsMultiple) {
+                          selected.contains(index)
+                              ? selected.remove(index)
+                              : selected.add(index);
+                        } else {
+                          selected = {index};
+                        }
+                      });
+                      if (!poll.allowsMultiple) unawaited(submit());
+                    },
+            ),
+            if (index != poll.options.length - 1) const SizedBox(height: 7),
+          ],
+          if (poll.allowsMultiple && !poll.isClosed) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: submitting || selected.isEmpty ? null : submit,
+                child: Text(submitting ? 'Sending...' : 'Vote'),
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Text(
+            '${poll.voterCount} ${poll.voterCount == 1 ? 'vote' : 'votes'}${poll.isAnonymous ? ' - anonymous' : ''}',
+            style: const TextStyle(fontSize: 11, color: Colors.white54),
+          ),
+          if (poll.isQuiz && hasVoted && poll.explanation.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              poll.explanation,
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PollOption extends StatelessWidget {
+  const _PollOption({
+    required this.label,
+    required this.count,
+    required this.maxCount,
+    required this.selected,
+    required this.showResult,
+    required this.isCorrect,
+    required this.isWrongSelection,
+    required this.onTap,
+  });
+
+  final String label;
+  final int count;
+  final int maxCount;
+  final bool selected;
+  final bool showResult;
+  final bool isCorrect;
+  final bool isWrongSelection;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isCorrect && showResult
+        ? Colors.greenAccent
+        : isWrongSelection
+        ? Colors.redAccent
+        : Colors.lightBlueAccent;
+    final progress = showResult && maxCount > 0 ? count / maxCount : 0.0;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: progress.clamp(0.0, 1.0),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ),
+          Container(
+            constraints: const BoxConstraints(minHeight: 42),
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: selected ? color : Colors.white24,
+                width: selected ? 1.4 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                  size: 18,
+                  color: selected ? color : Colors.white54,
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(label)),
+                if (showResult)
+                  Text(
+                    '$count',
+                    style: TextStyle(color: color, fontWeight: FontWeight.w800),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -10315,7 +11017,9 @@ class _AudioPreviewState extends State<_AudioPreview> {
   bool playing = false;
   bool sourceReady = false;
   bool transcribing = false;
+  bool summarizing = false;
   String localTranscription = '';
+  String voiceSummary = '';
   Duration duration = Duration.zero;
   Duration position = Duration.zero;
 
@@ -10427,6 +11131,32 @@ class _AudioPreviewState extends State<_AudioPreview> {
     }
   }
 
+  Future<void> summarize() async {
+    if (summarizing || localTranscription.trim().isEmpty) return;
+    final allowed = await requireMeshPro(
+      context,
+      widget.controller,
+      featureId: 'ai_chat_summary',
+      title: 'Voice summary',
+      description: 'Create a short natural summary of this voice message.',
+    );
+    if (!allowed || !mounted) return;
+    setState(() => summarizing = true);
+    try {
+      final result = await widget.controller.summarizeMessagesWithAi([
+        widget.message.copyWith(transcription: localTranscription),
+      ]);
+      if (mounted) setState(() => voiceSummary = result.text);
+    } on AiSummaryException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      if (mounted) setState(() => summarizing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final levels = levelsFor(widget.message);
@@ -10500,6 +11230,39 @@ class _AudioPreviewState extends State<_AudioPreview> {
                 style: const TextStyle(fontSize: 13, height: 1.35),
               ),
             ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: summarizing ? null : summarize,
+                icon: summarizing
+                    ? const SizedBox.square(
+                        dimension: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.summarize_rounded, size: 16),
+                label: Text(summarizing ? 'Summarizing...' : 'Summarize'),
+              ),
+            ),
+            if (voiceSummary.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7C5CFC).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFFB28AFF).withValues(alpha: 0.28),
+                  ),
+                ),
+                child: Text(
+                  voiceSummary,
+                  style: const TextStyle(fontSize: 13, height: 1.35),
+                ),
+              ),
           ] else
             Align(
               alignment: Alignment.centerRight,
