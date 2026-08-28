@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 37,
+  "catalogVersion": 38,
   "updatedAt": "2026-08-29T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-reliability-audit-1-0-90",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Reliable polls, schedules and call handoff",
+      "summary": "Poll and quiz votes are now protected from duplicates and synchronized across devices, scheduled messages remain server-driven while the app is closed, and active call handoff targets the selected device without disturbing the other devices in the conversation.",
+      "publishedAt": "2026-08-29"
+    },
     {
       "id": "meshchat-polls-natural-summaries",
       "appId": "meshchat",
@@ -52,7 +60,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.89",
+      "version": "1.0.90",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -65,15 +73,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 192,
+      "build": 193,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
       "updated_at": "2026-08-29T00:00:00Z",
       "release": {
-        "title": "Polls and smarter catch-up",
+        "title": "Reliability audit",
         "publishedAt": "2026-08-29",
-        "notes": ["Polls and quizzes in groups and channels with live synchronized results", "Unread summaries are now a natural retelling with links to source messages", "Voice transcription can be condensed into a short summary", "Suspicious links, code requests and urgent payment messages are highlighted", "Personal calls can move between online devices", "Message translation now relies on the server entitlement state instead of stale client cache"]
+        "notes": ["Each account can vote only once in a poll, and quizzes accept exactly one answer", "Poll votes, counts and personal selections synchronize across devices and survive server restarts", "Quiz answers remain hidden until the participant votes or the quiz closes", "Scheduled messages are dispatched by the server on time even while the app is closed", "Call handoff is restricted to your own devices and reconnects only the selected active endpoints", "Media resume receipts and offline delivery queues were verified for interrupted transfers"]
       }
     },
     {

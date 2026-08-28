@@ -213,10 +213,14 @@ async def route_call_signal(server, packet):
     delivered = await deliver(destination_node)
     source_node = str(packet.get("source_node") or "").strip()
     destination_login = server.get_login_by_node(destination_node)
-    exact_device_signal = str(packet.get("type") or "") in {
+    packet_type = str(packet.get("type") or "")
+    exact_device_signal = packet_type in {
         "call_handoff_request",
         "call_handoff_accept",
-    }
+    } or (
+        packet_type == "call_offer"
+        and bool(str(packet.get("handoff_from_call_id") or "").strip())
+    )
     if destination_login and not exact_device_signal:
         resolver = getattr(server, "get_realtime_account_nodes", None)
         target_nodes = (
@@ -291,6 +295,17 @@ async def handle_call_signal(server, packet, context):
     sender_login = account_login(server, context.node_id)
     if sender_login:
         packet["sender_login"] = sender_login
+    if packet_type in {"call_handoff_request", "call_handoff_accept"}:
+        destination_login = server.get_login_by_node(
+            str(packet.get("destination_node") or "").strip()
+        )
+        if not sender_login or destination_login != sender_login:
+            await server.send_server_error(
+                context.websocket,
+                "call_handoff_account_mismatch",
+                "Call handoff is only allowed between your own devices",
+            )
+            return True
     await route_call_signal(server, packet)
     if packet_type == "call_end":
         await _route_terminal_to_source_devices(server, packet, context)

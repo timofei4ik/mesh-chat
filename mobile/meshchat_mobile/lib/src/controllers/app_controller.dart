@@ -3832,6 +3832,7 @@ class AppController extends ChangeNotifier {
         .toList();
     for (final groupId in brokenGroupIds) {
       groups.remove(groupId);
+      pollsByMessageId.removeWhere((_, poll) => poll.groupId == groupId);
       _groupKeys.remove(groupId);
       _groupKeyHistory.remove(groupId);
       typingUntil.remove(groupId);
@@ -5451,7 +5452,11 @@ class AppController extends ChangeNotifier {
   Future<String?> votePoll(PollItem poll, Set<int> selectedOptions) async {
     if (!_socket.isConnected) return 'No server connection';
     if (poll.isClosed) return 'This poll is closed';
+    if (poll.selectedOptions.isNotEmpty) return 'You have already voted';
     if (selectedOptions.isEmpty) return 'Choose an option';
+    if (poll.isQuiz && selectedOptions.length != 1) {
+      return 'Choose one answer';
+    }
     final requestId = const Uuid().v4();
     final completer = Completer<String?>();
     _pollCompleters[requestId] = completer;
@@ -6128,6 +6133,7 @@ class AppController extends ChangeNotifier {
       if (owner.isNotEmpty && source != owner) return;
       await _rememberDeletedGroup(groupId);
       groups.remove(groupId);
+      pollsByMessageId.removeWhere((_, poll) => poll.groupId == groupId);
       _groupKeys.remove(groupId);
       _groupKeyHistory.remove(groupId);
       typingUntil.remove(groupId);
@@ -6342,6 +6348,7 @@ class AppController extends ChangeNotifier {
         '';
     if (messageId.isEmpty) return;
     await _rememberDeletedMessage(messageId);
+    pollsByMessageId.remove(messageId);
     for (final thread in [...threads.values, ...groups.values]) {
       if (_deleteLocalMessage(thread, messageId)) {
         notifyListeners();
@@ -6721,22 +6728,31 @@ class AppController extends ChangeNotifier {
     if (session == null || call == null || !call.incoming) return;
     unawaited(CallAlertService.stopAll());
     if (call.handoffSourceNode.isNotEmpty) {
+      final peer = call.peer;
+      final previousCallId = call.handoffFromCallId;
+      final sourceNode = call.handoffSourceNode;
+      _setActiveCall(null);
+      final error = await startCall(peer, handoffFromCallId: previousCallId);
+      if (error != null) {
+        addDiagnostic('call', 'Call handoff failed: $error');
+        _setActiveCall(
+          call.copyWith(
+            status: CallStatus.ended,
+            endReason: error,
+          ),
+        );
+        notifyListeners();
+        return;
+      }
       _socket.send({
         'type': 'call_handoff_accept',
         'packet_id': const Uuid().v4(),
         'protocol_version': MeshSocket.protocolVersion,
         'source_node': myNodeId,
-        'destination_node': call.handoffSourceNode,
+        'destination_node': sourceNode,
         'ttl': 5,
-        'call_id': call.handoffFromCallId,
+        'call_id': previousCallId,
       });
-      final peer = call.peer;
-      final previousCallId = call.handoffFromCallId;
-      _setActiveCall(null);
-      final error = await startCall(peer, handoffFromCallId: previousCallId);
-      if (error != null) {
-        addDiagnostic('call', 'Call handoff failed: $error');
-      }
       return;
     }
     if (call.remoteOfferSdp.isEmpty) {

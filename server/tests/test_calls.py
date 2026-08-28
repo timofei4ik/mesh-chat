@@ -308,6 +308,53 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(selected.sent))
         self.assertEqual([], other.sent)
 
+    async def test_handoff_replacement_offer_targets_only_active_peer_device(self):
+        server = FakeCallServer()
+        server.client_logins["callee-2"] = "bob"
+        selected = FakeSocket()
+        other = FakeSocket()
+        server.clients["callee"] = selected
+        server.clients["callee-2"] = other
+
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_offer",
+                "destination_node": "callee",
+                "call_id": "call-handoff-new",
+                "handoff_from_call_id": "call-handoff-old",
+                "sdp": "offer",
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(1, len(selected.sent))
+        self.assertEqual([], other.sent)
+
+    async def test_handoff_rejects_a_device_from_another_account(self):
+        server = FakeCallServer()
+        target = FakeSocket()
+        server.clients["callee"] = target
+
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_handoff_request",
+                "destination_node": "callee",
+                "call_id": "call-handoff",
+                "peer_node": "peer",
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual([], target.sent)
+        self.assertEqual(
+            "call_handoff_account_mismatch",
+            server.errors[0][0],
+        )
+
     async def test_dedicated_signaling_bypasses_local_socket_and_keeps_push(self):
         server = FakeCallServer()
         server.call_signaling = FakeSignalingPublisher()

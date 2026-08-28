@@ -128,6 +128,7 @@ class PostgresPersistenceTests(unittest.TestCase):
                 "009_moderation_enforcement.sql",
                 "010_meshpro_business.sql",
                 "011_account_chat_archive.sql",
+                "012_polls.sql",
             ],
             [item.name for item in migrations],
         )

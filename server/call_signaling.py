@@ -202,7 +202,15 @@ class CallSignalingService:
         destination_login = str(
             destination_presence.get("login") or ""
         ).strip().lower()
-        if destination_login:
+        packet_type = str(packet.get("type") or "")
+        exact_device_signal = packet_type in {
+            "call_handoff_request",
+            "call_handoff_accept",
+        } or (
+            packet_type == "call_offer"
+            and bool(str(packet.get("handoff_from_call_id") or "").strip())
+        )
+        if destination_login and not exact_device_signal:
             target_nodes.extend(
                 await self.redis.smembers(
                     self._account_key(destination_login)

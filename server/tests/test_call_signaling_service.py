@@ -105,3 +105,72 @@ class CallSignalingServiceTests(unittest.IsolatedAsyncioTestCase):
             "call-1",
             redis.sorted_sets[service.active_calls_key],
         )
+
+    async def test_handoff_routes_only_to_the_selected_device(self):
+        redis = FakeRedis()
+        service = CallSignalingService("redis://test")
+        service.redis = redis
+        for node, worker, session in (
+            ("alice-phone", "worker-a", "session-a"),
+            ("alice-desktop", "worker-b", "session-b"),
+        ):
+            redis.hashes[f"meshchat:presence:client:{node}"] = {
+                "login": "alice",
+                "worker_id": worker,
+                "session_id": session,
+            }
+        redis.sets["meshchat:account:client:alice:nodes"] = {
+            "alice-phone",
+            "alice-desktop",
+        }
+
+        delivered = await service.route(
+            {
+                "type": "call_handoff_request",
+                "source_node": "alice-phone",
+                "destination_node": "alice-desktop",
+                "call_id": "call-handoff",
+            }
+        )
+
+        self.assertTrue(delivered)
+        self.assertEqual(1, len(redis.published))
+        self.assertEqual(
+            "alice-desktop",
+            redis.published[0][1]["packet"]["destination_node"],
+        )
+
+    async def test_handoff_offer_routes_only_to_active_peer_device(self):
+        redis = FakeRedis()
+        service = CallSignalingService("redis://test")
+        service.redis = redis
+        for node, worker, session in (
+            ("bob-phone", "worker-a", "session-a"),
+            ("bob-desktop", "worker-b", "session-b"),
+        ):
+            redis.hashes[f"meshchat:presence:client:{node}"] = {
+                "login": "bob",
+                "worker_id": worker,
+                "session_id": session,
+            }
+        redis.sets["meshchat:account:client:bob:nodes"] = {
+            "bob-phone",
+            "bob-desktop",
+        }
+
+        delivered = await service.route(
+            {
+                "type": "call_offer",
+                "source_node": "alice-desktop",
+                "destination_node": "bob-phone",
+                "call_id": "call-handoff-new",
+                "handoff_from_call_id": "call-handoff-old",
+            }
+        )
+
+        self.assertTrue(delivered)
+        self.assertEqual(1, len(redis.published))
+        self.assertEqual(
+            "bob-phone",
+            redis.published[0][1]["packet"]["destination_node"],
+        )

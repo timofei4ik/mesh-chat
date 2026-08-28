@@ -1,6 +1,11 @@
 import json
 import uuid
 
+try:
+    from server.persistence.postgres import PostgresCompatibilityConnection
+except ModuleNotFoundError:
+    from persistence.postgres import PostgresCompatibilityConnection
+
 
 class ServerPollsMixin:
     def initialize_poll_storage(self):
@@ -90,6 +95,31 @@ class ServerPollsMixin:
             pass
         return any(self.get_login_by_node(node) == login for node in privileged_nodes)
 
+    def _invalidate_poll_snapshots(
+        self,
+        group_id,
+        poll_id,
+        reason,
+        operation_id,
+    ):
+        invalidate = getattr(self, "invalidate_sync_v2_snapshot", None)
+        if not callable(invalidate):
+            return
+        rows = self.db.execute(
+            """
+            SELECT DISTINCT login FROM server_group_members
+            WHERE group_id=? AND login IS NOT NULL AND login!=''
+            """,
+            (group_id,),
+        ).fetchall()
+        for row in rows:
+            invalidate(
+                str(row[0] or "").strip().lower(),
+                reason,
+                operation_id,
+                {"poll_id": poll_id, "group_id": group_id},
+            )
+
     def create_group_poll(self, node_id, packet):
         login = self._poll_actor(node_id)
         group_id = str(packet.get("group_id") or "").strip()
@@ -106,6 +136,20 @@ class ServerPollsMixin:
             return False, "group_access_denied", None
         if not message_id or not question or not 2 <= len(options) <= 10:
             return False, "invalid_poll", None
+        message_row = self.db.execute(
+            """
+            SELECT group_id, sender_login FROM server_group_messages
+            WHERE message_id=? LIMIT 1
+            """,
+            (message_id,),
+        ).fetchone()
+        if message_row is None:
+            return False, "poll_message_not_found", None
+        if (
+            str(message_row[0] or "").strip() != group_id
+            or str(message_row[1] or "").strip().lower() != login
+        ):
+            return False, "poll_message_mismatch", None
         is_quiz = packet.get("is_quiz") is True
         correct_option = packet.get("correct_option")
         try:
@@ -134,7 +178,9 @@ class ServerPollsMixin:
                     1 if is_quiz else 0,
                     correct_option,
                     str(packet.get("explanation") or "").strip()[:500],
-                    1 if packet.get("allows_multiple") is True else 0,
+                    1
+                    if packet.get("allows_multiple") is True and not is_quiz
+                    else 0,
                     1 if packet.get("is_anonymous") is not False else 0,
                 ),
             )
@@ -144,43 +190,62 @@ class ServerPollsMixin:
             if existing is not None and existing["creator_login"] == login:
                 return True, "duplicate", existing
             raise
+        self._invalidate_poll_snapshots(
+            group_id,
+            poll_id,
+            "poll_created",
+            f"poll-create:{poll_id}",
+        )
         return True, "created", self.poll_by_id(poll_id, login)
 
     def vote_group_poll(self, node_id, poll_id, selected_options):
         login = self._poll_actor(node_id)
-        row = self.db.execute(
-            """
-            SELECT group_id, options_json, allows_multiple, is_closed
-            FROM server_polls WHERE poll_id=?
-            """,
-            (poll_id,),
-        ).fetchone()
-        if row is None:
-            return False, "poll_not_found", None
-        if not self._poll_group_access(login, row[0]):
-            return False, "group_access_denied", None
-        if bool(row[3]):
-            return False, "poll_closed", None
-        try:
-            option_count = len(json.loads(row[1] or "[]"))
-        except (TypeError, ValueError):
-            option_count = 0
-        choices = []
-        if isinstance(selected_options, list):
-            for value in selected_options:
-                try:
-                    choice = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= choice < option_count and choice not in choices:
-                    choices.append(choice)
-        if not choices or (not bool(row[2]) and len(choices) != 1):
-            return False, "invalid_vote", None
         with self.atomic_storage_transaction():
-            self.db.execute(
-                "DELETE FROM server_poll_votes WHERE poll_id=? AND voter_login=?",
-                (poll_id, login),
+            lock_suffix = (
+                " FOR UPDATE"
+                if isinstance(self.db, PostgresCompatibilityConnection)
+                else ""
             )
+            row = self.db.execute(
+                """
+                SELECT group_id, options_json, allows_multiple, is_closed,
+                       is_quiz
+                FROM server_polls WHERE poll_id=?
+                """
+                + lock_suffix,
+                (poll_id,),
+            ).fetchone()
+            if row is None:
+                return False, "poll_not_found", None
+            if not self._poll_group_access(login, row[0]):
+                return False, "group_access_denied", None
+            if bool(row[3]):
+                return False, "poll_closed", None
+            already_voted = self.db.execute(
+                """
+                SELECT 1 FROM server_poll_votes
+                WHERE poll_id=? AND voter_login=? LIMIT 1
+                """,
+                (poll_id, login),
+            ).fetchone()
+            if already_voted is not None:
+                return False, "already_voted", self.poll_by_id(poll_id, login)
+            try:
+                option_count = len(json.loads(row[1] or "[]"))
+            except (TypeError, ValueError):
+                option_count = 0
+            choices = []
+            if isinstance(selected_options, list):
+                for value in selected_options:
+                    try:
+                        choice = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= choice < option_count and choice not in choices:
+                        choices.append(choice)
+            allows_multiple = bool(row[2]) and not bool(row[4])
+            if not choices or (not allows_multiple and len(choices) != 1):
+                return False, "invalid_vote", None
             for choice in choices:
                 self.db.execute(
                     """
@@ -193,6 +258,12 @@ class ServerPollsMixin:
                 "UPDATE server_polls SET updated_at=CURRENT_TIMESTAMP WHERE poll_id=?",
                 (poll_id,),
             )
+        self._invalidate_poll_snapshots(
+            row[0],
+            poll_id,
+            "poll_voted",
+            f"poll-vote:{poll_id}:{login}",
+        )
         return True, "voted", self.poll_by_id(poll_id, login)
 
     def close_group_poll(self, node_id, poll_id):
@@ -214,6 +285,12 @@ class ServerPollsMixin:
             (poll_id,),
         )
         self._commit_storage()
+        self._invalidate_poll_snapshots(
+            row[0],
+            poll_id,
+            "poll_closed",
+            f"poll-close:{poll_id}",
+        )
         return True, "closed", self.poll_by_id(poll_id, login)
 
     def poll_for_message(self, message_id, viewer_login):
@@ -260,6 +337,12 @@ class ServerPollsMixin:
             "SELECT COUNT(DISTINCT voter_login) FROM server_poll_votes WHERE poll_id=?",
             (poll_id,),
         ).fetchone()[0]
+        normalized_viewer = str(viewer_login or "").strip().lower()
+        can_view_correct = bool(row[6]) and (
+            bool(selected)
+            or bool(row[11])
+            or normalized_viewer == str(row[3] or "").strip().lower()
+        )
         return {
             "poll_id": row[0],
             "message_id": row[1],
@@ -271,7 +354,7 @@ class ServerPollsMixin:
             "selected_options": selected,
             "voter_count": int(voter_count or 0),
             "is_quiz": bool(row[6]),
-            "correct_option": row[7] if bool(row[6]) else None,
+            "correct_option": row[7] if can_view_correct else None,
             "explanation": row[8] or "",
             "allows_multiple": bool(row[9]),
             "is_anonymous": bool(row[10]),

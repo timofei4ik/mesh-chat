@@ -428,6 +428,48 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual("daily", remaining[0]["repeat_interval"])
         self.assertEqual(1, remaining[0]["run_count"])
 
+    def test_scheduled_message_survives_restart_with_owner_offline(self):
+        self.relay.grant_subscription("subscriber", days=7)
+        send_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        ok, reason, item = self.relay.create_scheduled_message(
+            "subscriber-node",
+            {
+                "send_at": send_at.isoformat(),
+                "repeat_interval": "none",
+                "chat_key": "direct:friend",
+                "preview": "Offline delivery",
+                "payloads": [
+                    {
+                        "type": "chat_message",
+                        "source_node": "subscriber-node",
+                        "destination_node": "friend-node",
+                        "message": "survives-restart",
+                    }
+                ],
+            },
+        )
+        self.assertTrue(ok, reason)
+        self.relay.db.execute(
+            "UPDATE scheduled_messages SET next_run_at=DATETIME('now', '-1 second') "
+            "WHERE schedule_id=?",
+            (item["schedule_id"],),
+        )
+        self.relay.db.commit()
+
+        self.relay.db.close()
+        self.relay = SubscriptionRelay()
+        self.assertEqual({}, self.relay.clients)
+
+        dispatched = asyncio.run(self.relay.dispatch_due_scheduled_messages())
+        self.assertEqual(1, dispatched)
+        self.assertEqual("survives-restart", self.relay.routed_packets[0]["message"])
+        self.assertEqual([], self.relay.list_scheduled_messages("subscriber"))
+        stored = self.relay.db.execute(
+            "SELECT message FROM direct_messages WHERE message_id=?",
+            (self.relay.routed_packets[0]["packet_id"],),
+        ).fetchone()
+        self.assertEqual(("survives-restart",), stored)
+
     def test_story_quality_and_duration_are_enforced_on_the_server(self):
         too_long = self.relay.save_history_packet(
             {

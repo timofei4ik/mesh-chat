@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/chat_thread.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
+import 'package:meshchat_mobile/src/models/poll_item.dart';
 import 'package:meshchat_mobile/src/models/scheduled_message.dart';
 import 'package:meshchat_mobile/src/models/story_item.dart';
 
@@ -47,6 +48,31 @@ void main() {
     expect(item.preview, 'Tomorrow morning');
     expect(item.repeats, isTrue);
     expect(item.runCount, 2);
+  });
+
+  test('poll sync preserves options, counts and the personal answer', () {
+    final poll = PollItem.fromJson({
+      'poll_id': 'poll-1',
+      'message_id': 'message-1',
+      'group_id': 'group-1',
+      'creator_login': 'owner',
+      'question': 'Choose one',
+      'options': ['A', 'B', 'C'],
+      'counts': [2, 1],
+      'selected_options': [1, 99],
+      'voter_count': 3,
+      'is_quiz': true,
+      'correct_option': null,
+      'allows_multiple': false,
+      'is_anonymous': true,
+      'is_closed': false,
+    });
+
+    expect(poll.options, ['A', 'B', 'C']);
+    expect(poll.counts, [2, 1, 0]);
+    expect(poll.selectedOptions, {1});
+    expect(poll.correctOption, isNull);
+    expect(poll.allowsMultiple, isFalse);
   });
 
   test('HD story and reaction map survive cache round-trip', () {

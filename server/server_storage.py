@@ -5440,6 +5440,20 @@ class ServerStorageMixin:
 
             self.db.execute(
                 """
+                DELETE FROM server_poll_votes
+                WHERE poll_id IN (
+                    SELECT poll_id FROM server_polls WHERE group_id=?
+                )
+                """,
+                (group_id,),
+            )
+            self.db.execute(
+                "DELETE FROM server_polls WHERE group_id=?",
+                (group_id,),
+            )
+
+            self.db.execute(
+                """
                 DELETE FROM server_group_messages
                 WHERE group_id=?
                 """,
@@ -5598,6 +5612,21 @@ class ServerStorageMixin:
 
             if message_cursor.rowcount <= 0 and deleted_files <= 0:
                 return False
+
+            if message_cursor.rowcount > 0:
+                self.db.execute(
+                    """
+                    DELETE FROM server_poll_votes
+                    WHERE poll_id IN (
+                        SELECT poll_id FROM server_polls WHERE message_id=?
+                    )
+                    """,
+                    (message_id,),
+                )
+                self.db.execute(
+                    "DELETE FROM server_polls WHERE message_id=?",
+                    (message_id,),
+                )
 
             self.db.execute(
                 """

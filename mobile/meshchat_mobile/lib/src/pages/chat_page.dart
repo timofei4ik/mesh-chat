@@ -9234,7 +9234,7 @@ class _PollMessageCardState extends State<_PollMessageCard> {
                   hasVoted &&
                   selected.contains(index) &&
                   poll.correctOption != index,
-              onTap: poll.isClosed || submitting
+              onTap: poll.isClosed || submitting || hasVoted
                   ? null
                   : () {
                       setState(() {
@@ -9251,7 +9251,7 @@ class _PollMessageCardState extends State<_PollMessageCard> {
             ),
             if (index != poll.options.length - 1) const SizedBox(height: 7),
           ],
-          if (poll.allowsMultiple && !poll.isClosed) ...[
+          if (poll.allowsMultiple && !poll.isClosed && !hasVoted) ...[
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
