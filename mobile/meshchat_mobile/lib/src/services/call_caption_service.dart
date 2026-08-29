@@ -85,7 +85,7 @@ class CallCaptionService {
     try {
       if ((Platform.isWindows || Platform.isAndroid || Platform.isIOS) &&
           _serverAudioTranscriber != null) {
-        return _startServerAudioCaptions();
+        return await _startServerAudioCaptions();
       }
       if (!_initialized) {
         _initialized = await _speech.initialize(
@@ -133,7 +133,7 @@ class CallCaptionService {
     _enabled = true;
     try {
       if (Platform.isIOS) {
-        return _startIosServerAudioCaptions();
+        return await _startIosServerAudioCaptions();
       }
       await _startServerAudioChunk();
       _serverAudioChunkTimer = Timer.periodic(
