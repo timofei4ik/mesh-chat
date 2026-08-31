@@ -18,6 +18,7 @@ try:
         REQUIRE_LOGIN,
         MESHPRIVACY_MIN_APP_VERSION,
         EMAIL_2FA_LEGACY_CLIENTS_ALLOWED,
+        EMAIL_2FA_CODE_TTL_SECONDS,
         SYNC_V2_DELTA_ENABLED,
         SYNC_V2_DELTA_TEST_ACCOUNTS,
         REDIS_URL,
@@ -82,6 +83,7 @@ except ModuleNotFoundError:
         REQUIRE_LOGIN,
         MESHPRIVACY_MIN_APP_VERSION,
         EMAIL_2FA_LEGACY_CLIENTS_ALLOWED,
+        EMAIL_2FA_CODE_TTL_SECONDS,
         SYNC_V2_DELTA_ENABLED,
         SYNC_V2_DELTA_TEST_ACCOUNTS,
         REDIS_URL,
@@ -199,6 +201,17 @@ class MeshRelayServer(
             }, ""
 
         account_exists = self.account_exists(normalized_login)
+        registration_intent = packet.get("register_if_missing")
+        if registration_intent is False and not account_exists:
+            return False, {
+                "code": "account_not_found",
+                "message": "No account exists with this login",
+            }, ""
+        if registration_intent is True and account_exists:
+            return False, {
+                "code": "account_already_exists",
+                "message": "This login is already registered",
+            }, ""
         if account_exists and not await self.verify_account_password_async(
             normalized_login,
             password,
@@ -279,7 +292,7 @@ class MeshRelayServer(
             retry_after = 0
             if str(reason).startswith("retry_after:"):
                 retry_after = int(str(reason).split(":", 1)[1] or 0)
-            return False, {
+            response = {
                 "code": reason.split(":", 1)[0],
                 "message": (
                     "Wait before requesting another code"
@@ -287,7 +300,24 @@ class MeshRelayServer(
                     else "Could not send the verification email"
                 ),
                 "retry_after": retry_after,
-            }, ""
+            }
+            if retry_after:
+                with self.unit_of_work_factory() as unit_of_work:
+                    active = unit_of_work.identity.latest_active_email_challenge(
+                        normalized_login,
+                        node_id,
+                        purpose,
+                    )
+                if active:
+                    response.update(
+                        {
+                            "challenge_id": active["challenge_id"],
+                            "masked_email": self.mask_email(active["email"]),
+                            "purpose": purpose,
+                            "expires_in": EMAIL_2FA_CODE_TTL_SECONDS,
+                        }
+                    )
+            return False, response, ""
         return False, {
             "code": "email_verification_required",
             "message": "Enter the code sent to your email",

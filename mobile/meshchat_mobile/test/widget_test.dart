@@ -11,6 +11,15 @@ void main() {
     await tester.pump();
 
     expect(find.text('MeshChat'), findsOneWidget);
-    expect(find.text('Login or create account'), findsOneWidget);
+    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.text('Login'), findsWidgets);
+    expect(find.text('Register'), findsOneWidget);
+
+    await tester.tap(find.text('Register'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Create your MeshChat account'), findsOneWidget);
+    expect(find.text('@username'), findsOneWidget);
+    expect(find.text('Email'), findsOneWidget);
   });
 }

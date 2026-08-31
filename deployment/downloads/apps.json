@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 38,
-  "updatedAt": "2026-08-29T00:00:00Z",
+  "catalogVersion": 39,
+  "updatedAt": "2026-08-31T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-reliable-sign-in-1-0-91",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Reliable sign-in and registration",
+      "summary": "Login and registration are now separate, email verification survives switching to the mail app or restarting MeshChat, and an unfinished verification can no longer be mistaken for a signed-in account.",
+      "publishedAt": "2026-08-31"
+    },
     {
       "id": "meshchat-reliability-audit-1-0-90",
       "appId": "meshchat",
@@ -60,7 +68,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.90",
+      "version": "1.0.91",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -73,15 +81,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 193,
+      "build": 194,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-08-29T00:00:00Z",
+      "updated_at": "2026-08-31T00:00:00Z",
       "release": {
-        "title": "Reliability audit",
-        "publishedAt": "2026-08-29",
-        "notes": ["Each account can vote only once in a poll, and quizzes accept exactly one answer", "Poll votes, counts and personal selections synchronize across devices and survive server restarts", "Quiz answers remain hidden until the participant votes or the quiz closes", "Scheduled messages are dispatched by the server on time even while the app is closed", "Call handoff is restricted to your own devices and reconnects only the selected active endpoints", "Media resume receipts and offline delivery queues were verified for interrupted transfers"]
+        "title": "Reliable sign-in",
+        "publishedAt": "2026-08-31",
+        "notes": ["Login and registration are separate flows", "Email verification remains available after switching apps or restarting MeshChat", "The verification button confirms the existing challenge instead of requesting another email", "Resend cooldown keeps the active verification code usable", "Unverified registrations are never restored as authenticated sessions", "Existing saved accounts remain compatible"]
       }
     },
     {

@@ -11,6 +11,7 @@ class SessionStore {
     : _secretStore = secretStore ?? PlatformSessionSecretStore();
 
   static const _recentKey = 'recent_sessions';
+  static const _pendingAuthenticationKey = 'pending_authentication_v1';
   static const _maxRecent = 8;
   static const _secretPrefix = 'meshchat.session.v1';
 
@@ -115,6 +116,81 @@ class SessionStore {
     await saveCurrent(session);
     await saveRecent(session);
     return session;
+  }
+
+  Future<Session> prepare({
+    required String serverUrl,
+    required String serverToken,
+    required String login,
+    required String password,
+    required String publicUsername,
+    String email = '',
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final normalizedServerUrl = _normalizeServerUrl(serverUrl);
+    final normalizedLogin = login.trim().toLowerCase();
+    return Session(
+      serverUrl: normalizedServerUrl,
+      serverToken: serverToken,
+      login: normalizedLogin,
+      password: password,
+      publicUsername: publicUsername,
+      nodeId: await _nodeIdFor(prefs, normalizedServerUrl, normalizedLogin),
+      email: email.trim().toLowerCase(),
+    );
+  }
+
+  Future<void> savePendingAuthentication(PendingAuthentication pending) async {
+    final prefs = await SharedPreferences.getInstance();
+    await _writeSecrets(pending.session);
+    await prefs.setString(
+      _pendingAuthenticationKey,
+      jsonEncode({
+        ..._sessionToJson(pending.session),
+        'challenge_id': pending.challengeId,
+        'masked_email': pending.maskedEmail,
+        'registration': pending.registration,
+        'expires_at': pending.expiresAt.toUtc().toIso8601String(),
+        'resend_at': pending.resendAt.toUtc().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<PendingAuthentication?> loadPendingAuthentication() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pendingAuthenticationKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final json = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final session = await _sessionFromJson(json);
+      final challengeId = json['challenge_id']?.toString() ?? '';
+      final expiresAt = DateTime.tryParse(json['expires_at']?.toString() ?? '');
+      final resendAt = DateTime.tryParse(json['resend_at']?.toString() ?? '');
+      if (session == null ||
+          challengeId.isEmpty ||
+          expiresAt == null ||
+          resendAt == null ||
+          !expiresAt.isAfter(DateTime.now().toUtc())) {
+        await clearPendingAuthentication();
+        return null;
+      }
+      return PendingAuthentication(
+        session: session,
+        challengeId: challengeId,
+        maskedEmail: json['masked_email']?.toString() ?? '',
+        registration: json['registration'] == true,
+        expiresAt: expiresAt,
+        resendAt: resendAt,
+      );
+    } catch (_) {
+      await clearPendingAuthentication();
+      return null;
+    }
+  }
+
+  Future<void> clearPendingAuthentication() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingAuthenticationKey);
   }
 
   Future<void> saveCurrent(Session session) async {
@@ -371,4 +447,22 @@ class _SessionSecrets {
   final String password;
   final String serverToken;
   final String identityRecovery;
+}
+
+class PendingAuthentication {
+  const PendingAuthentication({
+    required this.session,
+    required this.challengeId,
+    required this.maskedEmail,
+    required this.registration,
+    required this.expiresAt,
+    required this.resendAt,
+  });
+
+  final Session session;
+  final String challengeId;
+  final String maskedEmail;
+  final bool registration;
+  final DateTime expiresAt;
+  final DateTime resendAt;
 }

@@ -61,6 +61,14 @@ class IdentityRepository(Protocol):
     ):
         ...
 
+    def latest_active_email_challenge(
+        self,
+        login: str,
+        node_id: str,
+        purpose: str,
+    ):
+        ...
+
     def create_email_challenge(self, challenge: dict) -> None:
         ...
 

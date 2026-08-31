@@ -472,6 +472,10 @@ class AppController extends ChangeNotifier {
   bool emailBindingRequired = false;
   String pendingEmailChallengeId = '';
   String pendingEmailMasked = '';
+  Session? pendingAuthenticationSession;
+  bool pendingAuthenticationRegistration = false;
+  DateTime? pendingEmailExpiresAt;
+  DateTime? pendingEmailResendAt;
   Completer<Profile?>? _lookupCompleter;
   Completer<MeshProSubscription>? _meshProCompleter;
   final Map<String, Completer<AiRewriteResult>> _aiRewriteCompleters = {};
@@ -1348,6 +1352,8 @@ class AppController extends ChangeNotifier {
       _windowsBackground.setCloseToTray(appSettings.windowsCloseToTray),
     );
     recentSessions = await _store.loadRecent();
+    final pending = await _store.loadPendingAuthentication();
+    _applyPendingAuthentication(pending);
     session = await _store.load();
     if (session != null) {
       await _loadVerifiedCache(session!);
@@ -2498,13 +2504,14 @@ class AppController extends ChangeNotifier {
     String email = '',
     String emailChallengeId = '',
     String emailCode = '',
+    bool register = false,
   }) async {
     busy = true;
     error = null;
     notifyListeners();
     try {
       final normalized = _normalizeServerUrl(serverUrl);
-      var candidate = await _store.save(
+      final candidate = await _store.prepare(
         serverUrl: normalized,
         serverToken: token.trim(),
         login: login.trim().toLowerCase(),
@@ -2515,49 +2522,15 @@ class AppController extends ChangeNotifier {
         ),
         email: email.trim().toLowerCase(),
       );
-      await _initializeCryptoForSession(candidate);
-      final diagnostics = await _socket.diagnose(
+      return await _authenticateCandidate(
         candidate,
-        _crypto.publicKey,
+        register: register,
         emailChallengeId: emailChallengeId,
         emailCode: emailCode,
+        reactivateDevice: true,
       );
-      if (!diagnostics.ok) {
-        error = diagnostics.message;
-        pendingEmailChallengeId =
-            diagnostics.data['challenge_id']?.toString() ?? '';
-        pendingEmailMasked = diagnostics.data['masked_email']?.toString() ?? '';
-        final verificationPending =
-            diagnostics.code == 'email_verification_required';
-        if (!verificationPending) {
-          await _store.clear();
-          await _store.removeRecent(candidate);
-        }
-        recentSessions = await _store.loadRecent();
-        return false;
-      }
-      pendingEmailChallengeId = '';
-      pendingEmailMasked = '';
-      candidate = await _adoptCanonicalLogin(candidate, diagnostics.data);
-      emailBindingRequired = diagnostics.data['email_binding_required'] == true;
-      candidate = await _adoptServerIdentityRecovery(candidate);
-      await _socket.close();
-      _clearLocalState();
-      session = candidate;
-      recentSessions = await _store.loadRecent();
-      await _loadVerifiedCache(candidate);
-      await _loadOwnProfile(candidate);
-      stickerLibrary = await _stickerStore.load(candidate);
-      await _loadStories();
-      await _repairCachedGroups();
-      await _repairCachedMessages();
-      _restoreGroupKeysFromThreads();
-      await _repairCachedGroupMessages();
-      await _connect(reactivateDevice: true);
-      return true;
     } catch (exception) {
       error = exception.toString();
-      await _store.clear();
       recentSessions = await _store.loadRecent();
       return false;
     } finally {
@@ -2571,36 +2544,7 @@ class AppController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      await _initializeCryptoForSession(candidate);
-      final diagnostics = await _socket.diagnose(candidate, _crypto.publicKey);
-      if (!diagnostics.ok) {
-        error = diagnostics.message;
-        pendingEmailChallengeId =
-            diagnostics.data['challenge_id']?.toString() ?? '';
-        pendingEmailMasked = diagnostics.data['masked_email']?.toString() ?? '';
-        return false;
-      }
-      pendingEmailChallengeId = '';
-      pendingEmailMasked = '';
-      candidate = await _adoptCanonicalLogin(candidate, diagnostics.data);
-      emailBindingRequired = diagnostics.data['email_binding_required'] == true;
-      candidate = await _adoptServerIdentityRecovery(candidate);
-      await _socket.close();
-      _clearLocalState();
-      await _store.saveCurrent(candidate);
-      await _store.saveRecent(candidate);
-      session = candidate;
-      recentSessions = await _store.loadRecent();
-      await _loadVerifiedCache(candidate);
-      await _loadOwnProfile(candidate);
-      stickerLibrary = await _stickerStore.load(candidate);
-      await _loadStories();
-      await _repairCachedGroups();
-      await _repairCachedMessages();
-      _restoreGroupKeysFromThreads();
-      await _repairCachedGroupMessages();
-      await _connect();
-      return true;
+      return await _authenticateCandidate(candidate);
     } catch (exception) {
       error = exception.toString();
       return false;
@@ -2608,6 +2552,135 @@ class AppController extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  Future<bool> confirmPendingAuthentication(String code) async {
+    final candidate = pendingAuthenticationSession;
+    if (candidate == null || pendingEmailChallengeId.isEmpty) {
+      error = 'The verification request expired. Request a new code.';
+      notifyListeners();
+      return false;
+    }
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      return await _authenticateCandidate(
+        candidate,
+        register: pendingAuthenticationRegistration,
+        emailChallengeId: pendingEmailChallengeId,
+        emailCode: code.trim(),
+        reactivateDevice: true,
+      );
+    } catch (exception) {
+      error = exception.toString();
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> resendPendingAuthentication() async {
+    final candidate = pendingAuthenticationSession;
+    if (candidate == null) return false;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      return await _authenticateCandidate(
+        candidate,
+        register: pendingAuthenticationRegistration,
+        reactivateDevice: true,
+      );
+    } catch (exception) {
+      error = exception.toString();
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> cancelPendingAuthentication() async {
+    await _store.clearPendingAuthentication();
+    _applyPendingAuthentication(null);
+    error = null;
+    notifyListeners();
+  }
+
+  Future<bool> _authenticateCandidate(
+    Session initialCandidate, {
+    bool register = false,
+    String emailChallengeId = '',
+    String emailCode = '',
+    bool reactivateDevice = false,
+  }) async {
+    var candidate = initialCandidate;
+    await _initializeCryptoForSession(candidate);
+    final diagnostics = await _socket.diagnose(
+      candidate,
+      _crypto.publicKey,
+      emailChallengeId: emailChallengeId,
+      emailCode: emailCode,
+      registerIfMissing: register,
+    );
+    if (!diagnostics.ok) {
+      error = diagnostics.message;
+      final challengeId = diagnostics.data['challenge_id']?.toString() ?? '';
+      if (challengeId.isNotEmpty) {
+        final now = DateTime.now().toUtc();
+        final expiresIn =
+            int.tryParse(diagnostics.data['expires_in']?.toString() ?? '') ??
+            600;
+        final retryAfter =
+            int.tryParse(diagnostics.data['retry_after']?.toString() ?? '') ??
+            0;
+        final pending = PendingAuthentication(
+          session: candidate,
+          challengeId: challengeId,
+          maskedEmail:
+              diagnostics.data['masked_email']?.toString() ??
+              pendingEmailMasked,
+          registration: register,
+          expiresAt: now.add(Duration(seconds: expiresIn)),
+          resendAt: now.add(Duration(seconds: retryAfter)),
+        );
+        await _store.savePendingAuthentication(pending);
+        _applyPendingAuthentication(pending);
+      }
+      return false;
+    }
+    await _store.clearPendingAuthentication();
+    _applyPendingAuthentication(null);
+    candidate = await _adoptCanonicalLogin(candidate, diagnostics.data);
+    emailBindingRequired = diagnostics.data['email_binding_required'] == true;
+    candidate = await _adoptServerIdentityRecovery(candidate);
+    await _socket.close();
+    _clearLocalState();
+    await _store.saveCurrent(candidate);
+    await _store.saveRecent(candidate);
+    session = candidate;
+    recentSessions = await _store.loadRecent();
+    await _loadVerifiedCache(candidate);
+    await _loadOwnProfile(candidate);
+    stickerLibrary = await _stickerStore.load(candidate);
+    await _loadStories();
+    await _repairCachedGroups();
+    await _repairCachedMessages();
+    _restoreGroupKeysFromThreads();
+    await _repairCachedGroupMessages();
+    await _connect(reactivateDevice: reactivateDevice);
+    return true;
+  }
+
+  void _applyPendingAuthentication(PendingAuthentication? pending) {
+    pendingAuthenticationSession = pending?.session;
+    pendingAuthenticationRegistration = pending?.registration ?? false;
+    pendingEmailChallengeId = pending?.challengeId ?? '';
+    pendingEmailMasked = pending?.maskedEmail ?? '';
+    pendingEmailExpiresAt = pending?.expiresAt;
+    pendingEmailResendAt = pending?.resendAt;
   }
 
   Future<void> _initializeCryptoForSession(Session current) async {
@@ -11272,10 +11345,10 @@ class AppController extends ChangeNotifier {
     await _unsubscribeAndroidPush();
     await _socket.close();
     await _store.clear();
+    await _store.clearPendingAuthentication();
     session = null;
     emailBindingRequired = false;
-    pendingEmailChallengeId = '';
-    pendingEmailMasked = '';
+    _applyPendingAuthentication(null);
     _clearLocalState();
     status = 'Offline';
     notifyListeners();

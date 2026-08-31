@@ -234,6 +234,25 @@ class SQLiteIdentityRepository:
         ).fetchone()
         return row[0] if row else None
 
+    def latest_active_email_challenge(self, login, node_id, purpose):
+        row = self._connection.execute(
+            """
+            SELECT challenge_id, email
+            FROM email_auth_challenges
+            WHERE login=?
+              AND node_id=?
+              AND purpose=?
+              AND consumed_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (self._login(login), self._node(node_id), purpose),
+        ).fetchone()
+        if not row:
+            return None
+        return {"challenge_id": row[0], "email": row[1]}
+
     def create_email_challenge(self, challenge):
         self._connection.execute(
             """

@@ -311,6 +311,7 @@ class MeshSocket {
     String publicKey, {
     String emailChallengeId = '',
     String emailCode = '',
+    bool registerIfMissing = false,
   }) async {
     _lastIdentityRecovery = '';
     final channel = WebSocketChannel.connect(Uri.parse(session.serverUrl));
@@ -325,6 +326,7 @@ class MeshSocket {
             null,
             emailChallengeId: emailChallengeId,
             emailCode: emailCode,
+            registerIfMissing: registerIfMissing,
           ),
           'auth_check': true,
         }),
@@ -1134,6 +1136,7 @@ class MeshSocket {
     bool reactivateDevice = false,
     String emailChallengeId = '',
     String emailCode = '',
+    bool registerIfMissing = false,
   }) {
     final displayName = profile?.displayName.trim().isNotEmpty == true
         ? profile!.displayName
@@ -1147,6 +1150,7 @@ class MeshSocket {
       'password': session.password,
       'email': session.email,
       'supports_email_2fa': true,
+      'register_if_missing': registerIfMissing,
       if (emailChallengeId.isNotEmpty) 'email_challenge_id': emailChallengeId,
       if (emailCode.isNotEmpty) 'email_code': emailCode,
       'display_name': displayName,

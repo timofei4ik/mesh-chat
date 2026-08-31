@@ -179,6 +179,45 @@ void main() {
     expect(secrets.values.values, contains('bob-token'));
     expect(secrets.values.values, contains('bob-recovery'));
   });
+
+  test(
+    'pending email authentication survives restart without becoming current',
+    () async {
+      final secrets = MemorySessionSecretStore();
+      final store = SessionStore(secretStore: secrets);
+      final session = await store.prepare(
+        serverUrl: 'wss://meshchat-losa.ru/ws',
+        serverToken: 'invite-token',
+        login: 'new-user',
+        password: 'account-password',
+        publicUsername: 'new_user',
+        email: 'new@example.com',
+      );
+      final now = DateTime.now().toUtc();
+
+      await store.savePendingAuthentication(
+        PendingAuthentication(
+          session: session,
+          challengeId: 'challenge-1',
+          maskedEmail: 'n***@example.com',
+          registration: true,
+          expiresAt: now.add(const Duration(minutes: 10)),
+          resendAt: now.add(const Duration(seconds: 30)),
+        ),
+      );
+
+      expect(await store.load(), isNull);
+      final restored = await SessionStore(
+        secretStore: secrets,
+      ).loadPendingAuthentication();
+      expect(restored, isNotNull);
+      expect(restored!.challengeId, 'challenge-1');
+      expect(restored.registration, isTrue);
+      expect(restored.session.password, 'account-password');
+      expect(restored.session.nodeId, session.nodeId);
+      expect(await store.loadRecent(), isEmpty);
+    },
+  );
 }
 
 class MemorySessionSecretStore implements SessionSecretStore {

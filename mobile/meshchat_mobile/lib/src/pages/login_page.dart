@@ -10,6 +10,8 @@ import '../widgets/mesh_painting.dart';
 import '../controllers/app_controller.dart';
 import '../models/session.dart';
 
+enum _AuthenticationMode { login, registration }
+
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, required this.controller});
 
@@ -20,8 +22,7 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  static const _legalBaseUrl =
-      'https://meshchat-losa.ru/meshpro/legal';
+  static const _legalBaseUrl = 'https://meshchat-losa.ru/meshpro/legal';
   static const _acceptedRulesKey = 'accepted_rules_2026_08_18';
   final serverController = TextEditingController(
     text: 'wss://meshchat-losa.ru/ws',
@@ -31,6 +32,8 @@ class _LoginPageState extends State<LoginPage> {
   final usernameController = TextEditingController();
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
+  final codeController = TextEditingController();
+  _AuthenticationMode mode = _AuthenticationMode.login;
   bool obscurePassword = true;
   bool acceptedRules = false;
 
@@ -38,6 +41,13 @@ class _LoginPageState extends State<LoginPage> {
   void initState() {
     super.initState();
     _restoreRulesAcceptance();
+    final pending = widget.controller.pendingAuthenticationSession;
+    if (pending != null) {
+      mode = widget.controller.pendingAuthenticationRegistration
+          ? _AuthenticationMode.registration
+          : _AuthenticationMode.login;
+      fillFromRecent(pending);
+    }
   }
 
   Future<void> _restoreRulesAcceptance() async {
@@ -78,11 +88,13 @@ class _LoginPageState extends State<LoginPage> {
     usernameController.dispose();
     emailController.dispose();
     passwordController.dispose();
+    codeController.dispose();
     super.dispose();
   }
 
   Future<void> submit() async {
-    if (!_ensureRulesAccepted()) return;
+    final registering = mode == _AuthenticationMode.registration;
+    if (registering && !_ensureRulesAccepted()) return;
     final login = loginController.text.trim();
     final password = passwordController.text;
     if (serverController.text.trim().isEmpty ||
@@ -94,7 +106,14 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    await _rememberRulesAcceptance();
+    if (registering && emailController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter an email for account recovery')),
+      );
+      return;
+    }
+
+    if (registering) await _rememberRulesAcceptance();
 
     final success = await widget.controller.login(
       serverUrl: serverController.text,
@@ -104,30 +123,15 @@ class _LoginPageState extends State<LoginPage> {
       publicUsername: usernameController.text.trim().isEmpty
           ? login
           : usernameController.text,
-      email: emailController.text,
+      email: registering
+          ? emailController.text
+          : (login.contains('@') ? login : ''),
+      register: registering,
     );
+    if (mounted) setState(() {});
     if (!success &&
         mounted &&
-        widget.controller.pendingEmailChallengeId.isNotEmpty) {
-      final code = await _showEmailCodeDialog(
-        widget.controller.pendingEmailMasked,
-      );
-      if (code == null || !mounted) return;
-      final verified = await widget.controller.login(
-        serverUrl: serverController.text,
-        token: tokenController.text,
-        login: login,
-        password: password,
-        publicUsername: usernameController.text.trim().isEmpty
-            ? login
-            : usernameController.text,
-        email: emailController.text,
-        emailChallengeId: widget.controller.pendingEmailChallengeId,
-        emailCode: code,
-      );
-      if (verified || !mounted) return;
-    }
-    if (!success && mounted) {
+        widget.controller.pendingEmailChallengeId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(widget.controller.error ?? 'Login failed'),
@@ -138,29 +142,13 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> quickLogin(Session session) async {
-    if (!_ensureRulesAccepted()) return;
-    await _rememberRulesAcceptance();
+    mode = _AuthenticationMode.login;
+    fillFromRecent(session);
     final success = await widget.controller.quickLogin(session);
+    if (mounted) setState(() {});
     if (!success &&
         mounted &&
-        widget.controller.pendingEmailChallengeId.isNotEmpty) {
-      final code = await _showEmailCodeDialog(
-        widget.controller.pendingEmailMasked,
-      );
-      if (code == null || !mounted) return;
-      final verified = await widget.controller.login(
-        serverUrl: session.serverUrl,
-        token: session.serverToken,
-        login: session.login,
-        password: session.password,
-        publicUsername: session.publicUsername,
-        email: session.email,
-        emailChallengeId: widget.controller.pendingEmailChallengeId,
-        emailCode: code,
-      );
-      if (verified || !mounted) return;
-    }
-    if (!success && mounted) {
+        widget.controller.pendingEmailChallengeId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(widget.controller.error ?? 'Login failed'),
@@ -179,54 +167,136 @@ class _LoginPageState extends State<LoginPage> {
     emailController.text = session.email;
   }
 
-  Future<String?> _showEmailCodeDialog(String maskedEmail) async {
-    final codeController = TextEditingController();
-    final result = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Check your email'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Future<void> verifyCode() async {
+    final code = codeController.text.trim();
+    if (code.length != 6) return;
+    final success = await widget.controller.confirmPendingAuthentication(code);
+    if (!mounted) return;
+    setState(() {});
+    if (!success) _showError();
+  }
+
+  Future<void> resendCode() async {
+    final resendAt = widget.controller.pendingEmailResendAt;
+    final remaining = resendAt?.difference(DateTime.now().toUtc());
+    if (remaining != null && !remaining.isNegative) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Try again in ${remaining.inSeconds + 1}s')),
+      );
+      return;
+    }
+    await widget.controller.resendPendingAuthentication();
+    if (!mounted) return;
+    setState(() {});
+    if (widget.controller.error != null &&
+        widget.controller.pendingEmailChallengeId.isEmpty) {
+      _showError();
+    }
+  }
+
+  void _showError() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(widget.controller.error ?? 'Authentication failed'),
+        backgroundColor: Colors.red.shade700,
+      ),
+    );
+  }
+
+  Future<void> changeMode(_AuthenticationMode next) async {
+    if (mode == next) return;
+    if (widget.controller.pendingEmailChallengeId.isNotEmpty) {
+      await widget.controller.cancelPendingAuthentication();
+      codeController.clear();
+    }
+    if (!mounted) return;
+    setState(() => mode = next);
+  }
+
+  Widget _buildVerificationPanel(BuildContext context) {
+    final masked = widget.controller.pendingEmailMasked;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Enter the 6-digit code sent to $maskedEmail.'),
-            const SizedBox(height: 16),
+            const Icon(Icons.mark_email_read_outlined, size: 42),
+            const SizedBox(height: 12),
+            Text(
+              'Check your email',
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              masked.isEmpty
+                  ? 'Enter the 6-digit verification code.'
+                  : 'Enter the 6-digit code sent to $masked.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 18),
             TextField(
               controller: codeController,
               autofocus: true,
               keyboardType: TextInputType.number,
               maxLength: 6,
               textInputAction: TextInputAction.done,
-              onSubmitted: (value) {
-                if (value.trim().length == 6) {
-                  Navigator.pop(context, value.trim());
-                }
-              },
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) => verifyCode(),
               decoration: const InputDecoration(
                 labelText: 'Verification code',
                 prefixIcon: Icon(Icons.password_outlined),
               ),
             ),
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed:
+                  widget.controller.busy ||
+                      codeController.text.trim().length != 6
+                  ? null
+                  : verifyCode,
+              icon: widget.controller.busy
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.check_circle_outline),
+              label: const Text('Verify'),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton(
+                  onPressed: widget.controller.busy
+                      ? null
+                      : () async {
+                          await widget.controller.cancelPendingAuthentication();
+                          if (mounted) setState(codeController.clear);
+                        },
+                  child: const Text('Back'),
+                ),
+                TextButton.icon(
+                  onPressed: widget.controller.busy ? null : resendCode,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Send again'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'You can leave MeshChat to read the email. This screen will be restored when you return.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white60, fontSize: 12),
+            ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = codeController.text.trim();
-              if (value.length == 6) Navigator.pop(context, value);
-            },
-            child: const Text('Verify'),
-          ),
-        ],
       ),
     );
-    codeController.dispose();
-    return result;
   }
 
   @override
@@ -261,130 +331,167 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        'Login or create account',
+                        mode == _AuthenticationMode.login
+                            ? 'Welcome back'
+                            : 'Create your MeshChat account',
                         style: Theme.of(
                           context,
                         ).textTheme.bodyLarge?.copyWith(color: Colors.white60),
                       ),
-                      const SizedBox(height: 28),
-                      TextField(
-                        controller: serverController,
-                        keyboardType: TextInputType.url,
-                        decoration: const InputDecoration(
-                          labelText: 'Server',
-                          prefixIcon: Icon(Icons.dns_outlined),
-                        ),
+                      const SizedBox(height: 20),
+                      SegmentedButton<_AuthenticationMode>(
+                        segments: const [
+                          ButtonSegment(
+                            value: _AuthenticationMode.login,
+                            icon: Icon(Icons.login),
+                            label: Text('Login'),
+                          ),
+                          ButtonSegment(
+                            value: _AuthenticationMode.registration,
+                            icon: Icon(Icons.person_add_alt_1),
+                            label: Text('Register'),
+                          ),
+                        ],
+                        selected: {mode},
+                        onSelectionChanged: widget.controller.busy
+                            ? null
+                            : (selection) => changeMode(selection.single),
+                        showSelectedIcon: false,
                       ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: tokenController,
-                        obscureText: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Invite token',
-                          prefixIcon: Icon(Icons.key_outlined),
+                      const SizedBox(height: 24),
+                      if (widget.controller.pendingEmailChallengeId.isNotEmpty)
+                        _buildVerificationPanel(context)
+                      else ...[
+                        TextField(
+                          controller: serverController,
+                          keyboardType: TextInputType.url,
+                          decoration: const InputDecoration(
+                            labelText: 'Server',
+                            prefixIcon: Icon(Icons.dns_outlined),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: loginController,
-                        textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(
-                          labelText: 'Login',
-                          prefixIcon: Icon(Icons.person_outline),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: tokenController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Invite token',
+                            prefixIcon: Icon(Icons.key_outlined),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: usernameController,
-                        textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(
-                          labelText: '@username',
-                          prefixIcon: Icon(Icons.alternate_email),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: loginController,
+                          textInputAction: TextInputAction.next,
+                          decoration: InputDecoration(
+                            labelText: mode == _AuthenticationMode.login
+                                ? 'Login, @username or email'
+                                : 'Login',
+                            prefixIcon: const Icon(Icons.person_outline),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: emailController,
-                        keyboardType: TextInputType.emailAddress,
-                        textInputAction: TextInputAction.next,
-                        autofillHints: const [AutofillHints.email],
-                        decoration: const InputDecoration(
-                          labelText: 'Email',
-                          helperText:
-                              'Required for new accounts and new-device verification',
-                          prefixIcon: Icon(Icons.mail_outline),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: passwordController,
-                        obscureText: obscurePassword,
-                        onSubmitted: (_) => submit(),
-                        decoration: InputDecoration(
-                          labelText: 'Password',
-                          prefixIcon: const Icon(Icons.lock_outline),
-                          suffixIcon: IconButton(
-                            tooltip: obscurePassword
-                                ? 'Show password'
-                                : 'Hide password',
-                            onPressed: () => setState(
-                              () => obscurePassword = !obscurePassword,
+                        if (mode == _AuthenticationMode.registration) ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: usernameController,
+                            textInputAction: TextInputAction.next,
+                            decoration: const InputDecoration(
+                              labelText: '@username',
+                              prefixIcon: Icon(Icons.alternate_email),
                             ),
-                            icon: Icon(
-                              obscurePassword
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: emailController,
+                            keyboardType: TextInputType.emailAddress,
+                            textInputAction: TextInputAction.next,
+                            autofillHints: const [AutofillHints.email],
+                            decoration: const InputDecoration(
+                              labelText: 'Email',
+                              helperText:
+                                  'Required for new accounts and new-device verification',
+                              prefixIcon: Icon(Icons.mail_outline),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: passwordController,
+                          obscureText: obscurePassword,
+                          onSubmitted: (_) => submit(),
+                          decoration: InputDecoration(
+                            labelText: 'Password',
+                            prefixIcon: const Icon(Icons.lock_outline),
+                            suffixIcon: IconButton(
+                              tooltip: obscurePassword
+                                  ? 'Show password'
+                                  : 'Hide password',
+                              onPressed: () => setState(
+                                () => obscurePassword = !obscurePassword,
+                              ),
+                              icon: Icon(
+                                obscurePassword
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      CheckboxListTile(
-                        value: acceptedRules,
-                        onChanged: widget.controller.busy
-                            ? null
-                            : (value) => setState(
-                                () => acceptedRules = value ?? false,
-                              ),
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        title: const Text('I agree to the rules'),
-                        subtitle: Wrap(
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            const Text('I accept the '),
-                            TextButton(
-                              onPressed: () => _openLegalPage('terms'),
-                              child: const Text('Terms'),
-                            ),
-                            const Text(' and '),
-                            TextButton(
-                              onPressed: () => _openLegalPage('community'),
-                              child: const Text('Community Guidelines'),
-                            ),
-                            const Text('.'),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      FilledButton.icon(
-                        onPressed: widget.controller.busy || !acceptedRules
-                            ? null
-                            : submit,
-                        icon: widget.controller.busy
-                            ? const SizedBox.square(
-                                dimension: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
+                        if (mode == _AuthenticationMode.registration) ...[
+                          const SizedBox(height: 12),
+                          CheckboxListTile(
+                            value: acceptedRules,
+                            onChanged: widget.controller.busy
+                                ? null
+                                : (value) => setState(
+                                    () => acceptedRules = value ?? false,
+                                  ),
+                            contentPadding: EdgeInsets.zero,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            title: const Text('I agree to the rules'),
+                            subtitle: Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                const Text('I accept the '),
+                                TextButton(
+                                  onPressed: () => _openLegalPage('terms'),
+                                  child: const Text('Terms'),
                                 ),
-                              )
-                            : const Icon(Icons.login),
-                        label: Text(
-                          widget.controller.busy
-                              ? 'Connecting...'
-                              : 'Login / register',
+                                const Text(' and '),
+                                TextButton(
+                                  onPressed: () => _openLegalPage('community'),
+                                  child: const Text('Community Guidelines'),
+                                ),
+                                const Text('.'),
+                              ],
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 20),
+                        FilledButton.icon(
+                          onPressed:
+                              widget.controller.busy ||
+                                  (mode == _AuthenticationMode.registration &&
+                                      !acceptedRules)
+                              ? null
+                              : submit,
+                          icon: widget.controller.busy
+                              ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.login),
+                          label: Text(
+                            widget.controller.busy
+                                ? 'Connecting...'
+                                : mode == _AuthenticationMode.login
+                                ? 'Login'
+                                : 'Create account',
+                          ),
                         ),
-                      ),
+                      ],
                       if (widget.controller.recentSessions.isNotEmpty) ...[
                         const SizedBox(height: 24),
                         Text(

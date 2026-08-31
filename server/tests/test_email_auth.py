@@ -217,6 +217,78 @@ class EmailAuthTests(unittest.TestCase):
         self.assertEqual("new@example.com", row[0])
         self.assertIsNotNone(row[1])
 
+    def test_login_and_registration_intents_are_not_mixed(self):
+        login_packet = {
+            "supports_email_2fa": True,
+            "register_if_missing": False,
+        }
+        ok, response, _ = asyncio.run(
+            self.relay.authorize_email_2fa(
+                login_packet,
+                "missing-user",
+                "password123",
+                "phone",
+            )
+        )
+        self.assertFalse(ok)
+        self.assertEqual("account_not_found", response["code"])
+        self.assertEqual([], self.sent_codes)
+
+        created, reason = self.relay.authenticate_account(
+            "existing-user",
+            "password123",
+            "old-phone",
+            "Existing",
+            email="existing@example.com",
+            email_verified=True,
+        )
+        self.assertTrue(created, reason)
+        register_packet = {
+            "supports_email_2fa": True,
+            "register_if_missing": True,
+            "email": "other@example.com",
+        }
+        ok, response, _ = asyncio.run(
+            self.relay.authorize_email_2fa(
+                register_packet,
+                "existing-user",
+                "password123",
+                "new-phone",
+            )
+        )
+        self.assertFalse(ok)
+        self.assertEqual("account_already_exists", response["code"])
+
+    def test_resend_cooldown_returns_the_active_challenge(self):
+        packet = {
+            "supports_email_2fa": True,
+            "register_if_missing": True,
+            "email": "pending@example.com",
+        }
+        ok, first, _ = asyncio.run(
+            self.relay.authorize_email_2fa(
+                packet,
+                "pending-user",
+                "password123",
+                "phone",
+            )
+        )
+        self.assertFalse(ok)
+        self.assertEqual("email_verification_required", first["code"])
+
+        ok, second, _ = asyncio.run(
+            self.relay.authorize_email_2fa(
+                packet,
+                "pending-user",
+                "password123",
+                "phone",
+            )
+        )
+        self.assertFalse(ok)
+        self.assertEqual("retry_after", second["code"])
+        self.assertEqual(first["challenge_id"], second["challenge_id"])
+        self.assertGreater(second["retry_after"], 0)
+
     def test_legacy_client_rollout_can_be_disabled_server_side(self):
         packet = {"supports_email_2fa": False}
         ok, response, _ = asyncio.run(
