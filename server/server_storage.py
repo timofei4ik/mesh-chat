@@ -581,6 +581,18 @@ class ServerStorageMixin:
 
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS auth_rate_limits(
+                bucket TEXT PRIMARY KEY,
+                failures INTEGER NOT NULL DEFAULT 0,
+                window_started INTEGER NOT NULL,
+                blocked_until INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_email_auth_challenges_login
             ON email_auth_challenges(login, created_at)
             """
@@ -2459,6 +2471,18 @@ class ServerStorageMixin:
         action = str(action or "").strip().lower()
         if not login or not target_node:
             return False, "invalid_device"
+        if action == "revoke_others":
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.identity.revoke_other_account_devices(
+                    login,
+                    target_node,
+                )
+            for device in self.get_account_devices(login):
+                node_id = str(device.get("node_id") or "")
+                if node_id and node_id != target_node:
+                    self.delete_android_push_token(node_id=node_id)
+                    self.delete_web_push_subscription(node_id=node_id)
+            return True, "ok"
         with self.unit_of_work_factory() as unit_of_work:
             device_exists = unit_of_work.identity.account_device_exists(
                 login,

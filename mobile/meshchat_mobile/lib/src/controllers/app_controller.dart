@@ -2539,6 +2539,94 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<Map<String, dynamic>> requestPasswordReset({
+    required String serverUrl,
+    required String token,
+    required String login,
+  }) async {
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final normalizedServer = _normalizeServerUrl(serverUrl);
+      final normalizedLogin = login.trim().toLowerCase().replaceFirst('@', '');
+      final candidate = await _store.prepare(
+        serverUrl: normalizedServer,
+        serverToken: token.trim(),
+        login: normalizedLogin,
+        password: 'password-reset-pending',
+        publicUsername: normalizedLogin,
+      );
+      final result = await _socket.requestPasswordReset(
+        serverUrl: normalizedServer,
+        serverToken: token.trim(),
+        login: normalizedLogin,
+        nodeId: candidate.nodeId,
+      );
+      if (!result.ok) error = result.message;
+      return {
+        ...result.data,
+        'ok': result.ok,
+        'message': result.message,
+        'node_id': candidate.nodeId,
+        'server_url': normalizedServer,
+        'server_token': token.trim(),
+      };
+    } catch (exception) {
+      error = exception.toString();
+      return {'ok': false, 'message': error};
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<Map<String, dynamic>> confirmPasswordReset({
+    required String serverUrl,
+    required String token,
+    required String login,
+    required String nodeId,
+    required String challengeId,
+    required String code,
+    required String newPassword,
+  }) async {
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final recoveryCrypto = MeshCrypto();
+      await recoveryCrypto.initialize(login, newPassword);
+      final recovery = await recoveryCrypto.createIdentityRecovery(
+        login,
+        newPassword,
+      );
+      final result = await _socket.confirmPasswordReset(
+        serverUrl: serverUrl,
+        serverToken: token,
+        login: login,
+        nodeId: nodeId,
+        challengeId: challengeId,
+        code: code.trim(),
+        newPassword: newPassword,
+        encryptionRecovery: recovery,
+        encryptionPublicKey: recoveryCrypto.publicKey,
+      );
+      if (!result.ok) error = result.message;
+      return {
+        ...result.data,
+        'ok': result.ok,
+        'message': result.message,
+        'identity_recovery': recovery,
+      };
+    } catch (exception) {
+      error = exception.toString();
+      return {'ok': false, 'message': error};
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
   Future<bool> quickLogin(Session candidate) async {
     busy = true;
     error = null;
@@ -2892,6 +2980,20 @@ class AppController extends ChangeNotifier {
               'Server error';
         }
         addDiagnostic('server', status);
+        notifyListeners();
+      case 'security_alert':
+        final title = packet['title']?.toString() ?? 'MeshChat security';
+        final message = packet['message']?.toString() ?? 'New account activity';
+        addDiagnostic('security', message);
+        unawaited(
+          _showNotification(
+            title: title,
+            body: message,
+            notificationKey:
+                'security:${packet['packet_id'] ?? packet['source_node'] ?? message}',
+            sourceNode: packet['source_node']?.toString() ?? '',
+          ),
+        );
         notifyListeners();
       case 'server_users':
         _applyOnlineUsers(packet['users']);
@@ -6809,10 +6911,7 @@ class AppController extends ChangeNotifier {
       if (error != null) {
         addDiagnostic('call', 'Call handoff failed: $error');
         _setActiveCall(
-          call.copyWith(
-            status: CallStatus.ended,
-            endReason: error,
-          ),
+          call.copyWith(status: CallStatus.ended, endReason: error),
         );
         notifyListeners();
         return;
@@ -11291,6 +11390,10 @@ class AppController extends ChangeNotifier {
       return Future<String?>.value('The current device cannot revoke itself');
     }
     return _activeDeviceAction(device, 'revoke');
+  }
+
+  Future<String?> revokeOtherActiveDevices() {
+    return _activeDeviceAction(ActiveDevice(nodeId: myNodeId), 'revoke_others');
   }
 
   Future<String?> _activeDeviceAction(

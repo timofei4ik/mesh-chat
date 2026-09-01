@@ -20,7 +20,7 @@ typedef DeliveryTraceHandler =
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '1.0.87';
+  static const appVersion = '1.0.92';
 
   MeshSocket({
     MutationOutboxStore? outboxStore,
@@ -386,6 +386,104 @@ class MeshSocket {
     } finally {
       await channel.sink.close();
     }
+  }
+
+  Future<ConnectionDiagnostics> requestPasswordReset({
+    required String serverUrl,
+    required String serverToken,
+    required String login,
+    required String nodeId,
+  }) {
+    return _authAction(
+      serverUrl: serverUrl,
+      packet: {
+        'type': 'server_hello',
+        'auth_action': 'password_reset_request',
+        'server_token': serverToken,
+        'login': login,
+        'node_id': nodeId,
+        'protocol_version': protocolVersion,
+        'min_protocol_version': minProtocolVersion,
+      },
+    );
+  }
+
+  Future<ConnectionDiagnostics> confirmPasswordReset({
+    required String serverUrl,
+    required String serverToken,
+    required String login,
+    required String nodeId,
+    required String challengeId,
+    required String code,
+    required String newPassword,
+    required String encryptionRecovery,
+    required String encryptionPublicKey,
+  }) {
+    return _authAction(
+      serverUrl: serverUrl,
+      packet: {
+        'type': 'server_hello',
+        'auth_action': 'password_reset_confirm',
+        'server_token': serverToken,
+        'login': login,
+        'node_id': nodeId,
+        'challenge_id': challengeId,
+        'code': code,
+        'new_password': newPassword,
+        'encryption_recovery': encryptionRecovery,
+        'encryption_public_key': encryptionPublicKey,
+        'protocol_version': protocolVersion,
+        'min_protocol_version': minProtocolVersion,
+      },
+    );
+  }
+
+  Future<ConnectionDiagnostics> _authAction({
+    required String serverUrl,
+    required Map<String, dynamic> packet,
+  }) async {
+    final channel = WebSocketChannel.connect(Uri.parse(serverUrl));
+    final startedAt = DateTime.now();
+    try {
+      await channel.ready.timeout(const Duration(seconds: 10));
+      channel.sink.add(jsonEncode(packet));
+      final raw = await channel.stream.first.timeout(
+        const Duration(seconds: 20),
+      );
+      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
+      final ok = decoded['ok'] == true;
+      return ConnectionDiagnostics(
+        ok: ok,
+        message: ok
+            ? 'OK'
+            : _passwordResetError(decoded['code']?.toString() ?? ''),
+        latency: DateTime.now().difference(startedAt),
+        code: decoded['code']?.toString() ?? '',
+        data: decoded,
+      );
+    } catch (error) {
+      return ConnectionDiagnostics(
+        ok: false,
+        message: 'Could not connect: $error',
+        latency: DateTime.now().difference(startedAt),
+      );
+    } finally {
+      await channel.sink.close();
+    }
+  }
+
+  static String _passwordResetError(String code) {
+    return switch (code) {
+      'account_recovery_unavailable' =>
+        'No verified recovery email is linked to this account',
+      'retry_after' => 'Wait before requesting another email',
+      'invalid_code' => 'The verification code is incorrect',
+      'code_expired' => 'The verification code expired',
+      'too_many_attempts' => 'Too many incorrect code attempts',
+      'password_too_short' => 'Use at least 8 characters',
+      'password_too_long' => 'Password is too long',
+      _ => 'Could not reset the password',
+    };
   }
 
   void send(Map<String, dynamic> packet) {

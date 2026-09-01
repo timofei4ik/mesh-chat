@@ -22,4 +22,20 @@ void main() {
     expect(find.text('@username'), findsOneWidget);
     expect(find.text('Email'), findsOneWidget);
   });
+
+  testWidgets('opens password recovery without leaving the login screen', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(home: LoginPage(controller: AppController())),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Forgot password?'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Recover account'), findsOneWidget);
+    expect(find.text('Send recovery code'), findsOneWidget);
+    expect(find.text('Back to login'), findsOneWidget);
+  });
 }

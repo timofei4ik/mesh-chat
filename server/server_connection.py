@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass
 
 try:
@@ -44,6 +45,50 @@ class HandshakeOutcome:
 
 async def _send_json(websocket, payload):
     await websocket.send(json.dumps(payload, ensure_ascii=False))
+
+
+async def _close_other_account_sessions(server, login, current_node):
+    resolver = getattr(server, "get_realtime_account_nodes", None)
+    nodes = await resolver(login) if callable(resolver) else []
+    for node_id in nodes:
+        if node_id == current_node:
+            continue
+        packet = {
+            "type": "server_error",
+            "code": "account_password_changed",
+            "message": "The account password was reset.",
+        }
+        closer = getattr(server, "close_realtime_node", None)
+        if callable(closer):
+            await closer(
+                node_id,
+                packet=packet,
+                code=4004,
+                reason="account password reset",
+            )
+
+
+async def _notify_new_device(server, login, current_node, packet):
+    alert = {
+        "type": "security_alert",
+        "packet_id": str(uuid.uuid4()),
+        "source_node": current_node,
+        "title": "New MeshChat sign-in",
+        "message": (
+            f"{packet.get('device_name') or packet.get('display_name') or 'A new device'} "
+            "signed in to your account."
+        ),
+        "device_name": packet.get("device_name") or "",
+        "app_version": packet.get("app_version") or "",
+    }
+    for device in server.get_account_devices(login):
+        target_node = str(device.get("node_id") or "").strip()
+        if not target_node or target_node == current_node or device.get("revoked"):
+            continue
+        delivery = {**alert, "destination_node": target_node}
+        if not await server._send_live_packet(target_node, delivery):
+            server.save_offline_packet(target_node, delivery)
+        await server.send_web_push_for_packet(target_node, delivery)
 
 
 async def handle_server_hello(
@@ -91,6 +136,46 @@ async def handle_server_hello(
     if not node_id:
         return HandshakeOutcome()
 
+    auth_action = str(packet.get("auth_action") or "").strip().lower()
+    if auth_action == "password_reset_request":
+        challenge, reason = await server.request_password_reset(
+            packet.get("login"),
+            node_id,
+        )
+        response = {
+            "type": "password_reset_challenge",
+            "ok": bool(challenge),
+            "code": str(reason).split(":", 1)[0],
+        }
+        if challenge:
+            response.update(challenge)
+        elif str(reason).startswith("retry_after:"):
+            response["retry_after"] = int(str(reason).split(":", 1)[1])
+        await _send_json(websocket, response)
+        return HandshakeOutcome(node_id, terminate_handler=True)
+    if auth_action == "password_reset_confirm":
+        ok, reason, reset_login = server.confirm_password_reset(
+            packet.get("login"),
+            node_id,
+            packet.get("challenge_id"),
+            packet.get("code"),
+            packet.get("new_password"),
+            packet.get("encryption_recovery"),
+            packet.get("encryption_public_key"),
+        )
+        await _send_json(
+            websocket,
+            {
+                "type": "password_reset_result",
+                "ok": ok,
+                "code": reason,
+                "login": reset_login,
+            },
+        )
+        if ok:
+            await _close_other_account_sessions(server, reset_login, node_id)
+        return HandshakeOutcome(node_id, terminate_handler=True)
+
     login = packet.get("login")
     password = packet.get("password")
     auth_check = bool(packet.get("auth_check"))
@@ -130,6 +215,8 @@ async def handle_server_hello(
         packet.get("service_session_token") or ""
     ).strip()
     issued_service_token = None
+    account_existed = False
+    known_account_device = False
     if service_session_token:
         login = server.authenticate_service_session(
             service_session_token,
@@ -178,6 +265,12 @@ async def handle_server_hello(
             return HandshakeOutcome(node_id, terminate_handler=True)
 
         account_existed = server.account_exists(login)
+        if account_existed:
+            with server.unit_of_work_factory() as unit_of_work:
+                known_account_device = unit_of_work.identity.account_device_exists(
+                    login,
+                    node_id,
+                )
         ok, reason = server.authenticate_account(
             login,
             password,
@@ -388,6 +481,9 @@ async def handle_server_hello(
 
     await _send_json(websocket, welcome)
     print(f"Client online: {username} ({node_id})")
+
+    if account_existed and not known_account_device:
+        await _notify_new_device(server, normalized_login, node_id, packet)
 
     if not login:
         await server.send_user_list()

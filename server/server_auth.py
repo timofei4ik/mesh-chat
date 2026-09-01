@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import secrets
+import time
 
 try:
     from server.config import PASSWORD_ITERATIONS
@@ -10,6 +11,69 @@ except ModuleNotFoundError:
 
 
 class ServerAuthMixin:
+    _AUTH_WINDOW_SECONDS = 15 * 60
+    _AUTH_PAIR_LIMIT = 5
+    _AUTH_ACCOUNT_LIMIT = 30
+
+    @staticmethod
+    def _auth_bucket(kind, login, node_id=""):
+        normalized_login = str(login or "").strip().lower()
+        normalized_node = str(node_id or "").strip()
+        material = f"{kind}:{normalized_login}:{normalized_node}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def authentication_retry_after(self, login, node_id):
+        now = int(time.time())
+        buckets = (
+            self._auth_bucket("account", login),
+            self._auth_bucket("device", login, node_id),
+        )
+        retry_after = 0
+        with self.unit_of_work_factory() as unit_of_work:
+            for bucket in buckets:
+                state = unit_of_work.identity.auth_rate_limit(bucket)
+                if state and int(state[2] or 0) > now:
+                    retry_after = max(retry_after, int(state[2]) - now)
+        return retry_after
+
+    def record_authentication_failure(self, login, node_id):
+        now = int(time.time())
+        policies = (
+            (self._auth_bucket("account", login), self._AUTH_ACCOUNT_LIMIT),
+            (self._auth_bucket("device", login, node_id), self._AUTH_PAIR_LIMIT),
+        )
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            for bucket, limit in policies:
+                state = unit_of_work.identity.auth_rate_limit(bucket)
+                if not state or now - int(state[1]) >= self._AUTH_WINDOW_SECONDS:
+                    failures = 1
+                    window_started = now
+                    blocked_until = 0
+                else:
+                    failures = int(state[0]) + 1
+                    window_started = int(state[1])
+                    blocked_until = int(state[2] or 0)
+                if failures >= limit:
+                    excess = min(5, failures - limit)
+                    blocked_until = max(
+                        blocked_until,
+                        now + min(15 * 60, 30 * (2 ** excess)),
+                    )
+                unit_of_work.identity.save_auth_rate_limit(
+                    bucket,
+                    failures,
+                    window_started,
+                    blocked_until,
+                )
+
+    def clear_authentication_failures(self, login, node_id):
+        with self.unit_of_work_factory(write=True) as unit_of_work:
+            unit_of_work.identity.clear_auth_rate_limit(
+                self._auth_bucket("account", login)
+            )
+            unit_of_work.identity.clear_auth_rate_limit(
+                self._auth_bucket("device", login, node_id)
+            )
     def hash_password(
         self,
         password,
@@ -231,6 +295,46 @@ class ServerAuthMixin:
         except Exception:
             return False, "password_change_failed"
 
+        return True, "ok"
+
+    def reset_account_password(
+        self,
+        login,
+        new_password,
+        encryption_recovery,
+        encryption_public_key,
+        node_id,
+    ):
+        normalized_login = str(login or "").strip().lower()
+        new_password = str(new_password or "")
+        public_key = str(encryption_public_key or "").strip()
+        normalized_node = str(node_id or "").strip()
+        if not self.account_exists(normalized_login):
+            return False, "account_not_found"
+        if len(new_password) < 8:
+            return False, "password_too_short"
+        if len(new_password) > 256:
+            return False, "password_too_long"
+        if not self._valid_encryption_recovery(encryption_recovery):
+            return False, "invalid_encryption_recovery"
+        if not normalized_node or not public_key or len(public_key) > 256:
+            return False, "invalid_encryption_identity"
+
+        salt_hex = secrets.token_bytes(16).hex()
+        password_hash = self.hash_password(new_password, salt_hex)
+        try:
+            with self.unit_of_work_factory(write=True) as unit_of_work:
+                unit_of_work.identity.reset_credentials(
+                    normalized_login,
+                    salt_hex,
+                    password_hash,
+                    encryption_recovery,
+                    public_key,
+                    normalized_node,
+                )
+        except Exception:
+            return False, "password_reset_failed"
+        self.clear_authentication_failures(normalized_login, normalized_node)
         return True, "ok"
 
     @staticmethod

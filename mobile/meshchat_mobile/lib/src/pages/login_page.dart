@@ -33,9 +33,16 @@ class _LoginPageState extends State<LoginPage> {
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
   final codeController = TextEditingController();
+  final newPasswordController = TextEditingController();
+  final confirmPasswordController = TextEditingController();
   _AuthenticationMode mode = _AuthenticationMode.login;
   bool obscurePassword = true;
   bool acceptedRules = false;
+  bool passwordRecovery = false;
+  String resetChallengeId = '';
+  String resetNodeId = '';
+  String resetLogin = '';
+  String resetMaskedEmail = '';
 
   @override
   void initState() {
@@ -89,7 +96,83 @@ class _LoginPageState extends State<LoginPage> {
     emailController.dispose();
     passwordController.dispose();
     codeController.dispose();
+    newPasswordController.dispose();
+    confirmPasswordController.dispose();
     super.dispose();
+  }
+
+  Future<void> requestPasswordReset() async {
+    final login = loginController.text.trim();
+    if (serverController.text.trim().isEmpty || login.isEmpty) {
+      _showErrorMessage('Enter the server and your account login');
+      return;
+    }
+    final result = await widget.controller.requestPasswordReset(
+      serverUrl: serverController.text,
+      token: tokenController.text,
+      login: login,
+    );
+    if (!mounted) return;
+    if (result['ok'] != true) {
+      _showErrorMessage(result['message']?.toString() ?? 'Reset failed');
+      setState(() {});
+      return;
+    }
+    setState(() {
+      resetChallengeId = result['challenge_id']?.toString() ?? '';
+      resetNodeId = result['node_id']?.toString() ?? '';
+      resetLogin = result['login']?.toString() ?? login.toLowerCase();
+      resetMaskedEmail = result['masked_email']?.toString() ?? '';
+      codeController.clear();
+    });
+  }
+
+  Future<void> confirmPasswordReset() async {
+    final password = newPasswordController.text;
+    if (codeController.text.trim().length != 6) {
+      _showErrorMessage('Enter the 6-digit code');
+      return;
+    }
+    if (password.length < 8) {
+      _showErrorMessage('Use at least 8 characters');
+      return;
+    }
+    if (password != confirmPasswordController.text) {
+      _showErrorMessage('Passwords do not match');
+      return;
+    }
+    final result = await widget.controller.confirmPasswordReset(
+      serverUrl: serverController.text.trim(),
+      token: tokenController.text.trim(),
+      login: resetLogin,
+      nodeId: resetNodeId,
+      challengeId: resetChallengeId,
+      code: codeController.text,
+      newPassword: password,
+    );
+    if (!mounted) return;
+    if (result['ok'] != true) {
+      _showErrorMessage(result['message']?.toString() ?? 'Reset failed');
+      setState(() {});
+      return;
+    }
+    loginController.text = result['login']?.toString() ?? resetLogin;
+    passwordController.text = password;
+    setState(() {
+      passwordRecovery = false;
+      resetChallengeId = '';
+      codeController.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Password reset. Signing you in...')),
+    );
+    await submit();
+  }
+
+  void _showErrorMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red.shade700),
+    );
   }
 
   Future<void> submit() async {
@@ -210,7 +293,103 @@ class _LoginPageState extends State<LoginPage> {
       codeController.clear();
     }
     if (!mounted) return;
-    setState(() => mode = next);
+    setState(() {
+      mode = next;
+      passwordRecovery = false;
+      resetChallengeId = '';
+    });
+  }
+
+  Widget _buildPasswordRecoveryPanel(BuildContext context) {
+    final waitingForCode = resetChallengeId.isNotEmpty;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(Icons.lock_reset_rounded, size: 42),
+            const SizedBox(height: 12),
+            Text(
+              waitingForCode ? 'Create a new password' : 'Recover account',
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              waitingForCode
+                  ? 'Enter the code sent to $resetMaskedEmail.'
+                  : 'A verification code will be sent to the email linked to this account.',
+              textAlign: TextAlign.center,
+            ),
+            if (waitingForCode) ...[
+              const SizedBox(height: 14),
+              const Text(
+                'Emergency recovery creates a new encryption identity. Old encrypted history remains on devices that already have it, but cannot be unlocked on a fresh device.',
+                style: TextStyle(color: Colors.amberAccent, fontSize: 12),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: codeController,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Verification code',
+                  prefixIcon: Icon(Icons.password_outlined),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: newPasswordController,
+                obscureText: true,
+                autofillHints: const [AutofillHints.newPassword],
+                decoration: const InputDecoration(
+                  labelText: 'New password',
+                  prefixIcon: Icon(Icons.lock_outline),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: confirmPasswordController,
+                obscureText: true,
+                onSubmitted: (_) => confirmPasswordReset(),
+                decoration: const InputDecoration(
+                  labelText: 'Confirm password',
+                  prefixIcon: Icon(Icons.lock_reset),
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: widget.controller.busy ? null : confirmPasswordReset,
+                icon: const Icon(Icons.check_circle_outline),
+                label: const Text('Reset password'),
+              ),
+            ] else ...[
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: widget.controller.busy ? null : requestPasswordReset,
+                icon: const Icon(Icons.mark_email_unread_outlined),
+                label: const Text('Send recovery code'),
+              ),
+            ],
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: widget.controller.busy
+                  ? null
+                  : () => setState(() {
+                      passwordRecovery = false;
+                      resetChallengeId = '';
+                      codeController.clear();
+                    }),
+              child: const Text('Back to login'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildVerificationPanel(BuildContext context) {
@@ -359,7 +538,12 @@ class _LoginPageState extends State<LoginPage> {
                         showSelectedIcon: false,
                       ),
                       const SizedBox(height: 24),
-                      if (widget.controller.pendingEmailChallengeId.isNotEmpty)
+                      if (passwordRecovery)
+                        _buildPasswordRecoveryPanel(context)
+                      else if (widget
+                          .controller
+                          .pendingEmailChallengeId
+                          .isNotEmpty)
                         _buildVerificationPanel(context)
                       else ...[
                         TextField(
@@ -390,6 +574,19 @@ class _LoginPageState extends State<LoginPage> {
                             prefixIcon: const Icon(Icons.person_outline),
                           ),
                         ),
+                        if (mode == _AuthenticationMode.login)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: widget.controller.busy
+                                  ? null
+                                  : () => setState(() {
+                                      passwordRecovery = true;
+                                      resetChallengeId = '';
+                                    }),
+                              child: const Text('Forgot password?'),
+                            ),
+                          ),
                         if (mode == _AuthenticationMode.registration) ...[
                           const SizedBox(height: 12),
                           TextField(

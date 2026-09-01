@@ -1289,12 +1289,46 @@ class _ActiveDevicesPageState extends State<ActiveDevicesPage> {
     if (error == null) refresh();
   }
 
+  Future<void> revokeOtherDevices() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign out all other devices?'),
+        content: const Text(
+          'Every other MeshChat session will be closed and will require the account password and email code to sign in again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sign out all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final error = await widget.controller.revokeOtherActiveDevices();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(error ?? 'Other devices signed out')),
+    );
+    if (error == null) refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Active devices'),
         actions: [
+          IconButton(
+            tooltip: 'Sign out all other devices',
+            onPressed: revokeOtherDevices,
+            icon: const Icon(Icons.logout_rounded),
+          ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: refresh,

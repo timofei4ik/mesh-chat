@@ -321,4 +321,16 @@ class ServerPushMixin:
                 "cancel": True,
             }
 
+        if packet_type == "security_alert":
+            return {
+                "title": packet.get("title") or "MeshChat security",
+                "body": packet.get("message") or "New account activity",
+                "url": target_url(packet_type),
+                "packet_type": packet_type,
+                "packet_id": packet.get("packet_id") or "",
+                "tag": "meshchat-security",
+                "source_node": source_node,
+                "group_id": "",
+            }
+
         return None

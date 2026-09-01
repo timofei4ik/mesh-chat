@@ -162,7 +162,29 @@ async def handle_active_device_action(server, packet, context):
         },
     )
 
-    if not (ok and action == "revoke"):
+    if not (ok and action in {"revoke", "revoke_others"}):
+        return
+    if action == "revoke_others":
+        resolver = getattr(server, "get_realtime_account_nodes", None)
+        targets = await resolver(device_login) if callable(resolver) else []
+        for node_id in targets:
+            if node_id == context.node_id:
+                continue
+            try:
+                closer = getattr(server, "close_realtime_node", None)
+                if callable(closer):
+                    await closer(
+                        node_id,
+                        packet={
+                            "type": "server_error",
+                            "code": "device_revoked",
+                            "message": "This device session was signed out.",
+                        },
+                        code=4003,
+                        reason="device session revoked",
+                    )
+            except Exception as error:
+                print("Device session close failed:", node_id, error)
         return
     try:
         closer = getattr(server, "close_realtime_node", None)

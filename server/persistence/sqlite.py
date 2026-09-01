@@ -1,4 +1,5 @@
 import json
+import time
 from contextlib import nullcontext
 
 from .sqlite_billing import SQLiteBillingRepository
@@ -150,6 +151,104 @@ class SQLiteIdentityRepository:
             WHERE login=?
             """,
             (normalized_login,),
+        )
+
+    def reset_credentials(
+        self,
+        login,
+        password_salt,
+        password_hash,
+        encryption_recovery,
+        encryption_public_key,
+        current_node_id,
+    ):
+        normalized_login = self._login(login)
+        normalized_node = self._node(current_node_id)
+        self._connection.execute(
+            """
+            UPDATE accounts
+            SET password_salt=?,
+                password_hash=?,
+                encryption_recovery=?,
+                encryption_public_key=?,
+                node_id=?,
+                last_login=CURRENT_TIMESTAMP
+            WHERE login=?
+            """,
+            (
+                password_salt,
+                password_hash,
+                encryption_recovery,
+                encryption_public_key,
+                normalized_node,
+                normalized_login,
+            ),
+        )
+        self._connection.execute(
+            """
+            UPDATE service_sessions
+            SET revoked_at=CURRENT_TIMESTAMP
+            WHERE login=?
+            """,
+            (normalized_login,),
+        )
+        self._connection.execute(
+            """
+            UPDATE account_devices
+            SET revoked=CASE WHEN node_id=? THEN 0 ELSE 1 END,
+                online=0,
+                last_seen=CURRENT_TIMESTAMP
+            WHERE login=?
+            """,
+            (normalized_node, normalized_login),
+        )
+        self._connection.execute(
+            "DELETE FROM account_email_trusted_devices WHERE login=?",
+            (normalized_login,),
+        )
+        self.trust_email_device(normalized_login, normalized_node)
+
+    def auth_rate_limit(self, bucket):
+        return self._connection.execute(
+            """
+            SELECT failures, window_started, blocked_until
+            FROM auth_rate_limits
+            WHERE bucket=?
+            """,
+            (str(bucket or ""),),
+        ).fetchone()
+
+    def save_auth_rate_limit(
+        self,
+        bucket,
+        failures,
+        window_started,
+        blocked_until,
+    ):
+        self._connection.execute(
+            """
+            INSERT INTO auth_rate_limits(
+                bucket, failures, window_started, blocked_until, updated_at
+            ) VALUES(?,?,?,?,?)
+            ON CONFLICT(bucket) DO UPDATE SET
+                failures=excluded.failures,
+                window_started=excluded.window_started,
+                blocked_until=excluded.blocked_until,
+                updated_at=excluded.updated_at
+            """,
+            (
+                str(bucket or ""),
+                int(failures),
+                int(window_started),
+                int(blocked_until),
+                int(time.time()),
+            ),
+        )
+
+    def clear_auth_rate_limit(self, bucket):
+        self._connection.execute(
+            "DELETE FROM auth_rate_limits WHERE bucket=?",
+            (str(bucket or ""),),
         )
 
     def verified_email(self, login):
@@ -453,6 +552,18 @@ class SQLiteIdentityRepository:
                 online=0,
                 last_seen=CURRENT_TIMESTAMP
             WHERE login=? AND node_id=?
+            """,
+            (self._login(login), self._node(node_id)),
+        )
+
+    def revoke_other_account_devices(self, login, node_id):
+        self._connection.execute(
+            """
+            UPDATE account_devices
+            SET revoked=1,
+                online=0,
+                last_seen=CURRENT_TIMESTAMP
+            WHERE login=? AND node_id!=?
             """,
             (self._login(login), self._node(node_id)),
         )

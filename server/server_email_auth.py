@@ -130,6 +130,63 @@ class ServerEmailAuthMixin:
                 return normalized_candidate
         return normalized_identifier
 
+    def resolve_recovery_login(self, identifier):
+        normalized = str(identifier or "").strip().lower().lstrip("@")
+        if not normalized:
+            return ""
+        if self.account_exists(normalized):
+            return normalized
+        with self.unit_of_work_factory() as unit_of_work:
+            if self.normalize_email(normalized):
+                owner = unit_of_work.identity.email_owner(normalized)
+            else:
+                owner = unit_of_work.identity.public_username_owner(normalized)
+        return str(owner or "").strip().lower()
+
+    async def request_password_reset(self, identifier, node_id):
+        login = self.resolve_recovery_login(identifier)
+        email = self.account_email(login) if login else ""
+        if not login or not email:
+            return None, "account_recovery_unavailable"
+        challenge, reason = await self.issue_email_challenge_async(
+            login,
+            node_id,
+            email,
+            "password_reset",
+        )
+        if not challenge:
+            return None, reason
+        return {**challenge, "login": login}, "ok"
+
+    def confirm_password_reset(
+        self,
+        login,
+        node_id,
+        challenge_id,
+        code,
+        new_password,
+        encryption_recovery,
+        encryption_public_key,
+    ):
+        normalized_login = self.resolve_recovery_login(login)
+        ok, reason, _ = self.verify_email_challenge(
+            challenge_id,
+            normalized_login,
+            node_id,
+            code,
+            "password_reset",
+        )
+        if not ok:
+            return False, reason, normalized_login
+        ok, reason = self.reset_account_password(
+            normalized_login,
+            new_password,
+            encryption_recovery,
+            encryption_public_key,
+            node_id,
+        )
+        return ok, reason, normalized_login
+
     def is_email_device_trusted(self, login, node_id):
         with self.unit_of_work_factory() as unit_of_work:
             return unit_of_work.identity.is_email_device_trusted(
@@ -244,6 +301,8 @@ class ServerEmailAuthMixin:
         return challenge, "ok"
 
     def verify_email_challenge(self, challenge_id, login, node_id, code, purpose):
+        if self.authentication_retry_after(login, node_id) > 0:
+            return False, "too_many_attempts", ""
         with self.unit_of_work_factory() as unit_of_work:
             challenge = unit_of_work.identity.email_challenge(
                 challenge_id,
@@ -271,16 +330,22 @@ class ServerEmailAuthMixin:
                 unit_of_work.identity.increment_email_challenge_attempts(
                     challenge_id
                 )
+            self.record_authentication_failure(login, node_id)
             return False, "invalid_code", ""
         with self.unit_of_work_factory(write=True) as unit_of_work:
             unit_of_work.identity.consume_email_challenge(challenge_id)
+        self.clear_authentication_failures(login, node_id)
         return True, "ok", challenge["email"]
 
     def send_email_verification_code(self, email, code, purpose):
         if not SMTP_HOST or not SMTP_FROM_EMAIL:
             raise RuntimeError("SMTP is not configured")
         message = EmailMessage()
-        message["Subject"] = "MeshChat verification code"
+        message["Subject"] = (
+            "Reset your MeshChat password"
+            if purpose == "password_reset"
+            else "MeshChat verification code"
+        )
         message["From"] = formataddr(
             (SMTP_FROM_NAME or "MeshChat", SMTP_FROM_EMAIL)
         )
@@ -292,6 +357,8 @@ class ServerEmailAuthMixin:
         action = "finish registration" if purpose == "registration" else "confirm this device"
         if purpose == "binding":
             action = "bind this email to your MeshChat account"
+        elif purpose == "password_reset":
+            action = "reset your MeshChat password"
         message.set_content(
             f"Your MeshChat code is: {code}\n\nUse it to {action}. "
             f"The code expires in {EMAIL_2FA_CODE_TTL_SECONDS // 60} minutes.\n\n"

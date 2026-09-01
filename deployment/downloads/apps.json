@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 39,
-  "updatedAt": "2026-08-31T00:00:00Z",
+  "catalogVersion": 40,
+  "updatedAt": "2026-09-01T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-account-recovery-1-0-92",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Account recovery and session protection",
+      "summary": "Reset a forgotten password with an email code, review active sessions, sign out other devices and receive an alert when a new device signs in. Recovery codes and suspicious attempts are protected by persistent rate limits.",
+      "publishedAt": "2026-09-01"
+    },
     {
       "id": "meshchat-reliable-sign-in-1-0-91",
       "appId": "meshchat",
@@ -68,7 +76,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.91",
+      "version": "1.0.92",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -81,15 +89,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 194,
+      "build": 195,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-08-31T00:00:00Z",
+      "updated_at": "2026-09-01T00:00:00Z",
       "release": {
-        "title": "Reliable sign-in",
-        "publishedAt": "2026-08-31",
-        "notes": ["Login and registration are separate flows", "Email verification remains available after switching apps or restarting MeshChat", "The verification button confirms the existing challenge instead of requesting another email", "Resend cooldown keeps the active verification code usable", "Unverified registrations are never restored as authenticated sessions", "Existing saved accounts remain compatible"]
+        "title": "Account recovery and protection",
+        "publishedAt": "2026-09-01",
+        "notes": ["Forgotten passwords can be reset with a code sent to the linked email", "A normal password change keeps the existing encrypted message identity", "Emergency recovery creates a fresh encrypted identity and clearly explains access to old history", "Active sessions can be reviewed and all other devices can be signed out", "New-device sign-ins generate an in-app security alert and push notification", "Recovery requests and verification attempts use persistent rate limits"]
       }
     },
     {

@@ -38,6 +38,32 @@ class IdentityRepository(Protocol):
     ) -> None:
         ...
 
+    def reset_credentials(
+        self,
+        login: str,
+        password_salt: str,
+        password_hash: str,
+        encryption_recovery: str,
+        encryption_public_key: str,
+        current_node_id: str,
+    ) -> None:
+        ...
+
+    def auth_rate_limit(self, bucket: str):
+        ...
+
+    def save_auth_rate_limit(
+        self,
+        bucket: str,
+        failures: int,
+        window_started: int,
+        blocked_until: int,
+    ) -> None:
+        ...
+
+    def clear_auth_rate_limit(self, bucket: str) -> None:
+        ...
+
     def verified_email(self, login: str) -> str:
         ...
 
@@ -108,6 +134,9 @@ class IdentityRepository(Protocol):
         ...
 
     def revoke_account_device(self, login: str, node_id: str) -> None:
+        ...
+
+    def revoke_other_account_devices(self, login: str, node_id: str) -> None:
         ...
 
     def rename_account_device(

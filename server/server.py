@@ -212,14 +212,31 @@ class MeshRelayServer(
                 "code": "account_already_exists",
                 "message": "This login is already registered",
             }, ""
-        if account_exists and not await self.verify_account_password_async(
+        retry_after = self.authentication_retry_after(
             normalized_login,
-            password,
-        ):
+            node_id,
+        )
+        if account_exists and retry_after > 0:
+            return False, {
+                "code": "authentication_rate_limited",
+                "message": "Too many sign-in attempts. Try again later.",
+                "retry_after": retry_after,
+            }, ""
+        password_matches = (
+            not account_exists
+            or await self.verify_account_password_async(
+                normalized_login,
+                password,
+            )
+        )
+        if account_exists and not password_matches:
+            self.record_authentication_failure(normalized_login, node_id)
             return False, {
                 "code": "authentication_failed",
                 "message": "bad login or password",
             }, ""
+        if account_exists:
+            self.clear_authentication_failures(normalized_login, node_id)
 
         if not supports_email_2fa and EMAIL_2FA_LEGACY_CLIENTS_ALLOWED:
             return True, None, ""
