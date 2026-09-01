@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 40,
+  "catalogVersion": 41,
   "updatedAt": "2026-09-01T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-fixed-dark-interface-1-0-93",
+      "appId": "meshchat",
+      "badge": "Fix",
+      "title": "Readable Liquid Glass controls",
+      "summary": "MeshChat now consistently uses its intended dark interface, including on older installations that had a light-theme preference saved. Inactive Liquid Glass buttons and segmented controls remain clearly readable.",
+      "publishedAt": "2026-09-01"
+    },
     {
       "id": "meshchat-account-recovery-1-0-92",
       "appId": "meshchat",
@@ -76,7 +84,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.92",
+      "version": "1.0.93",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -89,15 +97,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 195,
+      "build": 196,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
       "updated_at": "2026-09-01T00:00:00Z",
       "release": {
-        "title": "Account recovery and protection",
+        "title": "Liquid Glass readability fix",
         "publishedAt": "2026-09-01",
-        "notes": ["Forgotten passwords can be reset with a code sent to the linked email", "A normal password change keeps the existing encrypted message identity", "Emergency recovery creates a fresh encrypted identity and clearly explains access to old history", "Active sessions can be reviewed and all other devices can be signed out", "New-device sign-ins generate an in-app security alert and push notification", "Recovery requests and verification attempts use persistent rate limits"]
+        "notes": ["MeshChat always uses the dark theme intended by its current interface", "Old saved light-theme preferences no longer affect the app", "Inactive Liquid Glass buttons and segmented controls use readable foreground colors", "Selected and disabled control states retain clear contrast"]
       }
     },
     {

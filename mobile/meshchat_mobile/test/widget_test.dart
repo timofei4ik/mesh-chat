@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meshchat_mobile/src/app.dart';
 import 'package:meshchat_mobile/src/controllers/app_controller.dart';
 import 'package:meshchat_mobile/src/pages/login_page.dart';
 
 void main() {
+  test('uses the dark theme for the fixed dark interface', () {
+    expect(meshChatThemeMode, ThemeMode.dark);
+  });
+
   testWidgets('shows the MeshChat login screen', (tester) async {
     await tester.pumpWidget(
       MaterialApp(home: LoginPage(controller: AppController())),

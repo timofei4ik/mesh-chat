@@ -9,6 +9,8 @@ import 'services/platform_capabilities.dart';
 import 'widgets/mesh_liquid_glass.dart';
 import 'widgets/mesh_performance_scope.dart';
 
+const meshChatThemeMode = ThemeMode.dark;
+
 class MeshChatApp extends StatefulWidget {
   const MeshChatApp({
     super.key,
@@ -66,7 +68,11 @@ class _MeshChatAppState extends State<MeshChatApp> {
             child: MaterialApp(
               debugShowCheckedModeBanner: false,
               title: 'MeshChat',
-              themeMode: settings.themeMode,
+              // MeshChat's current surfaces are intentionally dark. Older
+              // installs may still have the removed light-theme preference in
+              // storage, which makes inactive controls unreadable on native
+              // Liquid Glass.
+              themeMode: meshChatThemeMode,
               theme: _theme(settings.accentColor, Brightness.light),
               darkTheme: _theme(settings.accentColor, Brightness.dark),
               home: ValueListenableBuilder<_RootStage>(
@@ -123,12 +129,26 @@ class _MeshChatAppState extends State<MeshChatApp> {
 
   ThemeData _theme(Color accent, Brightness brightness) {
     final dark = brightness == Brightness.dark;
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: accent,
+      brightness: brightness,
+    );
+    final controlForeground = dark
+        ? const Color(0xFFE6EEF7)
+        : colorScheme.onSurface;
+    Color? buttonForeground(Set<WidgetState> states) {
+      if (states.contains(WidgetState.disabled)) {
+        return controlForeground.withValues(alpha: 0.38);
+      }
+      if (states.contains(WidgetState.selected)) {
+        return dark ? Colors.white : colorScheme.onSecondaryContainer;
+      }
+      return controlForeground;
+    }
+
     return ThemeData(
       brightness: brightness,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: accent,
-        brightness: brightness,
-      ),
+      colorScheme: colorScheme,
       scaffoldBackgroundColor: dark ? const Color(0xFF17191D) : null,
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? const Color(0xFF20242B) : null,
@@ -152,6 +172,26 @@ class _MeshChatAppState extends State<MeshChatApp> {
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(8)),
         ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.resolveWith(buttonForeground),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.resolveWith(buttonForeground),
+        ),
+      ),
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.resolveWith(buttonForeground),
+        ),
+      ),
+      toggleButtonsTheme: ToggleButtonsThemeData(
+        color: controlForeground,
+        selectedColor: Colors.white,
+        disabledColor: controlForeground.withValues(alpha: 0.38),
       ),
     );
   }

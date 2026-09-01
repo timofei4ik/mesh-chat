@@ -20,7 +20,7 @@ typedef DeliveryTraceHandler =
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
-  static const appVersion = '1.0.92';
+  static const appVersion = '1.0.93';
 
   MeshSocket({
     MutationOutboxStore? outboxStore,
