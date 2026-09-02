@@ -38,12 +38,13 @@ import '../widgets/message_send_effect.dart';
 import '../widgets/profile_avatar.dart';
 import 'chat_media_page.dart';
 import 'ai_editor_sheet.dart';
+import 'document_scanner_page.dart';
 import 'group_info_page.dart';
 import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, file, sticker, poll, shareLocation }
+enum _AttachAction { photo, scan, file, sticker, poll, shareLocation }
 
 class _ScheduleDraft {
   const _ScheduleDraft({
@@ -951,10 +952,32 @@ class _ChatPageState extends State<ChatPage>
     );
     if (image == null) return;
     final bytes = await image.readAsBytes();
+    if (!mounted) return;
     final filename = image.name.trim().isEmpty
         ? 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg'
         : image.name;
-    await sendAttachment(filename, bytes);
+    final result = await Navigator.of(context).push<ScannedAttachment>(
+      meshPageRoute<ScannedAttachment>(
+        builder: (_) => DocumentScannerPage(
+          photoEditor: true,
+          initialImages: [ScannerImageInput(name: filename, bytes: bytes)],
+        ),
+        fullWidthSlide: true,
+      ),
+    );
+    if (result == null || !mounted) return;
+    await sendAttachment(result.fileName, result.bytes);
+  }
+
+  Future<void> scanDocument() async {
+    final result = await Navigator.of(context).push<ScannedAttachment>(
+      meshPageRoute<ScannedAttachment>(
+        builder: (_) => const DocumentScannerPage(),
+        fullWidthSlide: true,
+      ),
+    );
+    if (result == null || !mounted) return;
+    await sendAttachment(result.fileName, result.bytes);
   }
 
   Future<void> showStickerPanel() async {
@@ -1493,6 +1516,12 @@ class _ChatPageState extends State<ChatPage>
                     onTap: () => Navigator.pop(context, _AttachAction.photo),
                   ),
                   _GlassSheetAction(
+                    icon: Icons.document_scanner_rounded,
+                    title: 'Scan document',
+                    subtitle: 'Align, enhance and send as an image or PDF',
+                    onTap: () => Navigator.pop(context, _AttachAction.scan),
+                  ),
+                  _GlassSheetAction(
                     icon: Icons.attach_file_rounded,
                     title: 'File',
                     subtitle: 'Choose any document',
@@ -1528,6 +1557,8 @@ class _ChatPageState extends State<ChatPage>
     );
     if (action == _AttachAction.photo) {
       await attachPhoto();
+    } else if (action == _AttachAction.scan) {
+      await scanDocument();
     } else if (action == _AttachAction.file) {
       await attachFile();
     } else if (action == _AttachAction.sticker) {
