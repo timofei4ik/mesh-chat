@@ -9,7 +9,7 @@
       "appId": "meshchat",
       "badge": "Release",
       "title": "Group audio and shared call captions",
-      "summary": "Updated group calls connect up to eight devices with audio between participants. MeshPro can start shared captions; each participant chooses whether to share their speech for recognition. Delivery, reconnect handling and caption synchronization have also been improved. Update every device before testing the new group calls.",
+      "summary": "Group calls now connect up to eight devices with audio between participants and can continue after the initiator leaves. MeshPro can start captions visible to everyone, with individual consent before speech recognition and a choice of translation language. Reconnect handling, pending-message recovery, caption synchronization and photo editing have also been improved. Update all participants before using the new group calls.",
       "publishedAt": "2026-09-06"
     },
     {
@@ -113,7 +113,17 @@
       "release": {
         "title": "Group calls and shared captions",
         "publishedAt": "2026-09-06",
-        "notes": ["Group audio connects up to eight invited devices; update all participants", "MeshPro starts shared captions, with individual consent before speech recognition", "Caption sessions and translation requests are synchronized across server workers", "Live-caption usage is counted in audio seconds", "Improved delivery recovery, reconnect handling and protection against stale call events"]
+        "notes": [
+          "Group calls connect up to eight invited devices with audio between participants; update every participant",
+          "A group conversation can continue between connected participants after the initiator leaves",
+          "MeshPro can start shared captions visible to everyone; each participant chooses whether their speech is sent for recognition",
+          "Participants can choose speech and translation languages and stop sharing their own speech",
+          "Caption updates preserve speaker identity and translations; delayed updates cannot leak into another call",
+          "Live-caption usage is counted in actual audio seconds instead of charging a full minute for each short chunk",
+          "Improved reconnect handling and pending-message recovery, with protection against stale acknowledgements and call events",
+          "Group signaling checks current membership and routes to the intended device",
+          "Photo alignment is more responsive and handles very small images correctly"
+        ]
       }
     },
     {
