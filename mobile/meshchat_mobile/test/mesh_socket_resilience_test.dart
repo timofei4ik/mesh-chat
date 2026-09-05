@@ -65,6 +65,219 @@ void main() {
     expect(socket.isConnected, isTrue);
   });
 
+  test(
+    'recovery hints coalesce and ACK only the persisted sync cursor',
+    () async {
+      var requests = 0;
+      final acknowledged = Completer<void>();
+      final client = MeshSocket();
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          expect(packet['supports_reliable_sync_v2'], isTrue);
+          socket.add(jsonEncode(_welcomePacket()));
+          for (var i = 0; i < 3; i++) {
+            socket.add(
+              jsonEncode({'type': 'reliable_sync_hint', 'cursor': 10}),
+            );
+          }
+        } else if (packet['type'] == 'reliable_sync_request') {
+          requests++;
+          expect(packet['cursor'], 0);
+          socket.add(
+            jsonEncode({'type': 'server_sync_done', 'sync_cursor': 10}),
+          );
+          socket.add(jsonEncode({'type': 'reliable_sync_hint', 'cursor': 10}));
+        } else if (packet['type'] == 'sync_v2_ack') {
+          expect(packet['cursor'], 10);
+          if (!acknowledged.isCompleted) acknowledged.complete();
+        }
+      });
+      addTearDown(server.close);
+      addTearDown(client.close);
+      await client.connect(
+        session: _session(server.url, 'recovery-hint'),
+        publicKey: 'public-key',
+        profile: _profile('recovery-hint'),
+        onStatus: (_) {},
+        onPacket: (packet) async {
+          if (packet['type'] == 'server_sync_done') {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+            client.updateSyncCursor(10);
+          }
+        },
+      );
+      await acknowledged.future.timeout(const Duration(seconds: 2));
+      expect(requests, 1);
+    },
+  );
+
+  test('failed checkpoint never acknowledges the hinted cursor', () async {
+    var acknowledgements = 0;
+    final handled = Completer<void>();
+    final client = MeshSocket();
+    final server = await _LocalWebSocketServer.start((socket, packet) {
+      if (packet['type'] == 'server_hello') {
+        socket.add(jsonEncode(_welcomePacket()));
+        socket.add(jsonEncode({'type': 'reliable_sync_hint', 'cursor': 10}));
+      } else if (packet['type'] == 'reliable_sync_request') {
+        socket.add(jsonEncode({'type': 'server_sync_done', 'sync_cursor': 10}));
+        socket.add(jsonEncode({'type': 'reliable_sync_hint', 'cursor': 10}));
+      } else if (packet['type'] == 'sync_v2_ack') {
+        acknowledgements++;
+      }
+    });
+    addTearDown(server.close);
+    addTearDown(client.close);
+    await client.connect(
+      session: _session(server.url, 'recovery-failure'),
+      publicKey: 'public-key',
+      profile: _profile('recovery-failure'),
+      onStatus: (_) {},
+      onPacket: (packet) {
+        if (packet['type'] == 'server_sync_done') {
+          handled.complete();
+          throw StateError('checkpoint failed');
+        }
+      },
+    );
+    await handled.future.timeout(const Duration(seconds: 2));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(acknowledgements, 0);
+  });
+
+  test(
+    'retained delivery is applied once and acknowledged on every retry',
+    () async {
+      final deliveryId = List.filled(64, 'a').join();
+      var acknowledgements = 0;
+      var applications = 0;
+      final received = Completer<void>();
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          expect(packet['supports_reliable_delivery_v1'], isTrue);
+          socket.add(jsonEncode(_welcomePacket()));
+          for (var i = 0; i < 3; i++) {
+            socket.add(
+              jsonEncode({
+                'type': 'chat_message',
+                '_delivery_id': deliveryId,
+                'message': 'delivery test',
+              }),
+            );
+          }
+        } else if (packet['type'] == 'reliable_delivery_ack') {
+          expect(packet['delivery_id'], deliveryId);
+          if (++acknowledgements == 3) received.complete();
+        }
+      });
+      addTearDown(server.close);
+      final socket = MeshSocket();
+      addTearDown(socket.close);
+      await socket.connect(
+        session: _session(server.url, 'retained'),
+        publicKey: 'public-key',
+        profile: _profile('retained'),
+        onPacket: (packet) {
+          if (packet['type'] == 'chat_message') applications++;
+        },
+        onStatus: (_) {},
+      );
+      await received.future.timeout(const Duration(seconds: 2));
+      expect(applications, 1);
+    },
+  );
+
+  test(
+    'failed packet application is not acknowledged and can be retried',
+    () async {
+      final deliveryId = List.filled(64, 'b').join();
+      var attempts = 0;
+      var acknowledgements = 0;
+      final received = Completer<void>();
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          socket.add(jsonEncode(_welcomePacket()));
+          for (var i = 0; i < 2; i++) {
+            socket.add(
+              jsonEncode({'type': 'chat_message', '_delivery_id': deliveryId}),
+            );
+          }
+        } else if (packet['type'] == 'reliable_delivery_ack') {
+          acknowledgements++;
+          if (!received.isCompleted) received.complete();
+        }
+      });
+      addTearDown(server.close);
+      final socket = MeshSocket();
+      addTearDown(socket.close);
+      await socket.connect(
+        session: _session(server.url, 'retained-failure'),
+        publicKey: 'public-key',
+        profile: _profile('retained-failure'),
+        onPacket: (packet) {
+          if (packet['type'] == 'chat_message' && ++attempts == 1) {
+            throw StateError('storage unavailable');
+          }
+        },
+        onStatus: (_) {},
+      );
+      await received.future.timeout(const Duration(seconds: 2));
+      expect(attempts, 2);
+      expect(acknowledgements, 1);
+    },
+  );
+
+  test(
+    'pending durable write cannot send through a different account',
+    () async {
+      final received = <Map<String, dynamic>>[];
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          socket.add(jsonEncode(_welcomePacket()));
+        } else if (packet['type'] == 'chat_message') {
+          received.add(packet);
+        }
+      });
+      addTearDown(server.close);
+      final gate = Completer<void>();
+      final store = _DelayedMutationOutboxStore(gate.future);
+      final socket = MeshSocket(outboxStore: store);
+      addTearDown(socket.close);
+      final first = _session(server.url, 'switch-first');
+      final second = _session(server.url, 'switch-second');
+      Future<void> connect(Session session) async {
+        final welcome = Completer<void>();
+        await socket.connect(
+          session: session,
+          publicKey: 'public-key',
+          profile: _profile(session.login),
+          onPacket: (packet) {
+            if (packet['type'] == 'server_welcome') welcome.complete();
+          },
+          onStatus: (_) {},
+        );
+        await welcome.future.timeout(const Duration(seconds: 2));
+      }
+
+      await connect(first);
+      socket.send(_chatPacket(first, 'old-account-message'));
+      await store.started.future.timeout(const Duration(seconds: 2));
+      await connect(second);
+      gate.complete();
+      await _waitUntilAsync(
+        () async => (await store.load(first)).isNotEmpty,
+        timeout: const Duration(seconds: 2),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(received, isEmpty);
+      expect(await store.load(second), isEmpty);
+      expect(
+        (await store.load(first)).single.state,
+        MutationOutboxState.queued,
+      );
+    },
+  );
+
   test('a socket without welcome is closed and reconnected', () async {
     final server = await _LocalWebSocketServer.start((_, _) {});
     addTearDown(server.close);
@@ -90,6 +303,147 @@ void main() {
     expect(statuses, contains('Connection timeout'));
     expect(statuses.where((status) => status == 'Connecting...').length, 2);
   });
+
+  test(
+    'disk write failure is visible and never sends an untracked message',
+    () async {
+      var messagePackets = 0;
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          socket.add(jsonEncode(_welcomePacket()));
+        } else if (packet['type'] == 'chat_message') {
+          messagePackets++;
+        }
+      });
+      addTearDown(server.close);
+      final socket = MeshSocket(outboxStore: _FailingMutationOutboxStore());
+      addTearDown(socket.close);
+      final session = _session(server.url, 'disk-full');
+      final welcome = Completer<void>();
+      final failure = Completer<Map<String, dynamic>>();
+      await socket.connect(
+        session: session,
+        publicKey: 'public-key',
+        profile: _profile('disk-full'),
+        onPacket: (packet) {
+          if (packet['type'] == 'server_welcome') welcome.complete();
+          if (packet['type'] == 'mutation_ack') failure.complete(packet);
+        },
+        onStatus: (_) {},
+      );
+      await welcome.future.timeout(const Duration(seconds: 2));
+      socket.send(_chatPacket(session, 'disk-full-message'));
+      final result = await failure.future.timeout(const Duration(seconds: 2));
+      expect(result['ok'], isFalse);
+      expect(result['operation_complete'], isTrue);
+      expect(result['reason'], 'local_outbox_unavailable');
+      expect(messagePackets, 0);
+    },
+  );
+
+  test('file upload window does not grow without acknowledgements', () async {
+    var chunks = 0;
+    final server = await _LocalWebSocketServer.start((socket, packet) {
+      if (packet['type'] == 'server_hello') {
+        socket.add(jsonEncode(_welcomePacket()));
+      } else if (packet['type'] == 'file_chunk') {
+        chunks++;
+      }
+    });
+    addTearDown(server.close);
+    final store = FileTransferOutboxStore(
+      databaseName: 'file_window_test.db',
+      payloadStore: _MemoryFileTransferPayloadStore(),
+    );
+    final socket = MeshSocket(fileTransferStore: store);
+    addTearDown(socket.close);
+    final session = _session(server.url, 'window');
+    final welcome = Completer<void>();
+    await socket.connect(
+      session: session,
+      publicKey: 'public-key',
+      profile: _profile('window'),
+      onPacket: (packet) {
+        if (packet['type'] == 'server_welcome') welcome.complete();
+      },
+      onStatus: (_) {},
+    );
+    await welcome.future.timeout(const Duration(seconds: 2));
+    await socket.queueFileTransfer(
+      transferId: 'window-transfer',
+      operationId: 'file_transfer:window-file',
+      bytes: Uint8List(MeshSocket.fileTransferChunkBytes * 6),
+      packet: {
+        'type': 'file_chunk',
+        'file_id': 'window-file',
+        'source_node': session.nodeId,
+        'destination_node': 'peer-node',
+      },
+    );
+    await _waitUntil(() => chunks >= 4, timeout: const Duration(seconds: 2));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await socket.flushFileTransfers();
+    await socket.flushFileTransfers();
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(chunks, 4);
+  });
+
+  test(
+    'file read finishing after account switch cannot use the new socket',
+    () async {
+      var chunks = 0;
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          socket.add(jsonEncode(_welcomePacket()));
+        }
+        if (packet['type'] == 'file_chunk') chunks++;
+      });
+      addTearDown(server.close);
+      final payloads = _DelayedFileTransferPayloadStore();
+      final store = FileTransferOutboxStore(
+        databaseName: 'file_account_switch.db',
+        payloadStore: payloads,
+      );
+      final socket = MeshSocket(fileTransferStore: store);
+      addTearDown(socket.close);
+      final first = _session(server.url, 'file-switch-first');
+      final second = _session(server.url, 'file-switch-second');
+      Future<void> connect(Session session) async {
+        final welcome = Completer<void>();
+        await socket.connect(
+          session: session,
+          publicKey: 'public-key',
+          profile: _profile(session.login),
+          onPacket: (packet) {
+            if (packet['type'] == 'server_welcome') welcome.complete();
+          },
+          onStatus: (_) {},
+        );
+        await welcome.future.timeout(const Duration(seconds: 2));
+      }
+
+      await connect(first);
+      final sending = socket.queueFileTransfer(
+        transferId: 'old-transfer',
+        operationId: 'file_transfer:old-file',
+        bytes: Uint8List(1024),
+        packet: {
+          'type': 'file_chunk',
+          'file_id': 'old-file',
+          'source_node': first.nodeId,
+          'destination_node': 'peer-node',
+        },
+      );
+      await payloads.started.future.timeout(const Duration(seconds: 2));
+      await connect(second);
+      payloads.gate.complete();
+      await sending.timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(chunks, 0);
+      expect(await store.load(second), isEmpty);
+      expect((await store.load(first)).single.isComplete, isFalse);
+    },
+  );
 
   test(
     'accepted mutation is reconciled after restart without duplicate send',
@@ -557,11 +911,20 @@ class _DelayedMutationOutboxStore extends MutationOutboxStore {
   _DelayedMutationOutboxStore(this.gate);
 
   final Future<void> gate;
+  final started = Completer<void>();
 
   @override
   Future<void> put(Session session, MutationOutboxEntry entry) async {
+    if (!started.isCompleted) started.complete();
     await gate;
     await super.put(session, entry);
+  }
+}
+
+class _FailingMutationOutboxStore extends MutationOutboxStore {
+  @override
+  Future<void> put(Session session, MutationOutboxEntry entry) async {
+    throw const FileSystemException('No space left');
   }
 }
 
@@ -596,5 +959,17 @@ class _MemoryFileTransferPayloadStore extends FileTransferPayloadStore {
   @override
   Future<void> delete(String reference) async {
     payloads.remove(reference);
+  }
+}
+
+class _DelayedFileTransferPayloadStore extends _MemoryFileTransferPayloadStore {
+  final started = Completer<void>();
+  final gate = Completer<void>();
+
+  @override
+  Future<Uint8List> readChunk(String reference, int offset, int length) async {
+    if (!started.isCompleted) started.complete();
+    await gate.future;
+    return super.readChunk(reference, offset, length);
   }
 }

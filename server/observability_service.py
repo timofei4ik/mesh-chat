@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import json
+from collections import Counter
+from redis.exceptions import ResponseError
 
 from aiohttp import web
 
 from server.redis_client import create_async_redis, warm_async_redis
+from server.runtime_metrics import RuntimeMetrics
 
 
 class MeshMetrics:
@@ -17,6 +21,7 @@ class MeshMetrics:
         self.prefix = str(prefix or "meshchat").strip()
         self.redis = None
         self.started_at = time.time()
+        self.worker_samples = {}
 
     async def start(self):
         self.redis = create_async_redis(
@@ -38,6 +43,8 @@ class MeshMetrics:
 
     async def collect(self):
         redis_up = 1
+        runtime = Counter()
+        self.worker_samples = {}
         try:
             await self.redis.ping()
             clients, services, workers, signaling = await asyncio.gather(
@@ -64,18 +71,44 @@ class MeshMetrics:
                 self.redis.zcard(active_calls_key),
                 self.redis.xlen(f"{self.prefix}:call:signals"),
             )
-            groups = await self.redis.xinfo_groups(
-                f"{self.prefix}:call:signals"
-            )
+            try:
+                groups = await self.redis.xinfo_groups(f"{self.prefix}:call:signals")
+            except ResponseError as error:
+                if "no such key" not in str(error).lower():
+                    raise
+                groups = []
             call_pending = sum(
                 int(group.get("pending") or 0)
                 for group in groups
             )
+            allowed = set(RuntimeMetrics().snapshot()) | {
+                "delivery_queue_depth", "delivery_oldest_seconds",
+                "delivery_intent_accounts", "delivery_intent_oldest_seconds",
+            }
+            async for key in self.redis.scan_iter(
+                    match=f"{self.prefix}:worker:metrics:*", count=100):
+                values = await self.redis.hgetall(key)
+                worker = key.removeprefix(f"{self.prefix}:worker:metrics:")
+                self.worker_samples[worker] = {
+                    name: float(raw) for name, raw in values.items() if name in allowed
+                }
+                for name, raw in values.items():
+                    if name not in allowed:
+                        continue
+                    value = float(raw)
+                    if name in {"event_loop_lag_seconds", "delivery_queue_depth", "delivery_oldest_seconds",
+                                "delivery_intent_accounts", "delivery_intent_oldest_seconds"}:
+                        runtime[name] = max(runtime[name], value)
+                    else:
+                        runtime[name] += value
         except Exception:
             redis_up = 0
             clients = services = workers = signaling = 0
             active_calls = signal_entries = call_pending = 0
+            runtime.clear()
+            self.worker_samples.clear()
         return {
+            **runtime,
             "redis_up": redis_up,
             "connected_clients": clients,
             "connected_services": services,
@@ -102,14 +135,36 @@ class MeshMetrics:
         }
         lines = []
         for name, value in values.items():
+            if name in RuntimeMetrics.COUNTERS:
+                continue
+            if "_seconds_bucket_" in name or name.endswith(("_seconds_count", "_seconds_sum")):
+                continue
             metric = f"meshchat_{name}"
             lines.extend(
                 [
-                    f"# HELP {metric} {descriptions[name]}",
+                    f"# HELP {metric} {descriptions.get(name, name.replace('_', ' '))}",
                     f"# TYPE {metric} gauge",
                     f"{metric} {value}",
                 ]
             )
+        for name in sorted(RuntimeMetrics.COUNTERS):
+            metric = f"meshchat_{name}"
+            lines.append(f"# TYPE {metric} counter")
+            for worker, sample in self.worker_samples.items():
+                lines.append(f'{metric}{{worker={json.dumps(worker)}}} {sample.get(name, 0)}')
+        # Separate worker labels preserve reset detection when just one process restarts.
+        for name in RuntimeMetrics.TIMINGS:
+            metric = f"meshchat_{name}_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            for worker, sample in self.worker_samples.items():
+                label = f'worker={json.dumps(worker)}'
+                for upper in RuntimeMetrics.BUCKETS:
+                    value = sample.get(f"{name}_seconds_bucket_{upper}", 0)
+                    lines.append(f'{metric}_bucket{{{label},le="{upper}"}} {value}')
+                count = sample.get(f"{name}_seconds_count", 0)
+                lines.append(f'{metric}_bucket{{{label},le="+Inf"}} {count}')
+                lines.append(f'{metric}_count{{{label}}} {count}')
+                lines.append(f'{metric}_sum{{{label}}} {sample.get(f"{name}_seconds_sum", 0)}')
         return "\n".join(lines) + "\n"
 
 

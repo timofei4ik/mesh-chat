@@ -893,6 +893,29 @@ class ServerStorageMixin:
 
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS call_caption_sessions(
+                call_id TEXT PRIMARY KEY,
+                sponsor_node TEXT NOT NULL UNIQUE,
+                group_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                expires_at BIGINT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS call_caption_members(
+                call_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                consent INTEGER NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(call_id, node_id),
+                FOREIGN KEY(call_id) REFERENCES call_caption_sessions(call_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS meshpro_usage(
                 login TEXT NOT NULL,
                 feature_id TEXT NOT NULL,
@@ -1759,6 +1782,7 @@ class ServerStorageMixin:
             or not normalized_feature
             or not normalized_period
             or normalized_limit <= 0
+            or normalized_amount > normalized_limit
         ):
             return False
         cursor = self.db.execute(

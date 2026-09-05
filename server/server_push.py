@@ -135,7 +135,8 @@ class ServerPushMixin:
                     self.web_push_subscriptions_for_node(target_node)
                 ):
                     try:
-                        webpush(
+                        await asyncio.to_thread(
+                            webpush,
                             subscription_info=subscription,
                             data=json.dumps(
                                 notification,

@@ -55,5 +55,29 @@ void main() {
     expect(find.text('Send image'), findsOneWidget);
     expect(find.text('Add the first page'), findsNothing);
     expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('Align'));
+    await _finishProcessing(tester);
+    expect(find.text('Align document'), findsOneWidget);
+    await tester.tap(find.text('Apply alignment'));
+    await _finishProcessing(tester);
+    expect(find.text('Align document'), findsNothing);
+    expect(find.text('Photo editor'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
+}
+
+Future<void> _finishProcessing(WidgetTester tester) async {
+  // Isolate work needs real time; pumpAndSettle alone only advances fake time.
+  for (var attempt = 0; attempt < 60; attempt++) {
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    if (find.byType(CircularProgressIndicator).evaluate().isEmpty &&
+        !tester.binding.hasScheduledFrame) {
+      return;
+    }
+  }
+  fail('Image processing did not finish');
 }

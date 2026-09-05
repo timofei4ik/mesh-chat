@@ -2,6 +2,7 @@ import asyncio
 import base64
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -469,6 +470,39 @@ class SubscriptionTests(unittest.TestCase):
             (self.relay.routed_packets[0]["packet_id"],),
         ).fetchone()
         self.assertEqual(("survives-restart",), stored)
+
+    def test_scheduled_retry_after_delivery_failure_does_not_duplicate_history(self):
+        self.relay.grant_subscription("subscriber", days=7)
+        ok, reason, item = self.relay.create_scheduled_message(
+            "subscriber-node",
+            {
+                "send_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                "payloads": [{
+                    "type": "chat_message",
+                    "source_node": "subscriber-node",
+                    "destination_node": "friend-node",
+                    "message": "retry-once",
+                }],
+            },
+        )
+        self.assertTrue(ok, reason)
+        self.relay.db.execute(
+            "UPDATE scheduled_messages SET next_run_at=DATETIME('now', '-1 second') "
+            "WHERE schedule_id=?", (item["schedule_id"],),
+        )
+        self.relay.db.commit()
+        route = self.relay.route_packet
+        self.relay.route_packet = AsyncMock(side_effect=ConnectionResetError())
+        with self.assertRaises(ConnectionResetError):
+            asyncio.run(self.relay.dispatch_due_scheduled_messages())
+        first_packet = self.relay.route_packet.call_args.args[0]
+        self.relay.route_packet = route
+        self.assertEqual(1, asyncio.run(self.relay.dispatch_due_scheduled_messages()))
+        self.assertEqual(first_packet["packet_id"], self.relay.routed_packets[0]["packet_id"])
+        self.assertEqual(first_packet["created_at"], self.relay.routed_packets[0]["created_at"])
+        self.assertEqual(1, self.relay.db.execute(
+            "SELECT COUNT(*) FROM direct_messages WHERE message='retry-once'",
+        ).fetchone()[0])
 
     def test_story_quality_and_duration_are_enforced_on_the_server(self):
         too_long = self.relay.save_history_packet(

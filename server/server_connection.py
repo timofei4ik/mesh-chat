@@ -389,6 +389,9 @@ async def handle_server_hello(
         "offline_packet_ack": bool(
             packet.get("supports_offline_packet_ack", False)
         ),
+        "reliable_delivery_v1": packet.get("supports_reliable_delivery_v1") is True,
+        "reliable_sync_v2": packet.get("supports_reliable_sync_v2") is True
+            and packet.get("supports_sync_v2") is True,
         "mutation_ack": bool(
             packet.get("supports_mutation_ack", False)
         ),
@@ -593,12 +596,16 @@ async def handle_connection(server, websocket, config):
     node_id = None
     account_sync_task = None
 
-    async def start_account_sync(sync_operation):
+    async def start_account_sync(sync_operation, replace=True):
         nonlocal account_sync_task
         if account_sync_task is not None and not account_sync_task.done():
+            if not replace:
+                sync_operation.close()
+                return
             account_sync_task.cancel()
             await asyncio.gather(account_sync_task, return_exceptions=True)
 
+        sync_started = asyncio.get_running_loop().time()
         account_sync_task = asyncio.create_task(
             sync_operation,
             name=f"account-sync:{node_id or 'pending'}",
@@ -608,6 +615,10 @@ async def handle_connection(server, websocket, config):
             if task.cancelled():
                 return
             error = task.exception()
+            metrics = getattr(server, "runtime_metrics", None)
+            if metrics is not None:
+                metrics.observe("sync", asyncio.get_running_loop().time() - sync_started)
+                metrics.increment("sync_failed_total" if error else "sync_completed_total")
             if error is not None:
                 print(f"Account sync failed for {node_id}: {error!r}")
 
@@ -618,10 +629,15 @@ async def handle_connection(server, websocket, config):
         async for raw_message in websocket:
             try:
                 packet = json.loads(raw_message)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(packet, dict) or not isinstance(packet.get("type"), str):
                 continue
 
             if packet.get("type") == "server_hello":
+                if node_id is not None:
+                    await websocket.close(code=1008, reason="already authenticated")
+                    return
                 outcome = await handle_server_hello(
                     server,
                     websocket,
@@ -645,6 +661,9 @@ async def handle_connection(server, websocket, config):
                     packet_source,
                 )
                 continue
+
+            packet["source_node"] = node_id
+            packet.pop("_delivery_id", None)
 
             is_service_connection = (
                 server.service_clients.get(node_id) is websocket

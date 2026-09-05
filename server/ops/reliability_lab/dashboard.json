@@ -1,0 +1,17 @@
+{
+  "title": "MeshChat Reliability",
+  "uid": "meshchat-reliability",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "timezone": "browser",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Connected clients", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "targets": [{"refId": "A", "expr": "meshchat_connected_clients"}]},
+    {"id": 2, "title": "Relay event loop delay", "type": "timeseries", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"refId": "A", "expr": "meshchat_event_loop_lag_seconds"}]},
+    {"id": 3, "title": "Database commit p95", "type": "timeseries", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(meshchat_mutation_commit_seconds_bucket[5m])))"}]},
+    {"id": 4, "title": "Account sync p95", "type": "timeseries", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(meshchat_sync_seconds_bucket[5m])))"}]},
+    {"id": 5, "title": "Retained delivery intents (accounts, not unread messages)", "type": "timeseries", "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8}, "targets": [{"refId": "A", "expr": "meshchat_delivery_intent_accounts"}]},
+    {"id": 6, "title": "Synchronization failures per second", "type": "timeseries", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8}, "targets": [{"refId": "A", "expr": "sum(rate(meshchat_sync_failed_total[5m]))"}]}
+  ]
+}

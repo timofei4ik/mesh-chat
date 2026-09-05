@@ -1,6 +1,10 @@
 import unittest
+import json
+from unittest.mock import AsyncMock, patch
 
-from server.server_connection import cleanup_connection
+from server.server_connection import (
+    HandshakeConfig, HandshakeOutcome, cleanup_connection, handle_connection,
+)
 
 
 class FakeConnectionServer:
@@ -23,6 +27,29 @@ class FakeConnectionServer:
 
 
 class ServerConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_frames_do_not_disconnect_before_valid_handshake(self):
+        server = FakeConnectionServer()
+        socket = _FramesSocket([
+            "null", "[]", "42", '"text"', "{invalid", b"\xff",
+            json.dumps({"type": "server_hello", "node_id": "node-1"}),
+        ])
+        hello = AsyncMock(return_value=HandshakeOutcome(terminate_handler=True))
+        with patch("server.server_connection.handle_server_hello", hello):
+            await handle_connection(server, socket, HandshakeConfig("", False, ""))
+        hello.assert_awaited_once()
+
+    async def test_repeated_handshake_cannot_rebind_authenticated_connection(self):
+        server = FakeConnectionServer()
+        socket = _FramesSocket([
+            json.dumps({"type": "server_hello", "node_id": "node-1"}),
+            json.dumps({"type": "server_hello", "node_id": "node-2"}),
+        ])
+        hello = AsyncMock(return_value=HandshakeOutcome(node_id="node-1"))
+        with patch("server.server_connection.handle_server_hello", hello):
+            await handle_connection(server, socket, HandshakeConfig("", False, ""))
+        hello.assert_awaited_once()
+        socket.close.assert_awaited_once()
+
     async def test_cleanup_removes_only_the_current_client_socket(self):
         server = FakeConnectionServer()
         stale_socket = object()
@@ -63,3 +90,13 @@ class ServerConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("vpn-node", server.service_clients)
         self.assertNotIn("vpn-node", server.service_logins)
         self.assertNotIn("vpn-node", server.client_services)
+
+
+class _FramesSocket:
+    def __init__(self, frames):
+        self.frames = frames
+        self.close = AsyncMock()
+
+    async def __aiter__(self):
+        for frame in self.frames:
+            yield frame

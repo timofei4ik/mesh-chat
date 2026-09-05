@@ -13,6 +13,18 @@ async def handle_offline_packet_ack(server, packet, context):
     )
 
 
+async def handle_reliable_delivery_ack(server, packet, context):
+    outbox = getattr(server, "delivery_outbox", None)
+    delivery_id = packet.get("delivery_id")
+    login = account_login(server, context.node_id)
+    if outbox is None or not login or not isinstance(delivery_id, str) or len(delivery_id) != 64:
+        return
+    latency = outbox.acknowledge(context.node_id, login, delivery_id)
+    if latency is not None:
+        server.runtime_metrics.increment("delivery_acked_total")
+        server.runtime_metrics.observe("delivery_ack", latency)
+
+
 async def handle_sync_v2_ack(server, packet, context):
     server.acknowledge_sync_v2_cursor(
         account_login(server, context.node_id),
@@ -37,6 +49,21 @@ async def handle_sync_v2_snapshot_request(server, packet, context):
             0,
         )
     )
+
+
+async def handle_reliable_sync_request(server, packet, context):
+    login = account_login(server, context.node_id)
+    caps = server.client_capabilities.get(context.node_id, {})
+    if (not login or context.start_account_sync is None
+            or not caps.get("reliable_sync_v2")
+            or getattr(server, "sync_delivery_queue", None) is None):
+        return
+    await context.start_account_sync(server.send_account_sync(
+        context.websocket, login, context.node_id,
+        caps.get("sticker_library_chunks", False), True,
+        caps.get("sync_v2_delta", False), packet.get("cursor", 0),
+        caps.get("media_delivery_v2", False), caps.get("sync_v2_delta_batch", False),
+    ), replace=False)
 
 
 async def handle_mutation_status_request(server, packet, context):
@@ -139,6 +166,10 @@ async def handle_file_chunk_v2(server, packet, context):
         or f"@node:{context.node_id}"
     )
     transfer_result = server.save_file_transfer_chunk(packet, login)
+    if transfer_result.get("ok") is False:
+        metrics = getattr(server, "runtime_metrics", None)
+        if metrics is not None:
+            metrics.increment("file_errors_total")
     await server.send_file_transfer_ack(
         context.websocket,
         packet,
@@ -149,6 +180,8 @@ async def handle_file_chunk_v2(server, packet, context):
 
 
 def register_sync_control_commands(registry):
+    registry.register("reliable_sync_request", handle_reliable_sync_request)
+    registry.register("reliable_delivery_ack", handle_reliable_delivery_ack)
     registry.register("offline_packet_ack", handle_offline_packet_ack)
     registry.register("sync_v2_ack", handle_sync_v2_ack)
     registry.register(

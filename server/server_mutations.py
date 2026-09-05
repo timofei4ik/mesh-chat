@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 from uuid import uuid4
+import time
+
+from websockets.exceptions import ConnectionClosed
 
 
 REACTION_PACKET_TYPES = frozenset(
@@ -102,12 +105,20 @@ async def execute_history_mutation(
         packet,
         group_delete_targets,
     )
+    started = time.perf_counter()
     mutation_result = server.persist_history_mutation(
         packet,
         sync_event_accounts,
         mutation_context,
     )
     saved = mutation_result["saved"]
+    metrics = getattr(server, "runtime_metrics", None)
+    if metrics is not None:
+        metrics.observe("mutation_commit", time.perf_counter() - started)
+        if saved is False:
+            metrics.increment("mutations_rejected_total")
+        elif saved != "duplicate":
+            metrics.increment("mutations_committed_total")
 
     if saved == "duplicate":
         if mutation_context:
@@ -132,12 +143,17 @@ async def execute_history_mutation(
 
     if mutation_context:
         inserted = mutation_result["processed_inserted"]
-        await server.send_mutation_ack(
-            websocket,
-            packet,
-            mutation_context,
-            duplicate=not inserted,
-        )
+        try:
+            await server.send_mutation_ack(
+                websocket,
+                packet,
+                mutation_context,
+                duplicate=not inserted,
+            )
+        except (OSError, ConnectionClosed):
+            # The commit has succeeded. A lost sender ACK must not prevent
+            # delivery; the sender can reconcile its durable outbox later.
+            pass
 
     await server.mirror_packet_to_source_account_devices(packet)
 

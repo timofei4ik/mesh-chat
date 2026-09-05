@@ -4,6 +4,9 @@ import asyncio
 import json
 import uuid
 
+from server.reliable_delivery import RELIABLE_PACKET_TYPES
+from server.reliable_sync import RELIABLE_SYNC_TYPES
+
 
 _UNREGISTER_SCRIPT = """
 if redis.call('HGET', KEYS[1], 'session_id') == ARGV[1] then
@@ -17,11 +20,22 @@ return 0
 """
 
 _REFRESH_SCRIPT = """
-if redis.call('HGET', KEYS[1], 'session_id') == ARGV[1] then
-  redis.call('EXPIRE', KEYS[1], ARGV[2])
-  return 1
+local owner = redis.call('HGET', KEYS[1], 'session_id')
+if owner and owner ~= ARGV[1] then
+  return 0
 end
-return 0
+if not owner then
+  local record = cjson.decode(ARGV[3])
+  for field, value in pairs(record) do
+    redis.call('HSET', KEYS[1], field, value)
+  end
+end
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+if ARGV[4] ~= '' then
+  redis.call('SADD', KEYS[2], ARGV[5])
+  redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]) * 4)
+end
+return 1
 """
 
 
@@ -45,9 +59,16 @@ class RealtimeCoordinator:
         self.pubsub = None
         self._listener_task = None
         self._heartbeat_task = None
+        self._delivery_task = None
+        self._lag_task = None
         self._closing = False
         self._local_sessions = {}
+        self._local_presence = {}
+        self._presence_lock = asyncio.Lock()
         self._last_error = ""
+        self._sync_retries = {}
+        self._hint_tasks = {}
+        self._last_queue_cleanup = 0
 
     @property
     def enabled(self):
@@ -69,7 +90,9 @@ class RealtimeCoordinator:
         return f"{self.prefix}:operation:{namespace}:{operation_id}"
 
     async def start(self):
+        self._closing = False
         if not self.enabled:
+            self._start_delivery_loop()
             return
         try:
             from server.redis_client import (
@@ -97,19 +120,33 @@ class RealtimeCoordinator:
             self._heartbeat(),
             name=f"realtime-heartbeat:{self.worker_id}",
         )
+        self._start_delivery_loop()
+
+    def _start_delivery_loop(self):
+        if getattr(self.server, "runtime_metrics", None) is not None:
+            self._lag_task = asyncio.create_task(self._measure_loop_lag())
+            self._delivery_task = asyncio.create_task(
+                self._retry_deliveries(), name=f"realtime-delivery:{self.worker_id}"
+            )
 
     async def stop(self):
         self._closing = True
+        hint_tasks = [entry[2] for entry in self._hint_tasks.values()]
+        for task in hint_tasks:
+            task.cancel()
+        await asyncio.gather(*hint_tasks, return_exceptions=True)
+        self._hint_tasks.clear()
         sessions = list(self._local_sessions.items())
         for (kind, node_id), session_id in sessions:
             await self.unregister(node_id, session_id, kind=kind)
-        for task in (self._listener_task, self._heartbeat_task):
+        tasks = (self._listener_task, self._heartbeat_task, self._delivery_task, self._lag_task)
+        for task in tasks:
             if task is not None:
                 task.cancel()
         await asyncio.gather(
             *(
                 task
-                for task in (self._listener_task, self._heartbeat_task)
+                for task in tasks
                 if task is not None
             ),
             return_exceptions=True,
@@ -123,6 +160,15 @@ class RealtimeCoordinator:
         self.redis = None
 
     async def register(
+        self, node_id, login="", username="", capabilities=None,
+        kind="client", service="",
+    ):
+        async with self._presence_lock:
+            return await self._register(
+                node_id, login, username, capabilities, kind, service,
+            )
+
+    async def _register(
         self,
         node_id,
         login="",
@@ -138,6 +184,7 @@ class RealtimeCoordinator:
             return session_id
 
         key = self._presence_key(node_id, kind)
+        login = str(login or "").strip().lower()
         account_key = self._account_key(login, kind) if login else ""
         previous = await self.redis.hgetall(key)
         payload = {
@@ -160,11 +207,12 @@ class RealtimeCoordinator:
             pipeline.sadd(account_key, str(node_id))
             pipeline.expire(account_key, self.presence_ttl * 4)
         await pipeline.execute()
+        self._local_presence[local_key] = payload
 
         previous_worker = previous.get("worker_id")
         previous_session = previous.get("session_id")
         if (
-            previous_worker == self.worker_id
+            previous_worker
             and previous_session
             and previous_session != session_id
         ):
@@ -182,9 +230,19 @@ class RealtimeCoordinator:
         return session_id
 
     async def unregister(self, node_id, session_id, kind="client"):
+        async with self._presence_lock:
+            return await self._unregister(node_id, session_id, kind)
+
+    async def _unregister(self, node_id, session_id, kind="client"):
         local_key = (kind, node_id)
         if self._local_sessions.get(local_key) == session_id:
             self._local_sessions.pop(local_key, None)
+            self._local_presence.pop(local_key, None)
+            self._sync_retries.pop(node_id, None)
+            pending = self._hint_tasks.get(node_id)
+            if pending is not None and pending[0] == session_id:
+                self._hint_tasks.pop(node_id, None)
+                pending[2].cancel()
         if not self.enabled or self.redis is None or not session_id:
             return True
 
@@ -226,6 +284,19 @@ class RealtimeCoordinator:
                 kind,
             ):
                 return False
+            if (kind == "client" and packet.get("type") in RELIABLE_SYNC_TYPES
+                    and getattr(self.server, "sync_delivery_queue", None) is not None
+                    and self._local_capability_allowed(node_id, "reliable_sync_v2", kind)):
+                self._schedule_sync_hint(node_id, websocket, force=True)
+                return True
+            delivery_id = self._queue_delivery(
+                node_id, getattr(self.server, "client_logins", {}).get(node_id, ""), packet,
+                required_capability, kind,
+                self._local_capability_allowed(node_id, "reliable_delivery_v1", kind),
+            )
+            if delivery_id:
+                await self._deliver_pending(node_id, websocket)
+                return True
             try:
                 await websocket.send(json.dumps(packet, ensure_ascii=False))
                 return True
@@ -248,18 +319,164 @@ class RealtimeCoordinator:
             required_capability,
         ):
             return False
+        delivery_id = self._queue_delivery(
+            node_id, presence.get("login", ""), packet, required_capability, kind,
+            self._remote_capability_allowed(presence, "reliable_delivery_v1"),
+        )
+        sync_ready = (
+            kind == "client" and packet.get("type") in RELIABLE_SYNC_TYPES
+            and getattr(self.server, "sync_delivery_queue", None) is not None
+            and self._remote_capability_allowed(presence, "reliable_sync_v2")
+        )
         subscribers = await self._publish(
             presence.get("worker_id"),
             {
-                "action": "deliver",
+                "action": "sync_ready" if sync_ready else "delivery_ready" if delivery_id else "deliver",
                 "node_id": str(node_id),
                 "kind": kind,
                 "session_id": presence.get("session_id"),
                 "required_capability": required_capability or "",
-                "packet": packet,
+                "packet": None if sync_ready or delivery_id else packet,
             },
         )
-        return bool(subscribers)
+        return bool(sync_ready or delivery_id or subscribers)
+
+    def _queue_delivery(self, node_id, login, packet, required, kind, supported):
+        outbox = getattr(self.server, "delivery_outbox", None)
+        if (outbox is None or not login or kind != "client" or not supported
+                or packet.get("type") not in RELIABLE_PACKET_TYPES):
+            return None
+        delivery_id = outbox.enqueue(node_id, login, packet, required)
+        self.server.runtime_metrics.increment("delivery_enqueued_total")
+        return delivery_id
+
+    async def _deliver_pending(self, node_id, websocket):
+        outbox = getattr(self.server, "delivery_outbox", None)
+        login = self.server.client_logins.get(node_id, "")
+        if (outbox is None or not login or not self._local_capability_allowed(
+                node_id, "reliable_delivery_v1", "client")):
+            return
+        # Check ownership before retrying: a replaced worker must not keep
+        # sending to the previous authenticated connection.
+        if self.redis is not None:
+            owner = await self.redis.hget(self._presence_key(node_id), "session_id")
+            if owner != self._local_sessions.get(("client", node_id)):
+                return
+        for delivery_id, encoded, required, _ in outbox.pending(node_id, login):
+            if (self.server.clients.get(node_id) is not websocket
+                    or self.server.client_logins.get(node_id) != login):
+                return
+            if not self._local_capability_allowed(node_id, required, "client"):
+                continue
+            if not outbox.claim(delivery_id):
+                continue
+            self.server.runtime_metrics.increment("delivery_attempts_total")
+            try:
+                payload = json.loads(encoded)
+                payload["_delivery_id"] = delivery_id
+                await asyncio.wait_for(websocket.send(
+                    json.dumps(payload, ensure_ascii=False)), timeout=5)
+            except Exception:
+                self.server.runtime_metrics.increment("delivery_send_errors_total")
+                return
+
+    async def _retry_deliveries(self):
+        while not self._closing:
+            await asyncio.sleep(1)
+            queue = getattr(self.server, "sync_delivery_queue", None)
+            if queue is not None:
+                now = asyncio.get_running_loop().time()
+                if now - self._last_queue_cleanup >= 60:
+                    try:
+                        with self.server.atomic_storage_transaction():
+                            queue.prune()
+                        self._last_queue_cleanup = now
+                    except Exception as error:
+                        self._report_error("queue cleanup", error)
+            if getattr(self.server, "delivery_outbox", None) is None and queue is None:
+                continue
+            async def attempt(node_id, websocket):
+                try:
+                    if queue is not None:
+                        await self._send_sync_hint(node_id, websocket)
+                    else:
+                        await self._deliver_pending(node_id, websocket)
+                except Exception as error:
+                    self._report_error("delivery retry", error)
+            clients = list(self.server.clients.items())
+            if queue is not None:
+                for node_id, websocket in clients:
+                    self._schedule_sync_hint(node_id, websocket)
+                continue
+            for offset in range(0, len(clients), 8):
+                await asyncio.gather(*(attempt(*client) for client in clients[offset:offset + 8]))
+
+    def _schedule_sync_hint(self, node_id, websocket, force=False):
+        if self._closing:
+            return
+        session = self._local_sessions.get(("client", node_id))
+        previous = self._hint_tasks.get(node_id)
+        if previous is not None:
+            if previous[0] == session and previous[1] is websocket and not previous[2].done():
+                previous[3] = previous[3] or force
+                return
+            previous[2].cancel()
+
+        # At most one bounded send per connected device. SQL checkpoints retain
+        # missed work, so PubSub never needs to wait for a slow socket to drain.
+        async def send():
+            try:
+                await self._send_sync_hint(node_id, websocket, force=self._hint_tasks[node_id][3])
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._report_error("sync hint", error)
+            finally:
+                current = self._hint_tasks.get(node_id)
+                if current is not None and current[2] is asyncio.current_task():
+                    self._hint_tasks.pop(node_id, None)
+        task = asyncio.create_task(send(), name="sync-hint:" + node_id)
+        self._hint_tasks[node_id] = [session, websocket, task, force]
+
+    async def _send_sync_hint(self, node_id, websocket, force=False):
+        queue = getattr(self.server, "sync_delivery_queue", None)
+        if queue is None or not self._local_capability_allowed(node_id, "reliable_sync_v2", "client"):
+            return
+        login = self.server.client_logins.get(node_id, "")
+        if not login:
+            return
+        session = self._local_sessions.get(("client", node_id))
+        now = asyncio.get_running_loop().time()
+        previous_session, due, attempts = self._sync_retries.get(node_id, (None, 0, 0))
+        if previous_session == session and now < due and not force:
+            return
+        if previous_session != session:
+            attempts = 0
+        if self.redis is not None:
+            owner = await self.redis.hget(self._presence_key(node_id), "session_id")
+            if owner != session:
+                return
+        if self.server.clients.get(node_id) is not websocket:
+            return
+        cursor = queue.pending_cursor(login, node_id)
+        delay = min(30, 2 ** min(attempts + 1, 5)) if cursor else 2
+        self._sync_retries[node_id] = (session, now + delay, attempts + 1 if cursor else 0)
+        if not cursor:
+            return
+        try:
+            await asyncio.wait_for(websocket.send(json.dumps({
+                "type": "reliable_sync_hint", "cursor": cursor,
+            })), timeout=5)
+            self.server.runtime_metrics.increment("delivery_attempts_total")
+        except Exception:
+            self.server.runtime_metrics.increment("delivery_send_errors_total")
+
+    async def _measure_loop_lag(self):
+        loop = asyncio.get_running_loop()
+        while not self._closing:
+            expected = loop.time() + 1
+            await asyncio.sleep(1)
+            self.server.runtime_metrics.event_loop_lag = max(0, loop.time() - expected)
 
     async def close_node(
         self,
@@ -468,7 +685,11 @@ class RealtimeCoordinator:
         websocket = socket_map.get(node_id)
         if websocket is None:
             return
-        if action == "deliver":
+        if action == "sync_ready" and kind == "client":
+            self._schedule_sync_hint(node_id, websocket, force=True)
+        elif action == "delivery_ready" and kind == "client":
+            await self._deliver_pending(node_id, websocket)
+        elif action == "deliver":
             required = str(envelope.get("required_capability") or "")
             if not self._local_capability_allowed(node_id, required, kind):
                 return
@@ -495,6 +716,18 @@ class RealtimeCoordinator:
                 self._report_error("heartbeat", error)
 
     async def _refresh_heartbeat(self):
+        # Serialize restoration with local registration/disconnect, so a delayed
+        # heartbeat cannot resurrect a socket that has already signed out.
+        async with self._presence_lock:
+            stale = await self._refresh_presence()
+        for kind, node_id, session_id, websocket in stale:
+            socket_map = self.server.service_clients if kind == "service" else self.server.clients
+            if (self._local_sessions.get((kind, node_id)) == session_id
+                    and socket_map.get(node_id) is websocket):
+                await asyncio.wait_for(websocket.close(
+                    code=4002, reason="connection was replaced"), timeout=5)
+
+    async def _refresh_presence(self):
         sessions = list(self._local_sessions.items())
         pipeline = self.redis.pipeline(transaction=False)
         pipeline.set(
@@ -502,15 +735,49 @@ class RealtimeCoordinator:
             str(asyncio.get_running_loop().time()),
             ex=self.presence_ttl,
         )
+        metrics = getattr(self.server, "runtime_metrics", None)
+        if metrics is not None:
+            values = metrics.snapshot()
+            values.update(delivery_queue_depth=0, delivery_oldest_seconds=0,
+                          delivery_intent_accounts=0, delivery_intent_oldest_seconds=0)
+            outbox = getattr(self.server, "delivery_outbox", None)
+            outbox = getattr(self.server, "sync_delivery_queue", None) or outbox
+            if outbox is not None:
+                values.update(outbox.stats())
+            else:
+                values.update(delivery_queue_depth=0, delivery_oldest_seconds=0)
+            key = f"{self.prefix}:worker:metrics:{self.worker_id}"
+            pipeline.hset(key, mapping=values)
+            pipeline.expire(key, self.presence_ttl)
+        refreshed = []
         for (kind, node_id), session_id in sessions:
+            payload = self._local_presence.get((kind, node_id))
+            socket_map = self.server.service_clients if kind == "service" else self.server.clients
+            websocket = socket_map.get(node_id)
+            if payload is None or payload["session_id"] != session_id or websocket is None:
+                continue
+            login = payload["login"]
+            refreshed.append((kind, node_id, session_id, websocket))
             pipeline.eval(
                 _REFRESH_SCRIPT,
-                1,
+                2,
                 self._presence_key(node_id, kind),
+                self._account_key(login, kind),
                 session_id,
                 self.presence_ttl,
+                json.dumps(payload, separators=(",", ":")),
+                login,
+                str(node_id),
             )
-        await pipeline.execute()
+        results = await pipeline.execute()
+        stale = []
+        if refreshed:
+            for record, owned in zip(refreshed, results[-len(refreshed):]):
+                if not owned:
+                    kind, node_id, _, _ = record
+                    self._local_presence.pop((kind, node_id), None)
+                    stale.append(record)
+        return stale
 
     async def _open_pubsub(self):
         self.pubsub = self.redis.pubsub(

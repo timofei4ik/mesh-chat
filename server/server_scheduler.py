@@ -259,8 +259,12 @@ class ServerSchedulerMixin:
                 self.db.commit()
                 continue
 
-            message_id = str(uuid.uuid4())
-            created_at = datetime.now(timezone.utc).isoformat()
+            # A crash after persistence but before marking the run complete
+            # must replay the same message, not create a second one.
+            message_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f"meshchat:schedule:{schedule_id}:{due_at}",
+            ))
+            created_at = (self._parse_schedule_time(due_at) or datetime.now(timezone.utc)).isoformat()
             sent_payload = None
             for raw_payload in payloads:
                 if not isinstance(raw_payload, dict):

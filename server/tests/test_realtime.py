@@ -1,5 +1,8 @@
+import asyncio
 import json
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 from server.server_realtime import RealtimeCoordinator
 
@@ -28,6 +31,7 @@ class FakeRedisBroker:
         self.hashes = {}
         self.sets = {}
         self.values = {}
+        self.expirations = {}
         self.coordinators = {}
 
     def client(self):
@@ -95,6 +99,7 @@ class FakeRedisClient:
         return self.broker.hashes.get(key, {}).get(field)
 
     async def expire(self, key, seconds):
+        self.broker.expirations[key] = seconds
         return key in self.broker.hashes or key in self.broker.sets
 
     async def sadd(self, key, *members):
@@ -128,6 +133,16 @@ class FakeRedisClient:
         key = args[0]
         session_id = args[key_count]
         record = self.broker.hashes.get(key, {})
+        if "cjson.decode" in script:
+            if record and record.get("session_id") != str(session_id):
+                return 0
+            if not record:
+                await self.hset(key, json.loads(args[key_count + 2]))
+            await self.expire(key, args[key_count + 1])
+            if args[key_count + 3]:
+                await self.sadd(args[1], args[key_count + 4])
+                await self.expire(args[1], args[key_count + 1] * 4)
+            return 1
         if record.get("session_id") != str(session_id):
             return 0
         if "DEL" in script:
@@ -139,6 +154,49 @@ class FakeRedisClient:
 
 
 class RealtimeCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_sync_hint_does_not_block_fast_receiver_and_coalesces(self):
+        broker = FakeRedisBroker()
+        server, coordinator = self.make_coordinator(broker, "worker-a")
+        server.client_logins = {"slow": "alice", "fast": "bob"}
+        server.sync_delivery_queue = SimpleNamespace(pending_cursor=lambda *_: 42)
+        server.runtime_metrics = SimpleNamespace(increment=lambda *_: None)
+        release = asyncio.Event()
+        slow, fast = FakeSocket(), FakeSocket()
+        async def blocked_send(_):
+            await release.wait()
+        slow.send = blocked_send
+        for node, socket in (("slow", slow), ("fast", fast)):
+            server.clients[node] = socket
+            server.client_capabilities[node] = {"reliable_sync_v2": True}
+            await coordinator.register(node, login=server.client_logins[node])
+        coordinator._schedule_sync_hint("slow", slow, force=True)
+        for _ in range(100):
+            coordinator._schedule_sync_hint("slow", slow, force=True)
+        self.assertEqual(1, len(coordinator._hint_tasks))
+        coordinator._sync_retries["fast"] = (
+            coordinator._local_sessions[("client", "fast")],
+            asyncio.get_running_loop().time() + 30, 1)
+        coordinator._schedule_sync_hint("fast", fast)
+        await coordinator._handle_envelope({"action": "sync_ready", "node_id": "fast",
+            "session_id": coordinator._local_sessions[("client", "fast")]})
+        try:
+            await asyncio.wait_for(coordinator._hint_tasks["fast"][2], .5)
+            self.assertEqual(42, fast.sent[0]["cursor"])
+            self.assertFalse(coordinator._hint_tasks["slow"][2].done())
+        finally:
+            tasks = [entry[2] for entry in coordinator._hint_tasks.values()]
+            release.set()
+            await asyncio.gather(*tasks)
+
+    async def test_disconnect_clears_hint_cancelled_before_first_execution(self):
+        coordinator = RealtimeCoordinator(FakeServer())
+        session = await coordinator.register("node", login="alice")
+        coordinator._schedule_sync_hint("node", FakeSocket())
+        task = coordinator._hint_tasks["node"][2]
+        await coordinator.unregister("node", session)
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual({}, coordinator._hint_tasks)
+
     def make_coordinator(self, broker, worker_id):
         server = FakeServer()
         coordinator = RealtimeCoordinator(
@@ -218,3 +276,82 @@ class RealtimeCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         await coordinator._refresh_heartbeat()
 
         self.assertIn(coordinator._worker_key(), broker.values)
+
+    async def test_heartbeat_restores_presence_after_broker_data_loss(self):
+        broker = FakeRedisBroker()
+        server, coordinator = self.make_coordinator(broker, "worker-a")
+        server.clients["alice-phone"] = FakeSocket()
+        session = await coordinator.register("alice-phone", login="Alice",
+            capabilities={"reliable_sync_v2": True})
+        broker.hashes.clear()
+        broker.sets.clear()
+        await coordinator._refresh_heartbeat()
+        restored = await coordinator.redis.hgetall(coordinator._presence_key("alice-phone"))
+        self.assertEqual(session, restored["session_id"])
+        self.assertTrue(json.loads(restored["capabilities"])["reliable_sync_v2"])
+        self.assertEqual(["alice-phone"], await coordinator.account_nodes("alice"))
+
+    async def test_heartbeat_renews_account_membership_too(self):
+        broker = FakeRedisBroker()
+        server, coordinator = self.make_coordinator(broker, "worker-a")
+        server.clients["alice-phone"] = FakeSocket()
+        await coordinator.register("alice-phone", login="alice")
+        broker.sets.clear()
+        broker.expirations.clear()
+        await coordinator._refresh_heartbeat()
+        self.assertEqual(["alice-phone"], await coordinator.account_nodes("alice"))
+        self.assertEqual(coordinator.presence_ttl * 4,
+                         broker.expirations[coordinator._account_key("alice")])
+
+    async def test_stale_heartbeat_never_overwrites_replacement(self):
+        broker = FakeRedisBroker()
+        first_server, first = self.make_coordinator(broker, "worker-a")
+        second_server, second = self.make_coordinator(broker, "worker-b")
+        old_socket = FakeSocket()
+        first_server.clients["same-node"] = old_socket
+        second_server.clients["same-node"] = FakeSocket()
+        await first.register("same-node", login="alice")
+        # Drop the close notification, as can happen during broker disconnect.
+        broker.coordinators.clear()
+        new_session = await second.register("same-node", login="alice")
+        await first._refresh_heartbeat()
+        record = await second.redis.hgetall(second._presence_key("same-node"))
+        self.assertEqual(new_session, record["session_id"])
+        self.assertEqual(4002, old_socket.closed[-1][0])
+        broker.hashes.clear()
+        await first._refresh_heartbeat()
+        self.assertFalse(await first.redis.hgetall(first._presence_key("same-node")))
+
+    async def test_disconnected_session_is_not_restored(self):
+        broker = FakeRedisBroker()
+        server, coordinator = self.make_coordinator(broker, "worker-a")
+        server.clients["alice-phone"] = FakeSocket()
+        session = await coordinator.register("alice-phone", login="alice")
+        await coordinator.unregister("alice-phone", session)
+        await coordinator._refresh_heartbeat()
+        self.assertFalse(await coordinator.redis.hgetall(coordinator._presence_key("alice-phone")))
+
+    async def test_disconnect_waits_for_inflight_presence_restore(self):
+        broker = FakeRedisBroker()
+        server, coordinator = self.make_coordinator(broker, "worker-a")
+        server.clients["alice-phone"] = FakeSocket()
+        session = await coordinator.register("alice-phone", login="alice")
+        broker.hashes.clear()
+        started, release = asyncio.Event(), asyncio.Event()
+        original = coordinator.redis.eval
+
+        async def delayed_eval(script, *args):
+            if "cjson.decode" in script:
+                started.set()
+                await asyncio.wait_for(release.wait(), 2)
+            return await original(script, *args)
+
+        with patch.object(coordinator.redis, "eval", side_effect=delayed_eval):
+            heartbeat = asyncio.create_task(coordinator._refresh_heartbeat())
+            await asyncio.wait_for(started.wait(), 2)
+            disconnect = asyncio.create_task(coordinator.unregister("alice-phone", session))
+            await asyncio.sleep(0)
+            self.assertFalse(disconnect.done())
+            release.set()
+            await asyncio.gather(heartbeat, disconnect)
+        self.assertFalse(await coordinator.redis.hgetall(coordinator._presence_key("alice-phone")))

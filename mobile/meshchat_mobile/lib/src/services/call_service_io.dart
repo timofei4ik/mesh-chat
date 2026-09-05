@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'call_models.dart';
+import 'shared_call_resource.dart';
 
 class CallAudioDevice {
   const CallAudioDevice({
@@ -20,6 +21,20 @@ class CallAudioDevice {
 }
 
 class CallService {
+  CallService({this.audioRoom = '', this.initialMuted = false});
+
+  @visibleForTesting
+  CallService.withPeerConnection(this._peerConnection)
+    : audioRoom = '',
+      initialMuted = false;
+
+  final String audioRoom;
+  final bool initialMuted;
+  static final _microphones = SharedCallResource<MediaStream>();
+  static final _audioUsers = <CallService>{};
+  CallResourceLease<MediaStream>? _microphoneLease;
+  int _preparationGeneration = 0;
+
   static const _audioSession = MethodChannel('meshchat/audio_session');
   static String _selectedAudioInputId = '';
   static String _selectedAudioOutputId = '';
@@ -29,6 +44,7 @@ class CallService {
   static bool get _isIOS => Platform.isIOS;
 
   RTCPeerConnection? _peerConnection;
+  RTCPeerConnection? _remoteDescriptionConnection;
   MediaStream? _localStream;
   // Native WebRTC plays remote audio through the peer connection's audio
   // session. Creating a video texture solely for audio breaks on some Android
@@ -118,9 +134,11 @@ class CallService {
       hdAudio: hdAudio,
       enhancedNoiseSuppression: enhancedNoiseSuppression,
     );
-    await _peerConnection!.setRemoteDescription(
+    final peerConnection = _peerConnection!;
+    await peerConnection.setRemoteDescription(
       RTCSessionDescription(remoteOfferSdp, 'offer'),
     );
+    _remoteDescriptionConnection = peerConnection;
     await _flushPendingRemoteCandidates();
     final answer = await _peerConnection!.createAnswer({
       'offerToReceiveAudio': 1,
@@ -139,6 +157,7 @@ class CallService {
     await peerConnection.setRemoteDescription(
       RTCSessionDescription(remoteAnswerSdp, 'answer'),
     );
+    _remoteDescriptionConnection = peerConnection;
     await _flushPendingRemoteCandidates();
   }
 
@@ -164,6 +183,7 @@ class CallService {
     await peerConnection.setRemoteDescription(
       RTCSessionDescription(remoteOfferSdp, 'offer'),
     );
+    _remoteDescriptionConnection = peerConnection;
     await _flushPendingRemoteCandidates();
     final answer = await peerConnection.createAnswer({
       'offerToReceiveAudio': 1,
@@ -178,7 +198,8 @@ class CallService {
 
   Future<void> addIceCandidate(Map<String, dynamic> data) async {
     final peerConnection = _peerConnection;
-    if (peerConnection == null) {
+    if (peerConnection == null ||
+        !identical(peerConnection, _remoteDescriptionConnection)) {
       _pendingRemoteCandidates.add(Map<String, dynamic>.from(data));
       return;
     }
@@ -201,6 +222,8 @@ class CallService {
   }
 
   Future<void> end() async {
+    _preparationGeneration++;
+    _remoteDescriptionConnection = null;
     _stopStats();
     await _stopScreenMedia();
     await _stopMediaTracks();
@@ -208,7 +231,7 @@ class CallService {
     // Some Android emulators reject disposing a stale video texture. Audio
     // calls must still be able to start after that renderer has failed.
     await _remoteScreenRenderer?.dispose().catchError((_) {});
-    await _localStream?.dispose().catchError((_) {});
+    await _releaseLocalAudio();
     await _peerConnection?.close().catchError((_) {});
     await _peerConnection?.dispose().catchError((_) {});
     _remoteAudioStream = null;
@@ -220,16 +243,17 @@ class CallService {
     _pendingRemoteCandidates.clear();
     onRemoteScreenChanged?.call();
     await _deactivateCallAudio();
-    await _clearAndroidCommunicationDevice();
+    if (_audioUsers.isEmpty) await _clearAndroidCommunicationDevice();
   }
 
   Future<void> _resetCurrentConnectionOnly() async {
+    _remoteDescriptionConnection = null;
     _stopStats();
     await _stopScreenMedia();
     await _stopMediaTracks();
     _remoteScreenRenderer?.srcObject = null;
     await _remoteScreenRenderer?.dispose().catchError((_) {});
-    await _localStream?.dispose().catchError((_) {});
+    await _releaseLocalAudio();
     await _peerConnection?.close().catchError((_) {});
     await _peerConnection?.dispose().catchError((_) {});
     _remoteAudioStream = null;
@@ -243,7 +267,11 @@ class CallService {
 
   Future<void> _flushPendingRemoteCandidates() async {
     final peerConnection = _peerConnection;
-    if (peerConnection == null || _pendingRemoteCandidates.isEmpty) return;
+    if (peerConnection == null ||
+        !identical(peerConnection, _remoteDescriptionConnection) ||
+        _pendingRemoteCandidates.isEmpty) {
+      return;
+    }
     final pending = List<Map<String, dynamic>>.from(_pendingRemoteCandidates);
     _pendingRemoteCandidates.clear();
     for (final candidate in pending) {
@@ -256,13 +284,24 @@ class CallService {
     required bool hdAudio,
     required bool enhancedNoiseSuppression,
   }) async {
+    final generation = ++_preparationGeneration;
     await _resetCurrentConnectionOnly();
+    if (generation != _preparationGeneration) {
+      throw StateError('Call preparation cancelled');
+    }
+    _localMuted = initialMuted;
     await _activateCallAudio();
     await _prepareMobileAudio();
     final peerConnection = await createPeerConnection({
       'iceServers': _iceServers,
       'sdpSemantics': 'unified-plan',
     });
+    if (generation != _preparationGeneration) {
+      await peerConnection.close();
+      await peerConnection.dispose();
+      throw StateError('Call ended during audio preparation');
+    }
+    _peerConnection = peerConnection;
     peerConnection.onIceCandidate = (candidate) {
       final raw = candidate.candidate;
       if (raw == null || raw.isEmpty) return;
@@ -304,16 +343,22 @@ class CallService {
 
     _hdAudio = hdAudio;
     _enhancedNoiseSuppression = enhancedNoiseSuppression;
-    MediaStream stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia(_mediaConstraints());
-    } catch (_) {
-      _hdAudio = false;
-      _enhancedNoiseSuppression = false;
-      stream = await navigator.mediaDevices.getUserMedia(_mediaConstraints());
+    final capture = await _acquireLocalAudio();
+    final stream = capture.stream;
+    if (generation != _preparationGeneration) {
+      if (capture.lease != null) {
+        await capture.lease!.close();
+      } else {
+        await _disposeMicrophone(stream);
+      }
+      await peerConnection.close().catchError((_) {});
+      await peerConnection.dispose().catchError((_) {});
+      throw StateError('Call ended during microphone preparation');
     }
+    _microphoneLease = capture.lease;
+    _localStream = stream;
     for (final track in stream.getAudioTracks()) {
-      track.enabled = true;
+      track.enabled = !_localMuted;
       await peerConnection.addTrack(track, stream);
     }
     await _setSpeakerphoneOnButPreferBluetooth();
@@ -511,6 +556,7 @@ class CallService {
     await peerConnection.setRemoteDescription(
       RTCSessionDescription(remoteOfferSdp, 'offer'),
     );
+    _remoteDescriptionConnection = peerConnection;
     await _flushPendingRemoteCandidates();
     final answer = await peerConnection.createAnswer({
       'offerToReceiveAudio': 1,
@@ -593,11 +639,53 @@ class CallService {
     _screenStream = null;
   }
 
+  Future<MediaStream> _openMicrophone() async {
+    try {
+      return await navigator.mediaDevices.getUserMedia(_mediaConstraints());
+    } catch (_) {
+      _hdAudio = false;
+      _enhancedNoiseSuppression = false;
+      return await navigator.mediaDevices.getUserMedia(_mediaConstraints());
+    }
+  }
+
+  Future<({MediaStream stream, CallResourceLease<MediaStream>? lease})>
+  _acquireLocalAudio() async {
+    if (audioRoom.isEmpty) {
+      return (stream: await _openMicrophone(), lease: null);
+    }
+    final lease = await _microphones.acquire(
+      audioRoom,
+      _openMicrophone,
+      _disposeMicrophone,
+    );
+    return (stream: lease.value, lease: lease);
+  }
+
+  static Future<void> _disposeMicrophone(MediaStream stream) async {
+    for (final track in stream.getTracks()) {
+      await track.stop().catchError((_) {});
+    }
+    await stream.dispose().catchError((_) {});
+  }
+
+  Future<void> _releaseLocalAudio() async {
+    final lease = _microphoneLease;
+    _microphoneLease = null;
+    if (lease != null) {
+      await lease.close();
+    } else {
+      await _localStream?.dispose().catchError((_) {});
+    }
+  }
+
   Future<void> _stopMediaTracks() async {
     final streams = <MediaStream>[];
     final localStream = _localStream;
     final remoteStream = _remoteAudioStream;
-    if (localStream != null) streams.add(localStream);
+    if (localStream != null && _microphoneLease == null) {
+      streams.add(localStream);
+    }
     if (remoteStream != null) streams.add(remoteStream);
     for (final stream in streams) {
       for (final track in stream.getTracks()) {
@@ -613,6 +701,11 @@ class CallService {
       for (final sender in senders) {
         final track = sender.track;
         if (track == null) continue;
+        if (_microphoneLease != null &&
+            (localStream?.getTracks().any((local) => local.id == track.id) ??
+                false)) {
+          continue;
+        }
         track.enabled = false;
         await track.stop().catchError((_) {});
       }
@@ -620,6 +713,7 @@ class CallService {
   }
 
   Future<void> _activateCallAudio() async {
+    _audioUsers.add(this);
     if (!_isIOS) return;
     try {
       await _audioSession.invokeMethod<void>('activateCallAudio');
@@ -627,6 +721,8 @@ class CallService {
   }
 
   Future<void> _deactivateCallAudio() async {
+    _audioUsers.remove(this);
+    if (_audioUsers.isNotEmpty) return;
     if (!_isIOS) return;
     try {
       await _audioSession.invokeMethod<void>('deactivateCallAudio');

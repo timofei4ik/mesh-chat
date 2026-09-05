@@ -424,6 +424,7 @@ def build_sqlite_account_deletion_orchestrator(
     connection,
     transaction_factory,
     pending_path_factory=None,
+    extra_owners=(),
 ):
     def path_is_referenced(storage_path):
         if not storage_path:
@@ -445,6 +446,7 @@ def build_sqlite_account_deletion_orchestrator(
     return AccountDeletionOrchestrator(
         SQLiteAccountDeletionContextLoader(connection),
         [
+            *extra_owners,
             SQLiteChatSyncDeletionOwner(connection),
             SQLiteMediaDeletionOwner(connection),
             SQLiteSubscriptionDeletionOwner(connection),

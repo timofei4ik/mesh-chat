@@ -96,6 +96,9 @@ class MeshSocket {
   final Map<String, Completer<Set<String>>> _mutationStatusRequests = {};
   int _connectionGeneration = 0;
   int _reconnectAttempt = 0;
+  String _deliverySessionKey = '';
+  final Set<String> _processedDeliveries = <String>{};
+  DateTime? _reliableSyncRequestedAt;
 
   bool get isConnected => _connected;
   bool get supportsMutationAck => _supportsMutationAck;
@@ -130,11 +133,18 @@ class MeshSocket {
   }) async {
     final generation = ++_connectionGeneration;
     _closed = false;
+    _connected = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _welcomeTimer?.cancel();
     _welcomeTimer = null;
+    final deliverySessionKey = MutationOutboxStore.sessionKey(session);
+    if (_deliverySessionKey != deliverySessionKey) {
+      _processedDeliveries.clear();
+      _deliverySessionKey = deliverySessionKey;
+    }
     _session = session;
+    _reliableSyncRequestedAt = null;
     _packetHandler = onPacket;
     _deliveryTraceHandler = onDeliveryTrace;
     _syncCursor = syncCursor < 0 ? 0 : syncCursor;
@@ -152,8 +162,12 @@ class MeshSocket {
     _mutationRetryTimer?.cancel();
     _mutationRetryArm++;
     _completeMutationStatusRequests();
-    await _subscription?.cancel();
-    await _channel?.sink.close();
+    final previousSubscription = _subscription;
+    final previousChannel = _channel;
+    _subscription = null;
+    _channel = null;
+    await previousSubscription?.cancel();
+    await previousChannel?.sink.close();
     if (!_isCurrentGeneration(generation)) return;
     _packetSerial = Future<void>.value();
 
@@ -209,6 +223,60 @@ class MeshSocket {
           final decoded = jsonDecode(raw.toString());
           if (decoded is Map<String, dynamic>) {
             final packetType = decoded['type']?.toString() ?? '';
+            if (packetType == 'reliable_sync_hint') {
+              final target = decoded['cursor'];
+              if (target is! int || target <= 0) return;
+              if (_syncCursor >= target) {
+                channel.sink.add(
+                  jsonEncode({
+                    'type': 'sync_v2_ack',
+                    'cursor': _syncCursor,
+                    'source_node': session.nodeId,
+                    'protocol_version': protocolVersion,
+                  }),
+                );
+              } else {
+                final requested = _reliableSyncRequestedAt;
+                final now = DateTime.now();
+                if (requested == null ||
+                    now.difference(requested).inSeconds >= 30) {
+                  _reliableSyncRequestedAt = now;
+                  channel.sink.add(
+                    jsonEncode({
+                      'type': 'reliable_sync_request',
+                      'cursor': _syncCursor,
+                      'source_node': session.nodeId,
+                      'protocol_version': protocolVersion,
+                    }),
+                  );
+                }
+              }
+              return;
+            }
+            if (packetType == 'server_sync_delta_begin' ||
+                packetType == 'server_sync') {
+              _reliableSyncRequestedAt = DateTime.now();
+            }
+            final rawDeliveryId = decoded['_delivery_id'];
+            final deliveryId =
+                rawDeliveryId is String &&
+                    RegExp(r'^[a-f0-9]{64}$').hasMatch(rawDeliveryId) &&
+                    (packetType == 'chat_message' ||
+                        packetType == 'group_message')
+                ? rawDeliveryId
+                : null;
+            if (deliveryId != null &&
+                _processedDeliveries.contains(deliveryId)) {
+              channel.sink.add(
+                jsonEncode({
+                  'type': 'reliable_delivery_ack',
+                  'delivery_id': deliveryId,
+                  'source_node': session.nodeId,
+                  'protocol_version': protocolVersion,
+                }),
+              );
+              return;
+            }
             if (packetType == 'server_welcome') {
               _welcomeTimer?.cancel();
               _welcomeTimer = null;
@@ -234,13 +302,35 @@ class MeshSocket {
                   capabilities['multi_device_state'] == true;
             }
             if (packetType == 'file_chunk_ack') {
-              await _serializeFileOutbox(() => _consumeFileChunkAck(decoded));
+              await _serializeFileOutbox(() async {
+                if (_isCurrentGeneration(generation)) {
+                  await _consumeFileChunkAck(decoded, generation);
+                }
+              });
             } else if (packetType == 'mutation_ack') {
-              await _consumeMutationAck(decoded, onPacket);
+              await _consumeMutationAck(decoded, onPacket, generation);
             } else if (packetType == 'mutation_status_result') {
               _consumeMutationStatusResult(decoded);
             } else {
               await onPacket(decoded);
+            }
+            if (!_isCurrentConnection(generation, channel)) return;
+            if (packetType == 'server_sync_done') {
+              _reliableSyncRequestedAt = null;
+            }
+            if (deliveryId != null) {
+              _processedDeliveries.add(deliveryId);
+              if (_processedDeliveries.length > 4096) {
+                _processedDeliveries.remove(_processedDeliveries.first);
+              }
+              channel.sink.add(
+                jsonEncode({
+                  'type': 'reliable_delivery_ack',
+                  'delivery_id': deliveryId,
+                  'source_node': session.nodeId,
+                  'protocol_version': protocolVersion,
+                }),
+              );
             }
             final queueId = decoded['_offline_queue_id'];
             if (queueId != null) {
@@ -259,8 +349,18 @@ class MeshSocket {
             }
             if (packetType == 'server_welcome') {
               _startupRecovery = () async {
-                await _recoverMutationOutbox(generation);
-                await _flushFileOutbox();
+                try {
+                  await _recoverMutationOutbox(generation);
+                  if (_isCurrentConnection(generation, channel)) {
+                    await _flushFileOutbox();
+                  }
+                } catch (error) {
+                  debugPrint('MeshSocket outbox recovery failed: $error');
+                  if (_isCurrentConnection(generation, channel)) {
+                    _scheduleMutationRetry();
+                    _scheduleFileRetry();
+                  }
+                }
               }();
             }
           }
@@ -597,14 +697,18 @@ class MeshSocket {
 
   Future<void> _flushFileOutbox() async {
     final current = _session;
+    final generation = _connectionGeneration;
     if (current == null || !_connected || !_serverCapabilitiesKnown) return;
     if (_flushingFileOutbox) return;
     _flushingFileOutbox = true;
     try {
       final entries = await _fileTransferStore.load(current);
       for (final entry in entries) {
+        if (!_isCurrentGeneration(generation)) break;
         if (!_connected || entry.isComplete || entry.isFailed) continue;
-        if (!await _fileTransferStore.payloadExists(entry)) {
+        final payloadExists = await _fileTransferStore.payloadExists(entry);
+        if (!_isCurrentGeneration(generation)) break;
+        if (!payloadExists) {
           await _fileTransferStore.markFailed(
             current,
             entry.transferId,
@@ -620,13 +724,14 @@ class MeshSocket {
           continue;
         }
         if (!_supportsFileTransferV2) {
-          await _sendLegacyFileTransfer(current, entry);
+          await _sendLegacyFileTransfer(current, entry, generation);
           continue;
         }
         final inFlight = _fileChunksInFlight.putIfAbsent(
           entry.transferId,
           () => <int>{},
         );
+        if (inFlight.length >= _fileTransferWindow) continue;
         final candidates = <int>[];
         for (var index = 0; index < entry.totalChunks; index++) {
           if (entry.acknowledgedChunks.contains(index) ||
@@ -640,8 +745,14 @@ class MeshSocket {
         }
         if (candidates.isEmpty) continue;
         for (final index in candidates) {
-          if (!_connected) break;
-          final sent = await _sendFileTransferChunk(entry, index, v2: true);
+          if (!_isCurrentGeneration(generation) || !_connected) break;
+          final sent = await _sendFileTransferChunk(
+            entry,
+            index,
+            generation,
+            v2: true,
+          );
+          if (!_isCurrentGeneration(generation)) break;
           if (sent == null) {
             await _fileTransferStore.markFailed(
               current,
@@ -662,24 +773,35 @@ class MeshSocket {
         }
         await _fileTransferStore.markAttempt(current, entry.transferId);
       }
-      if (_supportsFileTransferV2 &&
+      if (_isCurrentGeneration(generation) &&
+          _supportsFileTransferV2 &&
           entries.any((entry) => !entry.isComplete && !entry.isFailed)) {
         _scheduleFileRetry();
       }
     } catch (_) {
-      _scheduleFileRetry();
+      if (_isCurrentGeneration(generation)) _scheduleFileRetry();
     } finally {
       _flushingFileOutbox = false;
+      if (generation != _connectionGeneration && !_closed && _connected) {
+        unawaited(_flushFileOutbox());
+      }
     }
   }
 
   Future<void> _sendLegacyFileTransfer(
     Session current,
     FileTransferOutboxEntry entry,
+    int generation,
   ) async {
     for (var index = 0; index < entry.totalChunks; index++) {
-      if (!_connected) return;
-      final sent = await _sendFileTransferChunk(entry, index, v2: false);
+      if (!_isCurrentGeneration(generation) || !_connected) return;
+      final sent = await _sendFileTransferChunk(
+        entry,
+        index,
+        generation,
+        v2: false,
+      );
+      if (!_isCurrentGeneration(generation)) return;
       if (sent == null) {
         await _fileTransferStore.markFailed(
           current,
@@ -718,10 +840,12 @@ class MeshSocket {
 
   Future<bool?> _sendFileTransferChunk(
     FileTransferOutboxEntry entry,
-    int index, {
+    int index,
+    int generation, {
     required bool v2,
   }) async {
     final bytes = await _fileTransferStore.readChunk(entry, index);
+    if (!_isCurrentGeneration(generation)) return false;
     if (bytes.isEmpty) return null;
     return _sendRaw({
       ...entry.packet,
@@ -741,7 +865,10 @@ class MeshSocket {
     });
   }
 
-  Future<void> _consumeFileChunkAck(Map<String, dynamic> packet) async {
+  Future<void> _consumeFileChunkAck(
+    Map<String, dynamic> packet,
+    int generation,
+  ) async {
     final current = _session;
     final handler = _packetHandler;
     final transferId = packet['transfer_id']?.toString() ?? '';
@@ -750,7 +877,7 @@ class MeshSocket {
       return;
     }
     final entry = await _fileTransferStore.get(current, transferId);
-    if (entry == null) return;
+    if (entry == null || !_isCurrentGeneration(generation)) return;
     final ok = packet['ok'] != false;
     final retryable = packet['retryable'] == true;
     final reset = packet['reset'] == true;
@@ -789,6 +916,7 @@ class MeshSocket {
       acknowledged,
       complete: complete,
     );
+    if (!_isCurrentGeneration(generation)) return;
     final inFlight = _fileChunksInFlight[transferId];
     inFlight?.removeAll(acknowledged);
     if (complete) _fileChunksInFlight.remove(transferId);
@@ -800,6 +928,7 @@ class MeshSocket {
       current,
       entry.operationId,
     );
+    if (!_isCurrentGeneration(generation)) return;
     await _emitFileProgress(
       fileId: entry.fileId,
       operationId: entry.operationId,
@@ -925,21 +1054,21 @@ class MeshSocket {
   }
 
   Future<void> _queueMutation(Map<String, dynamic> originalPacket) async {
+    final current = _session;
+    final generation = _connectionGeneration;
     try {
       await _startupRecovery;
     } catch (_) {
       // Recovery failures leave durable rows queued for the normal retry path.
     }
-    final current = _session;
     if (current == null) {
-      _sendRaw(originalPacket);
       return;
     }
     final packet = Map<String, dynamic>.from(originalPacket);
     final operationId = operationIdForPacket(packet);
     final outboxId = outboxIdForPacket(packet);
     if (operationId.isEmpty || outboxId.isEmpty) {
-      _sendRaw(packet);
+      if (_isCurrentGeneration(generation)) _sendRaw(packet);
       return;
     }
     packet['operation_id'] = operationId;
@@ -950,29 +1079,54 @@ class MeshSocket {
       packet: packet,
       createdAt: DateTime.now().toUtc(),
     );
+    var persisted = false;
     try {
       await _serializeOutbox(() async {
         // Persist before exposing the mutation to the network. If the process
         // dies after the socket write but before this row exists, a missing
         // ACK would otherwise leave nothing to reconcile or replay.
         await _outboxStore.put(current, entry);
+        persisted = true;
         await _trace(
           operationId: operationId,
           packetId: packet['packet_id']?.toString() ?? '',
           stage: 'persisted',
           detail: packet['type']?.toString() ?? '',
         );
-        if (_connected && _serverCapabilitiesKnown) {
-          await _sendOutboxEntry(current, entry);
+        if (_isCurrentGeneration(generation) &&
+            _connected &&
+            _serverCapabilitiesKnown) {
+          await _sendOutboxEntry(current, entry, generation);
         }
       });
       _scheduleMutationRetry();
     } catch (error) {
-      // Storage failure must not turn a user action into an app-level crash.
-      try {
-        if (_connected) _sendRaw(packet);
-      } catch (_) {}
       debugPrint('Could not persist mutation $operationId: $error');
+      if (!_isCurrentGeneration(generation)) return;
+      if (persisted) {
+        _scheduleMutationRetry();
+        return;
+      }
+      // Without a durable row, a lost network ACK cannot be recovered.
+      // Expose the failure so the user can free space and explicitly retry.
+      try {
+        await _packetHandler?.call({
+          'type': 'mutation_ack',
+          'ok': false,
+          'operation_complete': true,
+          'operation_id': operationId,
+          'outbox_id': outboxId,
+          'packet_id':
+              packet['packet_id'] ??
+              packet['group_message_id'] ??
+              packet['message_id'] ??
+              '',
+          'packet_type': packet['type'],
+          'reason': 'local_outbox_unavailable',
+        });
+      } catch (failure) {
+        debugPrint('Could not report outbox failure: $failure');
+      }
     }
   }
 
@@ -1019,14 +1173,16 @@ class MeshSocket {
     if (!_isCurrentGeneration(generation)) return;
 
     for (final entry in entries) {
+      if (!_isCurrentGeneration(generation)) return;
       if (!processed.contains(entry.outboxId)) continue;
-      await _consumeReconciledMutation(current, entry);
+      await _consumeReconciledMutation(current, entry, generation);
     }
     await _flushOutbox(force: true);
   }
 
   Future<void> _flushOutbox({bool force = false}) async {
     final current = _session;
+    final generation = _connectionGeneration;
     if (current == null || !_connected || !_serverCapabilitiesKnown) return;
     if (_flushingOutbox) return;
     _flushingOutbox = true;
@@ -1035,9 +1191,9 @@ class MeshSocket {
         final entries = await _outboxStore.load(current);
         final now = DateTime.now().toUtc();
         for (final entry in entries) {
-          if (!_connected) break;
+          if (!_isCurrentGeneration(generation) || !_connected) break;
           if (!force && !_mutationRetryDue(entry, now)) continue;
-          await _sendOutboxEntry(current, entry);
+          await _sendOutboxEntry(current, entry, generation);
         }
       });
     } catch (_) {
@@ -1045,13 +1201,18 @@ class MeshSocket {
     } finally {
       _flushingOutbox = false;
       _scheduleMutationRetry();
+      if (generation != _connectionGeneration && !_closed && _connected) {
+        unawaited(_flushOutbox());
+      }
     }
   }
 
   Future<void> _sendOutboxEntry(
     Session current,
     MutationOutboxEntry entry,
+    int generation,
   ) async {
+    if (!_isCurrentGeneration(generation) || !_serverCapabilitiesKnown) return;
     if (!_sendRaw(entry.packet)) {
       await _outboxStore.markQueued(
         current,
@@ -1129,6 +1290,7 @@ class MeshSocket {
   Future<void> _consumeReconciledMutation(
     Session current,
     MutationOutboxEntry entry,
+    int generation,
   ) async {
     var operationComplete = false;
     await _serializeOutbox(() async {
@@ -1138,6 +1300,7 @@ class MeshSocket {
         entry.operationId,
       );
     });
+    if (!_isCurrentGeneration(generation)) return;
     final handler = _packetHandler;
     if (handler == null) return;
     await _trace(
@@ -1167,6 +1330,7 @@ class MeshSocket {
   Future<void> _consumeMutationAck(
     Map<String, dynamic> packet,
     PacketHandler onPacket,
+    int generation,
   ) async {
     final current = _session;
     final outboxId = packet['outbox_id']?.toString() ?? '';
@@ -1178,6 +1342,7 @@ class MeshSocket {
         await _outboxStore.delete(current, outboxId);
       });
     }
+    if (!_isCurrentGeneration(generation)) return;
     await _trace(
       operationId: packet['operation_id']?.toString() ?? '',
       packetId: packet['packet_id']?.toString() ?? '',
@@ -1196,7 +1361,7 @@ class MeshSocket {
 
   bool _sendRaw(Map<String, dynamic> packet) {
     final channel = _channel;
-    if (!_connected || channel == null) return false;
+    if (_closed || !_connected || channel == null) return false;
     try {
       channel.sink.add(jsonEncode(packet));
       return true;
@@ -1265,6 +1430,8 @@ class MeshSocket {
       'supports_sync_v2_delta_batch': true,
       'sync_cursor': _syncCursor,
       'supports_offline_packet_ack': true,
+      'supports_reliable_delivery_v1': true,
+      'supports_reliable_sync_v2': true,
       'supports_mutation_ack': true,
       'supports_mutation_reconcile': true,
       'supports_file_transfer_v2': true,
@@ -1398,6 +1565,7 @@ class MeshSocket {
         );
     _reconnectTimer = Timer(delay, () {
       if (!_isCurrentGeneration(generation)) return;
+      final reconnectGeneration = _connectionGeneration + 1;
       connect(
         session: session,
         publicKey: publicKey,
@@ -1408,7 +1576,7 @@ class MeshSocket {
         reactivateDevice: false,
         syncCursor: _syncCursor,
       ).catchError((_) {
-        final failedGeneration = _connectionGeneration;
+        if (!_isCurrentGeneration(reconnectGeneration)) return;
         _scheduleReconnect(
           session,
           publicKey,
@@ -1416,7 +1584,7 @@ class MeshSocket {
           onPacket,
           onStatus,
           deviceName,
-          generation: failedGeneration,
+          generation: reconnectGeneration,
         );
       });
     });
@@ -1429,8 +1597,9 @@ class MeshSocket {
     _reconnectTimer = null;
     _welcomeTimer?.cancel();
     _welcomeTimer = null;
-    await _subscription?.cancel();
-    await _channel?.sink.close();
+    final subscription = _subscription;
+    final channel = _channel;
+    _subscription = null;
     _channel = null;
     _connected = false;
     _serverCapabilitiesKnown = false;
@@ -1448,6 +1617,8 @@ class MeshSocket {
     _completeMutationStatusRequests();
     _session = null;
     _packetHandler = null;
+    await subscription?.cancel();
+    await channel?.sink.close();
   }
 
   void _completeMutationStatusRequests() {

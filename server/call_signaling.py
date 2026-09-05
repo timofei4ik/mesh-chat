@@ -203,7 +203,7 @@ class CallSignalingService:
             destination_presence.get("login") or ""
         ).strip().lower()
         packet_type = str(packet.get("type") or "")
-        exact_device_signal = packet_type in {
+        exact_device_signal = bool(packet.get("group_id")) or packet_type in {
             "call_handoff_request",
             "call_handoff_accept",
         } or (

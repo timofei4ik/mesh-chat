@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 42,
-  "updatedAt": "2026-09-02T00:00:00Z",
+  "catalogVersion": 43,
+  "updatedAt": "2026-09-06T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-group-calls-1-0-95",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Group audio and shared call captions",
+      "summary": "Updated group calls connect up to eight devices with audio between participants. MeshPro can start shared captions; each participant chooses whether to share their speech for recognition. Delivery, reconnect handling and caption synchronization have also been improved. Update every device before testing the new group calls.",
+      "publishedAt": "2026-09-06"
+    },
     {
       "id": "meshchat-document-scanner-1-0-94",
       "appId": "meshchat",
@@ -84,7 +92,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.94",
+      "version": "1.0.95",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -97,15 +105,15 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 197,
+      "build": 198,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-01T00:00:00Z",
+      "updated_at": "2026-09-06T00:00:00Z",
       "release": {
-        "title": "Built-in document and photo editor",
-        "publishedAt": "2026-09-02",
-        "notes": ["Every gallery photo opens in the editor before it is sent", "Photos keep their original colors until a filter is selected", "Document scans support perspective alignment, rotation and clean or monochrome processing", "Several pages can be reordered and sent as a PDF", "MeshScan and MeshDrop were removed from the app catalog"]
+        "title": "Group calls and shared captions",
+        "publishedAt": "2026-09-06",
+        "notes": ["Group audio connects up to eight invited devices; update all participants", "MeshPro starts shared captions, with individual consent before speech recognition", "Caption sessions and translation requests are synchronized across server workers", "Live-caption usage is counted in audio seconds", "Improved delivery recovery, reconnect handling and protection against stale call events"]
       }
     },
     {

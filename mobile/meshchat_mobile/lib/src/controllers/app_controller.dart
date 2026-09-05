@@ -22,6 +22,7 @@ import '../services/app_settings_store.dart';
 import '../services/ble_chat_service.dart';
 import '../services/call_alert_service.dart';
 import '../services/call_caption_service.dart';
+import '../services/group_call_mesh.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
 import '../services/delivery_trace_store.dart';
@@ -263,6 +264,7 @@ class CallCaptionLine {
     required this.updatedAt,
     this.translation = '',
     this.translating = false,
+    this.revision = 0,
   });
 
   final String id;
@@ -273,6 +275,21 @@ class CallCaptionLine {
   final DateTime updatedAt;
   final String translation;
   final bool translating;
+  final int revision;
+
+  CallCaptionLine mergeUpdate(CallCaptionLine next) {
+    if (id != next.id || sourceNode != next.sourceNode) return next;
+    if ((revision > 0 && next.revision > 0 && next.revision < revision) ||
+        (isFinal && !next.isFinal)) {
+      return this;
+    }
+    if (next.text == text &&
+        next.translation.isEmpty &&
+        translation.isNotEmpty) {
+      return next.copyWith(translation: translation, translating: false);
+    }
+    return next;
+  }
 
   CallCaptionLine copyWith({
     String? speaker,
@@ -291,6 +308,7 @@ class CallCaptionLine {
       updatedAt: updatedAt ?? this.updatedAt,
       translation: translation ?? this.translation,
       translating: translating ?? this.translating,
+      revision: revision,
     );
   }
 }
@@ -306,6 +324,7 @@ class ActiveCall {
     this.endReason = '',
     this.localMuted = false,
     this.isGroup = false,
+    this.groupMesh = false,
     this.groupId = '',
     this.groupMembers = const [],
     this.connectedNodes = const {},
@@ -333,6 +352,7 @@ class ActiveCall {
   final String endReason;
   final bool localMuted;
   final bool isGroup;
+  final bool groupMesh;
   final String groupId;
   final List<String> groupMembers;
   final Set<String> connectedNodes;
@@ -349,6 +369,28 @@ class ActiveCall {
   final bool remoteScreenSharing;
   final String handoffSourceNode;
   final String handoffFromCallId;
+
+  bool acceptsSignal(Map<String, dynamic> packet, {bool caption = false}) {
+    if (status == CallStatus.ended || packet['call_id'] != callId) return false;
+    final source = packet['source_node']?.toString() ?? '';
+    if (source.isEmpty) return false;
+    if (!isGroup) {
+      // The relay stamps sender_login from the authenticated connection; another
+      // device of the same peer account may answer an account-fanned-out offer.
+      final account = peer.accountLogin.trim().toLowerCase();
+      return source == peer.nodeId ||
+          (account.isNotEmpty &&
+              packet['sender_login']?.toString().trim().toLowerCase() ==
+                  account);
+    }
+    if (packet['group_id'] != null && packet['group_id'] != groupId) {
+      return false;
+    }
+    if (incoming && !caption && !groupMesh) return source == peer.nodeId;
+    return groupMembers.contains(source) ||
+        connectedNodes.contains(source) ||
+        (incoming && source == peer.nodeId);
+  }
 
   ActiveCall copyWith({
     CallStatus? status,
@@ -377,6 +419,7 @@ class ActiveCall {
       endReason: endReason ?? this.endReason,
       localMuted: localMuted ?? this.localMuted,
       isGroup: isGroup,
+      groupMesh: groupMesh,
       groupId: groupId,
       groupMembers: groupMembers,
       connectedNodes: connectedNodes ?? this.connectedNodes,
@@ -437,6 +480,13 @@ class AppController extends ChangeNotifier {
   final CallService _calls = CallService();
   final CallCaptionService _callCaptionService = CallCaptionService();
   final Map<String, CallService> _groupCalls = {};
+  GroupCallMesh? _groupMesh;
+  Future<void>? _callFinishing;
+  bool _groupMeshSupported = false;
+  final Map<String, List<Map<String, dynamic>>> _groupPendingIce = {};
+  final Map<String, Map<String, dynamic>> _groupPendingOffers = {};
+  final Map<String, ({DateTime expires, List<Map<String, dynamic>> candidates})>
+  _earlyCallIce = {};
   List<Map<String, dynamic>> _callIceServers = const [];
   final NotificationService _notifications = NotificationService();
   final OwnProfileStore _ownProfileStore = OwnProfileStore();
@@ -506,12 +556,24 @@ class AppController extends ChangeNotifier {
   String _activeThreadKey = '';
   Timer? _callTicker;
   Timer? _callPhaseTimeout;
-  Timer? _callReconnectTimer;
+  final Map<String, Timer> _callReconnectTimers = {};
+  int _callCaptionPacketRevision = 0;
   final Map<String, int> _callReconnectAttempts = {};
   Timer? _callCaptionSendTimer;
   final List<CallCaptionLine> _callCaptionLines = [];
   final Set<String> _callCaptionTranslationsInFlight = {};
   String _callCaptionStatus = 'Captions off';
+  String _captionSponsor = '';
+  String _captionSessionId = '';
+  bool sharedCaptionInvitation = false;
+  bool _sharedCaptionConsent = false;
+  int _captionConsentRevision = -1;
+  int _captionCaptureGeneration = 0;
+  Timer? _captionLeaseTimer;
+  Timer? _captionHeartbeatTimer;
+  final Set<String> _closedCaptionSessions = {};
+  final Map<String, Completer<String?>> _captionSessionRequests = {};
+  bool get hasSharedCaptionSession => _captionSessionId.isNotEmpty;
   String _activeCaptionId = '';
   String _pendingCaptionText = '';
   bool _pendingCaptionFinal = false;
@@ -1592,6 +1654,7 @@ class AppController extends ChangeNotifier {
     required String text,
     required String targetLanguage,
     bool emojify = false,
+    String liveCallId = '',
   }) async {
     final current = session;
     final normalizedText = text.trim();
@@ -1613,7 +1676,9 @@ class AppController extends ChangeNotifier {
     }
     // The server is authoritative for entitlement and quota checks. A stale
     // local subscription snapshot must not prevent an otherwise valid request.
-    await _refreshMeshProFeature('ai_message_translation');
+    if (liveCallId.isEmpty) {
+      await _refreshMeshProFeature('ai_message_translation');
+    }
 
     final requestId = const Uuid().v4();
     final completer = Completer<AiTranslationResult>();
@@ -1629,6 +1694,8 @@ class AppController extends ChangeNotifier {
       'text': normalizedText,
       'target_language': normalizedTarget,
       'emojify': emojify,
+      if (liveCallId.isNotEmpty) 'live_call_id': liveCallId,
+      if (liveCallId.isNotEmpty) 'caption_session_id': _captionSessionId,
     });
     return completer.future.timeout(
       const Duration(seconds: 55),
@@ -3166,6 +3233,21 @@ class AppController extends ChangeNotifier {
         _applyCallIceServers(packet);
       case 'call_offer':
         await _handleCallOffer(packet);
+      case 'call_group_ready':
+        await _handleGroupCallReady(packet);
+      case 'call_group_offer':
+        await _handleGroupPeerOffer(packet);
+      case 'call_caption_session':
+        await _handleSharedCaptionSession(packet);
+      case 'call_caption_session_result':
+        final request = _captionSessionRequests.remove(packet['request_id']);
+        if (request != null && !request.isCompleted) {
+          request.complete(
+            packet['ok'] == true
+                ? null
+                : packet['error']?.toString() ?? 'Caption session unavailable',
+          );
+        }
       case 'call_answer':
         await _handleCallAnswer(packet);
       case 'call_end':
@@ -3193,6 +3275,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _applyCallIceServers(Map<String, dynamic> packet) {
+    _groupMeshSupported = packet['group_mesh_version'] == 1;
     final raw = packet['ice_servers'];
     if (raw is! List) return;
     final servers = raw
@@ -6736,6 +6819,7 @@ class AppController extends ChangeNotifier {
     Profile recipient, {
     String handoffFromCallId = '',
   }) async {
+    await _callFinishing;
     if (session == null) return 'No active session';
     if (isSavedMessagesProfile(recipient)) return 'Cannot call Saved Messages';
     if (recipient.nodeId.isEmpty || recipient.nodeId == myNodeId) {
@@ -6806,7 +6890,11 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> startGroupCall(ChatThread thread) async {
+    await _callFinishing;
     if (session == null) return 'No active session';
+    if (!_socket.isConnected || !_groupMeshSupported) {
+      return 'Group audio requires an updated, connected server';
+    }
     if (!thread.isGroup || thread.groupId.isEmpty) {
       return 'Cannot call this group';
     }
@@ -6819,6 +6907,9 @@ class AppController extends ChangeNotifier {
         .toSet()
         .toList();
     if (recipients.isEmpty) return 'No group members to call';
+    if (recipients.length >= GroupCallMesh.maxParticipants) {
+      return 'Group audio currently supports up to 8 participants';
+    }
     final hdAudio = _meshProCallFeatureEnabled(
       'call_hd_audio',
       appSettings.meshProHdAudio,
@@ -6834,25 +6925,23 @@ class AppController extends ChangeNotifier {
       incoming: false,
       startedAt: DateTime.now(),
       isGroup: true,
+      groupMesh: true,
       groupId: thread.groupId,
       groupMembers: recipients,
       hdAudio: hdAudio,
       enhancedNoiseSuppression: enhancedNoiseSuppression,
     );
     _setActiveCall(call);
+    _groupMesh = GroupCallMesh(
+      localNode: myNodeId,
+      hostNode: myNodeId,
+      members: recipients,
+    )..accepted = true;
     notifyListeners();
 
     var started = 0;
     for (final recipientNode in recipients) {
-      final service = CallService();
-      service.setIceServers(_callIceServers);
-      service.onConnectionStateChanged = (phase) {
-        _handleCallConnectionState(recipientNode, phase);
-      };
-      service.onQualityChanged = (quality) {
-        _handleCallQuality(recipientNode, quality);
-      };
-      _groupCalls[recipientNode] = service;
+      final service = _groupService(call, recipientNode);
       final offerSdp = await service
           .startOutgoing(
             onIceCandidate: (candidate) =>
@@ -6861,6 +6950,14 @@ class AppController extends ChangeNotifier {
             enhancedNoiseSuppression: enhancedNoiseSuppression,
           )
           .catchError((_) async => '');
+      if (activeCall?.callId != call.callId ||
+          activeCall?.status == CallStatus.ended) {
+        if (identical(_groupCalls[recipientNode], service)) {
+          _groupCalls.remove(recipientNode);
+        }
+        unawaited(service.end().catchError((_) {}));
+        return null;
+      }
       if (offerSdp.isEmpty) {
         unawaited(service.end().catchError((_) {}));
         _groupCalls.remove(recipientNode);
@@ -6885,6 +6982,7 @@ class AppController extends ChangeNotifier {
             ? thread.profile.displayName
             : thread.groupName,
         'group_members': recipients,
+        'group_mesh': 1,
       });
     }
     if (started == 0) {
@@ -6935,8 +7033,11 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _calls.setIceServers(_callIceServers);
-    final answerSdp = await _calls
+    final service = call.groupMesh
+        ? _groupService(call, call.peer.nodeId)
+        : _calls;
+    service.setIceServers(_callIceServers);
+    final answerSdp = await service
         .acceptIncoming(
           remoteOfferSdp: call.remoteOfferSdp,
           onIceCandidate: (candidate) => _sendCallIce(call, candidate),
@@ -6944,18 +7045,25 @@ class AppController extends ChangeNotifier {
           enhancedNoiseSuppression: call.enhancedNoiseSuppression,
         )
         .catchError((error) async {
-          _sendCallEnd(call, 'audio_error');
-          _setActiveCall(
-            call.copyWith(
-              status: CallStatus.ended,
-              endReason: 'accept failed: $error',
-            ),
-          );
-          notifyListeners();
+          if (activeCall?.callId == call.callId &&
+              activeCall?.status != CallStatus.ended) {
+            await _finishCall(
+              call,
+              reason: 'accept failed: $error',
+              broadcast: true,
+            );
+          }
           return '';
         });
     if (answerSdp.isEmpty) return;
-    _setActiveCall(call.copyWith(status: CallStatus.connecting, quality: 0));
+    if (activeCall?.callId != call.callId ||
+        activeCall?.status == CallStatus.ended) {
+      return;
+    }
+    _setActiveCall(
+      activeCall!.copyWith(status: CallStatus.connecting, quality: 0),
+    );
+    if (call.groupMesh) _groupMesh?.accepted = true;
     notifyListeners();
     _socket.send({
       'type': 'call_answer',
@@ -6969,7 +7077,167 @@ class AppController extends ChangeNotifier {
       'sender': session!.login,
       'sdp': answerSdp,
       if (call.isGroup) 'group_id': call.groupId,
+      if (call.groupMesh) 'group_mesh': 1,
     });
+    if (call.groupMesh) {
+      for (final node in _groupMesh!.invited.where(
+        (node) => node != myNodeId,
+      )) {
+        _sendGroupCallReady(call, node);
+      }
+      await _connectReadyGroupPeers(call);
+    }
+  }
+
+  CallService _groupService(ActiveCall call, String node) {
+    return _groupCalls.putIfAbsent(node, () {
+      final service = CallService(
+        audioRoom: call.callId,
+        initialMuted: activeCall?.localMuted ?? false,
+      );
+      service.setIceServers(_callIceServers);
+      service.onConnectionStateChanged = (phase) {
+        if (activeCall?.callId == call.callId) {
+          _handleCallConnectionState(node, phase);
+        }
+      };
+      service.onQualityChanged = (quality) {
+        if (activeCall?.callId == call.callId) {
+          _handleCallQuality(node, quality);
+        }
+      };
+      for (final candidate
+          in _groupPendingIce.remove(node) ?? <Map<String, dynamic>>[]) {
+        unawaited(service.addIceCandidate(candidate).catchError((_) {}));
+      }
+      return service;
+    });
+  }
+
+  void _sendGroupCallReady(ActiveCall call, String node) {
+    _socket.send({
+      'type': 'call_group_ready',
+      'packet_id': const Uuid().v4(),
+      'source_node': myNodeId,
+      'destination_node': node,
+      'call_id': call.callId,
+      'group_id': call.groupId,
+      'group_mesh': 1,
+    });
+  }
+
+  Future<void> _handleGroupCallReady(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    final mesh = _groupMesh;
+    if (call == null ||
+        !call.groupMesh ||
+        mesh == null ||
+        !call.acceptsSignal(packet)) {
+      return;
+    }
+    final source = packet['source_node']?.toString() ?? '';
+    if (mesh.markReady(source) && mesh.accepted) {
+      _sendGroupCallReady(call, source);
+    }
+    if (mesh.accepted) await _connectReadyGroupPeers(call);
+  }
+
+  Future<void> _connectReadyGroupPeers(ActiveCall call) async {
+    final mesh = _groupMesh;
+    if (mesh == null || !mesh.accepted) return;
+    for (final node in mesh.ready.toList()) {
+      if (activeCall?.callId != call.callId ||
+          activeCall?.status == CallStatus.ended) {
+        return;
+      }
+      final queued = _groupPendingOffers.remove(node);
+      if (queued != null) await _handleGroupPeerOffer(queued);
+      if (!mesh.shouldOffer(node) || _groupCalls.containsKey(node)) continue;
+      final service = _groupService(call, node);
+      try {
+        final sdp = await service.startOutgoing(
+          onIceCandidate: (candidate) => _sendCallIceTo(call, node, candidate),
+          hdAudio: call.hdAudio,
+          enhancedNoiseSuppression: call.enhancedNoiseSuppression,
+        );
+        if (activeCall?.callId != call.callId ||
+            activeCall?.status == CallStatus.ended ||
+            !identical(_groupCalls[node], service)) {
+          await service.end();
+          continue;
+        }
+        await service.setMuted(activeCall!.localMuted);
+        await service.setSpeakerEnabled(activeCall!.speakerOn);
+        _socket.send({
+          'type': 'call_group_offer',
+          'packet_id': const Uuid().v4(),
+          'source_node': myNodeId,
+          'destination_node': node,
+          'call_id': call.callId,
+          'group_id': call.groupId,
+          'sdp': sdp,
+          'group_mesh': 1,
+        });
+      } catch (error) {
+        if (identical(_groupCalls[node], service)) _groupCalls.remove(node);
+        await service.end().catchError((_) {});
+        addDiagnostic('call', 'Group audio link failed: $error');
+      }
+    }
+  }
+
+  Future<void> _handleGroupPeerOffer(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    final mesh = _groupMesh;
+    if (call == null ||
+        !call.groupMesh ||
+        mesh == null ||
+        !call.acceptsSignal(packet)) {
+      return;
+    }
+    final source = packet['source_node']?.toString() ?? '';
+    if (!mesh.invited.contains(source) ||
+        mesh.departed.contains(source) ||
+        source == myNodeId) {
+      return;
+    }
+    if (!mesh.accepted || !mesh.ready.contains(source)) {
+      _groupPendingOffers[source] = packet;
+      return;
+    }
+    if (!mesh.acceptsOffer(source) || _groupCalls.containsKey(source)) return;
+    final service = _groupService(call, source);
+    try {
+      final sdp = await service.acceptIncoming(
+        remoteOfferSdp: packet['sdp']?.toString() ?? '',
+        onIceCandidate: (candidate) => _sendCallIceTo(call, source, candidate),
+        hdAudio: call.hdAudio,
+        enhancedNoiseSuppression: call.enhancedNoiseSuppression,
+      );
+      if (activeCall?.callId != call.callId ||
+          activeCall?.status == CallStatus.ended ||
+          !identical(_groupCalls[source], service)) {
+        await service.end();
+        return;
+      }
+      await service.setMuted(activeCall!.localMuted);
+      await service.setSpeakerEnabled(activeCall!.speakerOn);
+      _socket.send({
+        'type': 'call_answer',
+        'packet_id': const Uuid().v4(),
+        'source_node': myNodeId,
+        'destination_node': source,
+        'call_id': call.callId,
+        'group_id': call.groupId,
+        'group_mesh': 1,
+        'accepted': true,
+        'sdp': sdp,
+      });
+    } catch (error) {
+      if (identical(_groupCalls[source], service)) _groupCalls.remove(source);
+      await service.end().catchError((_) {});
+      addDiagnostic('call', 'Group audio answer failed: $error');
+    }
   }
 
   Future<void> declineCall() async {
@@ -7032,6 +7300,9 @@ class AppController extends ChangeNotifier {
     if (call == null || call.status == CallStatus.ended) {
       return 'Start a call before enabling captions';
     }
+    if (call.groupMesh && !(_groupMesh?.accepted ?? false)) {
+      return 'Accept the call before enabling captions';
+    }
     if (callCaptionsEnabled) {
       await _stopCallCaptions(clearLines: false);
       notifyListeners();
@@ -7040,6 +7311,7 @@ class AppController extends ChangeNotifier {
     if (!await _refreshMeshProFeature('ai_voice_transcription')) {
       return 'Live captions require MeshPro';
     }
+    if (call.groupMesh) return await _requestSharedCaptions('start');
     callCaptionsEnabled = true;
     if (call.localMuted) {
       _callCaptionStatus = 'Paused while muted';
@@ -7053,6 +7325,124 @@ class AppController extends ChangeNotifier {
     }
     notifyListeners();
     return error;
+  }
+
+  Future<String?> _requestSharedCaptions(String action) async {
+    final call = activeCall;
+    if (call == null ||
+        !call.groupMesh ||
+        call.status == CallStatus.ended ||
+        !_socket.isConnected) {
+      return 'No active group call connection';
+    }
+    final id = const Uuid().v4();
+    final result = Completer<String?>();
+    _captionSessionRequests[id] = result;
+    _socket.send({
+      'type': 'call_caption_session_request',
+      'request_id': id,
+      'call_id': call.callId,
+      'group_id': call.groupId,
+      'action': action,
+      'session_id': _captionSessionId,
+      if (action == 'start')
+        'members': _groupMesh?.invited.toList() ?? [myNodeId],
+    });
+    try {
+      return await result.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => 'Caption session timed out',
+      );
+    } finally {
+      _captionSessionRequests.remove(id);
+    }
+  }
+
+  Future<String?> answerSharedCaptionInvitation(bool accept) async {
+    if (!hasSharedCaptionSession) return 'Caption invitation expired';
+    if (!accept) {
+      await _stopCallCaptions(clearLines: false);
+      notifyListeners();
+      return null;
+    }
+    return await _requestSharedCaptions('join');
+  }
+
+  Future<void> _handleSharedCaptionSession(Map<String, dynamic> packet) async {
+    final call = activeCall;
+    if (packet['source_node'] != 'SERVER' ||
+        call == null ||
+        !call.groupMesh ||
+        call.callId != packet['call_id'] ||
+        call.groupId != packet['group_id'] ||
+        call.status == CallStatus.ended ||
+        !(_groupMesh?.accepted ?? false)) {
+      return;
+    }
+    final id = packet['session_id']?.toString() ?? '';
+    if (id.isEmpty || _closedCaptionSessions.contains(id)) return;
+    if (packet['enabled'] != true) {
+      if (id == _captionSessionId) {
+        await _stopCallCaptions(clearLines: false, notifySession: false);
+      }
+      return;
+    }
+    final expires = DateTime.fromMillisecondsSinceEpoch(
+      (int.tryParse(packet['expires_at'].toString()) ?? 0) * 1000,
+    );
+    final remaining = expires.difference(DateTime.now());
+    if (remaining <= Duration.zero) return;
+    final sponsor = packet['sponsor_node']?.toString() ?? '';
+    if (!(_groupMesh?.invited.contains(sponsor) ?? false)) return;
+    if (_captionSessionId.isNotEmpty && _captionSessionId != id) {
+      await _stopCallCaptions(clearLines: false, notifySession: false);
+    }
+    final revision = int.tryParse(packet['revision']?.toString() ?? '') ?? 0;
+    if (_captionSessionId == id && revision < _captionConsentRevision) return;
+    _captionConsentRevision = revision;
+    _captionSessionId = id;
+    _captionSponsor = sponsor;
+    _captionLeaseTimer?.cancel();
+    _captionLeaseTimer = Timer(
+      remaining > const Duration(seconds: 90)
+          ? const Duration(seconds: 90)
+          : remaining,
+      () {
+        if (_captionSessionId == id) {
+          unawaited(
+            _stopCallCaptions(
+              clearLines: false,
+              notifySession: false,
+            ).then((_) => notifyListeners()),
+          );
+        }
+      },
+    );
+    if (sponsor == myNodeId) {
+      _captionHeartbeatTimer ??= Timer.periodic(const Duration(seconds: 30), (
+        _,
+      ) {
+        if (_captionSessionId == id) {
+          unawaited(_requestSharedCaptions('heartbeat'));
+        }
+      });
+    }
+    final consent = packet['consent'];
+    sharedCaptionInvitation = consent == 0;
+    _sharedCaptionConsent = consent == 1;
+    if (_sharedCaptionConsent && !callCaptionsEnabled) {
+      callCaptionsEnabled = true;
+      if (call.localMuted) {
+        _callCaptionStatus = 'Paused while muted';
+      } else {
+        final error = await _startCallCaptions();
+        if (error != null && _captionSessionId == id) {
+          await _stopCallCaptions(clearLines: false);
+          _callCaptionStatus = 'Captions unavailable';
+        }
+      }
+    }
+    notifyListeners();
   }
 
   void setCallCaptionTranslation({
@@ -7101,9 +7491,20 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> _startCallCaptions() {
+    final callId = activeCall?.callId;
+    final generation = ++_captionCaptureGeneration;
     return _callCaptionService.start(
-      onResult: _handleLocalCallCaption,
+      onResult: (text, isFinal, confidence) {
+        if (activeCall?.callId == callId &&
+            generation == _captionCaptureGeneration) {
+          _handleLocalCallCaption(text, isFinal, confidence);
+        }
+      },
       onStatus: (status) {
+        if (activeCall?.callId != callId ||
+            generation != _captionCaptureGeneration) {
+          return;
+        }
         if (!callCaptionsEnabled && status != 'Captions off') return;
         _callCaptionStatus = status;
         notifyListeners();
@@ -7143,6 +7544,8 @@ class AppController extends ChangeNotifier {
         'audio_base64': base64Encode(wavBytes),
         'duration_seconds': duration.inMilliseconds / 1000,
         'transcription_language': callCaptionSourceLanguage,
+        if (_sharedCaptionConsent) 'live_call_id': call.callId,
+        if (_sharedCaptionConsent) 'caption_session_id': _captionSessionId,
       });
     } catch (_) {
       _aiTranscriptionCompleters.remove(requestId);
@@ -7171,12 +7574,57 @@ class AppController extends ChangeNotifier {
         ),
       );
       return result.text.trim().isEmpty ? null : result.text.trim();
-    } on AiTranscriptionException {
+    } on AiTranscriptionException catch (error) {
+      if (activeCall?.callId == call.callId &&
+          const {
+            'quota_exceeded',
+            'caption_session_expired',
+            'meshpro_required',
+          }.contains(error.code)) {
+        unawaited(
+          _stopCallCaptions(clearLines: false).then((_) {
+            _callCaptionStatus = error.code == 'quota_exceeded'
+                ? 'Caption allowance reached'
+                : 'Caption session ended';
+            notifyListeners();
+          }),
+        );
+      }
       return null;
     }
   }
 
-  Future<void> _stopCallCaptions({required bool clearLines}) async {
+  Future<void> _stopCallCaptions({
+    required bool clearLines,
+    bool notifySession = true,
+  }) async {
+    _captionCaptureGeneration++;
+    final call = activeCall;
+    if (_captionSessionId.isNotEmpty) {
+      if (notifySession && call != null && _socket.isConnected) {
+        _socket.send({
+          'type': 'call_caption_session_request',
+          'request_id': const Uuid().v4(),
+          'call_id': call.callId,
+          'group_id': call.groupId,
+          'session_id': _captionSessionId,
+          'action': _captionSponsor == myNodeId ? 'stop' : 'decline',
+        });
+      }
+      _closedCaptionSessions.add(_captionSessionId);
+      while (_closedCaptionSessions.length > 32) {
+        _closedCaptionSessions.remove(_closedCaptionSessions.first);
+      }
+    }
+    _captionLeaseTimer?.cancel();
+    _captionHeartbeatTimer?.cancel();
+    _captionLeaseTimer = null;
+    _captionHeartbeatTimer = null;
+    _captionSessionId = '';
+    _captionSponsor = '';
+    _sharedCaptionConsent = false;
+    _captionConsentRevision = -1;
+    sharedCaptionInvitation = false;
     callCaptionsEnabled = false;
     _callCaptionSendTimer?.cancel();
     _callCaptionSendTimer = null;
@@ -7286,6 +7734,7 @@ class AppController extends ChangeNotifier {
           }
         : <String>{call.peer.nodeId};
     destinations.removeWhere((node) => node.isEmpty || node == myNodeId);
+    final revision = ++_callCaptionPacketRevision;
     for (final destination in destinations) {
       _socket.send({
         'type': 'call_caption',
@@ -7296,6 +7745,7 @@ class AppController extends ChangeNotifier {
         'ttl': 5,
         'call_id': call.callId,
         'caption_id': captionId,
+        'revision': revision,
         'speaker': ownProfile.displayName,
         'text': text,
         'final': isFinal,
@@ -7304,18 +7754,22 @@ class AppController extends ChangeNotifier {
         if (translationLanguage.trim().isNotEmpty)
           'translation_language': translationLanguage.trim(),
         if (call.isGroup) 'group_id': call.groupId,
+        if (_sharedCaptionConsent) 'caption_session_id': _captionSessionId,
       });
     }
   }
 
   void _handleCallCaption(Map<String, dynamic> packet) {
     final call = activeCall;
-    if (call == null || call.status == CallStatus.ended) return;
-    if (packet['call_id']?.toString() != call.callId) return;
+    if (call == null || !call.acceptsSignal(packet, caption: true)) return;
     final source = packet['source_node']?.toString() ?? '';
     final captionId = packet['caption_id']?.toString() ?? '';
     final text = packet['text']?.toString().trim() ?? '';
-    final providedTranslation = packet['translation']?.toString().trim() ?? '';
+    final providedTranslation =
+        callCaptionTranslationEnabled &&
+            packet['translation_language'] != callCaptionTargetLanguage
+        ? ''
+        : packet['translation']?.toString().trim() ?? '';
     if (source.isEmpty ||
         source == myNodeId ||
         captionId.isEmpty ||
@@ -7333,6 +7787,7 @@ class AppController extends ChangeNotifier {
           : 'Participant',
       text: text,
       isFinal: packet['final'] == true,
+      revision: int.tryParse(packet['revision']?.toString() ?? '') ?? 0,
       updatedAt: DateTime.now(),
       // A MeshPro speaker may attach a ready translation. It is intentionally
       // visible to every participant, including listeners without MeshPro.
@@ -7341,7 +7796,8 @@ class AppController extends ChangeNotifier {
     _upsertCallCaption(caption);
     if (caption.isFinal &&
         caption.translation.isEmpty &&
-        _hasMeshProFeature('ai_message_translation')) {
+        (_hasMeshProFeature('ai_message_translation') ||
+            _sharedCaptionConsent)) {
       // Fallback for calls where the speaker did not request a translation.
       unawaited(_translateCallCaption(caption));
     }
@@ -7355,7 +7811,7 @@ class AppController extends ChangeNotifier {
     if (index < 0) {
       _callCaptionLines.add(caption);
     } else {
-      _callCaptionLines[index] = caption;
+      _callCaptionLines[index] = _callCaptionLines[index].mergeUpdate(caption);
     }
     // Keep final captions visible long enough for the separate AI translation
     // response to return on a busy provider.
@@ -7377,6 +7833,7 @@ class AppController extends ChangeNotifier {
       return;
     }
     final targetLanguage = callCaptionTargetLanguage;
+    final translatingCallId = activeCall?.callId;
     final requestKey =
         '$caption.sourceNode:${caption.id}:${caption.text}:$targetLanguage';
     if (!_callCaptionTranslationsInFlight.add(requestKey)) return;
@@ -7390,8 +7847,11 @@ class AppController extends ChangeNotifier {
       final result = await translateMessageWithAi(
         text: caption.text,
         targetLanguage: targetLanguage,
+        liveCallId: _sharedCaptionConsent ? activeCall?.callId ?? '' : '',
       );
       if (!callCaptionTranslationEnabled ||
+          activeCall?.callId != translatingCallId ||
+          activeCall?.status == CallStatus.ended ||
           targetLanguage != callCaptionTargetLanguage) {
         return;
       }
@@ -7403,7 +7863,14 @@ class AppController extends ChangeNotifier {
         );
       });
       final translatedText = result.text.trim();
-      if (relayToPeers && translatedText.isNotEmpty) {
+      if (relayToPeers &&
+          translatedText.isNotEmpty &&
+          _callCaptionLines.any(
+            (line) =>
+                line.sourceNode == caption.sourceNode &&
+                line.id == caption.id &&
+                line.text == caption.text,
+          )) {
         _sendCallCaptionPacket(
           captionId: caption.id,
           text: caption.text,
@@ -7559,9 +8026,12 @@ class AppController extends ChangeNotifier {
   }
 
   void _sendCallEnd(ActiveCall call, String reason) {
-    if (call.isGroup && !call.incoming) {
-      final destinations = {...call.groupMembers, ..._groupCalls.keys}
-        ..remove(myNodeId);
+    if (call.isGroup && (!call.incoming || call.groupMesh)) {
+      final destinations = {
+        ...call.groupMembers,
+        ..._groupCalls.keys,
+        if (call.incoming) call.peer.nodeId,
+      }..remove(myNodeId);
       for (final destination in destinations) {
         _sendCallEndTo(call, destination, reason);
       }
@@ -7691,6 +8161,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _handleCallOffer(Map<String, dynamic> packet) async {
+    await _callFinishing;
     final sender = packet['source_node']?.toString() ?? '';
     if (sender.isEmpty || sender == myNodeId) return;
     if (isBlocked(sender)) return;
@@ -7709,6 +8180,14 @@ class AppController extends ChangeNotifier {
     }
     final groupId = packet['group_id']?.toString() ?? '';
     final groupName = packet['group_name']?.toString() ?? '';
+    final groupMesh = groupId.isNotEmpty && packet['group_mesh'] == 1;
+    final members = _stringList(packet['group_members']);
+    if (groupMesh &&
+        ({...members, sender, myNodeId}.length >
+                GroupCallMesh.maxParticipants ||
+            !members.contains(myNodeId))) {
+      return;
+    }
     final handoffFromCallId = packet['handoff_from_call_id']?.toString() ?? '';
     final replacingCurrentCall =
         handoffFromCallId.isNotEmpty && activeCall?.callId == handoffFromCallId;
@@ -7762,7 +8241,8 @@ class AppController extends ChangeNotifier {
         remoteOfferSdp: packet['sdp']?.toString() ?? '',
         isGroup: groupId.isNotEmpty,
         groupId: groupId,
-        groupMembers: _stringList(packet['group_members']),
+        groupMembers: members,
+        groupMesh: groupMesh,
         hdAudio: _meshProCallFeatureEnabled(
           'call_hd_audio',
           appSettings.meshProHdAudio,
@@ -7773,6 +8253,21 @@ class AppController extends ChangeNotifier {
         ),
       ),
     );
+    if (groupMesh) {
+      _groupMesh = GroupCallMesh(
+        localNode: myNodeId,
+        hostNode: sender,
+        members: members,
+      );
+      _groupService(activeCall!, sender);
+    }
+    final earlyIce = _earlyCallIce.remove('${activeCall!.callId}:$sender');
+    if (earlyIce != null && earlyIce.expires.isAfter(DateTime.now())) {
+      final service = groupMesh ? _groupService(activeCall!, sender) : _calls;
+      for (final candidate in earlyIce.candidates) {
+        await service.addIceCandidate(candidate).catchError((_) {});
+      }
+    }
     unawaited(
       _showCallNotification(
         title: profile.displayName,
@@ -7787,29 +8282,49 @@ class AppController extends ChangeNotifier {
 
   Future<void> _handleCallAnswer(Map<String, dynamic> packet) async {
     final call = activeCall;
-    if (call == null) return;
-    if (packet['call_id']?.toString() != call.callId) return;
+    if (call == null || !call.acceptsSignal(packet)) return;
     final source = packet['source_node']?.toString() ?? '';
+    if (call.isGroup &&
+        (!call.incoming || call.groupMesh) &&
+        !_groupCalls.containsKey(source)) {
+      return;
+    }
+    if (call.groupMesh &&
+        packet['accepted'] == true &&
+        packet['group_mesh'] != 1) {
+      _sendCallEndTo(call, source, 'group_call_update_required');
+      await _handleCallEnd({...packet, 'reason': 'group_call_update_required'});
+      addDiagnostic('call', 'A participant needs an update for group audio');
+      return;
+    }
     if (packet['accepted'] == true) {
-      if (call.isGroup && !call.incoming) {
+      if (call.isGroup && (!call.incoming || call.groupMesh)) {
         final service = _groupCalls[source];
         if (service == null) return;
         await service
             .applyAnswer(packet['sdp']?.toString() ?? '')
             .catchError((_) {});
+        final current = activeCall;
+        if (current == null || !current.acceptsSignal(packet)) return;
         _setActiveCall(
-          call.copyWith(status: CallStatus.connecting, quality: 0),
+          current.copyWith(
+            status: current.connectedNodes.isEmpty
+                ? CallStatus.connecting
+                : CallStatus.active,
+          ),
         );
       } else {
         await _calls
             .applyAnswer(packet['sdp']?.toString() ?? '')
             .catchError((_) {});
+        if (activeCall == null || !activeCall!.acceptsSignal(packet)) return;
         _setActiveCall(
           call.copyWith(status: CallStatus.connecting, quality: 0),
         );
       }
     } else {
-      if (call.isGroup && !call.incoming) {
+      if (call.isGroup && (!call.incoming || call.groupMesh)) {
+        _callReconnectTimers.remove(source)?.cancel();
         final service = _groupCalls.remove(source);
         if (service != null) {
           unawaited(
@@ -7843,8 +8358,59 @@ class AppController extends ChangeNotifier {
     if (call == null) return;
     final packetCallId = packet['call_id']?.toString() ?? '';
     final source = packet['source_node']?.toString() ?? '';
-    if (packetCallId != call.callId && source != call.peer.nodeId) return;
-    if (call.isGroup && !call.incoming && _groupCalls.length > 1) {
+    final mirrored =
+        packet['mirrored_terminal'] == true &&
+        session != null &&
+        packet['sender_login']?.toString().trim().toLowerCase() ==
+            session!.login.trim().toLowerCase();
+    if (packetCallId != call.callId ||
+        (!mirrored && !call.acceptsSignal(packet))) {
+      return;
+    }
+    if (!mirrored && call.groupMesh) {
+      if (!(_groupMesh?.accepted ?? false)) {
+        if (source != call.peer.nodeId) {
+          _groupMesh?.leave(source);
+          return;
+        }
+        _groupMesh?.ready.clear();
+      }
+      _groupMesh?.leave(source);
+      _groupPendingIce.remove(source);
+      _groupPendingOffers.remove(source);
+      _callReconnectTimers.remove(source)?.cancel();
+      final service = _groupCalls.remove(source);
+      if (service != null) unawaited(service.end().catchError((_) {}));
+      final connected = {...call.connectedNodes}..remove(source);
+      if (_groupCalls.isNotEmpty || (_groupMesh?.ready.isNotEmpty ?? false)) {
+        _setActiveCall(
+          call.copyWith(
+            status: connected.isEmpty
+                ? CallStatus.connecting
+                : CallStatus.active,
+            connectedNodes: connected,
+            quality: connected.isEmpty ? 0 : call.quality,
+          ),
+        );
+        notifyListeners();
+        return;
+      }
+    }
+    if (!mirrored &&
+        call.isGroup &&
+        !call.incoming &&
+        !call.groupMesh &&
+        !_groupCalls.containsKey(source)) {
+      return;
+    }
+    _callReconnectTimers.remove(source)?.cancel();
+    _groupMesh?.leave(source);
+    _groupPendingIce.remove(source);
+    _groupPendingOffers.remove(source);
+    if (!mirrored &&
+        call.isGroup &&
+        (!call.incoming || call.groupMesh) &&
+        _groupCalls.length > 1) {
       final service = _groupCalls.remove(source);
       if (service != null) {
         unawaited(
@@ -7874,12 +8440,15 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _endCallMedia() async {
+    _groupMesh = null;
+    _groupPendingIce.clear();
+    _groupPendingOffers.clear();
+    final services = _groupCalls.values.toList();
+    _groupCalls.clear();
     await _calls
         .end()
         .timeout(const Duration(seconds: 2), onTimeout: () {})
         .catchError((_) {});
-    final services = _groupCalls.values.toList();
-    _groupCalls.clear();
     for (final service in services) {
       await service
           .end()
@@ -7896,36 +8465,44 @@ class AppController extends ChangeNotifier {
   }) async {
     if (_finishedCallIds.contains(call.callId)) return;
     _finishedCallIds.add(call.callId);
-    await _stopCallCaptions(clearLines: true);
-    _callPhaseTimeout?.cancel();
-    _callReconnectTimer?.cancel();
-    _callPhaseTimeout = null;
-    _callReconnectTimer = null;
-    _callReconnectAttempts.clear();
-    unawaited(CallAlertService.stopAll());
-    unawaited(_notifications.cancelCall(call.callId));
-    if (broadcast) _sendCallEnd(call, reason);
-    if (historyReason != null && historyReason.isNotEmpty) {
-      _appendCallHistory(call, historyReason);
+    final completion = Completer<void>();
+    _callFinishing = completion.future;
+    try {
+      await _stopCallCaptions(clearLines: true);
+      _callPhaseTimeout?.cancel();
+      _cancelCallReconnects();
+      _callPhaseTimeout = null;
+      _callReconnectAttempts.clear();
+      unawaited(CallAlertService.stopAll());
+      unawaited(_notifications.cancelCall(call.callId));
+      if (broadcast) _sendCallEnd(call, reason);
+      if (historyReason != null && historyReason.isNotEmpty) {
+        _appendCallHistory(call, historyReason);
+      }
+      final current = activeCall;
+      if (current != null && current.callId == call.callId) {
+        _setActiveCall(
+          current.copyWith(status: CallStatus.ended, endReason: reason),
+        );
+        notifyListeners();
+      }
+      await _endCallMedia();
+    } finally {
+      completion.complete();
+      if (identical(_callFinishing, completion.future)) _callFinishing = null;
     }
-    final current = activeCall;
-    if (current != null && current.callId == call.callId) {
-      _setActiveCall(
-        current.copyWith(status: CallStatus.ended, endReason: reason),
-      );
-      notifyListeners();
-    }
-    await _endCallMedia();
   }
 
   void _handleCallConnectionState(String nodeId, CallConnectionPhase phase) {
     final call = activeCall;
     if (call == null || call.status == CallStatus.ended) return;
+    if (call.isGroup && nodeId.isNotEmpty && !_groupCalls.containsKey(nodeId)) {
+      return;
+    }
     switch (phase) {
       case CallConnectionPhase.connected:
-        _callReconnectTimer?.cancel();
-        _callReconnectTimer = null;
         final connectedNode = nodeId.isEmpty ? call.peer.nodeId : nodeId;
+        _callReconnectTimers.remove(connectedNode)?.cancel();
         _callReconnectAttempts.remove(connectedNode);
         unawaited(
           FirebaseTelemetryService.recordLatency(
@@ -7964,9 +8541,11 @@ class AppController extends ChangeNotifier {
         }
         _setActiveCall(
           call.copyWith(
-            status: CallStatus.connecting,
+            status: connected.isEmpty
+                ? CallStatus.connecting
+                : CallStatus.active,
             connectedNodes: connected,
-            quality: 0,
+            quality: connected.isEmpty ? 0 : call.quality,
           ),
         );
         notifyListeners();
@@ -7998,9 +8577,16 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _cancelCallReconnects() {
+    for (final timer in _callReconnectTimers.values) {
+      timer.cancel();
+    }
+    _callReconnectTimers.clear();
+  }
+
   void _scheduleCallReconnect(String callId, String nodeId) {
-    _callReconnectTimer?.cancel();
     final key = nodeId.isEmpty ? activeCall?.peer.nodeId ?? '' : nodeId;
+    _callReconnectTimers.remove(key)?.cancel();
     final attempt = (_callReconnectAttempts[key] ?? 0) + 1;
     _callReconnectAttempts[key] = attempt;
     final delaySeconds = switch (attempt) {
@@ -8016,22 +8602,28 @@ class AppController extends ChangeNotifier {
         'protocol_version': MeshSocket.protocolVersion,
       });
     }
-    _callReconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
-      final call = activeCall;
-      if (call == null ||
-          call.callId != callId ||
-          call.status == CallStatus.ended) {
-        return;
-      }
-      if (!call.incoming) {
-        await _sendCallRestartOffer(call, nodeId);
-      }
-    });
+    _callReconnectTimers[key] = Timer(
+      Duration(seconds: delaySeconds),
+      () async {
+        _callReconnectTimers.remove(key);
+        final call = activeCall;
+        if (call == null ||
+            call.callId != callId ||
+            call.status == CallStatus.ended) {
+          return;
+        }
+        if (call.groupMesh
+            ? (_groupMesh?.shouldRestart(key) ?? false)
+            : !call.incoming) {
+          await _sendCallRestartOffer(call, nodeId);
+        }
+      },
+    );
   }
 
   Future<void> _sendCallRestartOffer(ActiveCall call, String nodeId) async {
     final destination = nodeId.isEmpty ? call.peer.nodeId : nodeId;
-    final service = call.isGroup && !call.incoming
+    final service = call.isGroup && (!call.incoming || call.groupMesh)
         ? _groupCalls[destination]
         : _calls;
     if (service == null) return;
@@ -8039,7 +8631,11 @@ class AppController extends ChangeNotifier {
       addDiagnostic('call', 'ICE restart failed: $error');
       return '';
     });
-    if (sdp.isEmpty) return;
+    if (sdp.isEmpty ||
+        activeCall?.callId != call.callId ||
+        activeCall?.status == CallStatus.ended) {
+      return;
+    }
     _socket.send({
       'type': 'call_restart_offer',
       'packet_id': const Uuid().v4(),
@@ -8055,15 +8651,13 @@ class AppController extends ChangeNotifier {
 
   Future<void> _handleCallRestartOffer(Map<String, dynamic> packet) async {
     final call = activeCall;
-    if (call == null ||
-        call.status == CallStatus.ended ||
-        packet['call_id']?.toString() != call.callId) {
+    if (call == null || !call.acceptsSignal(packet)) {
       return;
     }
     final source = packet['source_node']?.toString() ?? '';
     final sdp = packet['sdp']?.toString() ?? '';
     if (source.isEmpty || sdp.isEmpty) return;
-    final service = call.isGroup && !call.incoming
+    final service = call.isGroup && (!call.incoming || call.groupMesh)
         ? _groupCalls[source]
         : _calls;
     if (service == null) return;
@@ -8071,7 +8665,11 @@ class AppController extends ChangeNotifier {
       addDiagnostic('call', 'ICE restart offer failed: $error');
       return '';
     });
-    if (answer.isEmpty) return;
+    if (answer.isEmpty ||
+        activeCall?.callId != call.callId ||
+        activeCall?.status == CallStatus.ended) {
+      return;
+    }
     _socket.send({
       'type': 'call_restart_answer',
       'packet_id': const Uuid().v4(),
@@ -8087,13 +8685,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> _handleCallRestartAnswer(Map<String, dynamic> packet) async {
     final call = activeCall;
-    if (call == null ||
-        call.status == CallStatus.ended ||
-        packet['call_id']?.toString() != call.callId) {
+    if (call == null || !call.acceptsSignal(packet)) {
       return;
     }
     final source = packet['source_node']?.toString() ?? '';
-    final service = call.isGroup && !call.incoming
+    final service = call.isGroup && (!call.incoming || call.groupMesh)
         ? _groupCalls[source]
         : _calls;
     if (service == null) return;
@@ -8156,14 +8752,49 @@ class AppController extends ChangeNotifier {
 
   Future<void> _handleCallIce(Map<String, dynamic> packet) async {
     final call = activeCall;
-    if (call == null) return;
-    if (packet['call_id']?.toString() != call.callId) return;
+    if (call == null ||
+        call.status == CallStatus.ended ||
+        call.callId != packet['call_id']) {
+      final now = DateTime.now();
+      _earlyCallIce.removeWhere((_, entry) => !entry.expires.isAfter(now));
+      final callId = packet['call_id']?.toString() ?? '';
+      final source = packet['source_node']?.toString() ?? '';
+      final candidate = packet['candidate'];
+      if (callId.isEmpty ||
+          callId.length > 128 ||
+          source.isEmpty ||
+          source.length > 256 ||
+          candidate is! Map) {
+        return;
+      }
+      final key = '$callId:$source';
+      if (!_earlyCallIce.containsKey(key) && _earlyCallIce.length >= 8) return;
+      final entry = _earlyCallIce.putIfAbsent(
+        key,
+        () => (
+          expires: now.add(const Duration(seconds: 15)),
+          candidates: <Map<String, dynamic>>[],
+        ),
+      );
+      if (entry.candidates.length < 128) {
+        entry.candidates.add(Map<String, dynamic>.from(candidate));
+      }
+      return;
+    }
+    if (!call.acceptsSignal(packet)) return;
     final raw = packet['candidate'];
     if (raw is! Map) return;
     final source = packet['source_node']?.toString() ?? '';
-    if (call.isGroup && !call.incoming) {
+    if (call.isGroup && (!call.incoming || call.groupMesh)) {
       final service = _groupCalls[source];
-      if (service == null) return;
+      if (service == null) {
+        if (call.groupMesh &&
+            !(_groupMesh?.departed.contains(source) ?? true)) {
+          final queue = _groupPendingIce.putIfAbsent(source, () => []);
+          if (queue.length < 128) queue.add(Map<String, dynamic>.from(raw));
+        }
+        return;
+      }
       await service
           .addIceCandidate(Map<String, dynamic>.from(raw))
           .catchError((_) {});
@@ -11755,9 +12386,16 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _captionCaptureGeneration++;
+    _captionLeaseTimer?.cancel();
+    _captionHeartbeatTimer?.cancel();
+    for (final completer in _captionSessionRequests.values) {
+      if (!completer.isCompleted) completer.complete('Application closed');
+    }
+    _captionSessionRequests.clear();
     _callTicker?.cancel();
     _callPhaseTimeout?.cancel();
-    _callReconnectTimer?.cancel();
+    _cancelCallReconnects();
     _softResyncTimer?.cancel();
     _incomingPreviewTimer?.cancel();
     for (final timer in _draftSyncTimers.values) {

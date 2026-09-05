@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import websockets
+from server.reliable_sync import DeliveryCapacityError
 
 try:
     from server.sync_v2_shadow import DELTA_SHADOW_EVENT_TYPES
@@ -101,6 +102,9 @@ class ServerSyncMixin:
         inserted = None
         try:
             with self.atomic_storage_transaction():
+                delivery_queue = getattr(self, "sync_delivery_queue", None)
+                if delivery_queue is not None:
+                    delivery_queue.lock()
                 saved = self.save_history_packet(packet)
                 if saved is False:
                     raise MutationRejectedError()
@@ -124,6 +128,11 @@ class ServerSyncMixin:
                 "saved": False,
                 "processed_inserted": None,
             }
+        except DeliveryCapacityError:
+            metrics = getattr(self, "runtime_metrics", None)
+            if metrics is not None:
+                metrics.increment("delivery_capacity_rejections_total")
+            raise
 
         return {
             "saved": saved,
@@ -453,6 +462,13 @@ class ServerSyncMixin:
         return {**event, "payload": normalized_payload}
 
     def record_sync_v2_event(self, packet, account_logins):
+        if getattr(self, "sync_delivery_queue", None) is None:
+            return self._record_sync_v2_event(packet, account_logins)
+        with self.atomic_storage_transaction():
+            self.sync_delivery_queue.lock()
+            return self._record_sync_v2_event(packet, account_logins)
+
+    def _record_sync_v2_event(self, packet, account_logins):
         packet_type = str(packet.get("type") or "").strip()
         if packet_type not in SYNC_V2_EVENT_PACKET_TYPES:
             return {}
@@ -508,6 +524,9 @@ class ServerSyncMixin:
                     (login, event_id)
                 )
             cursors[login] = self.sync_v2_cursor(login)
+            delivery_queue = getattr(self, "sync_delivery_queue", None)
+            if delivery_queue is not None and cursors[login] > 0:
+                delivery_queue.stage(login, cursors[login])
         self._commit_storage()
         return cursors
 

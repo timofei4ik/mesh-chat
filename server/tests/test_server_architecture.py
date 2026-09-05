@@ -159,10 +159,15 @@ class ServerArchitectureTests(unittest.IsolatedAsyncioTestCase):
         commands = server_commands.build_command_registry()
         controls = server_commands.build_control_command_registry()
 
-        self.assertEqual(47, len(commands.packet_types))
+        self.assertEqual(51, len(commands.packet_types))
+        self.assertIn("call_group_ready", commands.packet_types)
+        self.assertIn("call_group_offer", commands.packet_types)
+        self.assertIn("call_caption_session_request", commands.packet_types)
         self.assertIn("meshpro_activation_request", commands.packet_types)
         self.assertIn("poll_create", commands.packet_types)
-        self.assertEqual(9, len(controls.packet_types))
+        self.assertEqual(11, len(controls.packet_types))
+        self.assertIn("reliable_sync_request", controls.packet_types)
+        self.assertIn("reliable_delivery_ack", controls.packet_types)
         self.assertIn("mutation_status_request", controls.packet_types)
         self.assertLess(
             len(inspect.getsource(server_commands).splitlines()),

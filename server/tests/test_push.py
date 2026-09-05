@@ -1,4 +1,5 @@
 import json
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -71,8 +72,11 @@ class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_push_reaches_every_offline_account_device(self):
         relay = FakePushServer()
         web_sends = []
+        sender_threads = []
+        event_loop_thread = threading.get_ident()
 
         def fake_webpush(**kwargs):
+            sender_threads.append(threading.get_ident())
             web_sends.append(kwargs)
 
         with (
@@ -120,6 +124,7 @@ class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(web_sends[0]["data"])
         self.assertEqual("chat:alice-device", payload["tag"])
         self.assertEqual("packet-1", payload["packet_id"])
+        self.assertTrue(all(thread != event_loop_thread for thread in sender_threads))
 
     def test_call_payload_has_stable_identity(self):
         relay = FakePushServer()

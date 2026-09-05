@@ -6,6 +6,11 @@ import unittest
 
 
 RELIABILITY_TESTS = (
+    "server.tests.test_realtime",
+    "server.tests.test_reliable_sync",
+    "server.tests.test_reliable_delivery.DeliveryStoreTests",
+    "server.tests.test_reliable_delivery.ReliableWorkerTests",
+    "server.tests.test_observability",
     "server.tests.test_sync_integration.ServerSyncIntegrationTests."
     "test_live_mutations_fan_out_to_every_online_account_device",
     "server.tests.test_sync_integration.ServerSyncIntegrationTests."

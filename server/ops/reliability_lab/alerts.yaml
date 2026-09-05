@@ -1,0 +1,38 @@
+groups:
+  - name: meshchat-reliability
+    rules:
+      - alert: MeshRedisUnavailable
+        expr: meshchat_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis coordination is unavailable
+      - alert: MeshNoRelayWorkers
+        expr: meshchat_chat_workers == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: No relay heartbeat is visible
+      - alert: MeshEventLoopBlocked
+        expr: meshchat_event_loop_lag_seconds > 0.25
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Relay event loop delay exceeds 250 ms
+      - alert: MeshDeliveryIntentCapacity
+        expr: meshchat_delivery_intent_accounts > 90000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Compact delivery intents approach the default 100000-account limit
+      - alert: MeshSyncFailures
+        expr: sum(rate(meshchat_sync_failed_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated account synchronization failures

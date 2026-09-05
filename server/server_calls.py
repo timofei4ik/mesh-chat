@@ -27,6 +27,7 @@ try:
         sfu_is_configured,
     )
     from server.server_command_bus import account_login, send_json
+    from server.server_call_captions import handle_caption_session, caption_billing_login
 except ModuleNotFoundError:
     from config import (
         TURN_CREDENTIAL_TTL_SECONDS,
@@ -46,11 +47,15 @@ except ModuleNotFoundError:
         sfu_is_configured,
     )
     from server_command_bus import account_login, send_json
+    from server_call_captions import handle_caption_session, caption_billing_login
 
 
 CALL_SIGNAL_PACKET_TYPES = frozenset(
     {
         "call_offer",
+        "call_group_ready",
+        "call_group_offer",
+        "call_caption_session",
         "call_answer",
         "call_ice",
         "call_end",
@@ -180,7 +185,7 @@ async def route_call_signal(server, packet):
 
     signaling = getattr(server, "call_signaling", None)
     if signaling is not None and await signaling.submit(packet):
-        if str(packet.get("type") or "") != "call_caption":
+        if str(packet.get("type") or "") not in {"call_caption", "call_group_ready", "call_group_offer", "call_caption_session"}:
             await server.send_web_push_for_packet(destination_node, packet)
         return True
 
@@ -214,7 +219,7 @@ async def route_call_signal(server, packet):
     source_node = str(packet.get("source_node") or "").strip()
     destination_login = server.get_login_by_node(destination_node)
     packet_type = str(packet.get("type") or "")
-    exact_device_signal = packet_type in {
+    exact_device_signal = bool(packet.get("group_id")) or packet_type in {
         "call_handoff_request",
         "call_handoff_accept",
     } or (
@@ -233,7 +238,7 @@ async def route_call_signal(server, packet):
                 continue
             delivered = await deliver(target_node) or delivered
 
-    if str(packet.get("type") or "") != "call_caption":
+    if str(packet.get("type") or "") not in {"call_caption", "call_group_ready", "call_group_offer", "call_caption_session"}:
         await server.send_web_push_for_packet(destination_node, packet)
     return delivered
 
@@ -267,6 +272,9 @@ async def _route_terminal_to_source_devices(server, packet, context):
 
 
 async def handle_call_signal(server, packet, context):
+    if packet.get("type") == "call_caption_session":
+        await server.send_server_error(context.websocket, "server_only_signal", "Caption sessions are server controlled")
+        return True
     packet_type = str(packet.get("type") or "")
     if packet_type not in CALL_SIGNAL_PACKET_TYPES:
         return False
@@ -278,6 +286,21 @@ async def handle_call_signal(server, packet, context):
             validation_error,
         )
         return True
+    group_id = str(packet.get("group_id") or "").strip()
+    if packet_type in {"call_group_ready", "call_group_offer"} and not group_id:
+        await server.send_server_error(context.websocket, "invalid_call_signal", "Group required")
+        return True
+    if group_id:
+        resolver = getattr(server, "get_group_delivery_nodes", None)
+        allowed = set(resolver(group_id)) if callable(resolver) else set()
+        destination = str(packet.get("destination_node") or "").strip()
+        members = packet.get("group_members", [])
+        if (context.node_id not in allowed or destination not in allowed or
+                not isinstance(members, list) or
+                any(not isinstance(node, str) or node not in allowed for node in members) or
+                (packet.get("group_mesh") == 1 and len(set(members) | {context.node_id, destination}) > 8)):
+            await server.send_server_error(context.websocket, "group_call_forbidden", "Invalid group call membership")
+            return True
     operation_id = str(packet.get("operation_id") or "").strip()
     if packet_type == "call_end":
         distributed_claim = getattr(server, "claim_realtime_operation", None)
@@ -295,6 +318,14 @@ async def handle_call_signal(server, packet, context):
     sender_login = account_login(server, context.node_id)
     if sender_login:
         packet["sender_login"] = sender_login
+    if packet_type == "call_caption":
+        feature = getattr(server, "subscription_feature_enabled", None)
+        permitted = bool(sender_login and callable(feature) and feature(sender_login, "ai_voice_transcription"))
+        if not permitted and group_id and packet.get("caption_session_id"):
+            permitted = bool(caption_billing_login(server, str(packet.get("call_id")), context.node_id, packet.get("caption_session_id")))
+        if not permitted:
+            await server.send_server_error(context.websocket, "meshpro_required", "An active caption subscription or sponsored session is required")
+            return True
     if packet_type in {"call_handoff_request", "call_handoff_accept"}:
         destination_login = server.get_login_by_node(
             str(packet.get("destination_node") or "").strip()
@@ -322,6 +353,7 @@ async def handle_call_ice_servers_request(server, packet, context):
             "ice_servers": build_ice_servers(login, context.node_id),
             "ttl_seconds": TURN_CREDENTIAL_TTL_SECONDS,
             "turn_available": bool(TURN_SHARED_SECRET and TURN_URLS),
+            "group_mesh_version": 1,
             "sfu_available": sfu_is_configured(
                 CALL_SFU_ENABLED,
                 CALL_SFU_URL,
@@ -406,6 +438,7 @@ async def handle_call_sfu_access_request(server, packet, context):
 
 
 def register_call_commands(registry):
+    registry.register("call_caption_session_request", handle_caption_session)
     registry.register(
         "call_ice_servers_request",
         handle_call_ice_servers_request,

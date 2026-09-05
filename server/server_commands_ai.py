@@ -1,7 +1,11 @@
+import hashlib
+
 try:
     from server.server_command_bus import send_json
+    from server.server_call_captions import caption_billing_login
 except ModuleNotFoundError:
     from server_command_bus import send_json
+    from server_call_captions import caption_billing_login
 
 
 AI_COMMANDS = {
@@ -59,6 +63,21 @@ AI_COMMANDS = {
 async def handle_ai_request(server, packet, context):
     command = AI_COMMANDS[packet["type"]]
     authenticated_login = server.client_logins.get(context.node_id)
+    live_call_id = str(packet.get("live_call_id") or "")
+    if live_call_id:
+        sponsored = packet["type"] in {"ai_voice_transcription_request", "ai_message_translation_request"}
+        billing_login = caption_billing_login(server, live_call_id, context.node_id, packet.get("caption_session_id")) if sponsored else ""
+        if not billing_login:
+            await send_json(context.websocket, {
+                "type": command["response_type"], "request_id": packet.get("request_id"),
+                "ok": False, "error": "caption_session_expired",
+            })
+            return
+        authenticated_login = billing_login
+        if packet["type"] == "ai_voice_transcription_request":
+            packet = dict(packet)
+            identity = f"{live_call_id}:{context.node_id}:{packet.get('request_id')}"
+            packet["message_id"] = "call-caption-" + hashlib.sha256(identity.encode()).hexdigest()
     method = getattr(server, command["method"])
     result = await method(
         authenticated_login,

@@ -798,7 +798,8 @@ class ServerAiMixin:
         ):
             return {"ok": False, "error": "invalid_message_id"}
 
-        cached = self.get_ai_voice_transcription(
+        live_caption = normalized_message_id.startswith("call-caption-")
+        cached = None if live_caption else self.get_ai_voice_transcription(
             normalized_login,
             normalized_message_id,
         )
@@ -843,18 +844,24 @@ class ServerAiMixin:
             .get("limits", {})
             .get("ai_transcription_minutes_month", 0)
         )
+        # Live audio has its own second-based allowance; short streaming chunks
+        # must not consume a whole voice-message minute each.
+        usage_feature = "ai_call_caption_seconds" if live_caption else "ai_voice_transcription"
+        unit_seconds = 1.0 if live_caption else 60.0
+        if live_caption and limit < 2_000_000_000:
+            limit *= 60
         try:
             hinted_duration = max(0.0, float(duration_seconds or 0))
         except (TypeError, ValueError):
             hinted_duration = 0.0
-        reserved_minutes = max(1, math.ceil(hinted_duration / 60.0))
+        reserved_units = max(1, math.ceil(hinted_duration / unit_seconds))
         period_key = datetime.now(timezone.utc).strftime("%Y-%m")
         if not self.reserve_meshpro_usage(
             normalized_login,
-            "ai_voice_transcription",
+            usage_feature,
             period_key,
             limit,
-            amount=reserved_minutes,
+            amount=reserved_units,
         ):
             return {
                 "ok": False,
@@ -880,9 +887,9 @@ class ServerAiMixin:
         except Exception as error:
             self.release_meshpro_usage(
                 normalized_login,
-                "ai_voice_transcription",
+                usage_feature,
                 period_key,
-                amount=reserved_minutes,
+                amount=reserved_units,
             )
             print(
                 "AI transcription failed:",
@@ -897,9 +904,9 @@ class ServerAiMixin:
         ):
             self.release_meshpro_usage(
                 normalized_login,
-                "ai_voice_transcription",
+                usage_feature,
                 period_key,
-                amount=reserved_minutes,
+                amount=reserved_units,
             )
             return {"ok": False, "error": "no_speech_detected"}
 
@@ -907,45 +914,46 @@ class ServerAiMixin:
             0.0,
             float(transcript.get("duration_seconds") or hinted_duration),
         )
-        actual_minutes = max(1, math.ceil(actual_duration / 60.0))
-        if actual_minutes > reserved_minutes:
-            extra = actual_minutes - reserved_minutes
+        actual_units = max(1, math.ceil(actual_duration / unit_seconds))
+        if actual_units > reserved_units:
+            extra = actual_units - reserved_units
             if not self.reserve_meshpro_usage(
                 normalized_login,
-                "ai_voice_transcription",
+                usage_feature,
                 period_key,
                 limit,
                 amount=extra,
             ):
                 self.release_meshpro_usage(
                     normalized_login,
-                    "ai_voice_transcription",
+                    usage_feature,
                     period_key,
-                    amount=reserved_minutes,
+                    amount=reserved_units,
                 )
                 return {
                     "ok": False,
                     "error": "quota_exceeded",
                     "remaining_minutes": 0,
                 }
-        elif actual_minutes < reserved_minutes:
+        elif actual_units < reserved_units:
             self.release_meshpro_usage(
                 normalized_login,
-                "ai_voice_transcription",
+                usage_feature,
                 period_key,
-                amount=reserved_minutes - actual_minutes,
+                amount=reserved_units - actual_units,
             )
 
-        self.save_ai_voice_transcription(
-            normalized_login,
-            normalized_message_id,
-            transcript["text"],
-            transcript.get("language", ""),
-            actual_duration,
-        )
+        if not live_caption:
+            self.save_ai_voice_transcription(
+                normalized_login,
+                normalized_message_id,
+                transcript["text"],
+                transcript.get("language", ""),
+                actual_duration,
+            )
         used = self.meshpro_usage_count(
             normalized_login,
-            "ai_voice_transcription",
+            usage_feature,
             period_key,
         )
         return {
@@ -953,7 +961,7 @@ class ServerAiMixin:
             "text": transcript["text"],
             "language": transcript.get("language", ""),
             "duration_seconds": actual_duration,
-            "remaining_minutes": max(0, limit - used),
+            "remaining_minutes": max(0, limit - used) // (60 if live_caption else 1),
             "cached": False,
         }
 

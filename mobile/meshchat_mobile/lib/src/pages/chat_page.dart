@@ -3097,11 +3097,7 @@ class _ChatPageState extends State<ChatPage>
         'Save to Saved Messages',
         Icons.bookmark_add_outlined,
       ),
-      const _MessageActionSpec(
-        'remind',
-        'Remind me',
-        Icons.alarm_add_rounded,
-      ),
+      const _MessageActionSpec('remind', 'Remind me', Icons.alarm_add_rounded),
       if (canCopyText)
         const _MessageActionSpec('copy', 'Copy', Icons.copy_rounded),
       if (canCopyText)
@@ -3320,9 +3316,7 @@ class _ChatPageState extends State<ChatPage>
     if (day == null || !mounted) return;
     final time = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(
-        now.add(const Duration(hours: 1)),
-      ),
+      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))),
     );
     if (time == null || !mounted) return;
     final start = DateTime(
@@ -5038,6 +5032,7 @@ class _CallBottomSheet extends StatelessWidget {
             const SizedBox(height: 18),
             _CallEqualizer(accent: accent),
             if (controller.callCaptionsEnabled ||
+                controller.sharedCaptionInvitation ||
                 controller.callCaptionLines.isNotEmpty) ...[
               const SizedBox(height: 16),
               _CallCaptions(controller: controller),
@@ -5529,7 +5524,51 @@ class _CallCaptions extends StatelessWidget {
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.20)),
         ),
-        child: lines.isEmpty
+        child: controller.sharedCaptionInvitation
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Shared call captions',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Allow your speech to be sent to the AI transcription service? The transcript will be visible to everyone in this call.',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      TextButton(
+                        onPressed: () =>
+                            controller.answerSharedCaptionInvitation(false),
+                        child: const Text('Not now'),
+                      ),
+                      FilledButton(
+                        onPressed: () async {
+                          final error = await controller
+                              .answerSharedCaptionInvitation(true);
+                          if (error != null && context.mounted) {
+                            ScaffoldMessenger.of(
+                              context,
+                            ).showSnackBar(SnackBar(content: Text(error)));
+                          }
+                        },
+                        child: const Text('Allow for this call'),
+                      ),
+                      IconButton(
+                        tooltip: 'Caption languages',
+                        onPressed: () => _showTranslationSettings(context),
+                        icon: const Icon(Icons.translate_rounded),
+                      ),
+                    ],
+                  ),
+                ],
+              )
+            : lines.isEmpty
             ? _CaptionStatus(controller: controller)
             : Column(
                 mainAxisSize: MainAxisSize.min,
@@ -5541,7 +5580,8 @@ class _CallCaptions extends StatelessWidget {
                       highlighted: index == lines.length - 1,
                     ),
                   const SizedBox(height: 6),
-                  if (controller.canStartCallCaptions)
+                  if (controller.canStartCallCaptions ||
+                      controller.hasSharedCaptionSession)
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton.icon(
@@ -5569,6 +5609,17 @@ class _CallCaptions extends StatelessWidget {
                               : 'Live translation',
                           style: const TextStyle(fontSize: 11),
                         ),
+                      ),
+                    ),
+                  if (controller.hasSharedCaptionSession &&
+                      !controller.canStartCallCaptions)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: IconButton(
+                        tooltip: 'Stop sharing my speech for captions',
+                        onPressed: () =>
+                            controller.answerSharedCaptionInvitation(false),
+                        icon: const Icon(Icons.mic_off_outlined, size: 18),
                       ),
                     ),
                 ],
@@ -5810,7 +5861,8 @@ class _CaptionStatus extends StatelessWidget {
             style: const TextStyle(color: Colors.white60, fontSize: 12),
           ),
         ),
-        if (controller.canStartCallCaptions) ...[
+        if (controller.canStartCallCaptions ||
+            controller.hasSharedCaptionSession) ...[
           const SizedBox(width: 4),
           IconButton(
             tooltip: 'Live translation',
@@ -5829,6 +5881,13 @@ class _CaptionStatus extends StatelessWidget {
             ),
           ),
         ],
+        if (controller.hasSharedCaptionSession &&
+            !controller.canStartCallCaptions)
+          IconButton(
+            tooltip: 'Stop sharing my speech for captions',
+            onPressed: () => controller.answerSharedCaptionInvitation(false),
+            icon: const Icon(Icons.mic_off_outlined, size: 18),
+          ),
       ],
     );
   }

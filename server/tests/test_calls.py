@@ -28,6 +28,9 @@ class FakeCallServer:
     def get_login_by_node(self, node_id):
         return self.client_logins.get(node_id, "")
 
+    def subscription_feature_enabled(self, login, feature):
+        return True
+
     def get_online_account_nodes(self, login):
         return [
             node_id

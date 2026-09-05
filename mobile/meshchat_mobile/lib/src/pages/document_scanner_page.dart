@@ -107,7 +107,7 @@ Uint8List _rectifyScan(Map<String, Object> request) {
                 2)
             .round(),
       )
-      .clamp(280, oriented.width * 2);
+      .clamp(1, math.min(4096, oriented.width * 2));
   final height = math
       .max(
         280,
@@ -115,7 +115,7 @@ Uint8List _rectifyScan(Map<String, Object> request) {
                 2)
             .round(),
       )
-      .clamp(280, oriented.height * 2);
+      .clamp(1, math.min(4096, oriented.height * 2));
   final imageCorners = corners
       .map(
         (point) => imglib.Point(
@@ -234,7 +234,7 @@ class _DocumentScannerPageState extends State<DocumentScannerPage> {
     List<ScannerImageInput> images, {
     bool alreadyWorking = false,
   }) async {
-    if (images.isEmpty || (working && !alreadyWorking)) return;
+    if (!mounted || images.isEmpty || (working && !alreadyWorking)) return;
     if (!alreadyWorking) setState(() => working = true);
     try {
       for (final image in images) {
@@ -243,6 +243,7 @@ class _DocumentScannerPageState extends State<DocumentScannerPage> {
           'bytes': original,
           'mode': defaultFilter.index,
         });
+        if (!mounted) return;
         pages.add(
           _ScanPageData(
             originalBytes: original,
@@ -255,6 +256,8 @@ class _DocumentScannerPageState extends State<DocumentScannerPage> {
         );
       }
       selectedIndex = pages.length - 1;
+    } catch (_) {
+      status('Could not process this image');
     } finally {
       if (mounted) setState(() => working = false);
     }
@@ -699,25 +702,53 @@ class _DocumentAlignPage extends StatefulWidget {
 }
 
 class _DocumentAlignPageState extends State<_DocumentAlignPage> {
-  late List<Offset> corners;
-  bool working = false;
+  List<Offset> corners = [];
+  List<Offset> initialCorners = [];
+  Size imageSize = const Size(1, 1);
+  bool working = true;
 
   @override
   void initState() {
     super.initState();
-    corners = _detectCorners(widget.bytes);
+    _prepare();
+  }
+
+  Future<void> _prepare() async {
+    try {
+      final geometry = await compute(_prepareAlignment, widget.bytes);
+      if (!mounted) return;
+      setState(() {
+        imageSize = geometry.$1;
+        initialCorners = geometry.$2;
+        corners = [...initialCorners];
+      });
+    } catch (_) {
+      if (mounted) Navigator.pop(context);
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
   }
 
   Future<void> apply() async {
     if (working) return;
     setState(() => working = true);
-    final output = await compute(_rectifyScan, <String, Object>{
-      'bytes': widget.bytes,
-      'corners': <double>[
-        for (final point in corners) ...[point.dx, point.dy],
-      ],
-    });
-    if (mounted) Navigator.pop(context, output);
+    try {
+      final output = await compute(_rectifyScan, <String, Object>{
+        'bytes': widget.bytes,
+        'corners': <double>[
+          for (final point in corners) ...[point.dx, point.dy],
+        ],
+      });
+      if (mounted) Navigator.pop(context, output);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not align this image')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
   }
 
   Rect _imageRect(Size box, Size image) {
@@ -733,10 +764,6 @@ class _DocumentAlignPageState extends State<_DocumentAlignPage> {
 
   @override
   Widget build(BuildContext context) {
-    final decoded = imglib.decodeImage(widget.bytes);
-    final imageSize = decoded == null
-        ? const Size(1, 1)
-        : Size(decoded.width.toDouble(), decoded.height.toDouble());
     return MeshSettingsSurface(
       child: Scaffold(
         appBar: AppBar(
@@ -751,8 +778,9 @@ class _DocumentAlignPageState extends State<_DocumentAlignPage> {
           actions: [
             IconButton(
               tooltip: 'Reset corners',
-              onPressed: () =>
-                  setState(() => corners = _detectCorners(widget.bytes)),
+              onPressed: working
+                  ? null
+                  : () => setState(() => corners = [...initialCorners]),
               icon: const Icon(Icons.restart_alt_rounded),
             ),
             const SizedBox(width: 8),
@@ -860,18 +888,26 @@ class _DocumentAlignPageState extends State<_DocumentAlignPage> {
   }
 }
 
-List<Offset> _detectCorners(Uint8List bytes) {
+(Size, List<Offset>) _prepareAlignment(Uint8List bytes) {
+  final decoded = imglib.decodeImage(bytes);
+  if (decoded == null) throw const FormatException('Unsupported image');
+  final image = imglib.bakeOrientation(decoded);
+  return (
+    Size(image.width.toDouble(), image.height.toDouble()),
+    _detectCorners(image),
+  );
+}
+
+List<Offset> _detectCorners(imglib.Image image) {
   const fallback = [
     Offset(0.08, 0.08),
     Offset(0.92, 0.08),
     Offset(0.08, 0.92),
     Offset(0.92, 0.92),
   ];
-  final decoded = imglib.decodeImage(bytes);
-  if (decoded == null || decoded.width < 32 || decoded.height < 32) {
+  if (image.width < 32 || image.height < 32) {
     return [...fallback];
   }
-  final image = imglib.bakeOrientation(decoded);
   final width = image.width;
   final height = image.height;
   final step = math.max(2, (math.max(width, height) / 360).round());
@@ -934,6 +970,7 @@ class _CornerPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (corners.length != 4) return;
     final points = corners
         .map((point) => Offset(point.dx * size.width, point.dy * size.height))
         .toList();

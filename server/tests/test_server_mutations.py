@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 
 from server.server_mutations import (
     execute_history_mutation,
@@ -98,6 +99,22 @@ class FakeMutationServer:
 
 
 class MutationPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sender_disconnect_after_commit_does_not_skip_delivery(self):
+        server = FakeMutationServer()
+        server.send_mutation_ack = AsyncMock(side_effect=ConnectionResetError())
+        packet = {
+            "type": "chat_message",
+            "source_node": "source",
+            "destination_node": "destination",
+        }
+        result = await execute_history_mutation(
+            server, FakeWebSocket(), "source", packet,
+            {"account_login": "alice", "outbox_id": "outbox-1",
+             "operation_id": "operation-1"},
+        )
+        self.assertTrue(result.accepted)
+        self.assertTrue(any(call[0] == "route" for call in server.calls))
+
     async def test_preparation_acknowledges_already_processed_operation(self):
         server = FakeMutationServer()
         server.processed = True

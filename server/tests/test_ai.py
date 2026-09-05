@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from server import server_ai, server_storage, server_subscription, server_sync
 
@@ -433,6 +434,33 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
             datetime.now(timezone.utc).strftime("%Y-%m"),
         )
         self.assertEqual(2, usage)
+
+    async def test_live_call_captions_are_not_saved_as_voice_message_history(self):
+        self.relay.grant_subscription("subscriber", days=7)
+        result = await self.relay.transcribe_voice_with_ai(
+            "subscriber", "call-caption-room-chunk", "voice.m4a",
+            base64.b64encode(b"fake m4a bytes").decode(), 2, "en",
+        )
+        self.assertTrue(result["ok"])
+        self.assertFalse(self.relay.get_ai_voice_transcription("subscriber", "call-caption-room-chunk"))
+
+    async def test_live_captions_charge_seconds_instead_of_a_minute_per_chunk(self):
+        self.relay.grant_subscription("subscriber", days=7)
+        transcript = {"text": "Hello there", "language": "en", "duration_seconds": 3}
+        with patch.object(self.relay, "_request_ai_transcription", AsyncMock(return_value=transcript)):
+            for index in range(4):
+                result = await self.relay.transcribe_voice_with_ai(
+                    "subscriber", f"call-caption-{index}", "voice.m4a",
+                    base64.b64encode(b"fake audio").decode(), 3, "en",
+                )
+                self.assertTrue(result["ok"])
+        period = datetime.now(timezone.utc).strftime("%Y-%m")
+        self.assertEqual(12, self.relay.meshpro_usage_count("subscriber", "ai_call_caption_seconds", period))
+        self.assertEqual(0, self.relay.meshpro_usage_count("subscriber", "ai_voice_transcription", period))
+
+    async def test_first_usage_reservation_cannot_exceed_entire_allowance(self):
+        self.assertFalse(self.relay.reserve_meshpro_usage("subscriber", "test", "2026-09", 1, amount=2))
+        self.assertEqual(0, self.relay.meshpro_usage_count("subscriber", "test", "2026-09"))
 
     async def test_transcription_failure_releases_reserved_minutes(self):
         self.relay.grant_subscription("subscriber", days=7)

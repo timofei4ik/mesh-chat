@@ -1,0 +1,20 @@
+name: meshchat-reliability-lab
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mesh_test
+      POSTGRES_PASSWORD: ${MESH_LAB_POSTGRES_PASSWORD:?Set a test-only password}
+      POSTGRES_DB: meshchat_reliability_test
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - ${MESH_LAB_DATA_DIR:?Set an absolute lab directory outside C}:/var/lib/postgresql/data
+    mem_limit: 256m
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=20"]
+  redis:
+    image: redis:7.4
+    ports:
+      - "127.0.0.1:16379:6379"
+    mem_limit: 96m
+    command: ["redis-server", "--maxmemory", "32mb", "--maxmemory-policy", "noeviction", "--save", "", "--appendonly", "no"]

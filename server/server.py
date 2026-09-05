@@ -1,4 +1,5 @@
 import asyncio
+import os
 import signal
 import sys
 from pathlib import Path
@@ -379,10 +380,29 @@ class MeshRelayServer(
         self.db = self.open_db()
         self.initialize_poll_storage()
         self.initialize_media_delivery()
+        from server.reliable_delivery import DeliveryOutbox, DeliveryDeletionOwner
+        from server.runtime_metrics import RuntimeMetrics
+        from server.reliable_sync import SyncDeliveryQueue, SyncDeliveryDeletionOwner
+        # Roll out only after the isolated multi-worker checks pass.
+        delivery_outbox = DeliveryOutbox(self.db)
+        # The old payload queue is retired: never replay stale message copies.
+        self.delivery_outbox = None
+        sync_queue = SyncDeliveryQueue(
+            self.db,
+            max_accounts=int(os.environ.get("MESH_RELIABLE_MAX_ACCOUNTS", "100000")),
+            retention_seconds=int(os.environ.get("MESH_RELIABLE_RETENTION_SECONDS", "604800")),
+        )
+        self.sync_delivery_queue = (
+            sync_queue
+            if os.environ.get("MESH_RELIABLE_DELIVERY_ENABLED") == "1"
+            else None
+        )
+        self.runtime_metrics = RuntimeMetrics()
         self.account_deletion_orchestrator = (
             build_sqlite_account_deletion_orchestrator(
                 self.db,
                 self.atomic_storage_transaction,
+                extra_owners=(DeliveryDeletionOwner(self.db), SyncDeliveryDeletionOwner(self.db)),
                 pending_path_factory=getattr(
                     self,
                     "_file_transfer_pending_path",

@@ -285,6 +285,7 @@ class TestClient:
         supports_file_transfer_v2=False,
         supports_media_delivery_v2=False,
         supports_account_live_fanout=False,
+        supports_reliable_sync_v2=False,
     ):
         self.uri = uri
         self.login = login
@@ -306,6 +307,7 @@ class TestClient:
         self.supports_file_transfer_v2 = supports_file_transfer_v2
         self.supports_media_delivery_v2 = supports_media_delivery_v2
         self.supports_account_live_fanout = supports_account_live_fanout
+        self.supports_reliable_sync_v2 = supports_reliable_sync_v2
 
     async def connect(self):
         self.websocket = await websockets.connect(
@@ -328,6 +330,7 @@ class TestClient:
                 "app_version": "integration-test",
                 "supports_sticker_library_chunks": True,
                 "supports_sync_v2": self.supports_sync_v2,
+                "supports_reliable_sync_v2": self.supports_reliable_sync_v2,
                 "supports_sync_v2_delta": self.supports_sync_v2_delta,
                 "sync_cursor": self.sync_cursor,
                 "supports_offline_packet_ack": self.supports_offline_ack,
