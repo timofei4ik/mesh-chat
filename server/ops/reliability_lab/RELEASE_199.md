@@ -4,11 +4,14 @@ This release ships the native encrypted SFU group-call client. Joining an
 existing room now populates participants from the initial room snapshot, so
 participants present before the join are included in call lifecycle decisions.
 Cancellation during encryption setup cannot start a new room after hangup.
+Cancelled SFU connections cannot fall through into a new mesh call, and late
+callbacks from a replaced or ended SFU session cannot restore its state.
 
 Validation before publication:
 
 - Flutter analysis: no issues.
 - Flutter suite: 149 tests passed.
+- Final lifecycle changes: analysis clean and 14 call lifecycle tests passed.
 - Server unittest discovery: passed (environment-dependent tests may skip).
 - Production cross-worker smoke: chat message, call offer and call end passed.
 - Production LiveKit smoke: two authenticated signaling sessions joined.

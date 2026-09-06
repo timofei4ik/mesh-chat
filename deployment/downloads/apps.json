@@ -9,7 +9,7 @@
       "appId": "meshchat",
       "badge": "Release",
       "title": "Encrypted group calls and shared captions",
-      "summary": "Updated native clients can use the new group audio server with end-to-end encryption and up to 32 invited devices. Each device sends one audio stream, reducing upload requirements in larger calls. MeshPro can start shared captions with participant consent and translation. Joining an ongoing call now restores the connected participant list correctly. Update all participants; browser and older clients retain the existing call route.",
+      "summary": "Updated native clients can use the new group audio server with end-to-end encryption and up to 32 invited devices. Each device sends one audio stream, reducing upload requirements in larger calls. MeshPro can start shared captions with participant consent and translation. Joining an ongoing call now restores the connected participant list correctly. Cancelling a connecting call no longer starts a fallback call, and late connection events cannot revive an ended call. Update all participants; browser and older clients retain the existing call route.",
       "publishedAt": "2026-09-07"
     },
     {

@@ -6979,6 +6979,10 @@ class AppController extends ChangeNotifier {
         _setActiveCall(sfuCall);
         notifyListeners();
         final connected = await _connectSfuCall(sfuCall, access, groupKey.key);
+        if (activeCall?.callId != callId ||
+            activeCall?.status == CallStatus.ended) {
+          return null;
+        }
         if (connected && activeCall?.callId == callId) {
           for (final recipientNode in sfuRecipients) {
             _socket.send({
@@ -7133,7 +7137,11 @@ class AppController extends ChangeNotifier {
     var established = false;
     _sfuCall = service;
     service.onConnectionStateChanged = (phase) {
-      if (activeCall?.callId != call.callId) return;
+      if (!identical(_sfuCall, service) ||
+          activeCall?.callId != call.callId ||
+          activeCall?.status == CallStatus.ended) {
+        return;
+      }
       if (phase == CallConnectionPhase.connected) established = true;
       if (!established &&
           (phase == CallConnectionPhase.failed ||
@@ -7143,13 +7151,19 @@ class AppController extends ChangeNotifier {
       _handleCallConnectionState('sfu', phase);
     };
     service.onQualityChanged = (quality) {
-      if (activeCall?.callId != call.callId) return;
+      if (!identical(_sfuCall, service) ||
+          activeCall?.callId != call.callId ||
+          activeCall?.status == CallStatus.ended) {
+        return;
+      }
       _handleCallQuality('sfu', quality);
     };
     service.onParticipantConnected = (identity) {
+      if (!identical(_sfuCall, service)) return;
       _setSfuParticipantConnected(call.callId, identity, true);
     };
     service.onParticipantDisconnected = (identity) {
+      if (!identical(_sfuCall, service)) return;
       _setSfuParticipantConnected(call.callId, identity, false);
     };
     service.onError = (message) => addDiagnostic('call', message);
@@ -7174,7 +7188,12 @@ class AppController extends ChangeNotifier {
     bool connected,
   ) {
     final call = activeCall;
-    if (call == null || !call.groupSfu || call.callId != callId) return;
+    if (call == null ||
+        !call.groupSfu ||
+        call.callId != callId ||
+        call.status == CallStatus.ended) {
+      return;
+    }
     final separator = identity.lastIndexOf(':');
     final nodeId = separator < 0 ? identity : identity.substring(separator + 1);
     if (nodeId.isEmpty ||
