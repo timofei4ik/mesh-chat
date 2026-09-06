@@ -28,6 +28,7 @@ class SfuCallService {
     if (_ended) throw StateError('SFU service is closed');
     onConnectionStateChanged?.call(CallConnectionPhase.connecting);
     final encryption = await E2EEOptions.sharedKey(encryptionKey);
+    if (_ended) return;
     final room = Room(
       roomOptions: RoomOptions(
         adaptiveStream: true,
@@ -96,6 +97,11 @@ class SfuCallService {
         return;
       }
       await room.localParticipant?.setMicrophoneEnabled(!_muted);
+      if (_ended || !identical(_room, room)) return;
+      // Participants already present do not emit a new join event.
+      for (final participant in room.remoteParticipants.values) {
+        onParticipantConnected?.call(participant.identity);
+      }
       onConnectionStateChanged?.call(CallConnectionPhase.connected);
       onQualityChanged?.call(const CallQualitySnapshot(route: 'sfu'));
     } catch (_) {

@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 43,
-  "updatedAt": "2026-09-06T00:00:00Z",
+  "catalogVersion": 44,
+  "updatedAt": "2026-09-07T00:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-sfu-1-0-96",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Encrypted group calls and shared captions",
+      "summary": "Updated native clients can use the new group audio server with end-to-end encryption and up to 32 invited devices. Each device sends one audio stream, reducing upload requirements in larger calls. MeshPro can start shared captions with participant consent and translation. Joining an ongoing call now restores the connected participant list correctly. Update all participants; browser and older clients retain the existing call route.",
+      "publishedAt": "2026-09-07"
+    },
     {
       "id": "meshchat-group-calls-1-0-95",
       "appId": "meshchat",
@@ -92,7 +100,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.95",
+      "version": "1.0.96",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -105,16 +113,18 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 198,
+      "build": 199,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-06T00:00:00Z",
+      "updated_at": "2026-09-07T00:00:00Z",
       "release": {
-        "title": "Group calls and shared captions",
-        "publishedAt": "2026-09-06",
+        "title": "Encrypted group calls and shared captions",
+        "publishedAt": "2026-09-07",
         "notes": [
-          "Group calls connect up to eight invited devices with audio between participants; update every participant",
+          "Updated native clients support encrypted server-routed group audio for up to 32 invited devices; update every participant",
+          "Each device uploads one audio stream; browser and older clients retain the existing P2P/TURN route",
+          "Joining an ongoing call correctly restores the participants already connected",
           "A group conversation can continue between connected participants after the initiator leaves",
           "MeshPro can start shared captions visible to everyone; each participant chooses whether their speech is sent for recognition",
           "Participants can choose speech and translation languages and stop sharing their own speech",
