@@ -44,6 +44,7 @@ dependencies:
   latlong2: ^0.10.1
   video_player: ^2.10.1
   speech_to_text: ^7.4.0
+  livekit_client: 2.11.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -1,5 +1,4 @@
-# Prepared SFU control plane. Do not enable in production until clients use
-# `call_sfu_access_request` and advertise `media_e2ee_capability=frame-v1`.
+# Audio-only SFU for MeshChat group calls. Replace both key placeholders.
 port: 7880
 rtc:
   tcp_port: 7881
@@ -11,7 +10,7 @@ redis:
 keys:
   replace-livekit-api-key: replace-livekit-api-secret
 room:
-  auto_create: false
+  auto_create: true
   empty_timeout: 300
   departure_timeout: 20
 logging:

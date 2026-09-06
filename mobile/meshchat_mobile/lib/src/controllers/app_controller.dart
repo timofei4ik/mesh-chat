@@ -37,6 +37,7 @@ import '../services/mutation_outbox_store.dart';
 import '../services/own_profile_store.dart';
 import '../services/proximity_screen_service.dart';
 import '../services/session_store.dart';
+import '../services/sfu_call_service.dart';
 import '../services/sticker_store.dart';
 import '../services/story_store.dart';
 import '../services/sync_cursor_store.dart';
@@ -106,6 +107,13 @@ class AiRewriteResult {
 
   final String text;
   final int remaining;
+}
+
+class _SfuAccess {
+  const _SfuAccess({required this.url, required this.token});
+
+  final String url;
+  final String token;
 }
 
 String _aiFailureMessage(String code, String fallback) => switch (code) {
@@ -325,6 +333,8 @@ class ActiveCall {
     this.localMuted = false,
     this.isGroup = false,
     this.groupMesh = false,
+    this.groupSfu = false,
+    this.sfuKeyId = '',
     this.groupId = '',
     this.groupMembers = const [],
     this.connectedNodes = const {},
@@ -353,6 +363,8 @@ class ActiveCall {
   final bool localMuted;
   final bool isGroup;
   final bool groupMesh;
+  final bool groupSfu;
+  final String sfuKeyId;
   final String groupId;
   final List<String> groupMembers;
   final Set<String> connectedNodes;
@@ -386,7 +398,9 @@ class ActiveCall {
     if (packet['group_id'] != null && packet['group_id'] != groupId) {
       return false;
     }
-    if (incoming && !caption && !groupMesh) return source == peer.nodeId;
+    if (incoming && !caption && !groupMesh && !groupSfu) {
+      return source == peer.nodeId;
+    }
     return groupMembers.contains(source) ||
         connectedNodes.contains(source) ||
         (incoming && source == peer.nodeId);
@@ -420,6 +434,8 @@ class ActiveCall {
       localMuted: localMuted ?? this.localMuted,
       isGroup: isGroup,
       groupMesh: groupMesh,
+      groupSfu: groupSfu,
+      sfuKeyId: sfuKeyId,
       groupId: groupId,
       groupMembers: groupMembers,
       connectedNodes: connectedNodes ?? this.connectedNodes,
@@ -480,9 +496,12 @@ class AppController extends ChangeNotifier {
   final CallService _calls = CallService();
   final CallCaptionService _callCaptionService = CallCaptionService();
   final Map<String, CallService> _groupCalls = {};
+  SfuCallService? _sfuCall;
   GroupCallMesh? _groupMesh;
   Future<void>? _callFinishing;
   bool _groupMeshSupported = false;
+  bool _groupSfuAvailable = false;
+  final Map<String, Completer<_SfuAccess?>> _sfuAccessRequests = {};
   final Map<String, List<Map<String, dynamic>>> _groupPendingIce = {};
   final Map<String, Map<String, dynamic>> _groupPendingOffers = {};
   final Map<String, ({DateTime expires, List<Map<String, dynamic>> candidates})>
@@ -3231,6 +3250,17 @@ class AppController extends ChangeNotifier {
         _handleGroupJoinResponse(packet);
       case 'call_ice_servers_result':
         _applyCallIceServers(packet);
+      case 'call_sfu_access_result':
+        final request = _sfuAccessRequests.remove(packet['request_id']);
+        if (request != null && !request.isCompleted) {
+          final url = packet['url']?.toString() ?? '';
+          final token = packet['token']?.toString() ?? '';
+          request.complete(
+            packet['enabled'] == true && url.isNotEmpty && token.isNotEmpty
+                ? _SfuAccess(url: url, token: token)
+                : null,
+          );
+        }
       case 'call_offer':
         await _handleCallOffer(packet);
       case 'call_group_ready':
@@ -3276,6 +3306,7 @@ class AppController extends ChangeNotifier {
 
   void _applyCallIceServers(Map<String, dynamic> packet) {
     _groupMeshSupported = packet['group_mesh_version'] == 1;
+    _groupSfuAvailable = !kIsWeb && packet['sfu_available'] == true;
     final raw = packet['ice_servers'];
     if (raw is! List) return;
     final servers = raw
@@ -6907,8 +6938,8 @@ class AppController extends ChangeNotifier {
         .toSet()
         .toList();
     if (recipients.isEmpty) return 'No group members to call';
-    if (recipients.length >= GroupCallMesh.maxParticipants) {
-      return 'Group audio currently supports up to 8 participants';
+    if (recipients.length >= 32) {
+      return 'Group audio currently supports up to 32 participants';
     }
     final hdAudio = _meshProCallFeatureEnabled(
       'call_hd_audio',
@@ -6918,8 +6949,69 @@ class AppController extends ChangeNotifier {
       'call_noise_suppression_plus',
       appSettings.meshProEnhancedNoiseSuppression,
     );
+    final callId = const Uuid().v4();
+    final groupKey = _groupKeys[thread.groupId];
+    final sfuRecipients = recipients
+        .where((node) => profiles[node]?.online == true)
+        .toList(growable: false);
+    if (_groupSfuAvailable && groupKey != null && sfuRecipients.isNotEmpty) {
+      final access = await _requestSfuAccess(
+        action: 'start',
+        callId: callId,
+        groupId: thread.groupId,
+        members: [myNodeId, ...sfuRecipients],
+      );
+      if (access != null) {
+        final sfuCall = ActiveCall(
+          callId: callId,
+          peer: thread.profile,
+          status: CallStatus.connecting,
+          incoming: false,
+          startedAt: DateTime.now(),
+          isGroup: true,
+          groupSfu: true,
+          sfuKeyId: groupKey.id,
+          groupId: thread.groupId,
+          groupMembers: sfuRecipients,
+          hdAudio: hdAudio,
+          enhancedNoiseSuppression: enhancedNoiseSuppression,
+        );
+        _setActiveCall(sfuCall);
+        notifyListeners();
+        final connected = await _connectSfuCall(sfuCall, access, groupKey.key);
+        if (connected && activeCall?.callId == callId) {
+          for (final recipientNode in sfuRecipients) {
+            _socket.send({
+              'type': 'call_offer',
+              'packet_id': const Uuid().v4(),
+              'protocol_version': MeshSocket.protocolVersion,
+              'source_node': myNodeId,
+              'destination_node': recipientNode,
+              'ttl': 5,
+              'call_id': callId,
+              'sender': session!.login,
+              'media': 'audio',
+              'group_id': thread.groupId,
+              'group_name': thread.groupName.isEmpty
+                  ? thread.profile.displayName
+                  : thread.groupName,
+              'group_members': [myNodeId, ...sfuRecipients],
+              'group_sfu': 1,
+              'sfu_key_id': groupKey.id,
+            });
+          }
+          return null;
+        }
+        await _sfuCall?.end().catchError((_) {});
+        _sfuCall = null;
+        if (activeCall?.callId == callId) _setActiveCall(null);
+      }
+    }
+    if (recipients.length >= GroupCallMesh.maxParticipants) {
+      return 'This group needs the SFU service for more than 8 participants';
+    }
     final call = ActiveCall(
-      callId: const Uuid().v4(),
+      callId: callId,
       peer: thread.profile,
       status: CallStatus.outgoing,
       incoming: false,
@@ -6996,6 +7088,117 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<_SfuAccess?> _requestSfuAccess({
+    required String action,
+    required String callId,
+    required String groupId,
+    List<String> members = const [],
+  }) async {
+    if (!_socket.isConnected || !_groupSfuAvailable) return null;
+    final requestId = const Uuid().v4();
+    final completer = Completer<_SfuAccess?>();
+    _sfuAccessRequests[requestId] = completer;
+    _socket.send({
+      'type': 'call_sfu_access_request',
+      'request_id': requestId,
+      'action': action,
+      'call_id': callId,
+      'group_id': groupId,
+      'media_e2ee_capability': 'frame-v1',
+      if (members.isNotEmpty) 'members': members,
+    });
+    try {
+      return await completer.future.timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      return null;
+    } finally {
+      _sfuAccessRequests.remove(requestId);
+    }
+  }
+
+  Future<String> _sfuEncryptionKey(String callId, List<int> groupKey) async {
+    final digest = await Sha256().hash([
+      ...utf8.encode('meshchat-call-sfu-v1:$callId:'),
+      ...groupKey,
+    ]);
+    return base64Url.encode(digest.bytes);
+  }
+
+  Future<bool> _connectSfuCall(
+    ActiveCall call,
+    _SfuAccess access,
+    List<int> groupKey,
+  ) async {
+    final service = SfuCallService(initialMuted: call.localMuted);
+    var established = false;
+    _sfuCall = service;
+    service.onConnectionStateChanged = (phase) {
+      if (activeCall?.callId != call.callId) return;
+      if (phase == CallConnectionPhase.connected) established = true;
+      if (!established &&
+          (phase == CallConnectionPhase.failed ||
+              phase == CallConnectionPhase.closed)) {
+        return;
+      }
+      _handleCallConnectionState('sfu', phase);
+    };
+    service.onQualityChanged = (quality) {
+      if (activeCall?.callId != call.callId) return;
+      _handleCallQuality('sfu', quality);
+    };
+    service.onParticipantConnected = (identity) {
+      _setSfuParticipantConnected(call.callId, identity, true);
+    };
+    service.onParticipantDisconnected = (identity) {
+      _setSfuParticipantConnected(call.callId, identity, false);
+    };
+    service.onError = (message) => addDiagnostic('call', message);
+    try {
+      await service.connect(
+        url: access.url,
+        token: access.token,
+        encryptionKey: await _sfuEncryptionKey(call.callId, groupKey),
+      );
+      return identical(_sfuCall, service) && service.connected;
+    } catch (error) {
+      addDiagnostic('call', 'SFU connection failed: $error');
+      if (identical(_sfuCall, service)) _sfuCall = null;
+      await service.end().catchError((_) {});
+      return false;
+    }
+  }
+
+  void _setSfuParticipantConnected(
+    String callId,
+    String identity,
+    bool connected,
+  ) {
+    final call = activeCall;
+    if (call == null || !call.groupSfu || call.callId != callId) return;
+    final separator = identity.lastIndexOf(':');
+    final nodeId = separator < 0 ? identity : identity.substring(separator + 1);
+    if (nodeId.isEmpty ||
+        nodeId == myNodeId ||
+        !call.groupMembers.contains(nodeId)) {
+      return;
+    }
+    final connectedNodes = {...call.connectedNodes};
+    if (connected) {
+      connectedNodes.add(nodeId);
+    } else {
+      connectedNodes.remove(nodeId);
+    }
+    _setActiveCall(
+      call.copyWith(
+        connectedNodes: connectedNodes,
+        status: connectedNodes.isEmpty
+            ? CallStatus.connecting
+            : CallStatus.active,
+      ),
+    );
+    notifyListeners();
+  }
+
   Future<void> acceptCall() async {
     final call = activeCall;
     if (session == null || call == null || !call.incoming) return;
@@ -7022,6 +7225,54 @@ class AppController extends ChangeNotifier {
         'destination_node': sourceNode,
         'ttl': 5,
         'call_id': previousCallId,
+      });
+      return;
+    }
+    if (call.groupSfu) {
+      final groupKey = _groupKeyForPacket(call.groupId, call.sfuKeyId);
+      if (groupKey == null) {
+        await _finishCall(
+          call,
+          reason: 'encryption key unavailable',
+          broadcast: true,
+        );
+        return;
+      }
+      final access = await _requestSfuAccess(
+        action: 'join',
+        callId: call.callId,
+        groupId: call.groupId,
+      );
+      if (access == null ||
+          !await _connectSfuCall(call, access, groupKey) ||
+          activeCall?.callId != call.callId) {
+        if (activeCall?.callId == call.callId) {
+          await _finishCall(
+            call,
+            reason: 'SFU connection failed',
+            broadcast: true,
+          );
+        }
+        return;
+      }
+      final current = activeCall;
+      if (current == null || current.callId != call.callId) return;
+      _setActiveCall(
+        current.copyWith(status: CallStatus.active, networkRoute: 'sfu'),
+      );
+      notifyListeners();
+      _socket.send({
+        'type': 'call_answer',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': call.peer.nodeId,
+        'ttl': 5,
+        'call_id': call.callId,
+        'accepted': true,
+        'sender': session!.login,
+        'group_id': call.groupId,
+        'group_sfu': 1,
       });
       return;
     }
@@ -7272,6 +7523,7 @@ class AppController extends ChangeNotifier {
     for (final service in _groupCalls.values) {
       await service.setMuted(muted).catchError((_) {});
     }
+    await _sfuCall?.setMuted(muted).catchError((_) {});
     if (callCaptionsEnabled) {
       if (muted) {
         await _callCaptionService.stop();
@@ -7293,6 +7545,7 @@ class AppController extends ChangeNotifier {
     for (final service in _groupCalls.values) {
       await service.setSpeakerEnabled(enabled).catchError((_) {});
     }
+    await _sfuCall?.setSpeakerEnabled(enabled).catchError((_) {});
   }
 
   Future<String?> toggleCallCaptions() async {
@@ -7311,7 +7564,9 @@ class AppController extends ChangeNotifier {
     if (!await _refreshMeshProFeature('ai_voice_transcription')) {
       return 'Live captions require MeshPro';
     }
-    if (call.groupMesh) return await _requestSharedCaptions('start');
+    if (call.groupMesh || call.groupSfu) {
+      return await _requestSharedCaptions('start');
+    }
     callCaptionsEnabled = true;
     if (call.localMuted) {
       _callCaptionStatus = 'Paused while muted';
@@ -7330,7 +7585,7 @@ class AppController extends ChangeNotifier {
   Future<String?> _requestSharedCaptions(String action) async {
     final call = activeCall;
     if (call == null ||
-        !call.groupMesh ||
+        (!call.groupMesh && !call.groupSfu) ||
         call.status == CallStatus.ended ||
         !_socket.isConnected) {
       return 'No active group call connection';
@@ -7346,7 +7601,9 @@ class AppController extends ChangeNotifier {
       'action': action,
       'session_id': _captionSessionId,
       if (action == 'start')
-        'members': _groupMesh?.invited.toList() ?? [myNodeId],
+        'members': call.groupSfu
+            ? {myNodeId, ...call.groupMembers}.toList()
+            : _groupMesh?.invited.toList() ?? [myNodeId],
     });
     try {
       return await result.future.timeout(
@@ -7372,11 +7629,11 @@ class AppController extends ChangeNotifier {
     final call = activeCall;
     if (packet['source_node'] != 'SERVER' ||
         call == null ||
-        !call.groupMesh ||
+        (!call.groupMesh && !call.groupSfu) ||
         call.callId != packet['call_id'] ||
         call.groupId != packet['group_id'] ||
         call.status == CallStatus.ended ||
-        !(_groupMesh?.accepted ?? false)) {
+        (call.groupMesh && !(_groupMesh?.accepted ?? false))) {
       return;
     }
     final id = packet['session_id']?.toString() ?? '';
@@ -7393,7 +7650,10 @@ class AppController extends ChangeNotifier {
     final remaining = expires.difference(DateTime.now());
     if (remaining <= Duration.zero) return;
     final sponsor = packet['sponsor_node']?.toString() ?? '';
-    if (!(_groupMesh?.invited.contains(sponsor) ?? false)) return;
+    final captionMembers = call.groupSfu
+        ? {myNodeId, ...call.groupMembers}
+        : _groupMesh?.invited ?? const <String>{};
+    if (!captionMembers.contains(sponsor)) return;
     if (_captionSessionId.isNotEmpty && _captionSessionId != id) {
       await _stopCallCaptions(clearLines: false, notifySession: false);
     }
@@ -8026,7 +8286,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _sendCallEnd(ActiveCall call, String reason) {
-    if (call.isGroup && (!call.incoming || call.groupMesh)) {
+    if (call.isGroup && (!call.incoming || call.groupMesh || call.groupSfu)) {
       final destinations = {
         ...call.groupMembers,
         ..._groupCalls.keys,
@@ -8181,10 +8441,11 @@ class AppController extends ChangeNotifier {
     final groupId = packet['group_id']?.toString() ?? '';
     final groupName = packet['group_name']?.toString() ?? '';
     final groupMesh = groupId.isNotEmpty && packet['group_mesh'] == 1;
+    final groupSfu = groupId.isNotEmpty && packet['group_sfu'] == 1;
     final members = _stringList(packet['group_members']);
-    if (groupMesh &&
+    if ((groupMesh || groupSfu) &&
         ({...members, sender, myNodeId}.length >
-                GroupCallMesh.maxParticipants ||
+                (groupSfu ? 32 : GroupCallMesh.maxParticipants) ||
             !members.contains(myNodeId))) {
       return;
     }
@@ -8243,6 +8504,8 @@ class AppController extends ChangeNotifier {
         groupId: groupId,
         groupMembers: members,
         groupMesh: groupMesh,
+        groupSfu: groupSfu,
+        sfuKeyId: packet['sfu_key_id']?.toString() ?? '',
         hdAudio: _meshProCallFeatureEnabled(
           'call_hd_audio',
           appSettings.meshProHdAudio,
@@ -8261,7 +8524,9 @@ class AppController extends ChangeNotifier {
       );
       _groupService(activeCall!, sender);
     }
-    final earlyIce = _earlyCallIce.remove('${activeCall!.callId}:$sender');
+    final earlyIce = groupSfu
+        ? null
+        : _earlyCallIce.remove('${activeCall!.callId}:$sender');
     if (earlyIce != null && earlyIce.expires.isAfter(DateTime.now())) {
       final service = groupMesh ? _groupService(activeCall!, sender) : _calls;
       for (final candidate in earlyIce.candidates) {
@@ -8284,6 +8549,27 @@ class AppController extends ChangeNotifier {
     final call = activeCall;
     if (call == null || !call.acceptsSignal(packet)) return;
     final source = packet['source_node']?.toString() ?? '';
+    if (call.groupSfu) {
+      if (packet['group_sfu'] != 1) return;
+      if (packet['accepted'] == true) {
+        final current = activeCall;
+        if (current == null || !current.acceptsSignal(packet)) return;
+        _setActiveCall(
+          current.copyWith(
+            status: CallStatus.active,
+            connectedNodes: {...current.connectedNodes, source},
+            networkRoute: 'sfu',
+            quality: current.quality == 0 ? 2 : current.quality,
+          ),
+        );
+        notifyListeners();
+        return;
+      }
+      final connected = {...call.connectedNodes}..remove(source);
+      _setActiveCall(call.copyWith(connectedNodes: connected));
+      notifyListeners();
+      return;
+    }
     if (call.isGroup &&
         (!call.incoming || call.groupMesh) &&
         !_groupCalls.containsKey(source)) {
@@ -8367,6 +8653,16 @@ class AppController extends ChangeNotifier {
         (!mirrored && !call.acceptsSignal(packet))) {
       return;
     }
+    if (!mirrored && call.groupSfu) {
+      final connected = {...call.connectedNodes}..remove(source);
+      if (source != call.peer.nodeId ||
+          !call.incoming ||
+          connected.isNotEmpty) {
+        _setActiveCall(call.copyWith(connectedNodes: connected));
+        notifyListeners();
+        return;
+      }
+    }
     if (!mirrored && call.groupMesh) {
       if (!(_groupMesh?.accepted ?? false)) {
         if (source != call.peer.nodeId) {
@@ -8445,6 +8741,14 @@ class AppController extends ChangeNotifier {
     _groupPendingOffers.clear();
     final services = _groupCalls.values.toList();
     _groupCalls.clear();
+    final sfu = _sfuCall;
+    _sfuCall = null;
+    if (sfu != null) {
+      await sfu
+          .end()
+          .timeout(const Duration(seconds: 2), onTimeout: () => false)
+          .catchError((_) => false);
+    }
     await _calls
         .end()
         .timeout(const Duration(seconds: 2), onTimeout: () {})
@@ -8496,6 +8800,32 @@ class AppController extends ChangeNotifier {
   void _handleCallConnectionState(String nodeId, CallConnectionPhase phase) {
     final call = activeCall;
     if (call == null || call.status == CallStatus.ended) return;
+    if (call.groupSfu && nodeId == 'sfu') {
+      switch (phase) {
+        case CallConnectionPhase.connected:
+          _setActiveCall(
+            call.copyWith(
+              status: call.incoming || call.connectedNodes.isNotEmpty
+                  ? CallStatus.active
+                  : CallStatus.connecting,
+              networkRoute: 'sfu',
+              quality: call.quality == 0 ? 2 : call.quality,
+            ),
+          );
+          notifyListeners();
+        case CallConnectionPhase.connecting:
+        case CallConnectionPhase.newConnection:
+        case CallConnectionPhase.disconnected:
+          _setActiveCall(call.copyWith(status: CallStatus.connecting));
+          notifyListeners();
+        case CallConnectionPhase.failed:
+        case CallConnectionPhase.closed:
+          unawaited(
+            _finishCall(call, reason: 'SFU connection lost', broadcast: true),
+          );
+      }
+      return;
+    }
     if (call.isGroup && nodeId.isNotEmpty && !_groupCalls.containsKey(nodeId)) {
       return;
     }
@@ -8561,6 +8891,7 @@ class AppController extends ChangeNotifier {
     final call = activeCall;
     if (call == null || call.status == CallStatus.ended) return;
     if (call.isGroup &&
+        !call.groupSfu &&
         nodeId.isNotEmpty &&
         !call.connectedNodes.contains(nodeId)) {
       return;
@@ -8585,6 +8916,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _scheduleCallReconnect(String callId, String nodeId) {
+    if (activeCall?.groupSfu == true) return;
     final key = nodeId.isEmpty ? activeCall?.peer.nodeId ?? '' : nodeId;
     _callReconnectTimers.remove(key)?.cancel();
     final attempt = (_callReconnectAttempts[key] ?? 0) + 1;
@@ -8752,6 +9084,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> _handleCallIce(Map<String, dynamic> packet) async {
     final call = activeCall;
+    if (call?.groupSfu == true && call?.callId == packet['call_id']) return;
     if (call == null ||
         call.status == CallStatus.ended ||
         call.callId != packet['call_id']) {
@@ -12078,6 +12411,8 @@ class AppController extends ChangeNotifier {
     await ble.stop();
     await _unsubscribeAndroidPush();
     await _socket.close();
+    await _endCallMedia();
+    _setActiveCall(null);
     await _store.clear();
     await _store.clearPendingAuthentication();
     session = null;
@@ -12091,6 +12426,8 @@ class AppController extends ChangeNotifier {
   Future<void> _handleDeviceRevoked() async {
     final current = session;
     await _socket.close();
+    await _endCallMedia();
+    _setActiveCall(null);
     await _store.clear();
     if (current != null) {
       await _store.removeRecent(current);
@@ -12106,6 +12443,8 @@ class AppController extends ChangeNotifier {
   Future<void> _handlePasswordChangedElsewhere() async {
     final current = session;
     await _socket.close();
+    await _endCallMedia();
+    _setActiveCall(null);
     await _store.clear();
     if (current != null) await _store.removeRecent(current);
     session = null;
@@ -12117,6 +12456,10 @@ class AppController extends ChangeNotifier {
   }
 
   void _clearLocalState() {
+    for (final completer in _sfuAccessRequests.values) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+    _sfuAccessRequests.clear();
     _ownProfileHydrated = false;
     profiles.clear();
     threads.clear();
@@ -12393,6 +12736,10 @@ class AppController extends ChangeNotifier {
       if (!completer.isCompleted) completer.complete('Application closed');
     }
     _captionSessionRequests.clear();
+    for (final completer in _sfuAccessRequests.values) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+    _sfuAccessRequests.clear();
     _callTicker?.cancel();
     _callPhaseTimeout?.cancel();
     _cancelCallReconnects();

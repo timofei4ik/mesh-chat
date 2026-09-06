@@ -50,6 +50,7 @@ def build_livekit_access_token(
             "canPublish": True,
             "canSubscribe": True,
             "canPublishData": True,
+            "canPublishSources": ["microphone"],
         },
     }
     encoded_header = _base64url(

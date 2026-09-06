@@ -131,6 +131,7 @@ class PostgresPersistenceTests(unittest.TestCase):
                 "012_polls.sql",
                 "013_account_recovery.sql",
                 "014_group_call_captions.sql",
+                "015_call_sfu_sessions.sql",
             ],
             [item.name for item in migrations],
         )

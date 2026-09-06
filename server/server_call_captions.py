@@ -13,6 +13,7 @@ except ModuleNotFoundError:
     from server_command_bus import account_login, send_json
 
 LEASE_SECONDS = 90
+MAX_PARTICIPANTS = 32
 
 
 def caption_session(server, call_id):
@@ -92,10 +93,10 @@ async def handle_caption_session(server, packet, context):
         if not login or not server.subscription_feature_enabled(login, "ai_voice_transcription"):
             return await fail("meshpro_required")
         members = packet.get("members")
-        if not isinstance(members, list) or not 1 <= len(members) <= 8 or any(not isinstance(member, str) or member not in allowed for member in members):
+        if not isinstance(members, list) or not 1 <= len(members) <= MAX_PARTICIPANTS or any(not isinstance(member, str) or member not in allowed for member in members):
             return await fail("invalid_members")
         members = set(members) | {node}
-        if len(members) > 8:
+        if len(members) > MAX_PARTICIPANTS:
             return await fail("invalid_members")
         # Unique sponsor_node prevents opening unbounded sponsored sessions.
         server.db.execute(

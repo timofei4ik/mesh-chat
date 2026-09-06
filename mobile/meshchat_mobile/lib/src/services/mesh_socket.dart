@@ -1438,6 +1438,7 @@ class MeshSocket {
       'supports_media_delivery_v2': !kIsWeb,
       'supports_account_live_fanout': true,
       'supports_multi_device_state': true,
+      'supports_call_sfu_v1': !kIsWeb,
       'protocol_version': protocolVersion,
       'min_protocol_version': minProtocolVersion,
     };

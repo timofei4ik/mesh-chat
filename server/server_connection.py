@@ -410,6 +410,7 @@ async def handle_server_hello(
         "multi_device_state": bool(
             packet.get("supports_multi_device_state", False)
         ),
+        "call_sfu_v1": bool(packet.get("supports_call_sfu_v1", False)),
     }
     register_realtime = getattr(
         server,
@@ -458,7 +459,7 @@ async def handle_server_hello(
             "call_ice_servers": True,
             "call_signaling_v2": True,
             "call_handoff_v1": True,
-            "call_sfu_v1": False,
+            "call_sfu_v1": True,
         },
         **version_payload(),
     }

@@ -141,13 +141,42 @@ class SQLiteChatSyncDeletionOwner:
         AccountDataPolicy("chat_sync", "account_chat_preferences"),
         AccountDataPolicy("chat_sync", "account_chat_state"),
         AccountDataPolicy("chat_sync", "message_read_receipts"),
+        AccountDataPolicy("chat_sync", "call_sfu_sessions"),
+        AccountDataPolicy("chat_sync", "call_sfu_members"),
     )
 
     def __init__(self, connection):
         self._connection = connection
 
     def delete_account(self, context):
+        if context.nodes:
+            placeholders = _placeholders(context.nodes)
+            self._connection.execute(
+                "DELETE FROM call_sfu_members WHERE node_id IN "
+                f"({placeholders})",
+                context.nodes,
+            )
+            self._connection.execute(
+                "DELETE FROM call_sfu_members WHERE call_id IN ("
+                "SELECT call_id FROM call_sfu_sessions WHERE owner_node IN "
+                f"({placeholders}))",
+                context.nodes,
+            )
+            self._connection.execute(
+                "DELETE FROM call_sfu_sessions WHERE owner_node IN "
+                f"({placeholders})",
+                context.nodes,
+            )
         for group_id in context.owned_group_ids:
+            self._connection.execute(
+                "DELETE FROM call_sfu_members WHERE call_id IN ("
+                "SELECT call_id FROM call_sfu_sessions WHERE group_id=?)",
+                (group_id,),
+            )
+            self._connection.execute(
+                "DELETE FROM call_sfu_sessions WHERE group_id=?",
+                (group_id,),
+            )
             self._connection.execute(
                 """
                 DELETE FROM server_poll_votes

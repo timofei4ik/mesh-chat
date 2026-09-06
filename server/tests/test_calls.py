@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +25,24 @@ class FakeCallServer:
         self.client_logins = {"caller": "alice", "callee": "bob"}
         self.errors = []
         self.pushes = []
+        self.group_nodes = {"group-1": {"caller", "callee"}}
+        self.capabilities = {"caller": True, "callee": True}
+        self.db = sqlite3.connect(":memory:")
+        self.db.executescript(
+            """
+            CREATE TABLE call_sfu_sessions(
+                call_id TEXT PRIMARY KEY,
+                owner_node TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+            CREATE TABLE call_sfu_members(
+                call_id TEXT NOT NULL REFERENCES call_sfu_sessions(call_id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL,
+                PRIMARY KEY(call_id, node_id)
+            );
+            """
+        )
 
     def get_login_by_node(self, node_id):
         return self.client_logins.get(node_id, "")
@@ -37,6 +56,12 @@ class FakeCallServer:
             for node_id, value in self.client_logins.items()
             if value == login
         ]
+
+    def get_group_delivery_nodes(self, group_id):
+        return list(self.group_nodes.get(group_id, set()))
+
+    async def realtime_node_capability(self, node_id, capability):
+        return capability == "call_sfu_v1" and self.capabilities.get(node_id, False)
 
     async def send_server_error(self, websocket, code, message, **details):
         self.errors.append((code, message))
@@ -118,6 +143,9 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
                     "type": "call_sfu_access_request",
                     "request_id": "request-2",
                     "call_id": "call-2",
+                    "group_id": "group-1",
+                    "action": "start",
+                    "members": ["caller", "callee"],
                     "media_e2ee_capability": "frame-v1",
                 },
                 ConnectionContext(socket, "caller"),
@@ -130,8 +158,77 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["enabled"])
         self.assertEqual(result["room"], payload["video"]["room"])
         self.assertTrue(payload["video"]["roomJoin"])
+        self.assertEqual(["microphone"], payload["video"]["canPublishSources"])
         self.assertLessEqual(payload["exp"] - payload["nbf"], 305)
         self.assertEqual("frame-v1", result["media_e2ee"])
+
+    async def test_sfu_join_requires_server_recorded_invitation(self):
+        server = FakeCallServer()
+        server.client_logins["outsider"] = "mallory"
+        socket = FakeSocket()
+        with (
+            patch.object(server_calls, "CALL_SFU_ENABLED", True),
+            patch.object(server_calls, "CALL_SFU_URL", "wss://sfu.test"),
+            patch.object(server_calls, "CALL_SFU_API_KEY", "api-key"),
+            patch.object(server_calls, "CALL_SFU_API_SECRET", "secret"),
+            patch.object(server_calls, "CALL_SFU_REQUIRE_E2EE", True),
+        ):
+            await build_command_registry().dispatch(
+                server,
+                {
+                    "type": "call_sfu_access_request",
+                    "request_id": "request-start",
+                    "call_id": "call-private",
+                    "group_id": "group-1",
+                    "action": "start",
+                    "members": ["caller", "callee"],
+                    "media_e2ee_capability": "frame-v1",
+                },
+                ConnectionContext(FakeSocket(), "caller"),
+            )
+            await build_command_registry().dispatch(
+                server,
+                {
+                    "type": "call_sfu_access_request",
+                    "request_id": "request-outsider",
+                    "call_id": "call-private",
+                    "group_id": "group-1",
+                    "action": "join",
+                    "media_e2ee_capability": "frame-v1",
+                },
+                ConnectionContext(socket, "outsider"),
+            )
+
+        self.assertFalse(socket.sent[0]["enabled"])
+        self.assertEqual("not_invited", socket.sent[0]["reason"])
+
+    async def test_sfu_start_falls_back_for_an_outdated_participant(self):
+        server = FakeCallServer()
+        server.capabilities["callee"] = False
+        socket = FakeSocket()
+        with (
+            patch.object(server_calls, "CALL_SFU_ENABLED", True),
+            patch.object(server_calls, "CALL_SFU_URL", "wss://sfu.test"),
+            patch.object(server_calls, "CALL_SFU_API_KEY", "api-key"),
+            patch.object(server_calls, "CALL_SFU_API_SECRET", "secret"),
+            patch.object(server_calls, "CALL_SFU_REQUIRE_E2EE", True),
+        ):
+            await build_command_registry().dispatch(
+                server,
+                {
+                    "type": "call_sfu_access_request",
+                    "request_id": "request-old-client",
+                    "call_id": "call-old-client",
+                    "group_id": "group-1",
+                    "action": "start",
+                    "members": ["caller", "callee"],
+                    "media_e2ee_capability": "frame-v1",
+                },
+                ConnectionContext(socket, "caller"),
+            )
+
+        self.assertFalse(socket.sent[0]["enabled"])
+        self.assertEqual("participant_update_required", socket.sent[0]["reason"])
 
     async def test_sfu_access_falls_back_without_media_e2ee(self):
         server = FakeCallServer()

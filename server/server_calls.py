@@ -26,6 +26,11 @@ try:
         private_room_name,
         sfu_is_configured,
     )
+    from server.server_call_sfu import (
+        authorize_sfu_member,
+        prune_sfu_sessions,
+        start_sfu_session,
+    )
     from server.server_command_bus import account_login, send_json
     from server.server_call_captions import handle_caption_session, caption_billing_login
 except ModuleNotFoundError:
@@ -45,6 +50,11 @@ except ModuleNotFoundError:
         build_livekit_access_token,
         private_room_name,
         sfu_is_configured,
+    )
+    from server_call_sfu import (
+        authorize_sfu_member,
+        prune_sfu_sessions,
+        start_sfu_session,
     )
     from server_command_bus import account_login, send_json
     from server_call_captions import handle_caption_session, caption_billing_login
@@ -75,6 +85,7 @@ _SEEN_OPERATION_LIMIT = 4096
 _seen_operations = OrderedDict()
 
 _MAX_CALL_ID_LENGTH = 128
+_MAX_GROUP_ID_LENGTH = 256
 _MAX_NODE_ID_LENGTH = 256
 _MAX_OPERATION_ID_LENGTH = 256
 _MAX_SDP_LENGTH = 2 * 1024 * 1024
@@ -109,6 +120,16 @@ def _valid_identifier(value, maximum):
         character.isprintable() and character not in "\r\n\0"
         for character in value
     )
+
+
+def _string_list(value):
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        str(item or "").strip()[:_MAX_NODE_ID_LENGTH]
+        for item in value
+        if str(item or "").strip()
+    ))
 
 
 def validate_call_signal(packet):
@@ -298,7 +319,8 @@ async def handle_call_signal(server, packet, context):
         if (context.node_id not in allowed or destination not in allowed or
                 not isinstance(members, list) or
                 any(not isinstance(node, str) or node not in allowed for node in members) or
-                (packet.get("group_mesh") == 1 and len(set(members) | {context.node_id, destination}) > 8)):
+                (packet.get("group_mesh") == 1 and len(set(members) | {context.node_id, destination}) > 8) or
+                (packet.get("group_sfu") == 1 and len(set(members) | {context.node_id, destination}) > 32)):
             await server.send_server_error(context.websocket, "group_call_forbidden", "Invalid group call membership")
             return True
     operation_id = str(packet.get("operation_id") or "").strip()
@@ -368,6 +390,8 @@ async def handle_call_ice_servers_request(server, packet, context):
 async def handle_call_sfu_access_request(server, packet, context):
     request_id = str(packet.get("request_id") or "")[:256]
     call_id = str(packet.get("call_id") or "").strip()
+    group_id = str(packet.get("group_id") or "").strip()
+    action = str(packet.get("action") or "join").strip().lower()
     configured = sfu_is_configured(
         CALL_SFU_ENABLED,
         CALL_SFU_URL,
@@ -407,6 +431,63 @@ async def handle_call_sfu_access_request(server, packet, context):
             "Invalid call_id",
         )
         return True
+    if not _valid_identifier(group_id, _MAX_GROUP_ID_LENGTH):
+        await server.send_server_error(
+            context.websocket,
+            "invalid_group_id",
+            "Invalid group_id",
+        )
+        return True
+
+    prune_sfu_sessions(server)
+    if action == "start":
+        members = _string_list(packet.get("members"))
+        if context.node_id not in members:
+            members.append(context.node_id)
+        for member in members:
+            if not await server.realtime_node_capability(
+                member,
+                "call_sfu_v1",
+            ):
+                await send_json(
+                    context.websocket,
+                    {
+                        "type": "call_sfu_access_result",
+                        "request_id": request_id,
+                        "enabled": False,
+                        "fallback": "p2p",
+                        "reason": "participant_update_required",
+                    },
+                )
+                return True
+        authorized, admission = start_sfu_session(
+            server,
+            call_id=call_id,
+            owner_node=context.node_id,
+            group_id=group_id,
+            members=members,
+        )
+    elif action == "join":
+        authorized, admission = authorize_sfu_member(
+            server,
+            call_id=call_id,
+            node_id=context.node_id,
+            group_id=group_id,
+        )
+    else:
+        authorized, admission = False, "invalid_action"
+    if not authorized:
+        await send_json(
+            context.websocket,
+            {
+                "type": "call_sfu_access_result",
+                "request_id": request_id,
+                "enabled": False,
+                "fallback": "p2p",
+                "reason": admission,
+            },
+        )
+        return True
 
     login = account_login(server, context.node_id)
     identity = f"{login or 'device'}:{context.node_id}"[:255]
@@ -432,6 +513,7 @@ async def handle_call_sfu_access_request(server, packet, context):
             "token": token,
             "expires_at": issued_at + CALL_SFU_TOKEN_TTL_SECONDS,
             "media_e2ee": "frame-v1",
+            "admission_expires_at": admission,
         },
     )
     return True

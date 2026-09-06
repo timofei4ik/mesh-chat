@@ -916,6 +916,20 @@ class ServerRealtimeMixin:
             for node_id, username in list(self.client_names.items())
         ]
 
+    async def realtime_node_capability(self, node_id, capability):
+        local = self.client_capabilities.get(node_id)
+        if local is not None:
+            return bool(local.get(capability, False))
+        if not self.realtime.enabled or self.realtime.redis is None:
+            return False
+        presence = await self.realtime.redis.hgetall(
+            self.realtime._presence_key(node_id, "client")
+        )
+        return self.realtime._remote_capability_allowed(
+            presence,
+            capability,
+        )
+
     async def claim_realtime_operation(
         self,
         namespace,

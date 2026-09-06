@@ -11,9 +11,14 @@
   the old direct route automatically. Calls remain available, with reduced
   isolation, until the signaling service recovers.
 
-The current client media plane remains WebRTC P2P/TURN. LiveKit is staged only
-as an SFU configuration because switching group media to an SFU requires a
-client capability and a rolling client release.
+Native clients use encrypted LiveKit SFU rooms for compatible online group
+participants and retain bounded WebRTC P2P/TURN as a rolling-release fallback.
+The SFU never receives the MeshChat group encryption key. Web clients continue
+to use the bounded mesh fallback.
+
+Install the checked-in LiveKit, nginx and systemd templates, expose TCP 7881
+and UDP 50000:50100, and keep `MESH_CALL_SFU_ENABLED=0` until `/rtc` and a
+two-client encrypted call pass.
 
 ## Single-VPS rollout
 

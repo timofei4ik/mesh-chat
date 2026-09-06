@@ -87,6 +87,35 @@ void main() {
         );
       },
     );
+    test('SFU group accepts lifecycle signals from its admitted roster', () {
+      final sfuCall = ActiveCall(
+        callId: 'sfu-call',
+        peer: Profile(nodeId: 'host', displayName: 'Host'),
+        status: CallStatus.active,
+        incoming: true,
+        startedAt: DateTime(2026),
+        isGroup: true,
+        groupSfu: true,
+        groupId: 'group',
+        groupMembers: const ['host', 'guest-a', 'guest-b'],
+      );
+      expect(
+        sfuCall.acceptsSignal({
+          'call_id': 'sfu-call',
+          'group_id': 'group',
+          'source_node': 'guest-b',
+        }),
+        isTrue,
+      );
+      expect(
+        sfuCall.acceptsSignal({
+          'call_id': 'sfu-call',
+          'group_id': 'group',
+          'source_node': 'outsider',
+        }),
+        isFalse,
+      );
+    });
   });
   group('caption updates', () {
     CallCaptionLine line({
