@@ -1367,7 +1367,10 @@ class _ChatStackHostState extends State<_ChatStackHost>
           children: [
             AnimatedBuilder(
               animation: transition,
-              child: RepaintBoundary(child: widget.home),
+              child: MeshGlassCompositionScope(
+                nativeAllowed: thread == null,
+                child: RepaintBoundary(child: widget.home),
+              ),
               builder: (context, child) {
                 final hiddenBehindSettledChat =
                     thread != null &&

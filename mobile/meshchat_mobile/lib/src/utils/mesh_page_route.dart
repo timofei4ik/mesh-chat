@@ -53,12 +53,12 @@ class _MeshSlideRoute<T> extends PageRouteBuilder<T> {
   AnimationStatusListener? gestureEndListener;
 
   void statusChanged(AnimationStatus status) {
-    if (!preserveLiquidGlass) {
-      MeshRouteTransition.setActive(
-        this,
-        status == AnimationStatus.forward || status == AnimationStatus.reverse,
-      );
-    }
+    MeshRouteTransition.setActive(
+      this,
+      gestureNavigator != null ||
+          status == AnimationStatus.forward ||
+          status == AnimationStatus.reverse,
+    );
   }
 
   @override
@@ -71,7 +71,7 @@ class _MeshSlideRoute<T> extends PageRouteBuilder<T> {
     if (!isCurrent || !popGestureEnabled || gestureNavigator != null) return;
     gestureNavigator = navigator;
     gestureNavigator!.didStartUserGesture();
-    if (!preserveLiquidGlass) MeshRouteTransition.setActive(this, true);
+    MeshRouteTransition.setActive(this, true);
   }
 
   void updateBack(double delta) {

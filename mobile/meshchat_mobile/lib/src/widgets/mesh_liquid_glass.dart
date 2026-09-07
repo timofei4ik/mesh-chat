@@ -40,6 +40,27 @@ class MeshPlatformScope extends InheritedWidget {
   }
 }
 
+/// Covered screens stay on Flutter's canvas, below the moving foreground page.
+class MeshGlassCompositionScope extends InheritedWidget {
+  const MeshGlassCompositionScope({
+    super.key,
+    required this.nativeAllowed,
+    required super.child,
+  });
+
+  final bool nativeAllowed;
+
+  static bool nativeAllowedOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<MeshGlassCompositionScope>()
+          ?.nativeAllowed ??
+      true;
+
+  @override
+  bool updateShouldNotify(MeshGlassCompositionScope oldWidget) =>
+      oldWidget.nativeAllowed != nativeAllowed;
+}
+
 class MeshLiquidGlass extends StatelessWidget {
   const MeshLiquidGlass({
     super.key,
@@ -79,7 +100,8 @@ class MeshLiquidGlass extends StatelessWidget {
     // forces both renderers to synchronize every frame. Chat screens use a
     // matching Flutter surface so scrolling and interactive routes stay on a
     // single GPU composition path; static iOS screens retain native glass.
-    if (forceFlutterSurface) {
+    if (forceFlutterSurface ||
+        !MeshGlassCompositionScope.nativeAllowedOf(context)) {
       return _staticTransitionSurface(context);
     }
 

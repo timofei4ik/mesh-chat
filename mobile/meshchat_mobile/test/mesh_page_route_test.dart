@@ -58,6 +58,39 @@ void main() {
     );
   }
 
+  testWidgets('settings suppress native glass throughout a cancelled swipe', (
+    tester,
+  ) async {
+    final navigator = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigator,
+        home: const Scaffold(body: Text('Home')),
+      ),
+    );
+    navigator.currentState!.push(
+      meshSettingsPageRoute<void>(
+        builder: (_) => const Scaffold(body: Text('Settings')),
+      ),
+    );
+    await tester.pump();
+    expect(MeshRouteTransition.active.value, isTrue);
+    await tester.pumpAndSettle();
+    expect(MeshRouteTransition.active.value, isFalse);
+    final gesture = await tester.startGesture(const Offset(10, 250));
+    await gesture.moveBy(const Offset(35, 0));
+    await tester.pump();
+    await gesture.moveBy(const Offset(60, 0));
+    await tester.pump();
+    expect(MeshRouteTransition.active.value, isTrue);
+    await gesture.cancel();
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(MeshRouteTransition.active.value, isTrue);
+    await tester.pumpAndSettle();
+    expect(MeshRouteTransition.active.value, isFalse);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'back swipe respects PopScope and leaves central horizontal gestures alone',
     (tester) async {

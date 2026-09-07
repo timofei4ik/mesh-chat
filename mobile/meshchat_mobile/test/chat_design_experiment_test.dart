@@ -174,6 +174,43 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
+  testWidgets('covered iOS home renders all glass on Flutter canvas', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MeshPlatformScope(
+          capabilities: const MeshPlatformCapabilities(iosMajorVersion: 26),
+          child: MeshGlassCompositionScope(
+            nativeAllowed: false,
+            child: Column(
+              children: [
+                for (final selected in [false, true])
+                  MeshLiquidGlass(
+                    selected: selected,
+                    accent: Colors.cyan,
+                    child: const SizedBox(
+                      width: 200,
+                      height: 48,
+                      child: Text('Home label'),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(UiKitView), findsNothing);
+    expect(find.text('Home label'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   for (final size in [const Size(1100, 780), const Size(360, 800)]) {
     testWidgets('chat list shows drafts and typing at ${size.width}', (
       tester,
