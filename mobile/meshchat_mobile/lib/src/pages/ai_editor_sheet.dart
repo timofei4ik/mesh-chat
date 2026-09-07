@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 
 import '../controllers/app_controller.dart';
 import '../widgets/mesh_liquid_glass.dart';
+import '../utils/mesh_page_route.dart';
+import 'ai_personal_page.dart';
 
 enum _AiEditorMode { translate, style, fix }
 
@@ -109,6 +111,23 @@ class _AiEditorSheetState extends State<_AiEditorSheet> {
   String error = '';
   bool emojify = false;
   bool loading = false;
+  Map<String, dynamic>? customPreset;
+
+  Future<void> chooseCustomStyle() async {
+    if (loading) return;
+    final preset = await Navigator.of(context).push<Map<String, dynamic>>(
+      meshPageRoute(
+        builder: (_) =>
+            AiPersonalPage(controller: widget.controller, presets: true),
+      ),
+    );
+    if (preset != null && mounted) {
+      setState(() {
+        customPreset = preset;
+        result = '';
+      });
+    }
+  }
 
   Future<void> run() async {
     if (loading) return;
@@ -125,6 +144,37 @@ class _AiEditorSheetState extends State<_AiEditorSheet> {
           emojify: emojify,
         );
         output = translation.text;
+      } else if (mode == _AiEditorMode.style && customPreset != null) {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Use your writing style?'),
+            content: const Text(
+              'The original text, saved style preferences and writing examples will be sent to Mesh AI and its external provider.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Apply style'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true || !mounted) return;
+        final rewrite = await widget.controller.runContextAiTool({
+          'mode': 'style',
+          'instruction':
+              '${customPreset!['text']}\n${emojify ? 'Add emoji where appropriate.' : 'Do not add emoji.'}',
+          'examples': customPreset!['examples'] ?? '',
+          'sources': [
+            {'id': 'original', 'text': widget.original},
+          ],
+        });
+        output = rewrite.answer;
       } else {
         final baseStyle = mode == _AiEditorMode.fix ? 'proofread' : style;
         final rewrite = await widget.controller.rewriteTextWithAi(
@@ -147,7 +197,7 @@ class _AiEditorSheetState extends State<_AiEditorSheet> {
   }
 
   void selectMode(_AiEditorMode next) {
-    if (mode == next) return;
+    if (loading || mode == next) return;
     HapticFeedback.selectionClick();
     setState(() {
       mode = next;
@@ -306,18 +356,52 @@ class _AiEditorSheetState extends State<_AiEditorSheet> {
       height: 72,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: _aiStyles.length,
+        itemCount: _aiStyles.length + 1,
         separatorBuilder: (_, _) => const SizedBox(width: 7),
         itemBuilder: (context, index) {
+          if (index == _aiStyles.length) {
+            return Tooltip(
+              message:
+                  customPreset?['title']?.toString() ?? 'My writing styles',
+              child: InkWell(
+                onTap: loading ? null : chooseCustomStyle,
+                child: SizedBox(
+                  width: 78,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.tune_rounded,
+                        color: customPreset == null
+                            ? Colors.white70
+                            : Colors.lightBlueAccent,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        customPreset?['title']?.toString() ?? 'My styles',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
           final option = _aiStyles[index];
-          final selected = style == option.id;
+          final selected = customPreset == null && style == option.id;
           return Tooltip(
             message: option.description,
             child: InkWell(
-              onTap: () => setState(() {
-                style = option.id;
-                result = '';
-              }),
+              onTap: loading
+                  ? null
+                  : () => setState(() {
+                      customPreset = null;
+                      style = option.id;
+                      result = '';
+                    }),
               borderRadius: BorderRadius.circular(16),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),

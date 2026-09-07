@@ -8,6 +8,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/chat_message.dart';
+import '../models/ai_context.dart';
 import '../models/chat_thread.dart';
 import '../models/app_settings.dart';
 import '../models/business_settings.dart';
@@ -19,6 +20,7 @@ import '../models/session.dart';
 import '../models/sticker_pack.dart';
 import '../models/story_item.dart';
 import '../services/app_settings_store.dart';
+import '../services/ai_personal_store.dart';
 import '../services/ble_chat_service.dart';
 import '../services/call_alert_service.dart';
 import '../services/call_caption_service.dart';
@@ -2144,6 +2146,61 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<AiContextResult> runContextAiTool(
+    Map<String, dynamic> payload, {
+    String attachmentHex = '',
+  }) async {
+    final current = session;
+    final feature = aiContextFeatures[payload['mode']];
+    if (current == null || !_socket.isConnected) {
+      throw const AiSummaryException('offline', 'Connect to the server first');
+    }
+    if (feature == null || !await _refreshMeshProFeature(feature)) {
+      throw const AiSummaryException(
+        'meshpro_required',
+        'This action requires MeshPro',
+      );
+    }
+    if (session != current) {
+      throw const AiSummaryException('session_changed', 'Account changed');
+    }
+    final id = const Uuid().v4();
+    final completer = Completer<AiSummaryResult>();
+    completer.future.ignore();
+    _aiSummaryCompleters[id] = completer;
+    try {
+      final packet = <String, dynamic>{
+        'type': 'ai_context_tool_request',
+        'packet_id': id,
+        'request_id': id,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'payload': payload,
+      };
+      if (attachmentHex.isEmpty) {
+        _socket.send(packet);
+      } else {
+        await _socket.sendAiMediaRequest(
+          packet,
+          hex: attachmentHex,
+          field: 'attachment_base64',
+          limit: 3 * 1024 * 1024,
+        );
+      }
+      final response = await completer.future.timeout(
+        const Duration(seconds: 60),
+      );
+      if (session != current) {
+        throw const AiSummaryException('session_changed', 'Account changed');
+      }
+      return AiContextResult.decode(response.text);
+    } finally {
+      _aiSummaryCompleters.remove(id);
+    }
+  }
+
   Future<AiPersonMemoryResult> askPersonMemoryWithAi({
     required ChatThread thread,
     required String question,
@@ -2276,7 +2333,26 @@ class AppController extends ChangeNotifier {
     completer.completeError(
       AiSummaryException(
         code,
-        messages[code] ?? _aiFailureMessage(code, 'Could not create summary'),
+        packet['type'] == 'ai_context_tool_result'
+            ? const <String, String>{
+                    'meshpro_required': 'This action requires MeshPro',
+                    'quota_exceeded':
+                        'The monthly limit for this AI action has been reached',
+                    'context_too_large': 'Select fewer or shorter messages',
+                    'document_too_large': 'Maximum attachment size is 3 MB',
+                    'no_document_text':
+                        'No readable text found. For scanned PDFs, send a page as a PNG or JPEG image.',
+                    'unsupported_document':
+                        'Supported: text PDFs, PNG and JPEG',
+                    'empty_question': 'Enter a question',
+                    'no_messages': 'No text in the selected context',
+                    'busy': 'Mesh AI is busy. Try again shortly.',
+                    'ai_vision_unavailable':
+                        'Image recognition is unavailable on the server',
+                  }[code] ??
+                  _aiFailureMessage(code, 'Could not complete the AI action')
+            : messages[code] ??
+                  _aiFailureMessage(code, 'Could not create summary'),
       ),
     );
   }
@@ -3167,6 +3243,8 @@ class AppController extends ChangeNotifier {
       case 'ai_message_translation_result':
         _handleAiTranslationResult(packet);
       case 'ai_chat_summary_result':
+        _handleAiSummaryResult(packet);
+      case 'ai_context_tool_result':
         _handleAiSummaryResult(packet);
       case 'ai_voice_transcription_result':
         _handleAiTranscriptionResult(packet);
@@ -12417,6 +12495,7 @@ class AppController extends ChangeNotifier {
     await _cache.clear(current);
     await _ownProfileStore.remove(current);
     await _syncCursorStore.clear(current);
+    await AiPersonalStore('${current.serverUrl}|${current.login}').clear();
     await _store.removeRecent(current);
     await _store.clear();
     session = null;

@@ -1,6 +1,9 @@
 import 'dart:async';
 import '../widgets/collection_message_surface.dart';
 import '../widgets/message_bubble_picker.dart';
+import '../models/ai_context.dart';
+import 'ai_context_page.dart';
+import 'ai_personal_page.dart';
 import '../widgets/mesh_sheet_surface.dart';
 import 'dart:collection';
 import 'dart:convert';
@@ -648,98 +651,12 @@ class _ChatPageState extends State<ChatPage>
   }
 
   Future<void> showCallSummary() async {
-    if (aiCallSummarizing) return;
-    final allowed = await requireMeshPro(
-      context,
-      widget.controller,
-      featureId: 'ai_call_summary',
-      title: 'Call summary',
-      description:
-          'Structure a transcript or your call notes into topics, decisions, tasks and dates.',
-    );
-    if (!allowed || !mounted) return;
-    final notesController = TextEditingController();
-    final notes = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Call notes or transcript'),
-        content: SizedBox(
-          width: 540,
-          child: TextField(
-            controller: notesController,
-            autofocus: true,
-            minLines: 7,
-            maxLines: 14,
-            decoration: const InputDecoration(
-              hintText:
-                  'Paste a transcript or write what was discussed. MeshChat does not record calls automatically.',
-              alignLabelWithHint: true,
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            onPressed: () {
-              final value = notesController.text.trim();
-              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
-            },
-            icon: const Icon(Icons.auto_awesome_rounded, size: 18),
-            label: const Text('Summarize'),
-          ),
-        ],
+    await Navigator.of(context).push<void>(
+      meshPageRoute(
+        builder: (_) =>
+            AiPersonalPage(controller: widget.controller, presets: false),
       ),
     );
-    notesController.dispose();
-    if (notes == null || !mounted) return;
-    setState(() => aiCallSummarizing = true);
-    try {
-      final result = await widget.controller.summarizeCallNotesWithAi(notes);
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.auto_awesome_rounded, color: Color(0xFFB28AFF)),
-              SizedBox(width: 10),
-              Expanded(child: Text('Call summary')),
-            ],
-          ),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: SingleChildScrollView(child: SelectableText(result.text)),
-          ),
-          actions: [
-            Text(
-              '${result.remaining} summaries left',
-              style: const TextStyle(fontSize: 12, color: Colors.white54),
-            ),
-            TextButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: result.text));
-                if (dialogContext.mounted) Navigator.pop(dialogContext);
-              },
-              icon: const Icon(Icons.copy_rounded, size: 18),
-              label: const Text('Copy'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Done'),
-            ),
-          ],
-        ),
-      );
-    } on AiSummaryException catch (error) {
-      if (mounted) showSnack(error.message);
-    } catch (_) {
-      if (mounted) showSnack('Could not create a call summary');
-    } finally {
-      if (mounted) setState(() => aiCallSummarizing = false);
-    }
   }
 
   Future<void> showSmartReplies() async {
@@ -836,109 +753,104 @@ class _ChatPageState extends State<ChatPage>
     useSmartReply(selected);
   }
 
-  Future<void> showPersonMemory() async {
-    if (aiPersonMemoryLoading) return;
+  Future<void> showPersonMemory() => showContextAi('search');
+
+  Future<void> showContextAi(
+    String mode, {
+    List<ChatMessage>? sources,
+    String question = '',
+    String? targetId,
+  }) async {
     final allowed = await requireMeshPro(
       context,
       widget.controller,
-      featureId: 'ai_person_memory',
-      title: 'Memory about ${widget.thread.profile.displayName}',
-      description:
-          'Ask a question and get an answer based only on this conversation.',
+      featureId: aiContextFeatures[mode] ?? 'ai_person_memory',
+      title: 'Mesh AI',
+      description: 'Use only the context you choose.',
     );
     if (!allowed || !mounted) return;
-    final questionController = TextEditingController();
-    final question = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.psychology_alt_rounded, color: Color(0xFFB28AFF)),
-            SizedBox(width: 10),
-            Expanded(child: Text('Ask chat memory')),
-          ],
-        ),
-        content: TextField(
-          controller: questionController,
-          autofocus: true,
-          minLines: 1,
-          maxLines: 4,
-          textInputAction: TextInputAction.done,
-          decoration: const InputDecoration(
-            hintText: 'What did we agree on last Friday?',
-            prefixIcon: Icon(Icons.search_rounded),
-          ),
-          onSubmitted: (value) {
-            if (value.trim().isNotEmpty) {
-              Navigator.pop(dialogContext, value.trim());
+    final available =
+        sources ?? visibleMessages().where((m) => !m.deleted).toList();
+    await Navigator.of(context).push<void>(
+      meshPageRoute(
+        builder: (_) => AiContextPage(
+          controller: widget.controller,
+          thread: widget.thread,
+          mode: mode,
+          messages: available,
+          question: question,
+          targetId: targetId,
+          onSource: (id) => WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) jumpToMessageById(id);
+          }),
+          onDraft: (draft) {
+            if (!mounted) return;
+            if (targetId != null) {
+              replyTo = widget.controller.messageInThread(
+                widget.thread,
+                targetId,
+              );
             }
+            useSmartReply(draft);
           },
+          onReminder: (text) => createMessageReminder(
+            ChatMessage(
+              id: 'ai-task',
+              senderNode: widget.controller.myNodeId,
+              receiverNode: widget.controller.myNodeId,
+              text: text,
+              createdAt: DateTime.now(),
+            ),
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            onPressed: () {
-              final value = questionController.text.trim();
-              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
-            },
-            icon: const Icon(Icons.auto_awesome_rounded, size: 18),
-            label: const Text('Ask'),
-          ),
-        ],
       ),
     );
-    questionController.dispose();
-    if (question == null || !mounted) return;
-    setState(() => aiPersonMemoryLoading = true);
-    try {
-      final result = await widget.controller.askPersonMemoryWithAi(
-        thread: widget.thread,
-        question: question,
-      );
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.psychology_alt_rounded, color: Color(0xFFB28AFF)),
-              SizedBox(width: 10),
-              Expanded(child: Text('Chat memory')),
-            ],
-          ),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 540),
-            child: SingleChildScrollView(child: SelectableText(result.text)),
-          ),
-          actions: [
-            Text(
-              '${result.remaining} searches left',
-              style: const TextStyle(fontSize: 12, color: Colors.white54),
+  }
+
+  Future<void> showSelectedAiActions(ChatMessage message) async {
+    final isDocument = RegExp(
+      r'\.(pdf|png|jpe?g)$',
+      caseSensitive: false,
+    ).hasMatch(message.fileName);
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_note_rounded),
+              title: const Text('Suggest a reply'),
+              onTap: () => Navigator.pop(context, 'reply'),
             ),
-            TextButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: result.text));
-                if (dialogContext.mounted) Navigator.pop(dialogContext);
-              },
-              icon: const Icon(Icons.copy_rounded, size: 18),
-              label: const Text('Copy'),
+            ListTile(
+              leading: const Icon(Icons.checklist_rounded),
+              title: const Text('Make a plan'),
+              onTap: () => Navigator.pop(context, 'plan'),
             ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Done'),
-            ),
+            if (isDocument)
+              ListTile(
+                leading: const Icon(Icons.find_in_page_outlined),
+                title: const Text('Ask attachment'),
+                onTap: () => Navigator.pop(context, 'document'),
+              ),
           ],
         ),
+      ),
+    );
+    if (action == null || !mounted) return;
+    if (action == 'reply') {
+      final messages = visibleMessages().where((m) => !m.deleted).toList();
+      final index = messages.indexWhere((m) => m.id == message.id);
+      if (index < 0) return;
+      await showContextAi(
+        action,
+        sources: messages.sublist(math.max(0, index - 11), index + 1),
+        targetId: message.id,
       );
-    } on AiPersonMemoryException catch (error) {
-      if (mounted) showSnack(error.message);
-    } catch (_) {
-      if (mounted) showSnack('Could not search chat memory');
-    } finally {
-      if (mounted) setState(() => aiPersonMemoryLoading = false);
+    } else {
+      await showContextAi(action, sources: [message]);
     }
   }
 
@@ -2757,6 +2669,11 @@ class _ChatPageState extends State<ChatPage>
                   title: const Text('Chat appearance'),
                   onTap: () => Navigator.pop(context, 'appearance'),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.notes_rounded),
+                  title: const Text('Call notes'),
+                  onTap: () => Navigator.pop(context, 'call_notes'),
+                ),
                 if (!widget.thread.isBluetooth &&
                     !widget.controller.isSavedMessagesProfile(
                       widget.thread.profile,
@@ -2794,6 +2711,8 @@ class _ChatPageState extends State<ChatPage>
         break;
       case 'appearance':
         await showChatAppearance();
+      case 'call_notes':
+        await showCallSummary();
         break;
       case 'scheduled':
         await showScheduledMessages();
@@ -2851,6 +2770,11 @@ class _ChatPageState extends State<ChatPage>
                   title: const Text('Chat appearance'),
                   onTap: () => Navigator.pop(context, 'appearance'),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.notes_rounded),
+                  title: const Text('Call notes'),
+                  onTap: () => Navigator.pop(context, 'call_notes'),
+                ),
                 if (!isChannelCommentThread)
                   ListTile(
                     leading: const Icon(Icons.schedule_rounded),
@@ -2882,6 +2806,8 @@ class _ChatPageState extends State<ChatPage>
         break;
       case 'appearance':
         await showChatAppearance();
+      case 'call_notes':
+        await showCallSummary();
         break;
       case 'scheduled':
         await showScheduledMessages();
@@ -3015,6 +2941,13 @@ class _ChatPageState extends State<ChatPage>
         enabled: canReplyOrComment,
       ),
       const _MessageActionSpec('forward', 'Forward', Icons.forward_rounded),
+      if (!message.deleted)
+        const _MessageActionSpec(
+          'ai_tools',
+          'AI actions',
+          Icons.auto_awesome_outlined,
+          subtitle: 'MeshPro',
+        ),
       const _MessageActionSpec(
         'save',
         'Save to Saved Messages',
@@ -3128,6 +3061,10 @@ class _ChatPageState extends State<ChatPage>
       ),
     );
     if (!mounted || action == null) return;
+    if (action == 'ai_tools') {
+      await showSelectedAiActions(message);
+      return;
+    }
     if (action == 'retry') {
       final error = await widget.controller.retryMessage(
         widget.thread,
@@ -3775,6 +3712,12 @@ class _ChatPageState extends State<ChatPage>
                             overflow: TextOverflow.ellipsis,
                           ),
                           subtitle: Text(messageTime(message.createdAt)),
+                          onTap: () {
+                            Navigator.pop(context);
+                            WidgetsBinding.instance.addPostFrameCallback(
+                              (_) => jumpToMessageById(message.id),
+                            );
+                          },
                         );
                       },
                     ),
@@ -3783,6 +3726,17 @@ class _ChatPageState extends State<ChatPage>
               ),
             ),
             actions: [
+              TextButton.icon(
+                onPressed: () {
+                  final question = searchInput.text;
+                  Navigator.pop(context);
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) showContextAi('search', question: question);
+                  });
+                },
+                icon: const Icon(Icons.manage_search_rounded),
+                label: const Text('By meaning'),
+              ),
               TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('Close'),
@@ -4203,6 +4157,10 @@ class _ChatPageState extends State<ChatPage>
                             onForward: () =>
                                 showForwardMessagesDialog(selectedMessages()),
                             onCopy: copySelectedMessages,
+                            onPlan: () => showContextAi(
+                              'plan',
+                              sources: selectedMessages(),
+                            ),
                             onSave: saveSelectedMessages,
                             onDeleteForMe: () =>
                                 deleteSelectedMessages(forEveryone: false),
@@ -6662,6 +6620,7 @@ class _MessageSelectionBar extends StatelessWidget {
     required this.onClose,
     required this.onForward,
     required this.onCopy,
+    required this.onPlan,
     required this.onSave,
     required this.onDeleteForMe,
     required this.onDeleteForEveryone,
@@ -6673,6 +6632,7 @@ class _MessageSelectionBar extends StatelessWidget {
   final VoidCallback onClose;
   final VoidCallback onForward;
   final VoidCallback onCopy;
+  final VoidCallback onPlan;
   final VoidCallback onSave;
   final VoidCallback onDeleteForMe;
   final VoidCallback onDeleteForEveryone;
@@ -6722,6 +6682,11 @@ class _MessageSelectionBar extends StatelessWidget {
                       tooltip: 'Copy selected text',
                       onPressed: canCopy ? onCopy : null,
                       icon: const Icon(Icons.copy_all_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Make a plan',
+                      onPressed: onPlan,
+                      icon: const Icon(Icons.checklist_rounded),
                     ),
                     IconButton(
                       tooltip: 'Save to Saved Messages',

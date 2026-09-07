@@ -438,7 +438,13 @@ def _is_transcription_hallucination(text):
     )
 
 
-class ServerAiMixin:
+try:
+    from server.server_ai_tools import AiToolsMixin
+except ModuleNotFoundError:
+    from server_ai_tools import AiToolsMixin
+
+
+class ServerAiMixin(AiToolsMixin):
     @property
     def ai_backend_ready(self):
         return bool(AI_API_URL and AI_MODEL)

@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 45,
-  "updatedAt": "2026-09-07T12:00:00Z",
+  "catalogVersion": 46,
+  "updatedAt": "2026-09-07T21:38:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-ai-tools-1-0-98",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "MeshPro AI tools for your conversations",
+      "summary": "Search selected loaded messages by meaning and jump to the original sources. Save personal writing styles with instructions and examples. Turn selected messages into a plan and review suggested reminders before creating them. Get contextual reply drafts without sending them automatically. Ask questions about PDF text and PNG/JPEG documents with page references (up to 3 MB; first 12 PDF pages). Edit, organize and save personal call notes, or send them to Saved Messages; no automatic call recording. Choose the context before external AI processing. Styles and notes are stored locally for each account.",
+      "publishedAt": "2026-09-08"
+    },
     {
       "id": "meshchat-design-1-0-97",
       "appId": "meshchat",
@@ -108,7 +116,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.97",
+      "version": "1.0.98",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -124,21 +132,22 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 200,
+      "build": 201,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-07T12:00:00Z",
+      "updated_at": "2026-09-07T21:38:00Z",
       "release": {
-        "title": "Collection bubbles and a smoother interface",
-        "publishedAt": "2026-09-07",
+        "title": "MeshPro AI tools for your conversations",
+        "publishedAt": "2026-09-08",
         "notes": [
-          "Choose from 18 illustrated message bubble styles, follow your profile collection or turn artwork off",
-          "MeshPro bubble selections are stored on the server and visible to everyone using an updated client",
-          "Decorations keep their proportions on short texts, long messages and voice messages",
-          "Consistent page transitions and edge-swipe back navigation, with refreshed bottom sheets",
-          "Slower background motion, updated replies, chat previews, voice transcripts and attachment menu",
-          "Heavy media encoding and cache preparation moved away from the main UI thread"
+          "Search selected loaded messages by meaning and jump to the original sources",
+          "Save personal writing styles with instructions and examples",
+          "Turn selected messages into a plan and review suggested reminders before creating them",
+          "Get contextual reply drafts without sending them automatically",
+          "Ask questions about PDF text and PNG/JPEG documents with page references (up to 3 MB; first 12 PDF pages)",
+          "Edit, organize and save personal call notes, or send them to Saved Messages; no automatic call recording",
+          "Choose the context before external AI processing. Styles and notes are stored locally for each account"
         ]
       }
     },

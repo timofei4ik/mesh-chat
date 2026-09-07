@@ -9,6 +9,11 @@ except ModuleNotFoundError:
 
 
 AI_COMMANDS = {
+    "ai_context_tool_request": {
+        "method": "run_context_ai_tool",
+        "response_type": "ai_context_tool_result",
+        "fields": ("payload", "attachment_base64"),
+    },
     "ai_text_rewrite_request": {
         "method": "rewrite_text_with_ai",
         "response_type": "ai_text_rewrite_result",

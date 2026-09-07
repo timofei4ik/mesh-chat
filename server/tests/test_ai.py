@@ -1,4 +1,6 @@
 import base64
+import json
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -126,6 +128,65 @@ class LanguageGuardRelay(server_ai.ServerAiMixin):
 
 
 class AiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_context_tools_require_pro_and_validate_sources(self):
+        request = {'mode': 'search', 'question': 'When?', 'sources': [{'id': 'm1', 'text': 'Meeting at seven'}]}
+        denied = await self.relay.run_context_ai_tool('subscriber', request)
+        self.assertEqual('meshpro_required', denied['error'])
+        self.relay.grant_subscription('subscriber', days=7)
+        self.relay._perform_chat_completion = AsyncMock(return_value=json.dumps({
+            'answer': 'At seven', 'source_ids': ['m1', 'invented', 'm1'],
+            'items': [{'text': 'Meet', 'source_ids': ['m1'], 'due': 'nonsense'},
+                      {'text': 'Invented', 'source_ids': ['invented']}],
+        }))
+        result = await self.relay.run_context_ai_tool('subscriber', request)
+        self.assertTrue(result['ok'])
+        data = json.loads(result['text'])
+        self.assertEqual(['m1'], data['source_ids'])
+        self.assertEqual(1, len(data['items']))
+        self.assertIsNone(data['items'][0]['due'])
+        self.assertEqual(request['sources'][0]['text'], data['sources'][0]['text'])
+
+    async def test_all_context_modes_use_existing_feature_quotas(self):
+        from server.server_ai_tools import TOOL_FEATURES
+        self.relay.grant_subscription('subscriber', days=7)
+        self.relay._perform_chat_completion = AsyncMock(return_value='{"answer":"Result","source_ids":["m1"],"replies":["Yes","When?","Sorry, no"]}')
+        for mode in TOOL_FEATURES:
+            result = await self.relay.run_context_ai_tool('subscriber', {'mode': mode, 'question': 'Question',
+                'sources': [{'id': 'm1', 'text': 'Source', 'target': mode == 'reply'}]})
+            self.assertTrue(result['ok'], (mode, result))
+        self.assertEqual(6, self.relay._perform_chat_completion.await_count)
+
+    async def test_context_failure_and_cancellation_refund_usage(self):
+        self.relay.grant_subscription('subscriber', days=7)
+        request = {'mode': 'plan', 'sources': [{'id': 'm1', 'text': 'Meet tomorrow'}]}
+        for failure in (RuntimeError('private provider detail'), asyncio.CancelledError()):
+            self.relay._perform_chat_completion = AsyncMock(side_effect=failure)
+            if isinstance(failure, asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await self.relay.run_context_ai_tool('subscriber', request)
+            else:
+                result = await self.relay.run_context_ai_tool('subscriber', request)
+                self.assertEqual({'ok': False, 'error': 'provider_error'}, result)
+            self.assertEqual(0, self.relay.meshpro_usage_count('subscriber', 'ai_chat_summary', datetime.now(timezone.utc).strftime('%Y-%m')))
+
+    async def test_context_invalid_requests_do_not_call_provider(self):
+        self.relay.grant_subscription('subscriber', days=7)
+        self.relay._perform_chat_completion = AsyncMock()
+        for request in (None, [], {'mode': []}, {'mode': 'unknown'},
+                        {'mode': 'plan', 'sources': [{'id': 'x', 'text': 'a'}, {'id': 'x', 'text': 'b'}]},
+                        {'mode': 'plan', 'sources': [{'id': 'x', 'text': 'a'*12001}]}):
+            result = await self.relay.run_context_ai_tool('subscriber', request)
+            self.assertFalse(result['ok'])
+        self.relay._perform_chat_completion.assert_not_awaited()
+
+    async def test_document_ocr_has_page_citations_and_does_not_share_filename(self):
+        self.relay.grant_subscription('subscriber', days=7)
+        self.relay._perform_chat_completion = AsyncMock(return_value='{"answer":"500 RUB","source_ids":["page:1"]}')
+        result = await self.relay.run_context_ai_tool('subscriber', {'mode': 'document', 'question': 'How much?'},
+            base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode())
+        self.assertTrue(result['ok'])
+        self.assertEqual('page:1', json.loads(result['text'])['sources'][0]['id'])
+
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.previous_db_path = server_storage.DB_PATH
