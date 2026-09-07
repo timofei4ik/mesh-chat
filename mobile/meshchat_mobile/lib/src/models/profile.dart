@@ -1,4 +1,5 @@
 import 'mesh_studio_style.dart';
+import 'message_bubble_style.dart';
 
 class Profile {
   static const String defaultBackground = 'mesh';
@@ -19,6 +20,7 @@ class Profile {
     this.online = false,
     this.meshProBadge,
     this.profileBackground,
+    this.messageBubbleStyle,
     this.profileEffect,
     this.profileBlinkShape,
     this.avatarDecoration,
@@ -38,6 +40,10 @@ class Profile {
   final bool online;
   final bool? meshProBadge;
   final String? profileBackground;
+  final String? messageBubbleStyle;
+
+  String get effectiveMessageBubbleStyle =>
+      normalizeMessageBubbleStyle(messageBubbleStyle);
   final String? profileEffect;
   final String? profileBlinkShape;
   final String? avatarDecoration;
@@ -229,6 +235,7 @@ class Profile {
     bool? online,
     bool? meshProBadge,
     String? profileBackground,
+    String? messageBubbleStyle,
     String? profileEffect,
     String? profileBlinkShape,
     String? avatarDecoration,
@@ -248,6 +255,7 @@ class Profile {
       online: online ?? this.online,
       meshProBadge: meshProBadge ?? this.meshProBadge,
       profileBackground: profileBackground ?? this.profileBackground,
+      messageBubbleStyle: messageBubbleStyle ?? this.messageBubbleStyle,
       profileEffect: profileEffect ?? this.profileEffect,
       profileBlinkShape: profileBlinkShape ?? this.profileBlinkShape,
       avatarDecoration: avatarDecoration ?? this.avatarDecoration,
@@ -284,6 +292,11 @@ class Profile {
       profileBackground: json.containsKey('profile_background')
           ? json['profile_background']?.toString()
           : null,
+      messageBubbleStyle: json.containsKey('message_bubble_style')
+          ? normalizeMessageBubbleStyle(
+              json['message_bubble_style']?.toString(),
+            )
+          : null,
       profileEffect: json.containsKey('profile_effect')
           ? json['profile_effect']?.toString()
           : null,
@@ -316,6 +329,8 @@ class Profile {
       'online': online,
       if (meshProBadge != null) 'meshpro_badge': meshProBadge,
       if (profileBackground != null) 'profile_background': profileBackground,
+      if (messageBubbleStyle != null)
+        'message_bubble_style': messageBubbleStyle,
       if (profileEffect != null) 'profile_effect': profileEffect,
       if (profileBlinkShape != null) 'profile_blink_shape': profileBlinkShape,
       if (avatarDecoration != null) 'avatar_decoration': avatarDecoration,

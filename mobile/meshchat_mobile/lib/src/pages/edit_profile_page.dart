@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../utils/mesh_page_route.dart';
 import 'package:flutter/rendering.dart';
 
 import '../controllers/app_controller.dart';
@@ -198,7 +199,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (!allowed || !mounted) return;
     final changed = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(
+      meshPageRoute(
         builder: (_) => MeshStudioPage(controller: widget.controller),
       ),
     );

@@ -2017,6 +2017,7 @@ class ServerSyncMixin:
                     "avatar_data": profile.get("avatar_data"),
                     "encryption_public_key": profile.get("encryption_public_key"),
                     "meshpro_badge": profile.get("meshpro_badge", False),
+                    "message_bubble_style": profile.get("message_bubble_style", "auto"),
                     "profile_background": profile.get(
                         "profile_background",
                         "mesh"

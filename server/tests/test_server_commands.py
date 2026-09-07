@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import AsyncMock, Mock
 
 from server.server_commands import (
     ConnectionContext,
@@ -565,6 +566,22 @@ class PacketCommandRegistryTests(unittest.IsolatedAsyncioTestCase):
             server.calls,
         )
         self.assertTrue(websocket.sent[0]["ok"])
+
+    async def test_bubble_selection_uses_authenticated_owner_and_broadcasts(self):
+        registry = build_command_registry()
+        websocket = FakeWebSocket()
+        server = FakeCommandServer()
+        server.save_message_bubble_style = Mock(return_value=(True, 'ok'))
+        server.send_user_list = AsyncMock()
+        await registry.dispatch(server, {
+            'type': 'message_bubble_style_update',
+            'login': 'someone-else', 'source_node': 'forged-node',
+            'style': 'ocean', 'request_id': 'bubble-request',
+        }, ConnectionContext(websocket, 'client-node'))
+        server.save_message_bubble_style.assert_called_once_with('client-login', 'ocean')
+        server.send_user_list.assert_awaited_once()
+        self.assertEqual('bubble-request', websocket.sent[0]['request_id'])
+        self.assertTrue(websocket.sent[0]['ok'])
 
     async def test_preference_commands_invalidate_sync_snapshot(self):
         registry = build_command_registry()

@@ -21,6 +21,7 @@ import '../widgets/in_app_message_banner.dart';
 import '../widgets/app_update_banner.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_settings_surface.dart';
+import '../widgets/mesh_sheet_surface.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/mesh_performance_scope.dart';
 import '../widgets/meshpro_badge.dart';
@@ -52,63 +53,20 @@ class _NeverListenable implements Listenable {
 
 class _ActionSheetGlass extends StatelessWidget {
   const _ActionSheetGlass({required this.children});
-
   final List<Widget> children;
-
   @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(
-          offset: Offset(0, 18 * (1 - value)),
-          child: Transform.scale(
-            scale: 0.98 + value * 0.02,
-            alignment: Alignment.bottomCenter,
-            child: child,
-          ),
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+    child: MeshSheetSurface(
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(mainAxisSize: MainAxisSize.min, children: children),
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
-        child: MeshLiquidGlass(
-          radius: 28,
-          accent: Colors.lightBlueAccent,
-          prominent: true,
-          fallbackBuilder: (context, child) => ClipRRect(
-            borderRadius: BorderRadius.circular(28),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: _edgeGlassGradient(
-                    base: const Color(0xFF26313B),
-                    alpha: 0.86,
-                    edgeBoost: 0.05,
-                  ),
-                  borderRadius: BorderRadius.circular(28),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.14),
-                  ),
-                ),
-                child: child,
-              ),
-            ),
-          ),
-          child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Column(mainAxisSize: MainAxisSize.min, children: children),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+    ),
+  );
 }
 
 class ChatsPage extends StatelessWidget {
@@ -473,10 +431,9 @@ class ChatsPage extends StatelessWidget {
             thread.ownerNode == controller.myNodeId);
     final action = await showModalBottomSheet<String>(
       context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SingleChildScrollView(
+        child: _ActionSheetGlass(
           children: [
             ListTile(
               leading: Icon(
@@ -971,25 +928,8 @@ class ChatsPage extends StatelessWidget {
     unawaited(controller.markStoryViewed(story));
     Navigator.push(
       context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 280),
-        reverseTransitionDuration: const Duration(milliseconds: 220),
-        pageBuilder: (_, _, _) =>
-            _StoryViewerPage(controller: controller, story: story),
-        transitionsBuilder: (_, animation, _, child) {
-          final curved = CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          );
-          return FadeTransition(
-            opacity: curved,
-            child: ScaleTransition(
-              scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
-              child: child,
-            ),
-          );
-        },
+      meshPageRoute(
+        builder: (_) => _StoryViewerPage(controller: controller, story: story),
       ),
     );
   }
@@ -997,9 +937,7 @@ class ChatsPage extends StatelessWidget {
   void openStoryArchive(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => _StoryArchivePage(controller: controller),
-      ),
+      meshPageRoute(builder: (_) => _StoryArchivePage(controller: controller)),
     );
   }
 
@@ -1278,8 +1216,8 @@ class _ChatStackHostState extends State<_ChatStackHost>
     with SingleTickerProviderStateMixin {
   late final AnimationController transition = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 285),
-    reverseDuration: const Duration(milliseconds: 255),
+    duration: meshPageTransitionDuration,
+    reverseDuration: meshPageTransitionDuration,
   );
   ChatThread? activeThread;
   final SnapshotController chatSnapshot = SnapshotController();
@@ -1331,7 +1269,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
       chatSnapshot.clear();
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || activeThread != thread) return;
-      await transition.animateTo(1, curve: Curves.easeInOutCubic);
+      await transition.animateTo(1, curve: Curves.linear);
       if (mounted) {
         chatSnapshot.allowSnapshotting = false;
         setState(() => opening = false);
@@ -1352,7 +1290,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
       chatSnapshot.clear();
       await WidgetsBinding.instance.endOfFrame;
     }
-    await transition.animateBack(0, curve: Curves.easeInOutCubic);
+    await transition.animateBack(0, curve: Curves.linear);
     if (!mounted) return;
     chatSnapshot.allowSnapshotting = false;
     chatReady = null;
@@ -1360,7 +1298,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
   }
 
   void startBackDrag(DragStartDetails details) {
-    if (activeThread == null || opening) return;
+    if (activeThread == null || opening || transition.isAnimating) return;
     dragging = true;
     chatSnapshot.allowSnapshotting = true;
     chatSnapshot.clear();
@@ -1382,7 +1320,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
     if (transition.value < 0.72 || velocity > 520) {
       await close();
     } else {
-      await transition.animateTo(1, curve: Curves.easeInOutCubic);
+      await transition.animateTo(1, curve: Curves.linear);
       chatSnapshot.allowSnapshotting = false;
     }
   }
@@ -1470,7 +1408,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
                     dragging = false;
                     unawaited(
                       transition
-                          .animateTo(1, curve: Curves.easeInOutCubic)
+                          .animateTo(1, curve: Curves.linear)
                           .whenComplete(() {
                             chatSnapshot.allowSnapshotting = false;
                           }),
@@ -1496,6 +1434,7 @@ class _HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<_HomeShell> {
+  bool frameRefreshScheduled = false;
   _HomeFilter filter = _HomeFilter.all;
   _HomeTab tab = _HomeTab.chats;
   double tabDirection = 1;
@@ -1542,16 +1481,23 @@ class _HomeShellState extends State<_HomeShell> {
       });
       return;
     }
-    final nextFingerprint = _computeHomeFingerprint();
-    if (homeFingerprint == nextFingerprint) return;
-    homeFingerprint = nextFingerprint;
-    syncCallAlert();
-    setState(() {});
+    if (frameRefreshScheduled) return;
+    frameRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      frameRefreshScheduled = false;
+      if (!mounted) return;
+      final nextFingerprint = _computeHomeFingerprint();
+      if (homeFingerprint == nextFingerprint) return;
+      homeFingerprint = nextFingerprint;
+      syncCallAlert();
+      setState(() {});
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   int _computeHomeFingerprint() {
     final controller = widget.controller;
-    final threads = controller.sortedThreads;
+    final threads = [...controller.threads.values, ...controller.groups.values];
     final peers = controller.ble.peers;
     return Object.hash(
       controller.status,
@@ -1569,6 +1515,7 @@ class _HomeShellState extends State<_HomeShell> {
             thread.pinned,
             thread.muted,
             thread.members.length,
+            controller.activityLabel(thread),
           ),
         ),
       ),
@@ -1864,6 +1811,7 @@ class _HomeTabBody extends StatelessWidget {
                         key: ValueKey('chat-${thread.storageKey}'),
                         index: index,
                         child: _ChatGlassTile(
+                          controller: controller,
                           thread: thread,
                           onTap: () => parent.openThread(context, thread),
                           onLongPress: () =>
@@ -2256,7 +2204,7 @@ class _StoryArchivePage extends StatelessWidget {
                                 onTap: () {
                                   Navigator.push(
                                     context,
-                                    MaterialPageRoute(
+                                    meshPageRoute(
                                       builder: (_) => _StoryViewerPage(
                                         controller: controller,
                                         story: story,
@@ -3446,48 +3394,58 @@ class _BluetoothStatusCard extends StatelessWidget {
                 size: compact ? 20 : 22,
               ),
               SizedBox(width: compact ? 6 : 9),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Bluetooth',
-                    style: TextStyle(
-                      fontSize: compact ? 11 : 12,
-                      color: Colors.white70,
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Bluetooth',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: compact ? 11 : 12,
+                        color: Colors.white70,
+                      ),
                     ),
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        active
-                            ? connected > 0
-                                  ? 'Connected'
-                                  : 'On'
-                            : 'Off',
-                        style: TextStyle(
-                          fontSize: compact ? 10 : 11,
-                          color: active ? Colors.greenAccent : Colors.white54,
-                          fontWeight: FontWeight.w700,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            active
+                                ? connected > 0
+                                      ? 'Connected'
+                                      : 'On'
+                                : 'Off',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: compact ? 10 : 11,
+                              color: active
+                                  ? Colors.greenAccent
+                                  : Colors.white54,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 6),
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: active
-                              ? Colors.greenAccent
-                              : online
-                              ? Colors.greenAccent
-                              : Colors.white38,
+                        const SizedBox(width: 6),
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: active
+                                ? Colors.greenAccent
+                                : online
+                                ? Colors.greenAccent
+                                : Colors.white38,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -3857,18 +3815,23 @@ class _FilterPill extends StatelessWidget {
 
 class _ChatGlassTile extends StatelessWidget {
   const _ChatGlassTile({
+    required this.controller,
     required this.thread,
     required this.onTap,
     required this.onLongPress,
   });
 
   final ChatThread thread;
+  final AppController controller;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
     final last = thread.lastMessage;
+    final typing = controller.isTyping(thread);
+    final drafting = thread.draft.isNotEmpty;
+    final outgoing = last != null && last.senderNode == controller.myNodeId;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: _HomeGlassSurface(
@@ -3928,16 +3891,63 @@ class _ChatGlassTile extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 5),
-                      Text(
-                        thread.draft.isNotEmpty
-                            ? 'Draft: ${thread.draft}'
-                            : ChatsPage._previewText(
-                                last,
-                                thread.profile.publicUsername,
+                      Row(
+                        children: [
+                          if (!typing &&
+                              !drafting &&
+                              last != null &&
+                              ChatsPage._isImageName(last.fileName)) ...[
+                            _ThreadMediaThumbnail(
+                              message: last,
+                              dataSaver: controller.appSettings.dataSaver,
+                            ),
+                            const SizedBox(width: 7),
+                          ] else if (drafting || typing || outgoing) ...[
+                            Icon(
+                              drafting
+                                  ? Icons.edit_outlined
+                                  : typing
+                                  ? Icons.more_horiz_rounded
+                                  : last!.failed
+                                  ? Icons.error_outline_rounded
+                                  : last.pending
+                                  ? Icons.schedule_rounded
+                                  : last.read
+                                  ? Icons.done_all_rounded
+                                  : Icons.check_rounded,
+                              size: 16,
+                              color: drafting
+                                  ? const Color(0xFFF3BF72)
+                                  : typing
+                                  ? const Color(0xFF8CD5B4)
+                                  : last?.failed == true
+                                  ? Colors.redAccent
+                                  : Colors.white54,
+                            ),
+                            const SizedBox(width: 5),
+                          ],
+                          Expanded(
+                            child: Text(
+                              typing
+                                  ? controller.activityLabel(thread)
+                                  : thread.draft.isNotEmpty
+                                  ? 'Draft: ${thread.draft}'
+                                  : ChatsPage._previewText(
+                                      last,
+                                      thread.profile.publicUsername,
+                                    ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: typing
+                                    ? const Color(0xFF8CD5B4)
+                                    : drafting
+                                    ? const Color(0xFFF3BF72)
+                                    : Colors.white60,
                               ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white60),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -3977,6 +3987,66 @@ class _ChatGlassTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ThreadMediaThumbnail extends StatefulWidget {
+  const _ThreadMediaThumbnail({required this.message, required this.dataSaver});
+  final ChatMessage message;
+  final bool dataSaver;
+  @override
+  State<_ThreadMediaThumbnail> createState() => _ThreadMediaThumbnailState();
+}
+
+class _ThreadMediaThumbnailState extends State<_ThreadMediaThumbnail> {
+  Uint8List? bytes;
+  void decode() {
+    bytes = null;
+    if (widget.dataSaver ||
+        widget.message.deleted ||
+        widget.message.fileData.length > 4 * 1024 * 1024) {
+      return;
+    }
+    try {
+      final result = hexDecode(widget.message.fileData);
+      if (result.isNotEmpty) bytes = result;
+    } catch (_) {
+      // A placeholder also covers media that has not downloaded yet.
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    decode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ThreadMediaThumbnail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.message.fileData != widget.message.fileData ||
+        oldWidget.message.deleted != widget.message.deleted ||
+        oldWidget.dataSaver != widget.dataSaver) {
+      decode();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: BorderRadius.circular(4),
+    child: SizedBox.square(
+      dimension: 28,
+      child: bytes == null
+          ? const Icon(Icons.image_outlined, size: 19, color: Colors.white54)
+          : Image.memory(
+              bytes!,
+              fit: BoxFit.cover,
+              cacheWidth: 64,
+              cacheHeight: 64,
+              errorBuilder: (_, _, _) =>
+                  const Icon(Icons.image_outlined, size: 19),
+            ),
+    ),
+  );
 }
 
 class _GlassAvatar extends StatelessWidget {
@@ -4901,7 +4971,7 @@ class _HomeLiquidBackground extends StatefulWidget {
 class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
     with WidgetsBindingObserver {
   late final MeshFrameClock controller;
-  late final Timer timer;
+  final double driftPhase = math.Random().nextDouble() * math.pi * 2;
   bool appActive = true;
   bool tickerModeActive = true;
 
@@ -4912,15 +4982,10 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     controller = MeshFrameClock(
-      duration: const Duration(milliseconds: 3200),
-      frameInterval: const Duration(milliseconds: 80),
+      duration: const Duration(seconds: 240),
+      frameInterval: const Duration(milliseconds: 33),
     );
-    timer = Timer.periodic(const Duration(milliseconds: 9400), (_) {
-      if (canAnimate) controller.forward(from: 0);
-    });
-    Future<void>.delayed(const Duration(milliseconds: 900), () {
-      if (mounted && canAnimate) controller.forward(from: 0);
-    });
+    if (canAnimate) controller.repeat();
   }
 
   @override
@@ -4941,21 +5006,19 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
   void _syncAnimationActivity() {
     if (!canAnimate) {
       controller.stop(canceled: false);
-    } else if (controller.value > 0 && controller.value < 1) {
-      controller.forward();
+    } else if (!controller.isAnimating) {
+      controller.repeat();
     }
   }
 
   @override
   void didUpdateWidget(covariant _HomeLiquidBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!canAnimate) controller.stop(canceled: false);
-    if (canAnimate && !oldWidget.enabled) controller.forward(from: 0);
+    _syncAnimationActivity();
   }
 
   @override
   void dispose() {
-    timer.cancel();
     WidgetsBinding.instance.removeObserver(this);
     controller.dispose();
     super.dispose();
@@ -4978,15 +5041,10 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
         ),
       ),
       child: RepaintBoundary(
-        child: AnimatedBuilder(
-          animation: controller,
-          builder: (context, _) {
-            return CustomPaint(
-              isComplex: true,
-              willChange: controller.isAnimating,
-              painter: _HomeMeshPainter(t: canAnimate ? controller.value : 0),
-            );
-          },
+        child: CustomPaint(
+          isComplex: true,
+          willChange: canAnimate,
+          painter: _HomeMeshPainter(clock: controller, driftPhase: driftPhase),
         ),
       ),
     );
@@ -4994,23 +5052,25 @@ class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
 }
 
 class _HomeMeshPainter extends CustomPainter {
-  const _HomeMeshPainter({this.t = 0});
+  _HomeMeshPainter({required this.clock, required this.driftPhase})
+    : super(repaint: clock);
 
-  final double t;
+  final MeshFrameClock clock;
+  final double driftPhase;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final eased = math.sin(t * math.pi).clamp(0.0, 1.0);
-    final phase = eased * math.pi * 2;
+    final phase = clock.value * math.pi * 2 + driftPhase;
     final cyanPulse = 0.78 + 0.22 * math.sin(phase);
     final violetPulse = 0.78 + 0.22 * math.sin(phase + math.pi * 0.75);
     final cyanCenter = Offset(
-      size.width * (0.18 + 0.035 * math.sin(phase * 0.7)),
-      size.height * (0.14 + 0.025 * math.cos(phase * 0.9)),
+      size.width *
+          (0.18 + 0.045 * math.sin(phase) + 0.01 * math.sin(phase * 3)),
+      size.height * (0.14 + 0.04 * math.cos(phase * 2)),
     );
     final violetCenter = Offset(
-      size.width * (0.88 + 0.03 * math.cos(phase * 0.6)),
-      size.height * (0.30 + 0.035 * math.sin(phase * 0.8)),
+      size.width * (0.88 + 0.04 * math.cos(phase * 2 + 1)),
+      size.height * (0.30 + 0.045 * math.sin(phase + 2)),
     );
     drawRadialGlow(
       canvas,
@@ -5043,7 +5103,7 @@ class _HomeMeshPainter extends CustomPainter {
     drawRadialGlow(
       canvas,
       center: Offset(
-        size.width * (0.55 + 0.025 * math.sin(phase * 0.45)),
+        size.width * (0.55 + 0.025 * math.sin(phase)),
         size.height * 0.92,
       ),
       radius: 410,
@@ -5054,7 +5114,7 @@ class _HomeMeshPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _HomeMeshPainter oldDelegate) {
-    return oldDelegate.t != t;
+    return oldDelegate.clock != clock || oldDelegate.driftPhase != driftPhase;
   }
 }
 

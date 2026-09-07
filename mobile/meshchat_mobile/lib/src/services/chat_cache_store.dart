@@ -69,8 +69,9 @@ class ChatCacheStore {
 
     final db = await _db();
     final sessionKey = _key(session);
-    final prepared = _prepareThreads(threads, sessionKey);
+    final snapshot = threads.toList(growable: false);
     await db.transaction((transaction) async {
+      final prepared = await compute(_prepareCacheRows, (snapshot, sessionKey));
       await _replaceThreads(transaction, sessionKey, prepared);
       final digest = await _sqliteDigest(transaction, sessionKey);
       await transaction.rawUpdate(
@@ -104,8 +105,10 @@ class ChatCacheStore {
 
     final db = await _db();
     final sessionKey = _key(session);
-    final prepared = _prepareThreads(threads, sessionKey);
+    final snapshot = threads.toList(growable: false);
     await db.transaction((transaction) async {
+      // Keep preparation under the transaction queue to preserve checkpoint order.
+      final prepared = await compute(_prepareCacheRows, (snapshot, sessionKey));
       await _replaceThreads(transaction, sessionKey, prepared);
       final digest = await _sqliteDigest(transaction, sessionKey);
       await transaction.insert('chat_sync_state', {
@@ -158,10 +161,11 @@ class ChatCacheStore {
       whereArgs: [sessionKey],
     );
     final currentKeys = prepared.keys.toSet();
+    final batch = executor.batch();
     for (final row in existingRows) {
       final threadKey = row['thread_key']?.toString() ?? '';
       if (threadKey.isNotEmpty && !currentKeys.contains(threadKey)) {
-        await executor.delete(
+        batch.delete(
           'chat_threads',
           where: 'session_key=? AND thread_key=?',
           whereArgs: [sessionKey, threadKey],
@@ -169,12 +173,13 @@ class ChatCacheStore {
       }
     }
     for (final row in prepared.values) {
-      await executor.insert(
+      batch.insert(
         'chat_threads',
         row,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
+    await batch.commit(noResult: true);
   }
 
   Future<void> clear(Session? session) async {
@@ -760,6 +765,12 @@ class CacheIntegrityReport {
   final bool hasCheckpoint;
   final String expectedDigest;
   final String actualDigest;
+}
+
+Map<String, Map<String, Object>> _prepareCacheRows(
+  (List<ChatThread>, String) input,
+) {
+  return ChatCacheStore()._prepareThreads(input.$1, input.$2);
 }
 
 class CacheStats {

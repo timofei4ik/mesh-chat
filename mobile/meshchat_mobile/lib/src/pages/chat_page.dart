@@ -1,4 +1,7 @@
 import 'dart:async';
+import '../widgets/collection_message_surface.dart';
+import '../widgets/message_bubble_picker.dart';
+import '../widgets/mesh_sheet_surface.dart';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
@@ -28,7 +31,9 @@ import '../models/poll_item.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../utils/mesh_page_route.dart';
+import '../utils/media_request_encoder.dart';
 import '../widgets/in_app_message_banner.dart';
+import '../widgets/chat_timeline_date.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/mesh_performance_scope.dart';
@@ -44,7 +49,7 @@ import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, scan, file, sticker, poll, shareLocation }
+enum _AttachAction { photo, camera, scan, file, poll, shareLocation }
 
 class _ScheduleDraft {
   const _ScheduleDraft({
@@ -945,9 +950,11 @@ class _ChatPageState extends State<ChatPage>
     await sendAttachment(file.name, bytes);
   }
 
-  Future<void> attachPhoto() async {
+  Future<void> attachPhoto({bool camera = false}) async {
     final image = await imagePicker.pickImage(
-      source: image_picker.ImageSource.gallery,
+      source: camera
+          ? image_picker.ImageSource.camera
+          : image_picker.ImageSource.gallery,
       requestFullMetadata: false,
     );
     if (image == null) return;
@@ -1121,6 +1128,7 @@ class _ChatPageState extends State<ChatPage>
       context: context,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black54,
+      constraints: const BoxConstraints(maxWidth: 460),
       builder: (context) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
@@ -1506,45 +1514,52 @@ class _ChatPageState extends State<ChatPage>
             useNativeGlass: true,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+              child: GridView.count(
+                shrinkWrap: true,
+                crossAxisCount: 3,
+                childAspectRatio: 1.2,
+                mainAxisSpacing: 4,
+                crossAxisSpacing: 4,
                 children: [
-                  _GlassSheetAction(
+                  _AttachmentTile(
                     icon: Icons.photo_library_rounded,
                     title: 'Photo',
-                    subtitle: 'Choose from gallery',
+                    color: const Color(0xFF6CC9FC),
                     onTap: () => Navigator.pop(context, _AttachAction.photo),
                   ),
-                  _GlassSheetAction(
+                  if (!kIsWeb &&
+                      (defaultTargetPlatform == TargetPlatform.android ||
+                          defaultTargetPlatform == TargetPlatform.iOS))
+                    _AttachmentTile(
+                      icon: Icons.camera_alt_rounded,
+                      title: 'Camera',
+                      color: const Color(0xFFF3BF72),
+                      onTap: () => Navigator.pop(context, _AttachAction.camera),
+                    ),
+                  _AttachmentTile(
                     icon: Icons.document_scanner_rounded,
                     title: 'Scan document',
-                    subtitle: 'Align, enhance and send as an image or PDF',
+                    color: const Color(0xFF8CD5B4),
                     onTap: () => Navigator.pop(context, _AttachAction.scan),
                   ),
-                  _GlassSheetAction(
+                  _AttachmentTile(
                     icon: Icons.attach_file_rounded,
                     title: 'File',
-                    subtitle: 'Choose any document',
+                    color: const Color(0xFFF3BF72),
                     onTap: () => Navigator.pop(context, _AttachAction.file),
                   ),
-                  _GlassSheetAction(
-                    icon: Icons.auto_awesome_motion_rounded,
-                    title: 'Sticker',
-                    subtitle: 'Open packs, favorites or add your own',
-                    onTap: () => Navigator.pop(context, _AttachAction.sticker),
-                  ),
                   if (widget.thread.isGroup)
-                    _GlassSheetAction(
+                    _AttachmentTile(
                       icon: Icons.poll_rounded,
                       title: 'Poll or quiz',
-                      subtitle: 'Ask the group and see live results',
+                      color: const Color(0xFFFF9FA9),
                       onTap: () => Navigator.pop(context, _AttachAction.poll),
                     ),
                   if (widget.thread.isGroup)
-                    _GlassSheetAction(
+                    _AttachmentTile(
                       icon: Icons.my_location_rounded,
-                      title: 'Share my location',
-                      subtitle: 'Show your latest place on the group map',
+                      title: 'Location',
+                      color: const Color(0xFF8CD5B4),
                       onTap: () =>
                           Navigator.pop(context, _AttachAction.shareLocation),
                     ),
@@ -1555,14 +1570,15 @@ class _ChatPageState extends State<ChatPage>
         ),
       ),
     );
+    if (!mounted) return;
     if (action == _AttachAction.photo) {
       await attachPhoto();
+    } else if (action == _AttachAction.camera) {
+      await attachPhoto(camera: true);
     } else if (action == _AttachAction.scan) {
       await scanDocument();
     } else if (action == _AttachAction.file) {
       await attachFile();
-    } else if (action == _AttachAction.sticker) {
-      await showStickerPanel();
     } else if (action == _AttachAction.poll) {
       await showPollComposer();
     } else if (action == _AttachAction.shareLocation) {
@@ -2394,125 +2410,32 @@ class _ChatPageState extends State<ChatPage>
     final allowed = await requireMeshPro(
       context,
       widget.controller,
-      featureId: 'per_chat_theme',
-      title: 'Chat appearance',
-      description:
-          'Choose a separate color theme, bubble shape and animated background for this chat.',
+      featureId: 'custom_message_bubbles',
+      title: 'Message bubbles',
+      description: 'Choose artwork for your messages, visible to everyone.',
     );
     if (!allowed || !mounted) return;
-    var themeId = widget.thread.themeId;
-    var bubbleStyle = widget.thread.bubbleStyle;
-    var animatedBackground = widget.thread.animatedBackground;
-    final apply = await showModalBottomSheet<bool>(
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => SafeArea(
-          top: false,
-          child: _ChatGlassSurface(
-            radius: 28,
-            useNativeGlass: true,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Chat appearance',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Theme',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final option in const [
-                        ('midnight', 'Midnight'),
-                        ('cyan', 'Cyan'),
-                        ('violet', 'Violet'),
-                        ('emerald', 'Emerald'),
-                      ])
-                        ChoiceChip(
-                          selected: themeId == option.$1,
-                          avatar: CircleAvatar(
-                            radius: 8,
-                            backgroundColor: _chatThemeAccent(option.$1),
-                          ),
-                          label: Text(option.$2),
-                          onSelected: (_) =>
-                              setSheetState(() => themeId = option.$1),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
-                  const Text(
-                    'Message bubbles',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'classic', label: Text('Classic')),
-                      ButtonSegment(value: 'soft', label: Text('Soft')),
-                      ButtonSegment(value: 'compact', label: Text('Compact')),
-                    ],
-                    selected: {bubbleStyle},
-                    onSelectionChanged: (selection) =>
-                        setSheetState(() => bubbleStyle = selection.first),
-                  ),
-                  const SizedBox(height: 10),
-                  SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    value: animatedBackground,
-                    onChanged: (value) =>
-                        setSheetState(() => animatedBackground = value),
-                    secondary: const Icon(Icons.auto_awesome_rounded),
-                    title: const Text('Animated background'),
-                    subtitle: const Text('Gentle Mesh lights behind messages'),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: () => Navigator.pop(context, true),
-                      icon: const Icon(Icons.check_rounded),
-                      label: const Text('Apply'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
+      builder: (_) => MessageBubblePicker(
+        profile: widget.controller.ownProfile,
+        animatedBackground: widget.thread.animatedBackground,
+        onSave: (style, animated) async {
+          final error = await widget.controller.updateMessageBubbleStyle(style);
+          if (error != null || animated == widget.thread.animatedBackground) {
+            return error;
+          }
+          return await widget.controller.updateChatAppearance(
+            widget.thread,
+            themeId: widget.thread.themeId,
+            bubbleStyle: widget.thread.bubbleStyle,
+            animatedBackground: animated,
+          );
+        },
       ),
     );
-    if (apply != true || !mounted) return;
-    final error = await widget.controller.updateChatAppearance(
-      widget.thread,
-      themeId: themeId,
-      bubbleStyle: bubbleStyle,
-      animatedBackground: animatedBackground,
-    );
-    if (!mounted) return;
-    if (error == null) setState(() {});
-    if (error != null) showSnack(error);
   }
 
   Future<void> showScheduleComposer() async {
@@ -4106,136 +4029,156 @@ class _ChatPageState extends State<ChatPage>
                         }
                       }
                       scheduleInitialScrollToBottom(messages.length);
-                      return NotificationListener<ScrollNotification>(
-                        onNotification: handleInitialUserScroll,
-                        child: ListView.builder(
-                          controller: scroll,
-                          scrollCacheExtent:
-                              MeshPerformanceScope.lowEndDeviceModeOf(context)
-                              ? const ScrollCacheExtent.pixels(180)
-                              : null,
-                          keyboardDismissBehavior:
-                              ScrollViewKeyboardDismissBehavior.onDrag,
-                          padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
-                          itemCount: messages.length,
-                          itemBuilder: (context, index) {
-                            final message = messages[index];
-                            if (isCoveredByAlbum(messages, index)) {
-                              return const SizedBox.shrink();
-                            }
-                            final album = albumFrom(messages, index);
-                            final showDate =
-                                index == 0 ||
-                                !sameDay(
-                                  messages[index - 1].createdAt,
-                                  message.createdAt,
-                                );
-                            final messageRow = Column(
-                              children: [
-                                if (showDate)
-                                  _DatePill(date: message.createdAt),
-                                if (album.length > 1)
-                                  _PhotoAlbumBubble(
-                                    thread: widget.thread,
-                                    messages: album,
-                                    mine:
-                                        message.senderNode ==
-                                        widget.controller.myNodeId,
-                                    dataSaver:
-                                        widget.controller.appSettings.dataSaver,
-                                    selected: album.every(
-                                      (item) =>
-                                          selectedMessageIds.contains(item.id),
-                                    ),
-                                    onTap: selectingMessages
-                                        ? () => toggleMessageSelection(album)
-                                        : null,
-                                    onLongPress: () => selectingMessages
-                                        ? toggleMessageSelection(album)
-                                        : showMessageActions(
-                                            album.last,
-                                            selectionGroup: album,
-                                          ),
-                                    onReply: () =>
-                                        setState(() => replyTo = album.last),
-                                  )
-                                else
-                                  Builder(
-                                    builder: (context) {
-                                      Widget bubble(
-                                        double positionTint,
-                                      ) => _MessageBubble(
-                                        key: ValueKey(message.id),
-                                        controller: widget.controller,
-                                        thread: widget.thread,
-                                        message: message,
-                                        mine:
-                                            message.senderNode ==
-                                            widget.controller.myNodeId,
-                                        dataSaver: widget
-                                            .controller
-                                            .appSettings
-                                            .dataSaver,
-                                        selected: selectedMessageIds.contains(
-                                          message.id,
+                      return ChatTimelineDate(
+                        label: dateLabel,
+                        child: NotificationListener<ScrollNotification>(
+                          onNotification: handleInitialUserScroll,
+                          child: ListView.builder(
+                            controller: scroll,
+                            scrollCacheExtent:
+                                MeshPerformanceScope.lowEndDeviceModeOf(context)
+                                ? const ScrollCacheExtent.pixels(180)
+                                : null,
+                            keyboardDismissBehavior:
+                                ScrollViewKeyboardDismissBehavior.onDrag,
+                            padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
+                            itemCount: messages.length,
+                            itemBuilder: (context, index) {
+                              final message = messages[index];
+                              if (isCoveredByAlbum(messages, index)) {
+                                return const SizedBox.shrink();
+                              }
+                              final album = albumFrom(messages, index);
+                              final showDate =
+                                  index == 0 ||
+                                  !sameDay(
+                                    messages[index - 1].createdAt,
+                                    message.createdAt,
+                                  );
+                              final messageRow = Column(
+                                children: [
+                                  if (showDate)
+                                    _DatePill(date: message.createdAt),
+                                  if (album.length > 1)
+                                    _PhotoAlbumBubble(
+                                      thread: widget.thread,
+                                      messages: album,
+                                      mine:
+                                          message.senderNode ==
+                                          widget.controller.myNodeId,
+                                      dataSaver: widget
+                                          .controller
+                                          .appSettings
+                                          .dataSaver,
+                                      selected: album.every(
+                                        (item) => selectedMessageIds.contains(
+                                          item.id,
                                         ),
-                                        onTap: selectingMessages
-                                            ? () => toggleMessageSelection([
-                                                message,
-                                              ])
-                                            : null,
-                                        onLongPress: () => selectingMessages
-                                            ? toggleMessageSelection([message])
-                                            : showMessageActions(message),
-                                        onReply: () =>
-                                            widget.thread.isChannel &&
-                                                !isChannelCommentThread
-                                            ? openChannelComments(message)
-                                            : setState(() => replyTo = message),
-                                        onReplyQuoteTap:
-                                            message.replyToMessageId.isEmpty
-                                            ? null
-                                            : () => jumpToMessageById(
-                                                message.replyToMessageId,
-                                              ),
-                                        highlighted:
-                                            highlightedMessageId == message.id,
-                                        onOpenComments:
-                                            widget.thread.isChannel &&
-                                                !isChannelCommentThread &&
-                                                message.replyToMessageId.isEmpty
-                                            ? () => openChannelComments(message)
-                                            : null,
-                                        commentCount:
-                                            commentCounts[message.id] ?? 0,
-                                        positionTint: positionTint,
-                                      );
-                                      if (MeshPerformanceScope.lowEndDeviceModeOf(
-                                        context,
-                                      )) {
-                                        return bubble(0.55);
-                                      }
-                                      return _ViewportMessageTint(
-                                        refreshListenable: messageTintRefresh,
-                                        builder: (context, positionTint) =>
-                                            _MessageDisintegrator(
-                                              deleting: deletingMessageIds
-                                                  .contains(message.id),
-                                              child: bubble(positionTint),
+                                      ),
+                                      onTap: selectingMessages
+                                          ? () => toggleMessageSelection(album)
+                                          : null,
+                                      onLongPress: () => selectingMessages
+                                          ? toggleMessageSelection(album)
+                                          : showMessageActions(
+                                              album.last,
+                                              selectionGroup: album,
                                             ),
-                                      );
-                                    },
-                                  ),
-                              ],
-                            );
-                            if (!messageScrollSpringEnabled) {
-                              return messageRow;
-                            }
-                            return _ChatScrollSpringLayer(
-                              motion: messageScrollMotion,
-                              child: messageRow,
-                            );
-                          },
+                                      onReply: () =>
+                                          setState(() => replyTo = album.last),
+                                    )
+                                  else
+                                    Builder(
+                                      builder: (context) {
+                                        Widget bubble(
+                                          double positionTint,
+                                        ) => _MessageBubble(
+                                          key: ValueKey(message.id),
+                                          controller: widget.controller,
+                                          thread: widget.thread,
+                                          message: message,
+                                          mine:
+                                              message.senderNode ==
+                                              widget.controller.myNodeId,
+                                          dataSaver: widget
+                                              .controller
+                                              .appSettings
+                                              .dataSaver,
+                                          selected: selectedMessageIds.contains(
+                                            message.id,
+                                          ),
+                                          onTap: selectingMessages
+                                              ? () => toggleMessageSelection([
+                                                  message,
+                                                ])
+                                              : null,
+                                          onLongPress: () => selectingMessages
+                                              ? toggleMessageSelection([
+                                                  message,
+                                                ])
+                                              : showMessageActions(message),
+                                          onReply: () =>
+                                              widget.thread.isChannel &&
+                                                  !isChannelCommentThread
+                                              ? openChannelComments(message)
+                                              : setState(
+                                                  () => replyTo = message,
+                                                ),
+                                          onReplyQuoteTap:
+                                              message.replyToMessageId.isEmpty
+                                              ? null
+                                              : () => jumpToMessageById(
+                                                  message.replyToMessageId,
+                                                ),
+                                          highlighted:
+                                              highlightedMessageId ==
+                                              message.id,
+                                          onOpenComments:
+                                              widget.thread.isChannel &&
+                                                  !isChannelCommentThread &&
+                                                  message
+                                                      .replyToMessageId
+                                                      .isEmpty
+                                              ? () =>
+                                                    openChannelComments(message)
+                                              : null,
+                                          commentCount:
+                                              commentCounts[message.id] ?? 0,
+                                          positionTint: positionTint,
+                                        );
+                                        if (MeshPerformanceScope.lowEndDeviceModeOf(
+                                          context,
+                                        )) {
+                                          return bubble(0.55);
+                                        }
+                                        return _ViewportMessageTint(
+                                          refreshListenable: messageTintRefresh,
+                                          builder: (context, positionTint) =>
+                                              _MessageDisintegrator(
+                                                deleting: deletingMessageIds
+                                                    .contains(message.id),
+                                                child: bubble(positionTint),
+                                              ),
+                                        );
+                                      },
+                                    ),
+                                ],
+                              );
+                              if (!messageScrollSpringEnabled) {
+                                return ChatDateAnchor(
+                                  date: message.createdAt,
+                                  child: messageRow,
+                                );
+                              }
+                              return ChatDateAnchor(
+                                date: message.createdAt,
+                                child: _ChatScrollSpringLayer(
+                                  motion: messageScrollMotion,
+                                  child: messageRow,
+                                ),
+                              );
+                            },
+                          ),
                         ),
                       );
                     },
@@ -5229,16 +5172,8 @@ class _CallBottomSheet extends StatelessWidget {
 
   void _openRemoteScreenFullscreen(BuildContext context) {
     Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        opaque: true,
-        transitionDuration: const Duration(milliseconds: 240),
-        reverseTransitionDuration: const Duration(milliseconds: 200),
-        pageBuilder: (_, _, _) =>
-            _FullscreenRemoteScreen(controller: controller),
-        transitionsBuilder: (_, animation, _, child) => FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
-          child: child,
-        ),
+      meshPageRoute<void>(
+        builder: (_) => _FullscreenRemoteScreen(controller: controller),
       ),
     );
   }
@@ -5652,10 +5587,8 @@ class _CallCaptions extends StatelessWidget {
       builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: MeshLiquidGlass(
-            forceFlutterSurface: true,
+          child: MeshSheetSurface(
             radius: 24,
-            accent: Colors.cyanAccent,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
               child: AnimatedBuilder(
@@ -5748,10 +5681,8 @@ class _CallCaptions extends StatelessWidget {
       builder: (pickerContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: MeshLiquidGlass(
-            forceFlutterSurface: true,
+          child: MeshSheetSurface(
             radius: 22,
-            accent: Colors.cyanAccent,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
               child: Column(
@@ -5776,6 +5707,7 @@ class _CallCaptions extends StatelessWidget {
                     ),
                   for (final entry in languages.entries)
                     ListTile(
+                      selected: selected == entry.value,
                       title: Text(entry.key),
                       trailing: selected == entry.value
                           ? const Icon(
@@ -7040,34 +6972,6 @@ class _VoiceHoldButtonState extends State<_VoiceHoldButton> {
   }
 }
 
-class _GlassSheetAction extends StatelessWidget {
-  const _GlassSheetAction({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      leading: CircleAvatar(
-        backgroundColor: Colors.white.withValues(alpha: 0.10),
-        child: Icon(icon, color: Colors.lightBlueAccent),
-      ),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
-      subtitle: Text(subtitle, style: const TextStyle(color: Colors.white60)),
-      onTap: onTap,
-    );
-  }
-}
-
 class _StickerSheet extends StatefulWidget {
   const _StickerSheet({
     required this.controller,
@@ -7505,6 +7409,51 @@ class _DisintegratePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _DisintegratePainter oldDelegate) =>
       oldDelegate.progress != progress;
+}
+
+class _AttachmentTile extends StatelessWidget {
+  const _AttachmentTile({
+    required this.icon,
+    required this.title,
+    required this.color,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String title;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(8),
+    child: Padding(
+      padding: const EdgeInsets.all(6),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color.withValues(alpha: 0.13),
+            ),
+            child: Icon(icon, color: color, size: 25),
+          ),
+          const SizedBox(height: 8),
+          Flexible(
+            child: Text(
+              title,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              style: const TextStyle(fontSize: 12, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _DatePill extends StatelessWidget {
@@ -8162,42 +8111,73 @@ class _MiniCallPanel extends StatelessWidget {
     final call = controller.activeCall;
     if (call == null) return const SizedBox.shrink();
     final active = call.status == CallStatus.active;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
-      child: _GlassCallSurface(
-        accent: active ? Colors.greenAccent : Colors.orangeAccent,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 6, 8, 6),
-          child: Row(
-            children: [
-              Icon(
-                active ? Icons.call_rounded : Icons.call_made_rounded,
-                color: active ? Colors.greenAccent : Colors.orangeAccent,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '${call.peer.displayName} - ${formatDuration(controller.callElapsed)} - ${controller.callQualityLabel}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
+    return Align(
+      alignment: Alignment.center,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 480),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+        child: _GlassCallSurface(
+          accent: active ? Colors.greenAccent : Colors.orangeAccent,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 6, 8, 6),
+            child: Row(
+              children: [
+                ProfileAvatar(profile: call.peer, radius: 17),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: InkWell(
+                    onTap: controller.toggleCallCollapsed,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          call.peer.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          active
+                              ? formatDuration(controller.callElapsed)
+                              : 'Connecting...',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: active
+                                ? Colors.greenAccent
+                                : Colors.orangeAccent,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              IconButton(
-                tooltip: 'Show call',
-                onPressed: controller.toggleCallCollapsed,
-                icon: const Icon(Icons.keyboard_arrow_down_rounded),
-              ),
-              IconButton(
-                tooltip: 'End',
-                onPressed: controller.endCall,
-                icon: const Icon(
-                  Icons.call_end_rounded,
-                  color: Colors.redAccent,
+                IconButton(
+                  tooltip: call.localMuted ? 'Unmute' : 'Mute',
+                  onPressed: controller.toggleCallMute,
+                  icon: Icon(
+                    call.localMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                    size: 20,
+                  ),
                 ),
-              ),
-            ],
+                IconButton(
+                  tooltip: 'Show call',
+                  onPressed: controller.toggleCallCollapsed,
+                  icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                ),
+                IconButton(
+                  tooltip: 'End',
+                  onPressed: controller.endCall,
+                  icon: const Icon(
+                    Icons.call_end_rounded,
+                    color: Colors.redAccent,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -8852,6 +8832,27 @@ class _MessageBubbleBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
     final time = message.createdAt.toLocal();
+    final original = message.replyToMessageId.isEmpty
+        ? null
+        : thread.messages
+              .where((item) => item.id == message.replyToMessageId)
+              .firstOrNull;
+    Widget quote() => _ReplyQuote(
+      text: original == null
+          ? message.replyToText
+          : original.deleted
+          ? 'Message deleted'
+          : replyPreview(original),
+      source: original,
+      author: original == null
+          ? 'Reply'
+          : original.senderNode == controller.myNodeId
+          ? 'You'
+          : original.senderName.isNotEmpty
+          ? original.senderName
+          : thread.profile.displayName,
+      onTap: onReplyQuoteTap,
+    );
     final meetingPoint = _MeetingPoint.fromMessageText(message.text);
     final sharedLocation = _SharedLocation.fromMessageText(message.text);
     final poll = controller.pollForMessage(message.id);
@@ -8865,6 +8866,13 @@ class _MessageBubbleBody extends StatelessWidget {
         ? null
         : _suspiciousMessageWarning(groupPresentation.text);
     final baseBubbleColor = _chatBubbleColor(thread.themeId, mine);
+    final sender = mine
+        ? controller.ownProfile
+        : controller.profiles[message.senderNode] ??
+              (!thread.isGroup && thread.profile.nodeId == message.senderNode
+                  ? thread.profile
+                  : null);
+    final collectionSkin = collectionBubbleSkin(sender);
     final verticalShade = ((0.54 - positionTint) * 0.20).clamp(-0.07, 0.10);
     final bubbleColor = verticalShade >= 0
         ? Color.lerp(baseBubbleColor, Colors.black, verticalShade)!
@@ -8900,10 +8908,7 @@ class _MessageBubbleBody extends StatelessWidget {
                 color: const Color(0xFF2A2E35).withValues(alpha: 0.72),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: _ReplyQuote(
-                text: message.replyToText,
-                onTap: onReplyQuoteTap,
-              ),
+              child: quote(),
             ),
             const SizedBox(height: 6),
           ],
@@ -8988,6 +8993,8 @@ class _MessageBubbleBody extends StatelessWidget {
           : CrossAxisAlignment.start,
       children: [
         _MessageBodySurface(
+          collectionSkin: collectionSkin,
+          mine: mine,
           animate: !lowEndMode,
           constraints: const BoxConstraints(maxWidth: 340),
           padding: _chatBubblePadding(
@@ -9031,7 +9038,7 @@ class _MessageBubbleBody extends StatelessWidget {
                 const SizedBox(height: 3),
               ],
               if (message.replyToText.isNotEmpty) ...[
-                _ReplyQuote(text: message.replyToText, onTap: onReplyQuoteTap),
+                quote(),
                 const SizedBox(height: 6),
               ],
               if (safetyWarning != null) ...[
@@ -9455,6 +9462,8 @@ class _MessageBodySurface extends StatelessWidget {
     required this.padding,
     required this.decoration,
     required this.child,
+    this.collectionSkin,
+    this.mine = false,
   });
 
   final bool animate;
@@ -9462,9 +9471,22 @@ class _MessageBodySurface extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final Decoration decoration;
   final Widget child;
+  final CollectionBubbleSkin? collectionSkin;
+  final bool mine;
 
   @override
   Widget build(BuildContext context) {
+    final skin = collectionSkin;
+    if (skin != null && decoration is BoxDecoration) {
+      return CollectionMessageSurface(
+        mine: mine,
+        skin: skin,
+        decoration: decoration as BoxDecoration,
+        padding: padding,
+        constraints: constraints,
+        child: child,
+      );
+    }
     if (!animate) {
       return Container(
         constraints: constraints,
@@ -9910,13 +9932,24 @@ class _ChannelCommentsButton extends StatelessWidget {
 }
 
 class _ReplyQuote extends StatelessWidget {
-  const _ReplyQuote({required this.text, this.onTap});
+  const _ReplyQuote({
+    required this.text,
+    this.onTap,
+    this.source,
+    this.author = 'Reply',
+  });
 
   final String text;
   final VoidCallback? onTap;
+  final ChatMessage? source;
+  final String author;
 
   @override
   Widget build(BuildContext context) {
+    final accent = _senderAccent(source?.senderNode ?? author);
+    final bytes = source == null || source!.deleted
+        ? null
+        : _MessageBubble.imageBytesFor(source!, dataSaver: true);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -9926,15 +9959,52 @@ class _ReplyQuote extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.16),
           borderRadius: BorderRadius.circular(7),
-          border: const Border(
-            left: BorderSide(color: Color(0xFF8EC8FF), width: 3),
-          ),
+          border: Border(left: BorderSide(color: accent, width: 3)),
         ),
-        child: Text(
-          text,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, color: Colors.white70),
+        child: Row(
+          children: [
+            if (bytes != null && bytes.isNotEmpty) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Image.memory(
+                  bytes,
+                  width: 36,
+                  height: 36,
+                  cacheWidth: 72,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => const SizedBox.square(
+                    dimension: 36,
+                    child: Icon(Icons.image_outlined),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    author,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: accent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    text,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -11106,6 +11176,9 @@ class _AudioPreviewState extends State<_AudioPreview> {
   StreamSubscription<void>? completeSubscription;
   bool playing = false;
   bool sourceReady = false;
+  Future<void>? sourcePreparation;
+  bool playbackChanging = false;
+  bool transcriptExpanded = false;
   bool transcribing = false;
   bool summarizing = false;
   String localTranscription = '';
@@ -11152,11 +11225,32 @@ class _AudioPreviewState extends State<_AudioPreview> {
 
   Future<void> ensureSource() async {
     if (sourceReady) return;
-    await player.setSource(BytesSource(hexDecode(widget.message.fileData)));
+    final pending = sourcePreparation ??= prepareSource();
+    try {
+      await pending;
+    } finally {
+      if (identical(sourcePreparation, pending)) sourcePreparation = null;
+    }
+  }
+
+  Future<void> prepareSource() async {
+    final bytes = await compute(decodeMediaHex, widget.message.fileData);
+    if (!mounted) return;
+    await player.setSource(BytesSource(bytes));
     sourceReady = true;
   }
 
   Future<void> toggle() async {
+    if (playbackChanging) return;
+    playbackChanging = true;
+    try {
+      await togglePlayback();
+    } finally {
+      playbackChanging = false;
+    }
+  }
+
+  Future<void> togglePlayback() async {
     if (playing) {
       await player.pause();
       if (mounted) setState(() => playing = false);
@@ -11164,6 +11258,7 @@ class _AudioPreviewState extends State<_AudioPreview> {
     }
     try {
       await ensureSource();
+      if (!mounted) return;
       await player.resume();
       if (mounted) setState(() => playing = true);
     } catch (_) {
@@ -11205,7 +11300,10 @@ class _AudioPreviewState extends State<_AudioPreview> {
         widget.message,
       );
       if (!mounted) return;
-      setState(() => localTranscription = result.text);
+      setState(() {
+        localTranscription = result.text;
+        transcriptExpanded = true;
+      });
     } on AiTranscriptionException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -11283,12 +11381,18 @@ class _AudioPreviewState extends State<_AudioPreview> {
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 6),
-                    _Waveform(
-                      levels: levels,
-                      active: playing,
-                      progress: progress,
-                      onSeek: seekToFraction,
-                      color: Colors.white70,
+                    TweenAnimationBuilder<double>(
+                      tween: Tween(end: progress),
+                      duration: MediaQuery.disableAnimationsOf(context)
+                          ? Duration.zero
+                          : const Duration(milliseconds: 100),
+                      builder: (context, value, _) => _Waveform(
+                        levels: levels,
+                        active: playing,
+                        progress: value,
+                        onSeek: seekToFraction,
+                        color: const Color(0xFF86DEDA),
+                      ),
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -11306,53 +11410,96 @@ class _AudioPreviewState extends State<_AudioPreview> {
             ],
           ),
           if (localTranscription.trim().isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.07),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.white12),
-              ),
-              child: Text(
-                localTranscription.trim(),
-                style: const TextStyle(fontSize: 13, height: 1.35),
-              ),
-            ),
-            const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(
-                onPressed: summarizing ? null : summarize,
-                icon: summarizing
-                    ? const SizedBox.square(
-                        dimension: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.summarize_rounded, size: 16),
-                label: Text(summarizing ? 'Summarizing...' : 'Summarize'),
+                onPressed: () =>
+                    setState(() => transcriptExpanded = !transcriptExpanded),
+                icon: Icon(
+                  transcriptExpanded
+                      ? Icons.expand_less_rounded
+                      : Icons.notes_rounded,
+                  size: 17,
+                ),
+                label: Text(
+                  transcriptExpanded ? 'Hide transcript' : 'Transcript',
+                ),
               ),
             ),
-            if (voiceSummary.isNotEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 11,
-                  vertical: 9,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7C5CFC).withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: const Color(0xFFB28AFF).withValues(alpha: 0.28),
-                  ),
-                ),
-                child: Text(
-                  voiceSummary,
-                  style: const TextStyle(fontSize: 13, height: 1.35),
-                ),
-              ),
+            AnimatedSize(
+              duration: MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 200),
+              alignment: Alignment.topCenter,
+              child: !transcriptExpanded
+                  ? const SizedBox(width: double.infinity)
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 11,
+                            vertical: 9,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.07),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Text(
+                            localTranscription.trim(),
+                            style: const TextStyle(fontSize: 13, height: 1.35),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: summarizing ? null : summarize,
+                            icon: summarizing
+                                ? const SizedBox.square(
+                                    dimension: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.summarize_rounded, size: 16),
+                            label: Text(
+                              summarizing ? 'Summarizing...' : 'Summarize',
+                            ),
+                          ),
+                        ),
+                        if (voiceSummary.isNotEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 11,
+                              vertical: 9,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(
+                                0xFF7C5CFC,
+                              ).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: const Color(
+                                  0xFFB28AFF,
+                                ).withValues(alpha: 0.28),
+                              ),
+                            ),
+                            child: Text(
+                              voiceSummary,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                height: 1.35,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
           ] else
             Align(
               alignment: Alignment.centerRight,
@@ -11446,11 +11593,15 @@ class _Waveform extends StatelessWidget {
   }
 
   Color _barColor(int index) {
-    final playedBars = (levels.length * progress.clamp(0.0, 1.0)).round();
-    if (index < playedBars) return color;
-    return active
-        ? color.withValues(alpha: 0.48)
-        : color.withValues(alpha: 0.32);
+    final fraction = (levels.length * progress.clamp(0.0, 1.0) - index).clamp(
+      0.0,
+      1.0,
+    );
+    return Color.lerp(
+      color.withValues(alpha: active ? 0.38 : 0.25),
+      color,
+      fraction,
+    )!;
   }
 }
 
@@ -12112,7 +12263,7 @@ class _MeetingPoint {
   Future<void> open(BuildContext context, {required bool route}) async {
     await Navigator.push<void>(
       context,
-      MaterialPageRoute(
+      meshPageRoute(
         builder: (_) => MeetingPointMapPage(
           title: title,
           latitude: latitude,
@@ -12187,7 +12338,7 @@ class _SharedLocation {
   Future<void> open(BuildContext context) async {
     await Navigator.push<void>(
       context,
-      MaterialPageRoute(
+      meshPageRoute(
         builder: (_) => MeetingPointMapPage(
           title: 'Shared location',
           latitude: latitude,

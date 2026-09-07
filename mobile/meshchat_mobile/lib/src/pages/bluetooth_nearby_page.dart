@@ -223,7 +223,7 @@ class _BluetoothNearbyPageState extends State<BluetoothNearbyPage> {
       if (!mounted) return;
       await Navigator.push<void>(
         context,
-        MaterialPageRoute(
+        meshPageRoute(
           builder: (_) =>
               ChatPage(controller: widget.controller, thread: thread),
         ),

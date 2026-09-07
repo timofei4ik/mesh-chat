@@ -1,12 +1,19 @@
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
-/// Shared transition state used to temporarily replace native platform views
-/// with cheap Flutter surfaces while a route snapshot is captured.
+const meshPageTransitionDuration = Duration(milliseconds: 285);
+
 class MeshRouteTransition {
   MeshRouteTransition._();
-
   static final ValueNotifier<bool> active = ValueNotifier<bool>(false);
+  static final Set<Object> _owners = {};
+  static void setActive(Object owner, bool value) {
+    if (value) {
+      _owners.add(owner);
+    } else {
+      _owners.remove(owner);
+    }
+    active.value = _owners.isNotEmpty;
+  }
 }
 
 Route<T> meshPageRoute<T>({
@@ -14,45 +21,11 @@ Route<T> meshPageRoute<T>({
   RouteSettings? settings,
   bool preserveLiquidGlass = false,
   bool fullWidthSlide = false,
-}) {
-  final mobile =
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.iOS ||
-          defaultTargetPlatform == TargetPlatform.android);
-  if (mobile) {
-    return _MeshCupertinoPageRoute<T>(
-      builder: (context) => fullWidthSlide
-          ? RepaintBoundary(child: builder(context))
-          : _MeshRoutePerformanceGate(child: builder(context)),
-      settings: settings,
-      allowSnapshotting: true,
-      preserveLiquidGlass: preserveLiquidGlass,
-    );
-  }
-
-  return PageRouteBuilder<T>(
-    settings: settings,
-    transitionDuration: const Duration(milliseconds: 285),
-    reverseTransitionDuration: const Duration(milliseconds: 255),
-    pageBuilder: (context, animation, secondaryAnimation) => fullWidthSlide
-        ? RepaintBoundary(child: builder(context))
-        : _MeshRoutePerformanceGate(child: builder(context)),
-    transitionsBuilder: (context, animation, secondaryAnimation, child) {
-      final offset =
-          Tween<Offset>(
-            begin: Offset(fullWidthSlide ? 1 : 0.025, 0),
-            end: Offset.zero,
-          ).animate(
-            CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeInOutCubic,
-              reverseCurve: Curves.easeInOutCubic,
-            ),
-          );
-      return SlideTransition(position: offset, child: child);
-    },
-  );
-}
+}) => _MeshSlideRoute<T>(
+  builder: builder,
+  settings: settings,
+  preserveLiquidGlass: preserveLiquidGlass,
+);
 
 Route<T> meshSettingsPageRoute<T>({
   required WidgetBuilder builder,
@@ -61,14 +34,144 @@ Route<T> meshSettingsPageRoute<T>({
   builder: builder,
   settings: settings,
   preserveLiquidGlass: true,
-  fullWidthSlide: true,
 );
+
+class _MeshSlideRoute<T> extends PageRouteBuilder<T> {
+  _MeshSlideRoute({
+    required WidgetBuilder builder,
+    super.settings,
+    required this.preserveLiquidGlass,
+  }) : super(
+         transitionDuration: meshPageTransitionDuration,
+         reverseTransitionDuration: meshPageTransitionDuration,
+         pageBuilder: (context, _, _) =>
+             _MeshRoutePerformanceGate(child: builder(context)),
+       );
+
+  final bool preserveLiquidGlass;
+  NavigatorState? gestureNavigator;
+  AnimationStatusListener? gestureEndListener;
+
+  void statusChanged(AnimationStatus status) {
+    if (!preserveLiquidGlass) {
+      MeshRouteTransition.setActive(
+        this,
+        status == AnimationStatus.forward || status == AnimationStatus.reverse,
+      );
+    }
+  }
+
+  @override
+  void install() {
+    super.install();
+    animation!.addStatusListener(statusChanged);
+  }
+
+  void startBack() {
+    if (!isCurrent || !popGestureEnabled || gestureNavigator != null) return;
+    gestureNavigator = navigator;
+    gestureNavigator!.didStartUserGesture();
+    if (!preserveLiquidGlass) MeshRouteTransition.setActive(this, true);
+  }
+
+  void updateBack(double delta) {
+    if (gestureNavigator == null || !isCurrent) return;
+    controller!.value = (controller!.value - delta).clamp(0.0, 1.0);
+  }
+
+  void stopGesture() {
+    final listener = gestureEndListener;
+    if (listener != null) controller!.removeStatusListener(listener);
+    gestureEndListener = null;
+    gestureNavigator?.didStopUserGesture();
+    gestureNavigator = null;
+    MeshRouteTransition.setActive(this, false);
+  }
+
+  void endBack(double velocity, {bool cancelled = false}) {
+    if (gestureNavigator == null) return;
+    final commit =
+        !cancelled &&
+        isCurrent &&
+        popDisposition == RoutePopDisposition.pop &&
+        (velocity > 650 || (velocity >= -650 && controller!.value < 0.65));
+    if (commit) {
+      navigator!.pop<T>();
+    } else if (isCurrent) {
+      controller!.animateTo(
+        1,
+        duration: Duration(
+          microseconds:
+              (meshPageTransitionDuration.inMicroseconds *
+                      (1 - controller!.value))
+                  .round(),
+        ),
+        curve: Curves.linear,
+      );
+    }
+    if (!controller!.isAnimating) {
+      stopGesture();
+      return;
+    }
+    gestureEndListener = (status) {
+      if (status == AnimationStatus.completed ||
+          status == AnimationStatus.dismissed) {
+        stopGesture();
+      }
+    };
+    controller!.addStatusListener(gestureEndListener!);
+  }
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    return Stack(
+      fit: StackFit.passthrough,
+      children: [
+        SlideTransition(
+          position: Tween<Offset>(
+            begin: reduced ? Offset.zero : const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(animation),
+          child: child,
+        ),
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 28 + MediaQuery.paddingOf(context).left,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) => startBack(),
+            onHorizontalDragUpdate: (details) {
+              final width = MediaQuery.sizeOf(context).width;
+              if (width > 0) updateBack(details.delta.dx / width);
+            },
+            onHorizontalDragEnd: (details) =>
+                endBack(details.primaryVelocity ?? 0),
+            onHorizontalDragCancel: () => endBack(0, cancelled: true),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  void dispose() {
+    stopGesture();
+    animation?.removeStatusListener(statusChanged);
+    super.dispose();
+  }
+}
 
 class _MeshRoutePerformanceGate extends StatelessWidget {
   const _MeshRoutePerformanceGate({required this.child});
-
   final Widget child;
-
   @override
   Widget build(BuildContext context) {
     final route = ModalRoute.of(context);
@@ -77,57 +180,15 @@ class _MeshRoutePerformanceGate extends StatelessWidget {
     if (primary == null || secondary == null) {
       return RepaintBoundary(child: child);
     }
-
     return AnimatedBuilder(
-      animation: Listenable.merge(<Listenable>[primary, secondary]),
+      animation: Listenable.merge([primary, secondary]),
       child: RepaintBoundary(child: child),
-      builder: (context, child) {
-        final settled =
+      builder: (context, child) => TickerMode(
+        enabled:
             primary.status == AnimationStatus.completed &&
-            secondary.status == AnimationStatus.dismissed;
-        return TickerMode(enabled: settled, child: child!);
-      },
+            secondary.status == AnimationStatus.dismissed,
+        child: child!,
+      ),
     );
-  }
-}
-
-class _MeshCupertinoPageRoute<T> extends CupertinoPageRoute<T> {
-  _MeshCupertinoPageRoute({
-    required super.builder,
-    super.settings,
-    super.allowSnapshotting,
-    required this.preserveLiquidGlass,
-  });
-
-  final bool preserveLiquidGlass;
-
-  AnimationStatusListener? _statusListener;
-
-  @override
-  void install() {
-    super.install();
-    if (preserveLiquidGlass) return;
-    _statusListener = (status) {
-      MeshRouteTransition.active.value =
-          status == AnimationStatus.forward ||
-          status == AnimationStatus.reverse;
-    };
-    animation?.addStatusListener(_statusListener!);
-  }
-
-  @override
-  TickerFuture didPush() {
-    if (!preserveLiquidGlass) MeshRouteTransition.active.value = true;
-    return super.didPush();
-  }
-
-  @override
-  void dispose() {
-    final listener = _statusListener;
-    if (listener != null) animation?.removeStatusListener(listener);
-    if (!preserveLiquidGlass && MeshRouteTransition.active.value) {
-      MeshRouteTransition.active.value = false;
-    }
-    super.dispose();
   }
 }

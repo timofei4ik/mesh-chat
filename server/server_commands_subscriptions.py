@@ -256,7 +256,25 @@ async def handle_chat_preferences_update(server, packet, context):
     )
 
 
+async def handle_message_bubble_style_update(server, packet, context):
+    login = account_login(server, context.node_id)
+    ok, reason = server.save_message_bubble_style(login, packet.get("style"))
+    if ok:
+        server.invalidate_sync_v2_snapshot(
+            login, "profile_changed", str(uuid.uuid4()), {}
+        )
+    await send_json(context.websocket, {
+        "type": "message_bubble_style_result",
+        "request_id": packet.get("request_id"),
+        "ok": ok,
+        "reason": reason,
+    })
+    if ok:
+        await server.send_user_list()
+
+
 def register_subscription_commands(registry):
+    registry.register("message_bubble_style_update", handle_message_bubble_style_update)
     registry.register("meshpro_catalog_request", handle_meshpro_catalog)
     registry.register(
         "subscription_status_request",

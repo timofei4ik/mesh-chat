@@ -671,6 +671,25 @@ class SubscriptionTests(unittest.TestCase):
         revoked = self.relay.find_account_by_public_username("subscriber")
         self.assertFalse(revoked["meshpro_badge"])
 
+    def test_message_bubble_selection_is_public_persistent_and_server_gated(self):
+        self.assertEqual((False, 'meshpro_required'),
+                         self.relay.save_message_bubble_style('subscriber', 'ocean'))
+        self.relay.grant_subscription('subscriber', days=7)
+        for style in ('ocean', 'camp_clouds', 'remote_moonlit_path', 'none', 'auto'):
+            self.assertEqual((True, 'ok'),
+                             self.relay.save_message_bubble_style('subscriber', style))
+            self.assertEqual(style, self.relay.get_profile_by_node('subscriber-node')['message_bubble_style'])
+        for invalid in ('../image', 'remote_unknown', None, [], {}):
+            self.assertEqual((False, 'invalid bubble style'),
+                             self.relay.save_message_bubble_style('subscriber', invalid))
+        self.relay.save_message_bubble_style('subscriber', 'ocean')
+        self.relay.save_account_profile('subscriber', 'subscriber-node', 'Subscriber', about='Updated')
+        self.assertEqual('ocean', self.relay.get_message_bubble_style('subscriber'))
+        self.relay.revoke_subscription('subscriber')
+        self.assertEqual('none', self.relay.get_profile_by_node('subscriber-node')['message_bubble_style'])
+        self.relay.grant_subscription('subscriber', days=7)
+        self.assertEqual('ocean', self.relay.get_profile_by_node('subscriber-node')['message_bubble_style'])
+
     def test_profile_style_is_server_gated_and_restored_after_renewal(self):
         self.relay.db.execute(
             """

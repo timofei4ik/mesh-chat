@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/profile.dart';
 import '../models/session.dart';
+import '../utils/media_request_encoder.dart';
 import 'file_transfer_outbox_store.dart';
 import 'mutation_outbox_store.dart';
 
@@ -592,6 +593,32 @@ class MeshSocket {
       return;
     }
     _sendRaw(packet);
+  }
+
+  Future<void> sendAiMediaRequest(
+    Map<String, dynamic> packet, {
+    required String hex,
+    required String field,
+    required int limit,
+  }) async {
+    final channel = _channel;
+    final current = _session;
+    if (_closed || !_connected || channel == null || current == null) {
+      throw StateError('Not connected');
+    }
+    final encoded = await compute(encodeMediaRequest, {
+      'packet': packet,
+      'hex': hex,
+      'field': field,
+      'limit': limit,
+    }, debugLabel: 'AI media request encoding');
+    if (_closed ||
+        !_connected ||
+        !identical(channel, _channel) ||
+        !identical(current, _session)) {
+      throw StateError('Connection changed during media preparation');
+    }
+    channel.sink.add(encoded);
   }
 
   Future<void> queueFileTransfer({

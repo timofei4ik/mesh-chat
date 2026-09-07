@@ -351,6 +351,7 @@ class SQLiteSubscriptionDeletionOwner:
         ),
         AccountDataPolicy("subscriptions", "meshpro_usage"),
         AccountDataPolicy("subscriptions", "account_meshpro_preferences"),
+        AccountDataPolicy("subscriptions", "account_bubble_appearance"),
     )
 
     def __init__(self, connection):
@@ -364,6 +365,7 @@ class SQLiteSubscriptionDeletionOwner:
             "boosty_telegram_links",
             "meshpro_usage",
             "account_meshpro_preferences",
+            "account_bubble_appearance",
         ):
             self._connection.execute(
                 f"DELETE FROM {table} WHERE login=?",

@@ -2084,6 +2084,14 @@ class ServerStorageMixin:
 
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS account_bubble_appearance(
+                login TEXT PRIMARY KEY,
+                style TEXT NOT NULL DEFAULT 'auto'
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS account_chat_preferences(
                 login TEXT NOT NULL,
                 chat_key TEXT NOT NULL,
@@ -2844,6 +2852,10 @@ class ServerStorageMixin:
 
         return {
             "meshpro_badge": bool(features.get("premium_badge")),
+            "message_bubble_style": (
+                self.get_message_bubble_style(login)
+                if features.get("custom_message_bubbles") else "none"
+            ),
             "profile_background": (
                 background
                 if features.get("profile_background")
@@ -2878,6 +2890,35 @@ class ServerStorageMixin:
                 else ""
             )
         }
+
+    def get_message_bubble_style(self, login):
+        row = self.db.execute(
+            "SELECT style FROM account_bubble_appearance WHERE login=?",
+            (str(login or "").strip().lower(),),
+        ).fetchone()
+        return row[0] if row else "auto"
+
+    def save_message_bubble_style(self, login, style):
+        login = str(login or "").strip().lower()
+        if not login:
+            return False, "unauthorized"
+        if not self.subscription_feature_enabled(login, "custom_message_bubbles"):
+            return False, "meshpro_required"
+        if not isinstance(style, str) or style not in {
+            "auto", "none", "nebula", "ocean", "sakura", "solar", "stardust",
+            "ember", "sunset", "frost", "orbit", "camp_clouds", "camp_moon",
+            "camp_ember", "camp_stories", "camp_rainlight",
+            "remote_skybound_camp", "remote_moonlit_path", "remote_ember_vale",
+            "remote_lantern_stories",
+        }:
+            return False, "invalid bubble style"
+        self.db.execute(
+            "INSERT INTO account_bubble_appearance(login, style) VALUES(?,?) "
+            "ON CONFLICT(login) DO UPDATE SET style=excluded.style",
+            (login, style),
+        )
+        self._commit_storage()
+        return True, "ok"
 
     def _meshpro_badge_enabled(self, login):
         return self._meshpro_public_profile_fields(login)["meshpro_badge"]

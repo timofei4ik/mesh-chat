@@ -150,6 +150,19 @@ class _MeshChatAppState extends State<MeshChatApp> {
       brightness: brightness,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: dark ? const Color(0xFF17191D) : null,
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: Color(0xFF1B2833),
+        modalBackgroundColor: Color(0xFF1B2833),
+        surfaceTintColor: Colors.transparent,
+        dragHandleColor: Color(0xFF8397A5),
+        elevation: 0,
+        constraints: BoxConstraints(maxWidth: 640),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          side: BorderSide(color: Color(0xFF3A4954)),
+        ),
+        clipBehavior: Clip.antiAlias,
+      ),
       appBarTheme: AppBarTheme(
         backgroundColor: dark ? const Color(0xFF20242B) : null,
         elevation: 0,

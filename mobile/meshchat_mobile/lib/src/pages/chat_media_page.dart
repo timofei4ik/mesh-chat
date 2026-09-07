@@ -4,6 +4,7 @@ import 'package:cross_file/cross_file.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../utils/mesh_page_route.dart';
 import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
@@ -196,7 +197,7 @@ class _MediaContent extends StatelessWidget {
           if (photoIndex >= 0) {
             Navigator.push(
               context,
-              MaterialPageRoute(
+              meshPageRoute(
                 builder: (_) => _PhotoViewerPage(
                   photos: photos,
                   initialIndex: photoIndex,

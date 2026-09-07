@@ -66,6 +66,59 @@ void main() {
   });
 
   test(
+    'AI worker sends exact media and does not send after connection close',
+    () async {
+      final received = Completer<Map<String, dynamic>>();
+      final welcome = Completer<void>();
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          socket.add(jsonEncode(_welcomePacket()));
+        }
+        if (packet['type'] == 'ai_voice_transcription_request' &&
+            !received.isCompleted) {
+          received.complete(packet);
+        }
+      });
+      addTearDown(server.close);
+      final socket = MeshSocket();
+      addTearDown(socket.close);
+      await socket.connect(
+        session: _session(server.url, 'ai-worker'),
+        publicKey: 'key',
+        profile: _profile('ai-worker'),
+        onStatus: (_) {},
+        onPacket: (packet) {
+          if (packet['type'] == 'server_welcome' && !welcome.isCompleted) {
+            welcome.complete();
+          }
+        },
+      );
+      await welcome.future.timeout(const Duration(seconds: 2));
+      await socket.sendAiMediaRequest(
+        {'type': 'ai_voice_transcription_request'},
+        hex: '00aaff',
+        field: 'audio_base64',
+        limit: 3,
+      );
+      expect(
+        (await received.future.timeout(
+          const Duration(seconds: 2),
+        ))['audio_base64'],
+        'AKr/',
+      );
+      final pending = socket.sendAiMediaRequest(
+        {'type': 'ai_voice_transcription_request'},
+        hex: 'aa' * (1024 * 1024),
+        field: 'audio_base64',
+        limit: 1024 * 1024,
+      );
+      final assertion = expectLater(pending, throwsStateError);
+      await socket.close();
+      await assertion;
+    },
+  );
+
+  test(
     'recovery hints coalesce and ACK only the persisted sync cursor',
     () async {
       var requests = 0;

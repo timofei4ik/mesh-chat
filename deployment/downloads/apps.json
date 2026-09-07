@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 44,
-  "updatedAt": "2026-09-07T00:00:00Z",
+  "catalogVersion": 45,
+  "updatedAt": "2026-09-07T12:00:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-design-1-0-97",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Collection bubbles and a smoother interface",
+      "summary": "Choose from 18 illustrated message bubble styles, follow your profile collection or turn artwork off. MeshPro bubble selections are stored on the server and visible to everyone using an updated client. Decorations keep their proportions on short texts, long messages and voice messages. Consistent page transitions and edge-swipe back navigation, with refreshed bottom sheets. Slower background motion, updated replies, chat previews, voice transcripts and attachment menu. Heavy media encoding and cache preparation moved away from the main UI thread.",
+      "publishedAt": "2026-09-07"
+    },
     {
       "id": "meshchat-sfu-1-0-96",
       "appId": "meshchat",
@@ -100,11 +108,14 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.96",
+      "version": "1.0.97",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
-      "colors": ["#43D9FF", "#9C63FF"],
+      "colors": [
+        "#43D9FF",
+        "#9C63FF"
+      ],
       "androidUrl": "https://meshchat-losa.ru/downloads/MeshChat-Android.apk",
       "windowsUrl": "https://meshchat-losa.ru/downloads/MeshChat-Windows.zip",
       "windowsExecutable": "MeshChat.exe",
@@ -113,26 +124,21 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 199,
+      "build": 200,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-07T00:00:00Z",
+      "updated_at": "2026-09-07T12:00:00Z",
       "release": {
-        "title": "Encrypted group calls and shared captions",
+        "title": "Collection bubbles and a smoother interface",
         "publishedAt": "2026-09-07",
         "notes": [
-          "Updated native clients support encrypted server-routed group audio for up to 32 invited devices; update every participant",
-          "Each device uploads one audio stream; browser and older clients retain the existing P2P/TURN route",
-          "Joining an ongoing call correctly restores the participants already connected",
-          "A group conversation can continue between connected participants after the initiator leaves",
-          "MeshPro can start shared captions visible to everyone; each participant chooses whether their speech is sent for recognition",
-          "Participants can choose speech and translation languages and stop sharing their own speech",
-          "Caption updates preserve speaker identity and translations; delayed updates cannot leak into another call",
-          "Live-caption usage is counted in actual audio seconds instead of charging a full minute for each short chunk",
-          "Improved reconnect handling and pending-message recovery, with protection against stale acknowledgements and call events",
-          "Group signaling checks current membership and routes to the intended device",
-          "Photo alignment is more responsive and handles very small images correctly"
+          "Choose from 18 illustrated message bubble styles, follow your profile collection or turn artwork off",
+          "MeshPro bubble selections are stored on the server and visible to everyone using an updated client",
+          "Decorations keep their proportions on short texts, long messages and voice messages",
+          "Consistent page transitions and edge-swipe back navigation, with refreshed bottom sheets",
+          "Slower background motion, updated replies, chat previews, voice transcripts and attachment menu",
+          "Heavy media encoding and cache preparation moved away from the main UI thread"
         ]
       }
     },
@@ -146,7 +152,10 @@
       "description": "Minimal privacy switch with ready VPN profile support.",
       "logoAsset": "assets/meshprivacy_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshprivacy.png",
-      "colors": ["#5EFCE8", "#736EFE"],
+      "colors": [
+        "#5EFCE8",
+        "#736EFE"
+      ],
       "androidUrl": "https://meshchat-losa.ru/downloads/MeshPrivacy-Android.apk",
       "windowsUrl": "https://meshchat-losa.ru/downloads/MeshPrivacy-Windows.zip",
       "windowsExecutable": "meshprivacy.exe",
@@ -158,7 +167,11 @@
       "release": {
         "title": "Connection diagnostics",
         "publishedAt": "2026-08-15",
-        "notes": ["MeshPro access checks", "Connection status and ping", "Simplified one-tap connection"]
+        "notes": [
+          "MeshPro access checks",
+          "Connection status and ping",
+          "Simplified one-tap connection"
+        ]
       }
     }
   ]

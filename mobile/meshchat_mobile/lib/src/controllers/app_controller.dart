@@ -1102,6 +1102,8 @@ class AppController extends ChangeNotifier {
       meshProBadge: incoming.meshProBadge ?? existing.meshProBadge,
       profileBackground:
           incoming.profileBackground ?? existing.profileBackground,
+      messageBubbleStyle:
+          incoming.messageBubbleStyle ?? existing.messageBubbleStyle,
       profileEffect: incoming.profileEffect ?? existing.profileEffect,
       profileBlinkShape:
           incoming.profileBlinkShape ?? existing.profileBlinkShape,
@@ -1927,17 +1929,16 @@ class AppController extends ChangeNotifier {
         'Voice transcription requires MeshPro',
       );
     }
+    if (!identical(current, session)) {
+      throw const AiTranscriptionException('unauthorized', 'Account changed');
+    }
     if (message.fileData.isEmpty) {
       throw const AiTranscriptionException(
         'empty_audio',
         'The audio file is not cached on this device',
       );
     }
-    final bytes = _hexDecode(message.fileData);
-    if (bytes.isEmpty) {
-      throw const AiTranscriptionException('empty_audio', 'Audio is empty');
-    }
-    if (bytes.length > 8 * 1024 * 1024) {
+    if (message.fileData.length > 16 * 1024 * 1024) {
       throw const AiTranscriptionException(
         'audio_too_large',
         'Voice transcription supports files up to 8 MB',
@@ -1946,23 +1947,29 @@ class AppController extends ChangeNotifier {
 
     final requestId = const Uuid().v4();
     final completer = Completer<AiTranscriptionResult>();
+    // Logout may fail pending requests while the media worker is still running.
+    completer.future.ignore();
     _aiTranscriptionCompleters[requestId] = completer;
     try {
-      _socket.send({
-        'type': 'ai_voice_transcription_request',
-        'packet_id': requestId,
-        'request_id': requestId,
-        'protocol_version': MeshSocket.protocolVersion,
-        'source_node': current.nodeId,
-        'destination_node': 'SERVER',
-        'ttl': 5,
-        'message_id': message.id,
-        'filename': message.fileName.trim().isEmpty
-            ? 'voice.m4a'
-            : message.fileName,
-        'audio_base64': base64Encode(bytes),
-        'duration_seconds': _voiceDurationHint(message.fileName),
-      });
+      await _socket.sendAiMediaRequest(
+        {
+          'type': 'ai_voice_transcription_request',
+          'packet_id': requestId,
+          'request_id': requestId,
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': current.nodeId,
+          'destination_node': 'SERVER',
+          'ttl': 5,
+          'message_id': message.id,
+          'filename': message.fileName.trim().isEmpty
+              ? 'voice.m4a'
+              : message.fileName,
+          'duration_seconds': _voiceDurationHint(message.fileName),
+        },
+        hex: message.fileData,
+        field: 'audio_base64',
+        limit: 8 * 1024 * 1024,
+      );
     } catch (_) {
       _aiTranscriptionCompleters.remove(requestId);
       throw const AiTranscriptionException(
@@ -1999,17 +2006,16 @@ class AppController extends ChangeNotifier {
         'Photo and document OCR requires MeshPro',
       );
     }
+    if (!identical(current, session)) {
+      throw const AiOcrException('unauthorized', 'Account changed');
+    }
     if (message.fileData.isEmpty) {
       throw const AiOcrException(
         'empty_image',
         'The image is not cached on this device',
       );
     }
-    final bytes = _hexDecode(message.fileData);
-    if (bytes.isEmpty) {
-      throw const AiOcrException('empty_image', 'The image is empty');
-    }
-    if (bytes.length > 2 * 1024 * 1024) {
+    if (message.fileData.length > 4 * 1024 * 1024) {
       throw const AiOcrException(
         'image_too_large',
         'OCR currently supports images up to 2 MB',
@@ -2018,22 +2024,27 @@ class AppController extends ChangeNotifier {
 
     final requestId = const Uuid().v4();
     final completer = Completer<AiOcrResult>();
+    completer.future.ignore();
     _aiOcrCompleters[requestId] = completer;
     try {
-      _socket.send({
-        'type': 'ai_image_ocr_request',
-        'packet_id': requestId,
-        'request_id': requestId,
-        'protocol_version': MeshSocket.protocolVersion,
-        'source_node': current.nodeId,
-        'destination_node': 'SERVER',
-        'ttl': 5,
-        'message_id': message.id,
-        'filename': message.fileName.trim().isEmpty
-            ? 'image.jpg'
-            : message.fileName,
-        'image_base64': base64Encode(bytes),
-      });
+      await _socket.sendAiMediaRequest(
+        {
+          'type': 'ai_image_ocr_request',
+          'packet_id': requestId,
+          'request_id': requestId,
+          'protocol_version': MeshSocket.protocolVersion,
+          'source_node': current.nodeId,
+          'destination_node': 'SERVER',
+          'ttl': 5,
+          'message_id': message.id,
+          'filename': message.fileName.trim().isEmpty
+              ? 'image.jpg'
+              : message.fileName,
+        },
+        hex: message.fileData,
+        field: 'image_base64',
+        limit: 2 * 1024 * 1024,
+      );
     } catch (_) {
       _aiOcrCompleters.remove(requestId);
       throw const AiOcrException(
@@ -3232,6 +3243,15 @@ class AppController extends ChangeNotifier {
         await _applyStoryDeletePacket(packet);
       case 'chat_preferences_result':
         _handleChatPreferencesResult(packet);
+      case 'message_bubble_style_result':
+        final pending = _chatPreferenceCompleters[packet['request_id']];
+        if (pending != null && !pending.isCompleted) {
+          pending.complete(
+            packet['ok'] == true
+                ? null
+                : packet['reason']?.toString() ?? 'Could not save bubble style',
+          );
+        }
       case 'scheduled_message_result':
         _handleScheduledMessageResult(packet);
       case 'scheduled_messages':
@@ -4016,6 +4036,7 @@ class AppController extends ChangeNotifier {
       online: true,
       meshProBadge: existing?.meshProBadge,
       profileBackground: normalizedBackground ?? existing?.profileBackground,
+      messageBubbleStyle: existing?.messageBubbleStyle,
       profileEffect: normalizedEffect ?? existing?.profileEffect,
       profileBlinkShape: normalizedBlinkShape ?? existing?.profileBlinkShape,
       avatarDecoration: normalizedDecoration ?? existing?.avatarDecoration,
@@ -5360,6 +5381,49 @@ class AppController extends ChangeNotifier {
     final username = thread.profile.publicUsername.trim().toLowerCase();
     if (username.isNotEmpty) return 'direct:@$username';
     return 'direct:${thread.profile.nodeId}';
+  }
+
+  Future<String?> updateMessageBubbleStyle(String style) async {
+    final current = session;
+    if (current == null) return 'No active session';
+    if (!_socket.isConnected) return 'No server connection';
+    if (!meshProSubscription.isActiveNow ||
+        !meshProSubscription.entitlements.hasFeature(
+          'custom_message_bubbles',
+        )) {
+      return 'MeshPro required';
+    }
+    final requestId = const Uuid().v4();
+    final completer = Completer<String?>();
+    _chatPreferenceCompleters[requestId] = completer;
+    try {
+      _socket.send({
+        'type': 'message_bubble_style_update',
+        'packet_id': requestId,
+        'request_id': requestId,
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': current.nodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'style': style,
+      });
+      final error = await completer.future.timeout(
+        const Duration(seconds: 12),
+        onTimeout: () => 'Server did not confirm the bubble style',
+      );
+      if (session != current) return 'Account changed';
+      if (error != null) return error;
+      final profile = ownProfile.copyWith(messageBubbleStyle: style);
+      profiles[current.nodeId] = profile;
+      await _saveOwnProfile(profile);
+      await _saveCache();
+      notifyListeners();
+      return null;
+    } catch (_) {
+      return 'Could not save bubble style. Try again.';
+    } finally {
+      _chatPreferenceCompleters.remove(requestId);
+    }
   }
 
   Future<String?> updateChatAppearance(

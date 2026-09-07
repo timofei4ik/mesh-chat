@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import '../utils/mesh_page_route.dart';
 
 import '../controllers/app_controller.dart';
 import '../models/chat_message.dart';
@@ -115,7 +116,7 @@ class MeetingPointsPage extends StatelessWidget {
     final first = points.first.point;
     final result = await Navigator.push<Object?>(
       context,
-      MaterialPageRoute(
+      meshPageRoute(
         builder: (_) => MeetingPointMapPage(
           title: thread.profile.displayName,
           latitude: first.latitude,
@@ -562,7 +563,7 @@ class _MeetingPoint {
   Future<void> open(BuildContext context, {required bool route}) async {
     await Navigator.push<void>(
       context,
-      MaterialPageRoute(
+      meshPageRoute(
         builder: (_) => MeetingPointMapPage(
           title: title,
           latitude: latitude,
