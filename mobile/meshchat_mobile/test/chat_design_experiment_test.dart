@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,6 +14,8 @@ import 'package:meshchat_mobile/src/pages/chat_page.dart';
 import 'package:meshchat_mobile/src/pages/chats_page.dart';
 import 'package:meshchat_mobile/src/widgets/chat_timeline_date.dart';
 import 'package:meshchat_mobile/src/widgets/mesh_performance_scope.dart';
+import 'package:meshchat_mobile/src/widgets/mesh_liquid_glass.dart';
+import 'package:meshchat_mobile/src/services/platform_capabilities.dart';
 
 class _PreviewController extends AppController {
   @override
@@ -121,6 +124,54 @@ void main() {
     expect(find.text('Day 3'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     scroll.dispose();
+  });
+
+  testWidgets('iOS glass navigation keeps native glass only on selections', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    tester.view.physicalSize = const Size(402, 874);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = _PreviewController();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: MeshPlatformScope(
+          capabilities: const MeshPlatformCapabilities(iosMajorVersion: 26),
+          // Inspect native configuration without creating UIKit views on Windows.
+          child: MeshPerformanceScope(
+            lowEndDeviceMode: true,
+            child: ChatsPage(controller: controller),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    final surfaces = tester.widgetList<MeshLiquidGlass>(
+      find.byType(MeshLiquidGlass),
+    );
+    expect(
+      surfaces.where((s) => s.forceFlutterSurface && !s.selected).length,
+      2,
+    );
+    expect(
+      surfaces.where((s) => s.selected && !s.forceFlutterSurface).length,
+      2,
+    );
+    for (final label in ['Personal', 'Groups', 'Chats', 'Settings']) {
+      final texts = tester.widgetList<Text>(find.text(label));
+      expect(texts, isNotEmpty);
+      for (final text in texts) {
+        expect(text.style?.color?.computeLuminance(), greaterThan(0.5));
+      }
+    }
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+    debugDefaultTargetPlatformOverride = null;
   });
 
   for (final size in [const Size(1100, 780), const Size(360, 800)]) {

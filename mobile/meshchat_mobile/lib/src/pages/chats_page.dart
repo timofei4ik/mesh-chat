@@ -3737,6 +3737,9 @@ class _HomeFilterBar extends StatelessWidget {
               radius: 22,
               dim: true,
               interactive: true,
+              // Keep a single native layer: the moving selection above.
+              // Nested UIKit backdrops can obscure unselected Flutter labels.
+              forceFlutterSurface: true,
               child: content,
             )
           : content,
@@ -3784,15 +3787,17 @@ class _FilterPill extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 7),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.fade,
-                softWrap: false,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                  color: Color.lerp(Colors.white70, Colors.white, value),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.fade,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                    color: Color.lerp(Colors.white70, Colors.white, value),
+                  ),
                 ),
               ),
             ],
@@ -4782,6 +4787,8 @@ class _HomeBottomBarState extends State<_HomeBottomBar> {
         radius: 28,
         prominent: true,
         interactive: true,
+        // Only the moving indicator uses UIKit glass, never the whole tab row.
+        forceFlutterSurface: true,
         child: content,
       );
     }
