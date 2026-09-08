@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:livekit_client/livekit_client.dart';
 
 import 'call_models.dart';
+import 'call_noise_suppression.dart';
 
 class SfuCallService {
   Room? _room;
@@ -10,7 +11,11 @@ class SfuCallService {
   bool _muted;
   bool _ended = false;
 
-  SfuCallService({bool initialMuted = false}) : _muted = initialMuted;
+  SfuCallService({
+    bool initialMuted = false,
+    this.enhancedNoiseSuppression = false,
+  }) : _muted = initialMuted;
+  final bool enhancedNoiseSuppression;
 
   void Function(CallConnectionPhase phase)? onConnectionStateChanged;
   void Function(CallQualitySnapshot quality)? onQualityChanged;
@@ -26,9 +31,17 @@ class SfuCallService {
     required String encryptionKey,
   }) async {
     if (_ended) throw StateError('SFU service is closed');
-    onConnectionStateChanged?.call(CallConnectionPhase.connecting);
     final encryption = await E2EEOptions.sharedKey(encryptionKey);
     if (_ended) return;
+    await CallNoiseSuppression.acquire(
+      this,
+      enhanced: enhancedNoiseSuppression,
+    );
+    if (_ended) {
+      await CallNoiseSuppression.release(this);
+      return;
+    }
+    onConnectionStateChanged?.call(CallConnectionPhase.connecting);
     final room = Room(
       roomOptions: RoomOptions(
         adaptiveStream: true,
@@ -38,6 +51,7 @@ class SfuCallService {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          highPassFilter: true,
         ),
       ),
     );
@@ -105,6 +119,7 @@ class SfuCallService {
       onConnectionStateChanged?.call(CallConnectionPhase.connected);
       onQualityChanged?.call(const CallQualitySnapshot(route: 'sfu'));
     } catch (_) {
+      await CallNoiseSuppression.release(this);
       if (identical(_room, room)) {
         _room = null;
         _listener = null;
@@ -132,11 +147,18 @@ class SfuCallService {
     final listener = _listener;
     _room = null;
     _listener = null;
-    if (room != null) {
-      await room.disconnect().catchError((_) {});
-      await room.dispose();
+    try {
+      if (room != null) {
+        await room.disconnect().catchError((_) {});
+        await room.dispose();
+      }
+    } finally {
+      try {
+        await listener?.dispose();
+      } finally {
+        await CallNoiseSuppression.release(this);
+      }
     }
-    await listener?.dispose();
     onConnectionStateChanged?.call(CallConnectionPhase.closed);
   }
 }

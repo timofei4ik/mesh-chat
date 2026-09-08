@@ -25,7 +25,10 @@ class CallAlertService {
   Future<void> sync(AppController controller) async {
     final call = controller.activeCall;
     final shouldAlert =
-        call != null && call.incoming && call.status == CallStatus.ringing;
+        call != null &&
+        call.incoming &&
+        call.status == CallStatus.ringing &&
+        !controller.systemCallPresented(call.callId);
     if (!shouldAlert) {
       if (_activeCallId.isEmpty && _vibrationTimer == null) return;
       await stop();

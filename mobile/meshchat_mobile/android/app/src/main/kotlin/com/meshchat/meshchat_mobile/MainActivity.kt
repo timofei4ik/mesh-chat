@@ -5,10 +5,15 @@ import android.content.Intent
 import android.os.PowerManager
 import com.google.firebase.messaging.FirebaseMessaging
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    override fun provideFlutterEngine(context: Context): FlutterEngine? =
+        FlutterEngineCache.getInstance().get(MeshAndroidCalls.ENGINE)
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
     private val proximityChannel = "meshchat/proximity_screen"
     private val androidPushChannel = "meshchat/android_push"
     private var pushMethodChannel: MethodChannel? = null
@@ -17,6 +22,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MeshAndroidCalls.bind(flutterEngine, withActivity = true)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, proximityChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

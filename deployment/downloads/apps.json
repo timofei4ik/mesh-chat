@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 46,
-  "updatedAt": "2026-09-07T21:38:00Z",
+  "catalogVersion": 47,
+  "updatedAt": "2026-09-08T20:30:00Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-history-calls-1-0-99",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "More reliable chat history and calls",
+      "summary": "Windows and Android: histories from the same account's devices are merged without hiding older conversations. Readable cached messages are preserved when cache verification fails. Call setup waits for an authenticated connection, and duplicate offers no longer cause a false busy response. Local enhanced noise suppression is now available to everyone, without MeshPro. Updated Android incoming-call controls and iOS interface fixes are also included in the source release. Update both participants; iOS binaries are distributed separately.",
+      "publishedAt": "2026-09-08"
+    },
     {
       "id": "meshchat-ai-tools-1-0-98",
       "appId": "meshchat",
@@ -116,7 +124,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.98",
+      "version": "1.0.99",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -132,15 +140,20 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 201,
+      "build": 202,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-07T21:38:00Z",
+      "updated_at": "2026-09-08T20:30:00Z",
       "release": {
-        "title": "MeshPro AI tools for your conversations",
+        "title": "More reliable chat history and calls",
         "publishedAt": "2026-09-08",
         "notes": [
+          "Windows and Android: merge same-account device histories instead of hiding older conversations",
+          "Preserve readable cached history and request resynchronization after cache verification errors",
+          "Wait for authenticated connection before sending call setup; ignore duplicate offers for the same call",
+          "Local enhanced noise suppression is available to everyone without MeshPro",
+          "Update both participants. iOS source is included; iOS binaries are distributed separately",
           "Search selected loaded messages by meaning and jump to the original sources",
           "Save personal writing styles with instructions and examples",
           "Turn selected messages into a plan and review suggested reminders before creating them",

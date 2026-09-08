@@ -65,6 +65,55 @@ void main() {
     expect(socket.isConnected, isTrue);
   });
 
+  for (final cancel in [false, true]) {
+    test(
+      'call signaling waits for authenticated welcome (cancel=$cancel)',
+      () async {
+        final hello = Completer<WebSocket>();
+        final received = Completer<String>();
+        final server = await _LocalWebSocketServer.start((socket, packet) {
+          if (packet['type'] == 'server_hello' && !hello.isCompleted) {
+            hello.complete(socket);
+          }
+          if (packet['type'].toString().startsWith('call_') &&
+              !received.isCompleted) {
+            received.complete(packet['type'] as String);
+          }
+        });
+        addTearDown(server.close);
+        final socket = MeshSocket();
+        addTearDown(socket.close);
+        await socket.connect(
+          session: _session(server.url, 'call-$cancel'),
+          publicKey: 'key',
+          profile: _profile('caller'),
+          onPacket: (_) {},
+          onStatus: (_) {},
+        );
+        final remote = await hello.future.timeout(const Duration(seconds: 2));
+        socket.send({
+          'type': 'call_offer',
+          'call_id': 'one',
+          'destination_node': 'peer',
+        });
+        if (cancel) {
+          socket.send({
+            'type': 'call_end',
+            'call_id': 'one',
+            'destination_node': 'peer',
+          });
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        expect(received.isCompleted, false);
+        remote.add(jsonEncode(_welcomePacket()));
+        expect(
+          await received.future.timeout(const Duration(seconds: 2)),
+          cancel ? 'call_end' : 'call_offer',
+        );
+      },
+    );
+  }
+
   test(
     'AI worker sends exact media and does not send after connection close',
     () async {

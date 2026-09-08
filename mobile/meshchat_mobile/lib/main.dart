@@ -7,13 +7,20 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'src/app.dart';
 import 'src/services/android_push_service.dart';
+import 'src/services/android_call_ui.dart';
 import 'src/services/firebase_telemetry_service.dart';
 import 'src/services/mesh_studio_catalog_service.dart';
 import 'src/services/platform_capabilities.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks([
+      'RNNoise',
+    ], await rootBundle.loadString('assets/licenses/rnnoise.txt'));
+  });
   if (!kIsWeb &&
+      !await AndroidCallUi.isBackgroundEngine() &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS)) {
     await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);

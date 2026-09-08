@@ -34,6 +34,10 @@ class AppSettingsStore {
           prefs.getStringList('meshpro_quick_reactions') ??
           const ['\u2764\uFE0F', '\u{1F44C}', '\u{1FACE}', '\u{1F44D}'],
       meshProHdAudio: prefs.getBool('meshpro_hd_audio') ?? true,
+      callNoiseSuppression:
+          prefs.getBool('call_noise_suppression') ??
+          prefs.getBool('meshpro_enhanced_noise_suppression') ??
+          true,
       meshProEnhancedNoiseSuppression:
           prefs.getBool('meshpro_enhanced_noise_suppression') ?? true,
       businessSettings: BusinessSettings.fromJson(
@@ -83,6 +87,10 @@ class AppSettingsStore {
       settings.quickReactions,
     );
     await prefs.setBool('meshpro_hd_audio', settings.meshProHdAudio);
+    await prefs.setBool(
+      'call_noise_suppression',
+      settings.callNoiseSuppression,
+    );
     await prefs.setBool(
       'meshpro_enhanced_noise_suppression',
       settings.meshProEnhancedNoiseSuppression,

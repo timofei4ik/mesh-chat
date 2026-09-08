@@ -1,0 +1,5 @@
+/.dart_tool/
+/build/
+/third_party/downloads/
+/third_party/libwebrtc/
+/third_party/.libwebrtc_extract/

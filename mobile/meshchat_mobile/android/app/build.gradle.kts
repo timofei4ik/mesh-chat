@@ -68,6 +68,13 @@ android {
         buildConfig = true
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     signingConfigs {
         val keyPropertiesFile = rootProject.file("key.properties")
         if (keyPropertiesFile.exists()) {
@@ -102,6 +109,8 @@ flutter {
 }
 
 dependencies {
+    // Same SDK as flutter_webrtc 1.6.0; needed for its native APM extension API.
+    compileOnly("io.github.webrtc-sdk:android:144.7559.09")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
     implementation("com.google.firebase:firebase-messaging")

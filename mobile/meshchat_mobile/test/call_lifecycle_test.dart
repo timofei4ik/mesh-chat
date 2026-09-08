@@ -7,6 +7,22 @@ import 'package:meshchat_mobile/src/services/call_service.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
 
 void main() {
+  test(
+    'desktop speaker toggle actually silences and restores remote tracks',
+    () async {
+      final track = _AudioTrack();
+      final service = CallService.withPeerConnection(
+        _FakePeerConnection(),
+        _AudioStream(track),
+      );
+      await service.setSpeakerEnabled(false);
+      expect(track.enabled, isFalse);
+      await service.setMuted(true);
+      expect(track.enabled, isFalse);
+      await service.setSpeakerEnabled(true);
+      expect(track.enabled, isTrue);
+    },
+  );
   group('group signal isolation', () {
     test(
       'direct answer from another authenticated peer device remains valid',
@@ -236,6 +252,22 @@ void main() {
       expect(quality.qualityLevel, 1);
     });
   });
+}
+
+class _AudioTrack implements MediaStreamTrack {
+  @override
+  bool enabled = true;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _AudioStream implements MediaStream {
+  _AudioStream(this.track);
+  final MediaStreamTrack track;
+  @override
+  List<MediaStreamTrack> getAudioTracks() => [track];
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _FakePeerConnection extends Fake implements RTCPeerConnection {

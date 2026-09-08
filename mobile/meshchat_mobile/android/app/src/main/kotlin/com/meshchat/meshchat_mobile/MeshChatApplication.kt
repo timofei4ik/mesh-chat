@@ -9,6 +9,7 @@ class MeshChatApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         MeshChatFirebase.configure(this)
+        MeshAndroidCalls.initialize(this)
     }
 }
 

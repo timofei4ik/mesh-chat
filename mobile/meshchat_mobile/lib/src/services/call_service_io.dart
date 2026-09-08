@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'call_models.dart';
+import 'call_audio_constraints.dart';
+import 'call_noise_suppression.dart';
 import 'shared_call_resource.dart';
 
 class CallAudioDevice {
@@ -24,9 +26,11 @@ class CallService {
   CallService({this.audioRoom = '', this.initialMuted = false});
 
   @visibleForTesting
-  CallService.withPeerConnection(this._peerConnection)
-    : audioRoom = '',
-      initialMuted = false;
+  CallService.withPeerConnection(
+    this._peerConnection, [
+    this._remoteAudioStream,
+  ]) : audioRoom = '',
+       initialMuted = false;
 
   final String audioRoom;
   final bool initialMuted;
@@ -57,6 +61,7 @@ class CallService {
   bool _speakerEnabled = true;
   bool _hdAudio = false;
   bool _enhancedNoiseSuppression = false;
+  Object? _noiseOwner;
   List<Map<String, dynamic>> _iceServers = const [
     {'urls': 'stun:stun.l.google.com:19302'},
     {'urls': 'stun:stun1.l.google.com:19302'},
@@ -232,6 +237,7 @@ class CallService {
     // calls must still be able to start after that renderer has failed.
     await _remoteScreenRenderer?.dispose().catchError((_) {});
     await _releaseLocalAudio();
+    await _releaseNoiseFilter();
     await _peerConnection?.close().catchError((_) {});
     await _peerConnection?.dispose().catchError((_) {});
     _remoteAudioStream = null;
@@ -247,6 +253,7 @@ class CallService {
   }
 
   Future<void> _resetCurrentConnectionOnly() async {
+    await _releaseNoiseFilter();
     _remoteDescriptionConnection = null;
     _stopStats();
     await _stopScreenMedia();
@@ -290,6 +297,17 @@ class CallService {
       throw StateError('Call preparation cancelled');
     }
     _localMuted = initialMuted;
+    final noiseOwner = Object();
+    _noiseOwner = noiseOwner;
+    await CallNoiseSuppression.acquire(
+      noiseOwner,
+      enhanced: enhancedNoiseSuppression,
+    );
+    if (generation != _preparationGeneration) {
+      if (identical(_noiseOwner, noiseOwner)) _noiseOwner = null;
+      await CallNoiseSuppression.release(noiseOwner);
+      throw StateError('Call ended during noise-filter preparation');
+    }
     await _activateCallAudio();
     await _prepareMobileAudio();
     final peerConnection = await createPeerConnection({
@@ -479,7 +497,6 @@ class CallService {
     for (final track in tracks) {
       track.enabled = !muted;
     }
-    await _activateCallAudio();
     if (_selectedAudioOutputId.isNotEmpty) {
       await Helper.selectAudioOutput(_selectedAudioOutputId).catchError((_) {});
     }
@@ -489,8 +506,14 @@ class CallService {
 
   Future<void> setSpeakerEnabled(bool enabled) async {
     _speakerEnabled = enabled;
+    if (!_isMobile) {
+      for (final track
+          in _remoteAudioStream?.getAudioTracks() ?? <MediaStreamTrack>[]) {
+        track.enabled = enabled;
+      }
+      return;
+    }
     await _activateCallAudio();
-    if (!_isMobile) return;
     await Helper.setSpeakerphoneOn(enabled).catchError((_) {});
     if (enabled) {
       await _setSpeakerphoneOnButPreferBluetooth();
@@ -596,7 +619,7 @@ class CallService {
   Future<void> _attachRemoteAudio(MediaStream stream) async {
     if (stream.getAudioTracks().isEmpty) return;
     for (final track in stream.getAudioTracks()) {
-      track.enabled = true;
+      track.enabled = _isMobile || _speakerEnabled;
     }
     _remoteAudioStream = stream;
     await _activateCallAudio();
@@ -644,9 +667,16 @@ class CallService {
       return await navigator.mediaDevices.getUserMedia(_mediaConstraints());
     } catch (_) {
       _hdAudio = false;
+      // Only relax capture hints. The native filter owns its own format fallback.
       _enhancedNoiseSuppression = false;
       return await navigator.mediaDevices.getUserMedia(_mediaConstraints());
     }
+  }
+
+  Future<void> _releaseNoiseFilter() async {
+    final owner = _noiseOwner;
+    _noiseOwner = null;
+    if (owner != null) await CallNoiseSuppression.release(owner);
   }
 
   Future<({MediaStream stream, CallResourceLease<MediaStream>? lease})>
@@ -716,7 +746,9 @@ class CallService {
     _audioUsers.add(this);
     if (!_isIOS) return;
     try {
-      await _audioSession.invokeMethod<void>('activateCallAudio');
+      await _audioSession.invokeMethod<void>('activateCallAudio', {
+        'speakerEnabled': _speakerEnabled,
+      });
     } catch (_) {}
   }
 
@@ -749,37 +781,12 @@ class CallService {
     await Helper.clearAndroidCommunicationDevice().catchError((_) {});
   }
 
-  Map<String, dynamic> _mediaConstraints() {
-    final audio = <String, dynamic>{
-      'echoCancellation': true,
-      'noiseSuppression': true,
-      'autoGainControl': true,
-      'googEchoCancellation': true,
-      'googAutoGainControl': true,
-      'googNoiseSuppression': true,
-      'googHighpassFilter': true,
-    };
-    if (_enhancedNoiseSuppression) {
-      audio.addAll({
-        'googTypingNoiseDetection': true,
-        'googExperimentalNoiseSuppression': true,
-        'googNoiseSuppression2': true,
-        'googAutoGainControl2': true,
-      });
-    }
-    if (_hdAudio) {
-      audio.addAll({
-        'sampleRate': {'ideal': 48000},
-        'sampleSize': {'ideal': 16},
-        'channelCount': {'ideal': 1},
-        'latency': {'ideal': 0.01},
-      });
-    }
-    if (_selectedAudioInputId.isNotEmpty) {
-      audio['deviceId'] = {'exact': _selectedAudioInputId};
-    }
-    return {'audio': audio, 'video': false};
-  }
+  Map<String, dynamic> _mediaConstraints() => callAudioConstraints(
+    native: true,
+    enhanced: _enhancedNoiseSuppression,
+    hd: _hdAudio,
+    inputId: _selectedAudioInputId,
+  );
 
   String _enhanceOpusSdp(String sdp) {
     if (!_hdAudio || sdp.isEmpty) return sdp;

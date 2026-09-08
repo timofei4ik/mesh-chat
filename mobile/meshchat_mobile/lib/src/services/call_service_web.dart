@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
 import 'call_models.dart';
+import 'call_audio_constraints.dart';
 import 'shared_call_resource.dart';
 
 class CallAudioDevice {
@@ -505,6 +506,7 @@ class CallService {
 
   Future<void> setSpeakerEnabled(bool enabled) async {
     _speakerEnabled = enabled;
+    _remoteAudioElement?.muted = !enabled;
   }
 
   bool get speakerEnabled => _speakerEnabled;
@@ -594,7 +596,7 @@ class CallService {
         (web.HTMLAudioElement()
           ..autoplay = true
           ..controls = false
-          ..muted = false
+          ..muted = !_speakerEnabled
           ..setAttribute('playsinline', 'true')
           ..style.display = 'none');
     if (_remoteAudioElement == null) {
@@ -654,37 +656,12 @@ class CallService {
     _screenStream = null;
   }
 
-  Map<String, dynamic> _mediaConstraints() {
-    final audio = <String, dynamic>{
-      'echoCancellation': true,
-      'noiseSuppression': true,
-      'autoGainControl': true,
-      'googEchoCancellation': true,
-      'googAutoGainControl': true,
-      'googNoiseSuppression': true,
-      'googHighpassFilter': true,
-    };
-    if (_enhancedNoiseSuppression) {
-      audio.addAll({
-        'googTypingNoiseDetection': true,
-        'googExperimentalNoiseSuppression': true,
-        'googNoiseSuppression2': true,
-        'googAutoGainControl2': true,
-      });
-    }
-    if (_hdAudio) {
-      audio.addAll({
-        'sampleRate': {'ideal': 48000},
-        'sampleSize': {'ideal': 16},
-        'channelCount': {'ideal': 1},
-        'latency': {'ideal': 0.01},
-      });
-    }
-    if (_selectedAudioInputId.isNotEmpty) {
-      audio['deviceId'] = {'exact': _selectedAudioInputId};
-    }
-    return {'audio': audio, 'video': false};
-  }
+  Map<String, dynamic> _mediaConstraints() => callAudioConstraints(
+    native: false,
+    enhanced: _enhancedNoiseSuppression,
+    hd: _hdAudio,
+    inputId: _selectedAudioInputId,
+  );
 
   String _enhanceOpusSdp(String sdp) {
     if (!_hdAudio || sdp.isEmpty) return sdp;

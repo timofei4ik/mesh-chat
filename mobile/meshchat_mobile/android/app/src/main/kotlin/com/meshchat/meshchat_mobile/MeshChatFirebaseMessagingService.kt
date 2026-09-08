@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
@@ -23,6 +25,26 @@ class MeshChatFirebaseMessagingService : FirebaseMessagingService() {
         val callId = data["call_id"].orEmpty()
         if (type == "call_end" || data["cancel"] == "true") {
             cancelCallNotification(callId)
+            Handler(Looper.getMainLooper()).post {
+                runCatching {
+                    MeshAndroidCalls.ensureEngine()
+                    MeshAndroidCalls.end(callId)
+                }
+            }
+            return
+        }
+        if (type == "call_offer" && callId.isNotBlank()) {
+            if (message.sentTime > 0 && System.currentTimeMillis() - message.sentTime > 45_000L) return
+            Handler(Looper.getMainLooper()).post {
+                val expires = (message.sentTime.takeIf { it > 0 } ?: System.currentTimeMillis()) + 45_000L
+                if (expires > System.currentTimeMillis()) {
+                    val shown = runCatching {
+                        MeshAndroidCalls.ensureEngine()
+                        MeshAndroidCalls.show(data + ("expires_at" to expires.toString()))
+                    }.getOrDefault(false)
+                    if (!shown && MeshAndroidCalls.canUseFallback(callId)) showNotification(message)
+                }
+            }
             return
         }
         showNotification(message)

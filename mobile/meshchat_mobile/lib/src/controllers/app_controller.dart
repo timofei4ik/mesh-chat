@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../models/chat_message.dart';
 import '../models/ai_context.dart';
 import '../models/chat_thread.dart';
+import '../services/direct_thread_identity.dart';
 import '../models/app_settings.dart';
 import '../models/business_settings.dart';
 import '../models/meshpro_subscription.dart';
@@ -649,6 +650,28 @@ class AppController extends ChangeNotifier {
   AppController() {
     _notifications.onAndroidPushToken = _handleAndroidPushToken;
     _notifications.onActivated = _handleNotificationActivation;
+    _notifications.systemCalls.onAction = (action) async {
+      final call = activeCall;
+      if (!action.matches(call?.callId) || session == null) return false;
+      if (call == null || call.status == CallStatus.ended) return true;
+      if (_systemCallReady != call.callId) return false;
+      if (action.action == 'answer') {
+        if (call.incoming && call.status == CallStatus.ringing) {
+          _setActiveCall(call.copyWith(collapsed: false));
+          notifyListeners();
+          unawaited(
+            acceptCall().catchError((Object error) {
+              addDiagnostic('call', 'System answer failed: $error');
+            }),
+          );
+        }
+      } else if (call.status == CallStatus.ringing) {
+        await declineCall();
+      } else {
+        await endCall();
+      }
+      return true;
+    };
     ble.onPacket = _handleBluetoothPacket;
     ble.addListener(_handleBluetoothStateChanged);
     _calls.onRemoteScreenChanged = _handleRemoteScreenChanged;
@@ -1184,6 +1207,10 @@ class AppController extends ChangeNotifier {
       if (thread.isGroup || thread.profile.nodeId != profile.nodeId) continue;
       thread.profile = profile;
     }
+    consolidateDirectThreads(
+      threads,
+      deletedMessageIds: appSettings.deletedMessageIds.toSet(),
+    );
   }
 
   List<ChatThread> get sortedThreads {
@@ -1251,52 +1278,9 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatThread> _dedupeVisibleThreads(List<ChatThread> source) {
-    final personal = <String, ChatThread>{};
-    final result = <ChatThread>[];
-    for (final thread in source) {
-      if (thread.isGroup ||
-          thread.chatKind != 'normal' ||
-          isSavedMessagesProfile(thread.profile)) {
-        result.add(thread);
-        continue;
-      }
-      final key = _threadIdentityKey(thread);
-      final existing = personal[key];
-      if (existing == null) {
-        personal[key] = thread;
-        continue;
-      }
-      personal[key] = _preferVisibleThread(existing, thread);
-    }
-    result.addAll(personal.values);
-    return result;
-  }
-
-  String _threadIdentityKey(ChatThread thread) {
-    if (thread.chatKind != 'normal') return thread.storageKey;
-    final profile = thread.profile;
-    final username = profile.publicUsername.trim().toLowerCase();
-    if (username.isNotEmpty) return 'username:$username';
-    if (profile.avatarData.isNotEmpty &&
-        profile.displayName.trim().isNotEmpty) {
-      final avatarKey = profile.avatarData.length <= 96
-          ? profile.avatarData
-          : profile.avatarData.substring(0, 96);
-      return 'visual:${profile.displayName.trim().toLowerCase()}:$avatarKey';
-    }
-    return 'node:${profile.nodeId}';
-  }
-
-  ChatThread _preferVisibleThread(ChatThread a, ChatThread b) {
-    if (a.pinned != b.pinned) return a.pinned ? a : b;
-    final aTime = a.lastMessage?.createdAt ?? DateTime(1970);
-    final bTime = b.lastMessage?.createdAt ?? DateTime(1970);
-    final timeCompare = aTime.compareTo(bTime);
-    if (timeCompare != 0) return timeCompare > 0 ? a : b;
-    if (a.messages.length != b.messages.length) {
-      return a.messages.length > b.messages.length ? a : b;
-    }
-    return a.unread >= b.unread ? a : b;
+    // Identity reconciliation happens on ingestion, never by hiding history
+    // based on a matching avatar, display name or whichever message is newest.
+    return source.toSet().toList();
   }
 
   bool isTyping(ChatThread thread) {
@@ -1433,6 +1417,7 @@ class AppController extends ChangeNotifier {
   Future<void> restoreSession() async {
     unawaited(_notifications.initialize());
     appSettings = await _settingsStore.load();
+    await _configureSystemCallNotifications();
     unawaited(
       _windowsBackground.setCloseToTray(appSettings.windowsCloseToTray),
     );
@@ -6815,19 +6800,44 @@ class AppController extends ChangeNotifier {
       return ChatThread(profile: profile);
     }
     final mergedProfile = _mergeProfile(profile);
-    final existing = threads[profile.nodeId];
+    final existing = findDirectAccountThread(threads.values, mergedProfile);
     if (existing != null) {
-      existing.profile = mergedProfile;
+      existing.profile = _mergeProfile(
+        mergedProfile.copyWith(
+          nodeId: existing.profile.nodeId,
+          nodeAliases: {
+            existing.profile.nodeId,
+            profile.nodeId,
+            ...existing.profile.nodeAliases,
+            ...mergedProfile.nodeAliases,
+          }.where((node) => node.isNotEmpty).toList(),
+        ),
+      );
+      profiles[existing.profile.nodeId] = existing.profile;
       return existing;
     }
-    final thread = ChatThread(profile: mergedProfile);
+    // A reused node must not overwrite a different account's cached history.
+    final identityConflict = threads.containsKey(profile.nodeId);
+    final thread = ChatThread(
+      profile: mergedProfile,
+      threadId: identityConflict
+          ? 'normal:account:${Uri.encodeComponent(mergedProfile.accountLogin.trim().toLowerCase())}'
+          : '',
+    );
     _applyArchiveState(thread);
-    threads[profile.nodeId] = thread;
+    threads[thread.threadId.isEmpty ? profile.nodeId : thread.threadId] =
+        thread;
     return thread;
   }
 
   ChatThread? threadForProfile(Profile profile) {
-    return threads[profile.nodeId];
+    final exact = threads[profile.nodeId];
+    if (exact != null &&
+        (isSavedMessagesProfile(profile) ||
+            sameDirectAccount(exact.profile, profile))) {
+      return exact;
+    }
+    return findDirectAccountThread(threads.values, profile);
   }
 
   ChatThread? bluetoothThreadForNode(String nodeId) {
@@ -7006,10 +7016,7 @@ class AppController extends ChangeNotifier {
       'call_hd_audio',
       appSettings.meshProHdAudio,
     );
-    final enhancedNoiseSuppression = _meshProCallFeatureEnabled(
-      'call_noise_suppression_plus',
-      appSettings.meshProEnhancedNoiseSuppression,
-    );
+    final enhancedNoiseSuppression = appSettings.callNoiseSuppression;
     final call = ActiveCall(
       callId: const Uuid().v4(),
       peer: recipient,
@@ -7087,10 +7094,7 @@ class AppController extends ChangeNotifier {
       'call_hd_audio',
       appSettings.meshProHdAudio,
     );
-    final enhancedNoiseSuppression = _meshProCallFeatureEnabled(
-      'call_noise_suppression_plus',
-      appSettings.meshProEnhancedNoiseSuppression,
-    );
+    final enhancedNoiseSuppression = appSettings.callNoiseSuppression;
     final callId = const Uuid().v4();
     final groupKey = _groupKeys[thread.groupId];
     final sfuRecipients = recipients
@@ -7275,7 +7279,10 @@ class AppController extends ChangeNotifier {
     _SfuAccess access,
     List<int> groupKey,
   ) async {
-    final service = SfuCallService(initialMuted: call.localMuted);
+    final service = SfuCallService(
+      initialMuted: call.localMuted,
+      enhancedNoiseSuppression: call.enhancedNoiseSuppression,
+    );
     var established = false;
     _sfuCall = service;
     service.onConnectionStateChanged = (phase) {
@@ -7362,7 +7369,15 @@ class AppController extends ChangeNotifier {
 
   Future<void> acceptCall() async {
     final call = activeCall;
-    if (session == null || call == null || !call.incoming) return;
+    if (session == null ||
+        call == null ||
+        !call.incoming ||
+        call.status != CallStatus.ringing ||
+        _acceptingSystemCall == call.callId) {
+      return;
+    }
+    _acceptingSystemCall = call.callId;
+    unawaited(_notifications.systemCalls.answered(call.callId));
     unawaited(CallAlertService.stopAll());
     if (call.handoffSourceNode.isNotEmpty) {
       final peer = call.peer;
@@ -8585,6 +8600,14 @@ class AppController extends ChangeNotifier {
     await _callFinishing;
     final sender = packet['source_node']?.toString() ?? '';
     if (sender.isEmpty || sender == myNodeId) return;
+    final callId = packet['call_id']?.toString() ?? '';
+    if (callId.isEmpty || _finishedCallIds.contains(callId)) return;
+    final current = activeCall;
+    if (current != null && current.incoming && current.acceptsSignal(packet)) {
+      // WebSocket replay and push recovery can carry the same invitation.
+      // Replying "busy" here would terminate the call that is already ringing.
+      return;
+    }
     if (isBlocked(sender)) return;
     if (!appSettings.allowCalls) {
       _socket.send({
@@ -8671,10 +8694,7 @@ class AppController extends ChangeNotifier {
           'call_hd_audio',
           appSettings.meshProHdAudio,
         ),
-        enhancedNoiseSuppression: _meshProCallFeatureEnabled(
-          'call_noise_suppression_plus',
-          appSettings.meshProEnhancedNoiseSuppression,
-        ),
+        enhancedNoiseSuppression: appSettings.callNoiseSuppression,
       ),
     );
     if (groupMesh) {
@@ -11596,7 +11616,17 @@ class AppController extends ChangeNotifier {
     required String sourceNode,
     String groupId = '',
   }) async {
-    if (!appSettings.notificationsEnabled) return;
+    if (activeCall?.callId != callId ||
+        activeCall?.status != CallStatus.ringing) {
+      await _notifications.systemCalls.drain();
+      return;
+    }
+    if (!appSettings.notificationsEnabled) {
+      _systemCallReady = callId;
+      await _notifications.systemCalls.drain();
+      return;
+    }
+    _systemCallReady = callId;
     await _notifications.showCall(
       title: title,
       body: appSettings.notificationPreview ? body : 'Incoming call',
@@ -11610,7 +11640,25 @@ class AppController extends ChangeNotifier {
         callId: callId,
       ),
     );
+    if (activeCall?.callId != callId ||
+        activeCall?.status == CallStatus.ended) {
+      await _notifications.cancelCall(callId);
+      return;
+    }
+    if (systemCallPresented(callId)) await CallAlertService.stopAll();
+    await _notifications.systemCalls.drain();
   }
+
+  String? _acceptingSystemCall;
+  String? _systemCallReady;
+  Future<void> _configureSystemCallNotifications() =>
+      _notifications.systemCalls.configure(
+        enabled: appSettings.notificationsEnabled,
+        sound: appSettings.notificationSound,
+        vibration: appSettings.notificationVibration,
+      );
+  bool systemCallPresented(String id) =>
+      _notifications.systemCalls.presented.contains(id);
 
   bool _isImageName(String filename) {
     final lower = filename.toLowerCase();
@@ -12150,6 +12198,7 @@ class AppController extends ChangeNotifier {
     final launchAtStartupChanged =
         appSettings.windowsLaunchAtStartup != settings.windowsLaunchAtStartup;
     appSettings = settings;
+    await _configureSystemCallNotifications();
     await _settingsStore.save(settings);
     if (closeToTrayChanged) {
       unawaited(_windowsBackground.setCloseToTray(settings.windowsCloseToTray));
@@ -12227,6 +12276,17 @@ class AppController extends ChangeNotifier {
       return;
     }
     activeCall = call;
+    if (previous?.callId != call?.callId || call?.status == CallStatus.ended) {
+      _systemCallReady = null;
+    }
+    if (previous != null && (call == null || call.status == CallStatus.ended)) {
+      _acceptingSystemCall = null;
+      unawaited(_notifications.systemCalls.end(previous.callId));
+    }
+    if (call?.status == CallStatus.active &&
+        previous?.status != CallStatus.active) {
+      unawaited(_notifications.systemCalls.connected(call!.callId));
+    }
     _callPhaseTimeout?.cancel();
     _callPhaseTimeout = null;
     unawaited(
@@ -12618,6 +12678,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _clearLocalState() {
+    if (session == null) unawaited(_notifications.systemCalls.clear());
     for (final completer in _sfuAccessRequests.values) {
       if (!completer.isCompleted) completer.complete(null);
     }
@@ -12795,17 +12856,21 @@ class AppController extends ChangeNotifier {
       if (integrity.hasCheckpoint && !integrity.verified) {
         addDiagnostic(
           'sync',
-          'Local cache checksum mismatch; preserving outbox and requesting snapshot',
+          'Local cache checksum mismatch; preserving readable history and requesting snapshot',
         );
-        await _cache.clear(current);
+        // A failed checkpoint is not evidence that every cached message is bad.
+        // Restart synchronization without discarding locally readable history.
         await _syncCursorStore.clear(current);
       }
     } catch (error) {
       addDiagnostic('sync', 'Local cache integrity check failed: $error');
-      await _cache.clear(current);
       await _syncCursorStore.clear(current);
     }
     await _cache.load(current, profiles, threads, groups);
+    consolidateDirectThreads(
+      threads,
+      deletedMessageIds: appSettings.deletedMessageIds.toSet(),
+    );
     _archiveStates
       ..clear()
       ..addAll(await _cache.loadArchiveStates(current));
@@ -12891,6 +12956,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _notifications.systemCalls.dispose();
     _captionCaptureGeneration++;
     _captionLeaseTimer?.cancel();
     _captionHeartbeatTimer?.cancel();

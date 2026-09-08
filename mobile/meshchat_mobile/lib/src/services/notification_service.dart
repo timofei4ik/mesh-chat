@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'dart:convert';
 
 import 'android_push_service.dart';
+import 'android_call_ui.dart';
 import 'notification_web_stub.dart'
     if (dart.library.html) 'notification_web.dart'
     as web_notifications;
@@ -56,6 +57,7 @@ class NotificationTarget {
 }
 
 class NotificationService {
+  final systemCalls = AndroidCallUi();
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
@@ -74,6 +76,7 @@ class NotificationService {
 
   Future<void> initialize() async {
     if (_initialized) return;
+    await systemCalls.initialize();
     if (kIsWeb) {
       _initialized = true;
       final initial = web_notifications.consumeInitialNotificationTarget();
@@ -102,7 +105,7 @@ class NotificationService {
       onDidReceiveNotificationResponse: _handleNotificationResponse,
     );
     _initialized = true;
-    await requestPermissions();
+    if (!await AndroidCallUi.isBackgroundEngine()) await requestPermissions();
     await refreshAndroidPushToken();
   }
 
@@ -222,6 +225,15 @@ class NotificationService {
     NotificationTarget target = const NotificationTarget(),
   }) async {
     if (!_initialized) await initialize();
+    if (await systemCalls.show({
+      ...target.toMap(),
+      'call_id': callId,
+      'title': title,
+      'sound': '$sound',
+      'vibration': '$vibration',
+    })) {
+      return;
+    }
     final key = 'call:$callId';
     final id = _stableNotificationId(key, call: true);
     _callNotificationIds[callId] = id;
@@ -275,6 +287,7 @@ class NotificationService {
 
   Future<void> cancelCall(String callId) async {
     if (callId.trim().isEmpty) return;
+    await systemCalls.end(callId);
     final id =
         _callNotificationIds.remove(callId) ??
         _stableNotificationId('call:$callId', call: true);

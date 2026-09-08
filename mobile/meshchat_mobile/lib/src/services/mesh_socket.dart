@@ -10,6 +10,7 @@ import '../models/session.dart';
 import '../utils/media_request_encoder.dart';
 import 'file_transfer_outbox_store.dart';
 import 'mutation_outbox_store.dart';
+import 'call_signal_buffer.dart';
 
 typedef PacketHandler = FutureOr<void> Function(Map<String, dynamic> packet);
 typedef StatusHandler = void Function(String status);
@@ -102,6 +103,7 @@ class MeshSocket {
   DateTime? _reliableSyncRequestedAt;
 
   bool get isConnected => _connected;
+  final _callSignals = CallSignalBuffer();
   bool get supportsMutationAck => _supportsMutationAck;
   bool get supportsMutationReconcile => _supportsMutationReconcile;
   bool get supportsFileTransferV2 => _supportsFileTransferV2;
@@ -141,6 +143,7 @@ class MeshSocket {
     _welcomeTimer = null;
     final deliverySessionKey = MutationOutboxStore.sessionKey(session);
     if (_deliverySessionKey != deliverySessionKey) {
+      _callSignals.clear();
       _processedDeliveries.clear();
       _deliverySessionKey = deliverySessionKey;
     }
@@ -316,6 +319,9 @@ class MeshSocket {
               await onPacket(decoded);
             }
             if (!_isCurrentConnection(generation, channel)) return;
+            if (packetType == 'server_welcome') {
+              _callSignals.flush(_sendRaw);
+            }
             if (packetType == 'server_sync_done') {
               _reliableSyncRequestedAt = null;
             }
@@ -588,6 +594,12 @@ class MeshSocket {
   }
 
   void send(Map<String, dynamic> packet) {
+    if (CallSignalBuffer.handles(packet)) {
+      if (_closed || _session == null) return;
+      _callSignals.add(packet);
+      if (_connected && _serverCapabilitiesKnown) _callSignals.flush(_sendRaw);
+      return;
+    }
     if (isDurableMutationPacket(packet) && _session != null) {
       unawaited(_queueMutation(packet));
       return;
@@ -1619,6 +1631,7 @@ class MeshSocket {
   }
 
   Future<void> close() async {
+    _callSignals.clear();
     _closed = true;
     _connectionGeneration++;
     _reconnectTimer?.cancel();

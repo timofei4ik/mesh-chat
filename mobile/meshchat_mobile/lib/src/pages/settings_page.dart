@@ -6,6 +6,7 @@ import '../controllers/app_controller.dart';
 import '../models/app_settings.dart';
 import '../models/business_settings.dart';
 import '../services/chat_cache_store.dart';
+import '../services/android_call_ui.dart';
 import '../services/mesh_socket.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/meshpro_gate.dart';
@@ -188,9 +189,7 @@ class SettingsPage extends StatelessWidget {
                   color: Color(0xFFA98BFF),
                 ),
                 title: const Text('MeshPro calls & reactions'),
-                subtitle: const Text(
-                  'Quick reactions, HD audio and noise suppression',
-                ),
+                subtitle: const Text('Quick reactions and HD audio'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => openMeshProPreferences(context),
               ),
@@ -700,7 +699,6 @@ class MeshProPreferencesPage extends StatefulWidget {
 class _MeshProPreferencesPageState extends State<MeshProPreferencesPage> {
   late List<String> reactions;
   late bool hdAudio;
-  late bool enhancedNoiseSuppression;
   bool saving = false;
 
   int get reactionLimit =>
@@ -715,7 +713,6 @@ class _MeshProPreferencesPageState extends State<MeshProPreferencesPage> {
     final settings = widget.controller.appSettings;
     reactions = [...settings.quickReactions];
     hdAudio = settings.meshProHdAudio;
-    enhancedNoiseSuppression = settings.meshProEnhancedNoiseSuppression;
   }
 
   Future<void> editReaction(int? index) async {
@@ -773,7 +770,6 @@ class _MeshProPreferencesPageState extends State<MeshProPreferencesPage> {
     final error = await widget.controller.updateMeshProPreferences(
       quickReactions: reactions,
       hdAudio: hdAudio,
-      enhancedNoiseSuppression: enhancedNoiseSuppression,
     );
     if (!mounted) return;
     setState(() => saving = false);
@@ -859,17 +855,6 @@ class _MeshProPreferencesPageState extends State<MeshProPreferencesPage> {
                   ),
                   value: hdAudio,
                   onChanged: (value) => setState(() => hdAudio = value),
-                ),
-                const Divider(height: 1),
-                SwitchListTile(
-                  secondary: const Icon(Icons.noise_control_off_rounded),
-                  title: const Text('Enhanced noise suppression'),
-                  subtitle: const Text(
-                    'Typing-noise filtering and stronger echo processing',
-                  ),
-                  value: enhancedNoiseSuppression,
-                  onChanged: (value) =>
-                      setState(() => enhancedNoiseSuppression = value),
                 ),
               ],
             ),
@@ -1582,6 +1567,28 @@ class _NotificationSettings extends StatelessWidget {
             leading: Icon(Icons.notifications_outlined),
             title: Text('Notifications'),
           ),
+          if (AndroidCallUi.supported)
+            ListTile(
+              leading: const Icon(Icons.phone_in_talk_outlined),
+              title: const Text('Incoming calls on lock screen'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                try {
+                  await controller.requestNotificationPermissions();
+                  await AndroidCallUi.requestLockScreenPermission();
+                } on PlatformException catch (_) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Open Android notification settings for MeshChat',
+                        ),
+                      ),
+                    );
+                  }
+                }
+              },
+            ),
           SwitchListTile(
             title: const Text('Enabled'),
             value: settings.notificationsEnabled,
@@ -1757,6 +1764,14 @@ class _PrivacySettings extends StatelessWidget {
             value: settings.showAbout,
             onChanged: (value) => controller.updateAppSettings(
               settings.copyWith(showAbout: value),
+            ),
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.noise_control_off_rounded),
+            title: const Text('Noise suppression'),
+            value: settings.callNoiseSuppression,
+            onChanged: (value) => controller.updateAppSettings(
+              settings.copyWith(callNoiseSuppression: value),
             ),
           ),
           SwitchListTile(

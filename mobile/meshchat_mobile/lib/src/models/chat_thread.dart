@@ -32,7 +32,7 @@ class ChatThread {
        pinnedMessageIds = List<String>.of(pinnedMessageIds ?? const <String>[]);
 
   Profile profile;
-  final List<ChatMessage> messages;
+  List<ChatMessage> messages;
   final bool isGroup;
   bool isChannel;
   bool commentsEnabled;

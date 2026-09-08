@@ -31,6 +31,7 @@ class AppSettings {
     ],
     this.meshProHdAudio = true,
     this.meshProEnhancedNoiseSuppression = true,
+    this.callNoiseSuppression = true,
     this.businessSettings = const BusinessSettings(),
     this.blockedNodeIds = const [],
     this.deletedGroupIds = const [],
@@ -59,6 +60,7 @@ class AppSettings {
   final List<String> quickReactions;
   final bool meshProHdAudio;
   final bool meshProEnhancedNoiseSuppression;
+  final bool callNoiseSuppression;
   final BusinessSettings businessSettings;
   final List<String> blockedNodeIds;
   final List<String> deletedGroupIds;
@@ -87,6 +89,7 @@ class AppSettings {
     List<String>? quickReactions,
     bool? meshProHdAudio,
     bool? meshProEnhancedNoiseSuppression,
+    bool? callNoiseSuppression,
     BusinessSettings? businessSettings,
     List<String>? blockedNodeIds,
     List<String>? deletedGroupIds,
@@ -120,6 +123,7 @@ class AppSettings {
       meshProEnhancedNoiseSuppression:
           meshProEnhancedNoiseSuppression ??
           this.meshProEnhancedNoiseSuppression,
+      callNoiseSuppression: callNoiseSuppression ?? this.callNoiseSuppression,
       businessSettings: businessSettings ?? this.businessSettings,
       blockedNodeIds: blockedNodeIds ?? this.blockedNodeIds,
       deletedGroupIds: deletedGroupIds ?? this.deletedGroupIds,
