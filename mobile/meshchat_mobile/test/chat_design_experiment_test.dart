@@ -16,6 +16,7 @@ import 'package:meshchat_mobile/src/widgets/chat_timeline_date.dart';
 import 'package:meshchat_mobile/src/widgets/mesh_performance_scope.dart';
 import 'package:meshchat_mobile/src/widgets/mesh_liquid_glass.dart';
 import 'package:meshchat_mobile/src/services/platform_capabilities.dart';
+import 'package:meshchat_mobile/src/utils/mesh_page_route.dart';
 
 class _PreviewController extends AppController {
   @override
@@ -126,7 +127,7 @@ void main() {
     scroll.dispose();
   });
 
-  testWidgets('iOS glass navigation keeps native glass only on selections', (
+  testWidgets('iOS glass navigation keeps panels and selections on one canvas', (
     tester,
   ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
@@ -158,7 +159,7 @@ void main() {
       2,
     );
     expect(
-      surfaces.where((s) => s.selected && !s.forceFlutterSurface).length,
+      surfaces.where((s) => s.selected && s.forceFlutterSurface).length,
       2,
     );
     for (final label in ['Personal', 'Groups', 'Chats', 'Settings']) {
@@ -171,6 +172,60 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 2));
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('navigation material stays identical through return and cancel', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final owner = Object();
+    addTearDown(() {
+      MeshRouteTransition.setActive(owner, false);
+      debugDefaultTargetPlatformOverride = null;
+    });
+    Future<void> show(bool nativeAllowed) => tester.pumpWidget(
+      MaterialApp(
+        home: MeshPlatformScope(
+          capabilities: const MeshPlatformCapabilities(iosMajorVersion: 26),
+          child: MeshGlassCompositionScope(
+            nativeAllowed: nativeAllowed,
+            child: Column(
+              children: [
+                for (final selected in [false, true])
+                  MeshLiquidGlass.navigation(
+                    selected: selected,
+                    accent: Colors.lightBlueAccent,
+                    child: const SizedBox(width: 200, height: 48),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    List<Decoration> decorations() => tester
+        .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+        .map((widget) => widget.decoration)
+        .toList();
+    await show(true);
+    final original = decorations();
+    final surfaces = original.whereType<BoxDecoration>().where(
+      (decoration) => decoration.borderRadius != null,
+    );
+    expect(surfaces.length, 2);
+    for (final surface in surfaces) {
+      expect(surface.color!.a, greaterThan(0.9));
+    }
+    for (final transitioning in [true, false, true, false]) {
+      MeshRouteTransition.setActive(owner, transitioning);
+      await show(!transitioning);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(UiKitView), findsNothing);
+      expect(decorations(), orderedEquals(original));
+    }
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
     debugDefaultTargetPlatformOverride = null;
   });
 

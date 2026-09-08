@@ -71,7 +71,21 @@ class MeshLiquidGlass extends StatelessWidget {
     this.interactive = true,
     this.forceFlutterSurface = false,
     this.fallbackBuilder,
-  });
+  }) : _matteNavigation = false;
+
+  /// Navigation keeps one compositor during both completed and cancelled swipes.
+  const MeshLiquidGlass.navigation({
+    super.key,
+    required this.child,
+    required this.accent,
+    this.radius = 22,
+    this.selected = false,
+    this.dim = false,
+    this.prominent = false,
+    this.interactive = true,
+  }) : forceFlutterSurface = true,
+       fallbackBuilder = null,
+       _matteNavigation = true;
 
   static const viewType = 'meshchat/liquid_glass';
 
@@ -84,6 +98,7 @@ class MeshLiquidGlass extends StatelessWidget {
   final bool interactive;
   final bool forceFlutterSurface;
   final MeshGlassFallbackBuilder? fallbackBuilder;
+  final bool _matteNavigation;
 
   @override
   Widget build(BuildContext context) {
@@ -148,6 +163,12 @@ class MeshLiquidGlass extends StatelessWidget {
   Widget _revealedNativeGlass(BuildContext context) => _nativeGlass(context);
 
   Widget _staticTransitionSurface(BuildContext context) {
+    final surfaceColor = _matteNavigation
+        ? Color.alphaBlend(
+            accent.withValues(alpha: selected ? 0.14 : 0.025),
+            const Color(0xFF20303D),
+          ).withValues(alpha: selected ? 0.96 : 0.93)
+        : const Color(0xFF101A23).withValues(alpha: prominent ? 0.78 : 0.72);
     final baseAlpha = selected
         ? 0.22
         : prominent
@@ -160,11 +181,11 @@ class MeshLiquidGlass extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(radius),
-          color: const Color(
-            0xFF101A23,
-          ).withValues(alpha: prominent ? 0.78 : 0.72),
+          color: surfaceColor,
           border: Border.all(
-            color: Colors.white.withValues(alpha: selected ? 0.22 : 0.13),
+            color: _matteNavigation && selected
+                ? accent.withValues(alpha: 0.28)
+                : Colors.white.withValues(alpha: selected ? 0.22 : 0.13),
           ),
           boxShadow: <BoxShadow>[
             BoxShadow(

@@ -3673,7 +3673,7 @@ class _HomeFilterBar extends StatelessWidget {
                       height: 38,
                       duration: const Duration(milliseconds: 320),
                       curve: Curves.easeOutCubic,
-                      child: MeshLiquidGlass(
+                      child: MeshLiquidGlass.navigation(
                         accent: Colors.lightBlueAccent,
                         radius: 19,
                         selected: true,
@@ -3735,14 +3735,11 @@ class _HomeFilterBar extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: liquidGlass
-          ? MeshLiquidGlass(
+          ? MeshLiquidGlass.navigation(
               accent: Colors.lightBlueAccent,
               radius: 22,
               dim: true,
               interactive: true,
-              // Keep a single native layer: the moving selection above.
-              // Nested UIKit backdrops can obscure unselected Flutter labels.
-              forceFlutterSurface: true,
               child: content,
             )
           : content,
@@ -4716,7 +4713,7 @@ class _HomeBottomBarState extends State<_HomeBottomBar> {
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 3),
                         child: liquidGlass
-                            ? MeshLiquidGlass(
+                            ? MeshLiquidGlass.navigation(
                                 accent: Colors.lightBlueAccent,
                                 radius: 22,
                                 selected: true,
@@ -4785,13 +4782,11 @@ class _HomeBottomBarState extends State<_HomeBottomBar> {
       ),
     );
     if (liquidGlass) {
-      return MeshLiquidGlass(
+      return MeshLiquidGlass.navigation(
         accent: Colors.lightBlueAccent,
         radius: 28,
         prominent: true,
         interactive: true,
-        // Only the moving indicator uses UIKit glass, never the whole tab row.
-        forceFlutterSurface: true,
         child: content,
       );
     }
