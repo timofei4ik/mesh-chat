@@ -1,4 +1,8 @@
 import 'dart:async';
+import '../models/rich_message_document.dart';
+import '../services/rich_draft_store.dart';
+import '../widgets/rich_message_view.dart';
+import 'rich_message_editor_page.dart';
 import '../widgets/collection_message_surface.dart';
 import '../widgets/message_bubble_picker.dart';
 import '../models/ai_context.dart';
@@ -34,6 +38,7 @@ import '../models/poll_item.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
 import '../utils/mesh_page_route.dart';
+import '../utils/message_grouping.dart';
 import '../utils/media_request_encoder.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/chat_timeline_date.dart';
@@ -52,7 +57,15 @@ import 'meeting_point_map_page.dart';
 import 'meeting_points_page.dart';
 import 'profile_page.dart';
 
-enum _AttachAction { photo, camera, scan, file, poll, shareLocation }
+enum _AttachAction {
+  photo,
+  camera,
+  scan,
+  file,
+  poll,
+  shareLocation,
+  richMessage,
+}
 
 class _ScheduleDraft {
   const _ScheduleDraft({
@@ -177,7 +190,25 @@ class _ChatPageState extends State<ChatPage>
   }
 
   List<ChatMessage> visibleMessages() {
-    final messages = widget.thread.messages;
+    final all = widget.thread.messages;
+    final embedded = <String, String>{};
+    for (final parent in all) {
+      if (parent.deleted || parent.richContent.isEmpty) continue;
+      final doc = RichMessageDocument.decode(
+        parent.richContent,
+        expectedText: parent.text,
+      );
+      for (final item in doc?.attachments ?? <Map<String, dynamic>>[]) {
+        embedded[item['id'] as String] = parent.senderNode;
+      }
+    }
+    final messages = all
+        .where(
+          (message) =>
+              message.kind != ChatMessageKind.file ||
+              embedded[message.id] != message.senderNode,
+        )
+        .toList(growable: false);
     if (!widget.thread.isChannel) return messages;
     final root = fixedCommentRoot;
     if (root == null) {
@@ -506,6 +537,123 @@ class _ChatPageState extends State<ChatPage>
     }
     if (error != null && mounted) showSnack(error);
     WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
+  }
+
+  Future<void> showRichEditor({ChatMessage? editing}) async {
+    if (!canPostToThread || widget.thread.isBluetooth) return;
+    final session = widget.controller.session;
+    if (session == null) return;
+    final drafts = RichDraftStore(
+      jsonEncode([
+        session.serverUrl,
+        session.login,
+        widget.thread.storageKey,
+        editing?.id ?? '',
+      ]),
+    );
+    try {
+      final initial =
+          await drafts.load() ??
+          RichMessageDocument.decode(
+            editing?.richContent ?? '',
+            expectedText: editing?.text,
+          ) ??
+          RichMessageDocument.fromText(editing?.text ?? input.text);
+      if (!mounted) return;
+      final quote = fixedCommentRoot ?? replyTo;
+      final sent = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => Dialog(
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 24,
+          ),
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          child: SizedBox(
+            width: 900,
+            height: MediaQuery.sizeOf(dialogContext).height * 0.88,
+            child: RichMessageEditorPage(
+              initial: initial,
+              drafts: drafts,
+              background: _LiquidMeshBackground(
+                enabled:
+                    !widget.controller.appSettings.reducedAnimations &&
+                    !MeshPerformanceScope.lowEndDeviceModeOf(context) &&
+                    widget.thread.animatedBackground,
+                themeId: widget.thread.themeId,
+              ),
+              editing: editing != null,
+              attachmentBuilder: (id, name) => _RichAttachmentPreview(
+                key: ValueKey('draft-$id'),
+                controller: widget.controller,
+                thread: widget.thread,
+                id: id,
+                name: name,
+                senderNode: widget.controller.myNodeId,
+                drafts: drafts,
+              ),
+              onGenerate: (instruction) async =>
+                  (await widget.controller.runContextAiTool({
+                    'mode': 'compose',
+                    'instruction': instruction,
+                    'sources': <Object>[],
+                  })).answer,
+              onSend: (document) async {
+                if (widget.controller.session != session) {
+                  throw StateError('Account changed');
+                }
+                await widget.controller.prepareRichAttachments(
+                  widget.thread,
+                  document,
+                  drafts.readAttachment,
+                  replyTo: quote,
+                );
+                if (widget.controller.session != session) {
+                  throw StateError('Account changed');
+                }
+                if (editing != null) {
+                  await widget.controller.editMessage(
+                    widget.thread,
+                    editing,
+                    document.text,
+                    richContent: document.encode(),
+                  );
+                } else if (widget.thread.isGroup) {
+                  final failure = await widget.controller.sendGroupMessage(
+                    widget.thread,
+                    document.text,
+                    replyTo: quote,
+                    richContent: document.encode(),
+                  );
+                  if (failure != null) throw StateError(failure);
+                } else {
+                  await widget.controller.sendMessage(
+                    widget.thread.profile,
+                    document.text,
+                    replyTo: quote,
+                    threadOverride: widget.thread,
+                    richContent: document.encode(),
+                  );
+                }
+              },
+            ),
+          ),
+        ),
+      );
+      if (sent == true && mounted && editing == null) {
+        input.clear();
+        widget.controller.updateDraft(widget.thread, '');
+        setState(() {
+          replyTo = null;
+          smartReplies = const [];
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) => scrollToBottom());
+      }
+    } catch (e) {
+      if (mounted) showSnack(e.toString());
+    }
   }
 
   Future<void> showAiRewrite() async {
@@ -1433,6 +1581,14 @@ class _ChatPageState extends State<ChatPage>
                 mainAxisSpacing: 4,
                 crossAxisSpacing: 4,
                 children: [
+                  if (!widget.thread.isBluetooth)
+                    _AttachmentTile(
+                      icon: Icons.edit_note_rounded,
+                      title: 'Message editor',
+                      color: const Color(0xFF8CD5B4),
+                      onTap: () =>
+                          Navigator.pop(context, _AttachAction.richMessage),
+                    ),
                   _AttachmentTile(
                     icon: Icons.photo_library_rounded,
                     title: 'Photo',
@@ -1483,7 +1639,9 @@ class _ChatPageState extends State<ChatPage>
       ),
     );
     if (!mounted) return;
-    if (action == _AttachAction.photo) {
+    if (action == _AttachAction.richMessage) {
+      await showRichEditor();
+    } else if (action == _AttachAction.photo) {
       await attachPhoto();
     } else if (action == _AttachAction.camera) {
       await attachPhoto(camera: true);
@@ -3637,6 +3795,10 @@ class _ChatPageState extends State<ChatPage>
   }
 
   Future<void> showEditDialog(ChatMessage message) async {
+    if (message.richContent.isNotEmpty) {
+      await showRichEditor(editing: message);
+      return;
+    }
     final editInput = TextEditingController(text: message.text);
     final isCaption =
         message.kind == ChatMessageKind.file ||
@@ -4003,6 +4165,24 @@ class _ChatPageState extends State<ChatPage>
                                 return const SizedBox.shrink();
                               }
                               final album = albumFrom(messages, index);
+                              final joinedPrevious =
+                                  index > 0 &&
+                                  !isCoveredByAlbum(messages, index - 1) &&
+                                  messagesShareBubbleGroup(
+                                    messages[index - 1],
+                                    message,
+                                  );
+                              final joinedNext =
+                                  index + 1 < messages.length &&
+                                  !(index + 2 < messages.length &&
+                                      sameAlbumPhoto(
+                                        messages[index + 1],
+                                        messages[index + 2],
+                                      )) &&
+                                  messagesShareBubbleGroup(
+                                    message,
+                                    messages[index + 1],
+                                  );
                               final showDate =
                                   index == 0 ||
                                   !sameDay(
@@ -4051,6 +4231,8 @@ class _ChatPageState extends State<ChatPage>
                                           controller: widget.controller,
                                           thread: widget.thread,
                                           message: message,
+                                          joinedPrevious: joinedPrevious,
+                                          joinedNext: joinedNext,
                                           mine:
                                               message.senderNode ==
                                               widget.controller.myNodeId,
@@ -8421,6 +8603,8 @@ class _MessageBubble extends StatefulWidget {
     this.onOpenComments,
     this.commentCount = 0,
     this.positionTint = 0.55,
+    this.joinedPrevious = false,
+    this.joinedNext = false,
   });
 
   final AppController controller;
@@ -8437,6 +8621,8 @@ class _MessageBubble extends StatefulWidget {
   final VoidCallback? onOpenComments;
   final int commentCount;
   final double positionTint;
+  final bool joinedPrevious;
+  final bool joinedNext;
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -8571,6 +8757,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
       onOpenComments: widget.onOpenComments,
       commentCount: widget.commentCount,
       positionTint: widget.positionTint,
+      joinedPrevious: widget.joinedPrevious,
+      showTail: !widget.joinedNext,
     );
     final messageEffectsEnabled =
         !lowEndMode &&
@@ -8638,7 +8826,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 animate: !lowEndMode,
                 offset: replyDrag,
                 constraints: const BoxConstraints(maxWidth: 340),
-                margin: const EdgeInsets.only(bottom: 8),
+                margin: EdgeInsets.only(bottom: widget.joinedNext ? 2 : 8),
                 child: messageEffectsEnabled
                     ? MessageSendEffect(
                         messageId: message.id,
@@ -8780,6 +8968,8 @@ class _MessageBubbleBody extends StatelessWidget {
     this.onOpenComments,
     this.commentCount = 0,
     this.positionTint = 0.55,
+    this.joinedPrevious = false,
+    this.showTail = true,
   });
 
   final AppController controller;
@@ -8792,6 +8982,8 @@ class _MessageBubbleBody extends StatelessWidget {
   final VoidCallback? onOpenComments;
   final int commentCount;
   final double positionTint;
+  final bool joinedPrevious;
+  final bool showTail;
 
   @override
   Widget build(BuildContext context) {
@@ -8960,6 +9152,8 @@ class _MessageBubbleBody extends StatelessWidget {
         _MessageBodySurface(
           collectionSkin: collectionSkin,
           mine: mine,
+          showTail: showTail,
+          joinedPrevious: joinedPrevious,
           animate: !lowEndMode,
           constraints: const BoxConstraints(maxWidth: 340),
           padding: _chatBubblePadding(
@@ -8991,7 +9185,8 @@ class _MessageBubbleBody extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (groupPresentation.senderName.isNotEmpty) ...[
+              if (!joinedPrevious &&
+                  groupPresentation.senderName.isNotEmpty) ...[
                 Text(
                   groupPresentation.senderName,
                   style: TextStyle(
@@ -9017,6 +9212,15 @@ class _MessageBubbleBody extends StatelessWidget {
                   children: [
                     _MessageTextContent(
                       text: groupPresentation.text,
+                      richContent: message.richContent,
+                      attachmentBuilder: (id, name) => _RichAttachmentPreview(
+                        key: ValueKey('rich-$id'),
+                        controller: controller,
+                        thread: thread,
+                        id: id,
+                        name: name,
+                        senderNode: message.senderNode,
+                      ),
                       createdAt: message.createdAt,
                     ),
                     const SizedBox(height: 2),
@@ -9429,6 +9633,8 @@ class _MessageBodySurface extends StatelessWidget {
     required this.child,
     this.collectionSkin,
     this.mine = false,
+    this.showTail = true,
+    this.joinedPrevious = false,
   });
 
   final bool animate;
@@ -9438,6 +9644,8 @@ class _MessageBodySurface extends StatelessWidget {
   final Widget child;
   final CollectionBubbleSkin? collectionSkin;
   final bool mine;
+  final bool showTail;
+  final bool joinedPrevious;
 
   @override
   Widget build(BuildContext context) {
@@ -9445,6 +9653,8 @@ class _MessageBodySurface extends StatelessWidget {
     if (skin != null && decoration is BoxDecoration) {
       return CollectionMessageSurface(
         mine: mine,
+        showTail: showTail,
+        joinedPrevious: joinedPrevious,
         skin: skin,
         decoration: decoration as BoxDecoration,
         padding: padding,
@@ -9452,11 +9662,29 @@ class _MessageBodySurface extends StatelessWidget {
         child: child,
       );
     }
+    final box = decoration as BoxDecoration;
+    final shape = CollectionBubbleBorder(
+      mine: mine,
+      showTail: showTail,
+      joinedPrevious: joinedPrevious,
+      side: box.border?.top ?? BorderSide.none,
+      radius:
+          box.borderRadius?.resolve(Directionality.of(context)).topLeft.x ?? 12,
+    );
+    final surfaceDecoration = ShapeDecoration(
+      shape: shape,
+      color: box.color,
+      gradient: box.gradient,
+      shadows: box.boxShadow,
+    );
+    final inset = padding.resolve(Directionality.of(context));
+    final contentPadding =
+        inset + EdgeInsets.only(left: mine ? 0 : 6, right: mine ? 6 : 0);
     if (!animate) {
       return Container(
         constraints: constraints,
-        padding: padding,
-        decoration: decoration,
+        padding: contentPadding,
+        decoration: surfaceDecoration,
         child: child,
       );
     }
@@ -9464,8 +9692,8 @@ class _MessageBodySurface extends StatelessWidget {
       duration: const Duration(milliseconds: 280),
       curve: Curves.easeOutCubic,
       constraints: constraints,
-      padding: padding,
-      decoration: decoration,
+      padding: contentPadding,
+      decoration: surfaceDecoration,
       child: child,
     );
   }
@@ -9509,13 +9737,27 @@ class _MessageMetadata extends StatelessWidget {
 }
 
 class _MessageTextContent extends StatelessWidget {
-  const _MessageTextContent({required this.text, required this.createdAt});
+  const _MessageTextContent({
+    required this.text,
+    required this.createdAt,
+    this.richContent = '',
+    this.attachmentBuilder,
+  });
 
   final String text;
   final DateTime createdAt;
+  final String richContent;
+  final Widget Function(String, String)? attachmentBuilder;
 
   @override
   Widget build(BuildContext context) {
+    final rich = RichMessageDocument.decode(richContent, expectedText: text);
+    if (rich != null) {
+      return RichMessageView(
+        document: rich,
+        attachmentBuilder: attachmentBuilder,
+      );
+    }
     final suggestion = _ContextSuggestion.parse(text, createdAt.toLocal());
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -10581,6 +10823,135 @@ class _StickerMessagePreview extends StatelessWidget {
       ),
     );
   }
+}
+
+class _RichAttachmentPreview extends StatefulWidget {
+  const _RichAttachmentPreview({
+    super.key,
+    required this.controller,
+    required this.thread,
+    required this.id,
+    required this.name,
+    required this.senderNode,
+    this.drafts,
+  });
+  final AppController controller;
+  final ChatThread thread;
+  final String id;
+  final String name;
+  final String senderNode;
+  final RichDraftStore? drafts;
+  @override
+  State<_RichAttachmentPreview> createState() => _RichAttachmentPreviewState();
+}
+
+class _RichAttachmentPreviewState extends State<_RichAttachmentPreview> {
+  late final Future<ChatMessage?> draftMessage = loadDraft();
+  Future<ChatMessage?> loadDraft() async {
+    final bytes = await widget.drafts?.readAttachment(widget.id);
+    if (bytes == null) return null;
+    final data = await compute(encodeMediaHex, bytes);
+    return ChatMessage(
+      id: widget.id,
+      senderNode: widget.senderNode,
+      receiverNode: widget.thread.profile.nodeId,
+      text: '',
+      createdAt: DateTime(2026),
+      kind: ChatMessageKind.file,
+      fileName: widget.name,
+      fileSize: bytes.length,
+      fileData: data,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => FutureBuilder<ChatMessage?>(
+      future: draftMessage,
+      builder: (context, snapshot) {
+        var message = widget.controller.messageInThread(
+          widget.thread,
+          widget.id,
+        );
+        if (message?.senderNode != widget.senderNode ||
+            message?.kind != ChatMessageKind.file) {
+          message = null;
+        }
+        message ??= snapshot.data;
+        if (message == null || message.deleted) {
+          return _UnavailableFilePreview(
+            icon: Icons.attach_file,
+            title: widget.name,
+            subtitle: snapshot.hasError
+                ? 'Draft file unavailable'
+                : message?.deleted == true
+                ? 'Attachment deleted'
+                : 'Waiting for attachment',
+          );
+        }
+        final file = message;
+        final image = _MessageBubble.imageBytesFor(file, dataSaver: false);
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            GestureDetector(
+              onTap: image == null
+                  ? null
+                  : () => showDialog<void>(
+                      context: context,
+                      builder: (context) => Dialog(
+                        child: Stack(
+                          children: [
+                            InteractiveViewer(
+                              child: Image.memory(image, fit: BoxFit.contain),
+                            ),
+                            Positioned(
+                              top: 4,
+                              right: 4,
+                              child: IconButton.filledTonal(
+                                tooltip: 'Close',
+                                icon: const Icon(Icons.close),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+              child: _FilePreview(
+                message: file,
+                imageBytes: image,
+                controller: widget.controller,
+                thread: widget.thread,
+              ),
+            ),
+            if (file.pending)
+              LinearProgressIndicator(
+                value: file.progress > 0 ? file.progress : null,
+              ),
+            if (file.failed)
+              TextButton.icon(
+                onPressed: () async {
+                  final error = await widget.controller.retryMessage(
+                    widget.thread,
+                    file,
+                  );
+                  if (error != null && context.mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(error)));
+                  }
+                },
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry attachment'),
+              ),
+          ],
+        );
+      },
+    ),
+  );
 }
 
 class _FilePreview extends StatefulWidget {

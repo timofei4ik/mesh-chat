@@ -52,6 +52,8 @@ class CollectionMessageSurface extends StatelessWidget {
     required this.constraints,
     required this.child,
     this.mine = false,
+    this.showTail = true,
+    this.joinedPrevious = false,
   });
 
   final CollectionBubbleSkin skin;
@@ -60,12 +62,16 @@ class CollectionMessageSurface extends StatelessWidget {
   final BoxConstraints constraints;
   final Widget child;
   final bool mine;
+  final bool showTail;
+  final bool joinedPrevious;
 
   @override
   Widget build(BuildContext context) {
     final inset = padding.resolve(Directionality.of(context));
     final shape = CollectionBubbleBorder(
       mine: mine,
+      showTail: showTail,
+      joinedPrevious: joinedPrevious,
       side:
           decoration.border?.top ??
           const BorderSide(color: Color(0xFF445064), width: 0.7),
@@ -176,9 +182,15 @@ class CollectionBubbleBorder extends ShapeBorder {
   const CollectionBubbleBorder({
     this.mine = false,
     this.side = BorderSide.none,
+    this.showTail = true,
+    this.joinedPrevious = false,
+    this.radius = 12,
   });
   final bool mine;
   final BorderSide side;
+  final bool showTail;
+  final bool joinedPrevious;
+  final double radius;
 
   @override
   EdgeInsetsGeometry get dimensions => EdgeInsets.all(side.width);
@@ -187,20 +199,28 @@ class CollectionBubbleBorder extends ShapeBorder {
   Path getOuterPath(Rect rect, {TextDirection? textDirection}) {
     final w = rect.width;
     final h = rect.height;
-    final r = (h / 3).clamp(0.0, 12.0);
+    final r = (h / 3).clamp(0.0, radius);
+    final top = joinedPrevious ? r.clamp(0.0, 4.0) : r;
+    final bottom = showTail ? r : r.clamp(0.0, 4.0);
     const tail = 6.0;
     var path = Path()
-      ..moveTo(tail + r, 0)
+      ..moveTo(tail + top, 0)
       ..lineTo(w - r, 0)
       ..quadraticBezierTo(w, 0, w, r)
       ..lineTo(w, h - r)
       ..quadraticBezierTo(w, h, w - r, h)
-      ..lineTo(tail + r, h)
-      ..quadraticBezierTo(tail + 3, h, tail + 2, h - 3)
-      ..quadraticBezierTo(2, h, 0, h)
-      ..quadraticBezierTo(tail, h - 7, tail, h - 15)
-      ..lineTo(tail, r)
-      ..quadraticBezierTo(tail, 0, tail + r, 0)
+      ..lineTo(tail + bottom, h);
+    if (showTail) {
+      path
+        ..quadraticBezierTo(tail + 3, h, tail + 2, h - 3)
+        ..quadraticBezierTo(2, h, 0, h)
+        ..quadraticBezierTo(tail, h - 7, tail, h - 15);
+    } else {
+      path.quadraticBezierTo(tail, h, tail, h - bottom);
+    }
+    path
+      ..lineTo(tail, top)
+      ..quadraticBezierTo(tail, 0, tail + top, 0)
       ..close();
     if (mine) {
       path = path.transform(
@@ -215,8 +235,13 @@ class CollectionBubbleBorder extends ShapeBorder {
       getOuterPath(rect.deflate(side.width), textDirection: textDirection);
 
   @override
-  ShapeBorder scale(double t) =>
-      CollectionBubbleBorder(mine: mine, side: side.scale(t));
+  ShapeBorder scale(double t) => CollectionBubbleBorder(
+    mine: mine,
+    side: side.scale(t),
+    showTail: showTail,
+    joinedPrevious: joinedPrevious,
+    radius: radius * t,
+  );
 
   @override
   void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {

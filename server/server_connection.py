@@ -455,6 +455,8 @@ async def handle_server_hello(
             "media_delivery_v2": True,
             "account_live_fanout": True,
             "multi_device_state": True,
+            "rich_messages_v1": True,
+            "ai_compose_v1": True,
             "email_2fa": True,
             "call_ice_servers": True,
             "call_signaling_v2": True,

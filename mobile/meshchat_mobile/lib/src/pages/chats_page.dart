@@ -1442,6 +1442,7 @@ class _HomeShellState extends State<_HomeShell> {
   _HomeTab tab = _HomeTab.chats;
   double tabDirection = 1;
   double filterDirection = 1;
+  final folderPages = PageController();
   final callAlert = CallAlertService();
   Timer? lowEndRefreshTimer;
   bool lowEndMode = false;
@@ -1465,6 +1466,7 @@ class _HomeShellState extends State<_HomeShell> {
   void dispose() {
     widget.controller.removeListener(_handleControllerChange);
     lowEndRefreshTimer?.cancel();
+    folderPages.dispose();
     unawaited(callAlert.dispose());
     super.dispose();
   }
@@ -1567,6 +1569,23 @@ class _HomeShellState extends State<_HomeShell> {
   }
 
   void selectFilter(_HomeFilter value) {
+    if (folderPages.hasClients) {
+      if (widget.controller.appSettings.reducedAnimations || lowEndMode) {
+        folderPages.jumpToPage(_filterIndex(value));
+      } else {
+        unawaited(
+          folderPages.animateToPage(
+            _filterIndex(value),
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.linear,
+          ),
+        );
+      }
+    }
+    updateFilter(value);
+  }
+
+  void updateFilter(_HomeFilter value) {
     if (value == filter) return;
     setState(() {
       filterDirection = _filterIndex(value) > _filterIndex(filter) ? 1 : -1;
@@ -1578,7 +1597,7 @@ class _HomeShellState extends State<_HomeShell> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final allThreads = controller.sortedThreads;
-    final threads = switch (filter) {
+    List<ChatThread> threadsFor(_HomeFilter folder) => switch (folder) {
       _HomeFilter.all => allThreads,
       _HomeFilter.personal =>
         allThreads
@@ -1624,6 +1643,7 @@ class _HomeShellState extends State<_HomeShell> {
               if (tab == _HomeTab.chats)
                 _HomeFilterBar(
                   selected: filter,
+                  pages: folderPages,
                   onChanged: selectFilter,
                   onSettings: () => selectTab(_HomeTab.settings),
                 ),
@@ -1644,16 +1664,37 @@ class _HomeShellState extends State<_HomeShell> {
                         direction: tabDirection,
                         child: child,
                       ),
-                  child: _HomeTabBody(
-                    key: ValueKey(tab),
-                    tab: tab,
-                    filter: filter,
-                    filterDirection: filterDirection,
-                    threads: threads,
-                    archivedCount: archivedCount,
-                    controller: controller,
-                    parent: widget.parent,
-                  ),
+                  child: tab == _HomeTab.chats
+                      ? PageView.builder(
+                          key: const ValueKey('home-folder-pages'),
+                          controller: folderPages,
+                          itemCount: _HomeFilter.values.length,
+                          onPageChanged: (index) =>
+                              updateFilter(_HomeFilter.values[index]),
+                          itemBuilder: (context, index) {
+                            final folder = _HomeFilter.values[index];
+                            return _HomeTabBody(
+                              key: PageStorageKey('folder-${folder.name}'),
+                              tab: _HomeTab.chats,
+                              filter: folder,
+                              filterDirection: 1,
+                              threads: threadsFor(folder),
+                              archivedCount: archivedCount,
+                              controller: controller,
+                              parent: widget.parent,
+                            );
+                          },
+                        )
+                      : _HomeTabBody(
+                          key: ValueKey(tab),
+                          tab: tab,
+                          filter: filter,
+                          filterDirection: filterDirection,
+                          threads: threadsFor(filter),
+                          archivedCount: archivedCount,
+                          controller: controller,
+                          parent: widget.parent,
+                        ),
                 ),
               ),
             ],
@@ -2988,6 +3029,10 @@ class _DismissibleChatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Folder paging owns horizontal drags; pin/archive remain in the long-press menu.
+    if (Scrollable.maybeOf(context, axis: Axis.horizontal) != null) {
+      return child;
+    }
     return Dismissible(
       key: ValueKey(
         'swipe-${thread.isGroup ? thread.groupId : thread.profile.nodeId}',
@@ -3591,16 +3636,55 @@ class _RoundFilterButton extends StatelessWidget {
   }
 }
 
-class _HomeFilterBar extends StatelessWidget {
+class _HomeFilterBar extends StatefulWidget {
   const _HomeFilterBar({
     required this.selected,
     required this.onChanged,
     required this.onSettings,
+    required this.pages,
   });
 
   final _HomeFilter selected;
   final ValueChanged<_HomeFilter> onChanged;
   final VoidCallback onSettings;
+  final PageController pages;
+
+  @override
+  State<_HomeFilterBar> createState() => _HomeFilterBarState();
+}
+
+class _HomeFilterBarState extends State<_HomeFilterBar> {
+  final scroll = ScrollController();
+  _HomeFilter get selected => widget.selected;
+  ValueChanged<_HomeFilter> get onChanged => widget.onChanged;
+  VoidCallback get onSettings => widget.onSettings;
+
+  @override
+  void didUpdateWidget(_HomeFilterBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selected != selected) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !scroll.hasClients) return;
+        final target =
+            (_selectedIndex() * 109.0 -
+                    (scroll.position.viewportDimension - 104) / 2)
+                .clamp(0.0, scroll.position.maxScrollExtent);
+        unawaited(
+          scroll.animateTo(
+            target,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.linear,
+          ),
+        );
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    scroll.dispose();
+    super.dispose();
+  }
 
   int _selectedIndex() => switch (selected) {
     _HomeFilter.all => 0,
@@ -3653,6 +3737,7 @@ class _HomeFilterBar extends StatelessWidget {
         ? SizedBox(
             height: 44,
             child: SingleChildScrollView(
+              controller: scroll,
               scrollDirection: Axis.horizontal,
               physics: const BouncingScrollPhysics(),
               child: SizedBox(
@@ -3664,15 +3749,25 @@ class _HomeFilterBar extends StatelessWidget {
                 height: 44,
                 child: Stack(
                   children: [
-                    AnimatedPositioned(
-                      left:
-                          edgePadding +
-                          _selectedIndex() * (itemWidth + itemGap),
-                      top: edgePadding,
-                      width: itemWidth,
-                      height: 38,
-                      duration: const Duration(milliseconds: 320),
-                      curve: Curves.easeOutCubic,
+                    AnimatedBuilder(
+                      animation: widget.pages,
+                      builder: (context, child) => Positioned(
+                        left:
+                            edgePadding +
+                            (widget.pages.hasClients &&
+                                        widget
+                                            .pages
+                                            .position
+                                            .hasContentDimensions
+                                    ? widget.pages.page ??
+                                          _selectedIndex().toDouble()
+                                    : _selectedIndex().toDouble()) *
+                                (itemWidth + itemGap),
+                        top: edgePadding,
+                        width: itemWidth,
+                        height: 38,
+                        child: child!,
+                      ),
                       child: MeshLiquidGlass.navigation(
                         accent: Colors.lightBlueAccent,
                         radius: 19,
@@ -3718,6 +3813,7 @@ class _HomeFilterBar extends StatelessWidget {
         : SizedBox(
             height: 44,
             child: ListView.separated(
+              controller: scroll,
               scrollDirection: Axis.horizontal,
               physics: const BouncingScrollPhysics(),
               itemCount: pills.length + 1,

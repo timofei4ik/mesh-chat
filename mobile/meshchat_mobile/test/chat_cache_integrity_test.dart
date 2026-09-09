@@ -1,8 +1,11 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/chat_thread.dart';
+import 'package:meshchat_mobile/src/models/chat_message.dart';
+import 'package:meshchat_mobile/src/models/rich_message_document.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
 import 'package:meshchat_mobile/src/models/session.dart';
 import 'package:meshchat_mobile/src/services/app_database_path.dart';
@@ -105,6 +108,118 @@ void main() {
     expect(await store.loadSyncCursor(session), 11);
     expect((await store.inspectIntegrity(session)).verified, isTrue);
   });
+
+  test(
+    'large rich history is chunked without losing formatting or queued messages',
+    () async {
+      final store = ChatCacheStore();
+      final chat = thread('rich-peer');
+      final rich = RichMessageDocument.fromText('message ' * 6500);
+      chat.messages.addAll(
+        List.generate(
+          35,
+          (index) => ChatMessage(
+            id: 'rich-$index',
+            senderNode: session.nodeId,
+            receiverNode: 'rich-peer',
+            text: rich.text,
+            richContent: rich.encode(),
+            pending: index == 0,
+            createdAt: DateTime(2026).add(Duration(seconds: index)),
+          ),
+        ),
+      );
+      await store.saveCheckpoint(session, [chat], 21);
+      final profiles = <String, Profile>{};
+      final threads = <String, ChatThread>{};
+      await store.load(session, profiles, threads, {});
+      expect(threads['rich-peer']!.messages.length, 35);
+      expect(threads['rich-peer']!.messages.first.pending, isTrue);
+      expect(
+        threads['rich-peer']!.messages.every(
+          (message) => message.richContent == rich.encode(),
+        ),
+        isTrue,
+      );
+      expect(await store.loadSyncCursor(session), 21);
+      expect((await store.inspectIntegrity(session)).verified, isTrue);
+      expect((await store.stats(session)).threads, 1);
+      await store.deleteThread(session, chat);
+      threads.clear();
+      await store.load(session, profiles, threads, {});
+      expect(threads, isEmpty);
+      await store.saveCheckpoint(session, [chat], 21);
+      chat.messages.removeRange(1, chat.messages.length);
+      await store.saveCheckpoint(session, [chat], 22);
+      threads.clear();
+      await store.load(session, profiles, threads, {});
+      expect(threads['rich-peer']!.messages.length, 1);
+    },
+  );
+
+  test(
+    'rich file metadata is retained beyond the normal history trim boundary',
+    () async {
+      final store = ChatCacheStore();
+      final chat = thread('rich-boundary');
+      chat.messages.add(
+        ChatMessage(
+          id: 'old-file',
+          senderNode: 'owner',
+          receiverNode: 'rich-boundary',
+          text: '',
+          kind: ChatMessageKind.file,
+          fileName: 'plan.pdf',
+          mediaId: 'media-id',
+          fileSize: 1024,
+          createdAt: DateTime(2026),
+        ),
+      );
+      for (var i = 0; i < 505; i++) {
+        chat.messages.add(
+          ChatMessage(
+            id: 'text-$i',
+            senderNode: 'owner',
+            receiverNode: 'rich-boundary',
+            text: 'Text $i',
+            createdAt: DateTime(2026).add(Duration(seconds: i + 1)),
+          ),
+        );
+      }
+      final doc = RichMessageDocument.fromOps([
+        {
+          'insert': {
+            'mesh': jsonEncode({
+              'type': 'attachment',
+              'id': 'old-file',
+              'name': 'plan.pdf',
+            }),
+          },
+        },
+        {'insert': '\n'},
+      ]);
+      chat.messages.add(
+        ChatMessage(
+          id: 'rich-parent',
+          senderNode: 'owner',
+          receiverNode: 'rich-boundary',
+          text: doc.text,
+          richContent: doc.encode(),
+          createdAt: DateTime(2026).add(const Duration(minutes: 10)),
+        ),
+      );
+      await store.saveCheckpoint(session, [chat], 30);
+      final restored = <String, ChatThread>{};
+      await store.load(session, {}, restored, {});
+      expect(restored['rich-boundary']!.messages.first.id, 'old-file');
+      expect(restored['rich-boundary']!.messages.first.mediaId, 'media-id');
+      expect(
+        restored['rich-boundary']!.messages.last.richContent,
+        doc.encode(),
+      );
+      expect((await store.inspectIntegrity(session)).verified, isTrue);
+    },
+  );
 
   test('failed checkpoint rolls back both cache and cursor', () async {
     final store = ChatCacheStore();

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/controllers/app_controller.dart';
 import 'package:meshchat_mobile/src/models/chat_message.dart';
+import 'package:meshchat_mobile/src/models/rich_message_document.dart';
 import 'package:meshchat_mobile/src/models/chat_thread.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
 import 'package:meshchat_mobile/src/pages/chat_page.dart';
@@ -159,7 +161,7 @@ void main() {
       2,
     );
     expect(
-      surfaces.where((s) => s.selected && s.forceFlutterSurface).length,
+      surfaces.where((s) => s.selected && !s.forceFlutterSurface).length,
       2,
     );
     for (final label in ['Personal', 'Groups', 'Chats', 'Settings']) {
@@ -175,59 +177,68 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  testWidgets('navigation material stays identical through return and cancel', (
-    tester,
-  ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    final owner = Object();
-    addTearDown(() {
-      MeshRouteTransition.setActive(owner, false);
-      debugDefaultTargetPlatformOverride = null;
-    });
-    Future<void> show(bool nativeAllowed) => tester.pumpWidget(
-      MaterialApp(
-        home: MeshPlatformScope(
-          capabilities: const MeshPlatformCapabilities(iosMajorVersion: 26),
-          child: MeshGlassCompositionScope(
-            nativeAllowed: nativeAllowed,
-            child: Column(
-              children: [
-                for (final selected in [false, true])
-                  MeshLiquidGlass.navigation(
-                    selected: selected,
-                    accent: Colors.lightBlueAccent,
-                    child: const SizedBox(width: 200, height: 48),
-                  ),
-              ],
+  testWidgets(
+    'native selection stays mounted but offstage through return and cancel',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final owner = Object();
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      var creations = 0;
+      messenger.setMockMethodCallHandler(SystemChannels.platform_views, (
+        call,
+      ) async {
+        if (call.method == 'create') creations++;
+        return null;
+      });
+      addTearDown(() {
+        MeshRouteTransition.setActive(owner, false);
+        debugDefaultTargetPlatformOverride = null;
+        messenger.setMockMethodCallHandler(SystemChannels.platform_views, null);
+      });
+      Future<void> show(bool nativeAllowed) => tester.pumpWidget(
+        MaterialApp(
+          home: MeshPlatformScope(
+            capabilities: const MeshPlatformCapabilities(iosMajorVersion: 26),
+            child: MeshGlassCompositionScope(
+              nativeAllowed: nativeAllowed,
+              child: Column(
+                children: [
+                  for (final selected in [false, true])
+                    MeshLiquidGlass.navigation(
+                      selected: selected,
+                      accent: Colors.lightBlueAccent,
+                      child: const SizedBox(width: 200, height: 48),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
-      ),
-    );
-    List<Decoration> decorations() => tester
-        .widgetList<DecoratedBox>(find.byType(DecoratedBox))
-        .map((widget) => widget.decoration)
-        .toList();
-    await show(true);
-    final original = decorations();
-    final surfaces = original.whereType<BoxDecoration>().where(
-      (decoration) => decoration.borderRadius != null,
-    );
-    expect(surfaces.length, 2);
-    for (final surface in surfaces) {
-      expect(surface.color!.a, greaterThan(0.9));
-    }
-    for (final transitioning in [true, false, true, false]) {
-      MeshRouteTransition.setActive(owner, transitioning);
-      await show(!transitioning);
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byType(UiKitView), findsNothing);
-      expect(decorations(), orderedEquals(original));
-    }
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-    debugDefaultTargetPlatformOverride = null;
-  });
+      );
+      await show(true);
+      await tester.pump();
+      final nativeState = tester.state(find.byType(UiKitView));
+      expect(creations, 1);
+      for (final transitioning in [true, false, true, false]) {
+        MeshRouteTransition.setActive(owner, transitioning);
+        await show(!transitioning);
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(
+          find.byType(UiKitView),
+          transitioning ? findsNothing : findsOneWidget,
+        );
+        expect(
+          tester.state(find.byType(UiKitView, skipOffstage: false)),
+          same(nativeState),
+        );
+        expect(creations, 1);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
 
   testWidgets('covered iOS home renders all glass on Flutter canvas', (
     tester,
@@ -266,7 +277,145 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
+  testWidgets(
+    'swiping a chat row changes folders without pinning or archiving',
+    (tester) async {
+      tester.view.physicalSize = const Size(402, 874);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = _PreviewController();
+      final personal = ChatThread(
+        profile: const Profile(nodeId: 'peer', displayName: 'Personal friend'),
+      );
+      final group = ChatThread(
+        profile: const Profile(nodeId: 'group', displayName: 'Study group'),
+        isGroup: true,
+        groupId: 'group',
+      );
+      controller.threads[personal.storageKey] = personal;
+      controller.groups[group.groupId] = group;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: MeshPerformanceScope(
+            lowEndDeviceMode: true,
+            child: ChatsPage(controller: controller),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      await tester.drag(
+        find.text('Personal friend').first,
+        const Offset(-310, 0),
+      );
+      await tester.pumpAndSettle();
+      final pages = tester.widget<PageView>(find.byType(PageView));
+      expect(pages.controller!.page, closeTo(1, 0.01));
+      expect(personal.archived, isFalse);
+      expect(personal.pinned, isFalse);
+      await tester.drag(
+        find.text('Personal friend').first,
+        const Offset(310, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(pages.controller!.page, closeTo(0, 0.01));
+      expect(personal.pinned, isFalse);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
   for (final size in [const Size(1100, 780), const Size(360, 800)]) {
+    testWidgets('rich attachment stays inside its document at ${size.width}', (
+      tester,
+    ) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = _PreviewController();
+      final doc = RichMessageDocument.fromOps([
+        {
+          'insert': 'Weekend plans',
+          'attributes': {'bold': true},
+        },
+        {'insert': '\nHere is the document for our trip.\n'},
+        {
+          'insert': {
+            'mesh': jsonEncode({
+              'type': 'attachment',
+              'id': 'document-file',
+              'name': 'agenda.pdf',
+            }),
+          },
+        },
+        {'insert': '\nLet me know what you think.\n'},
+      ]);
+      final thread = ChatThread(
+        profile: const Profile(nodeId: 'friend', displayName: 'Alex'),
+        messages: [
+          ChatMessage(
+            id: 'document-file',
+            senderNode: 'friend',
+            receiverNode: '',
+            text: '',
+            createdAt: DateTime(2026, 9, 9),
+            kind: ChatMessageKind.file,
+            fileName: 'agenda.pdf',
+            fileData: '010203',
+            fileSize: 3,
+          ),
+          ChatMessage(
+            id: 'document-parent',
+            senderNode: 'friend',
+            receiverNode: '',
+            text: doc.text,
+            richContent: doc.encode(),
+            createdAt: DateTime(2026, 9, 9),
+          ),
+        ],
+      );
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: key,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData.dark(useMaterial3: true).copyWith(
+              textTheme: ThemeData.dark().textTheme.apply(
+                fontFamily: 'PreviewSans',
+              ),
+            ),
+            home: MeshPerformanceScope(
+              lowEndDeviceMode: true,
+              child: ChatPage(controller: controller, thread: thread),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('agenda.pdf'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      if (Platform.environment['MESH_DESIGN_SCREENSHOTS'] == '1') {
+        await tester.runAsync(() async {
+          final image =
+              await (key.currentContext!.findRenderObject()!
+                      as RenderRepaintBoundary)
+                  .toImage();
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          await Directory('build/design-review').create(recursive: true);
+          await File(
+            'build/design-review/rich-${size.width.toInt()}.png',
+          ).writeAsBytes(data!.buffer.asUint8List());
+          image.dispose();
+        });
+      }
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
     testWidgets('chat list shows drafts and typing at ${size.width}', (
       tester,
     ) async {

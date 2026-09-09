@@ -68,6 +68,7 @@ class ChatMessage {
     required this.receiverNode,
     required this.text,
     required this.createdAt,
+    this.richContent = '',
     this.senderName = '',
     this.kind = ChatMessageKind.text,
     this.fileName = '',
@@ -102,6 +103,7 @@ class ChatMessage {
   final String senderNode;
   final String receiverNode;
   final String text;
+  final String richContent;
   final DateTime createdAt;
   final String senderName;
   final ChatMessageKind kind;
@@ -132,6 +134,7 @@ class ChatMessage {
   final double progress;
 
   ChatMessage copyWith({
+    String? richContent,
     String? text,
     String? senderName,
     ChatMessageKind? kind,
@@ -166,6 +169,9 @@ class ChatMessage {
       senderNode: senderNode,
       receiverNode: receiverNode,
       text: text ?? this.text,
+      richContent:
+          richContent ??
+          (text != null && text != this.text ? '' : this.richContent),
       senderName: senderName ?? this.senderName,
       createdAt: createdAt,
       kind: kind ?? this.kind,
@@ -213,6 +219,9 @@ class ChatMessage {
       senderNode: json['sender_node']?.toString() ?? '',
       receiverNode: json['receiver_node']?.toString() ?? '',
       text: json['text']?.toString() ?? '',
+      richContent: json['rich_content'] is String
+          ? json['rich_content'] as String
+          : '',
       senderName: json['sender_name']?.toString() ?? '',
       createdAt: parseMessageCreatedAt(
         json,
@@ -259,6 +268,7 @@ class ChatMessage {
       'sender_node': senderNode,
       'receiver_node': receiverNode,
       'text': text,
+      'rich_content': richContent,
       'sender_name': senderName,
       'created_at': createdAt.toUtc().toIso8601String(),
       'kind': kind.name,

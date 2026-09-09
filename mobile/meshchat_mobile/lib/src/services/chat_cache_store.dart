@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../models/rich_message_document.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:cryptography/cryptography.dart';
@@ -46,6 +47,7 @@ class ChatCacheStore {
       where: 'session_key=?',
       whereArgs: [sessionKey],
     );
+    final restored = <String, ChatThread>{};
     for (final row in rows) {
       final payload = row['payload']?.toString() ?? '';
       if (payload.isEmpty) continue;
@@ -53,10 +55,25 @@ class ChatCacheStore {
         final decoded = jsonDecode(payload);
         if (decoded is! Map) continue;
         final thread = ChatThread.fromJson(Map<String, dynamic>.from(decoded));
-        _putThread(thread, profiles, threads, groups);
+        final previous = restored[thread.storageKey];
+        if (previous == null) {
+          restored[thread.storageKey] = thread;
+        } else {
+          final messages = {
+            for (final message in previous.messages) message.id: message,
+          };
+          for (final message in thread.messages) {
+            messages[message.id] = message;
+          }
+          previous.messages = messages.values.toList()
+            ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        }
       } catch (_) {
         // Ignore one broken cached thread instead of dropping the whole cache.
       }
+    }
+    for (final thread in restored.values) {
+      _putThread(thread, profiles, threads, groups);
     }
   }
 
@@ -128,23 +145,49 @@ class ChatCacheStore {
   ) {
     final prepared = <String, Map<String, Object>>{};
     for (final thread in threads) {
-      var trimmed = _trimThread(thread);
+      final trimmed = _trimThread(thread);
       final threadKey = trimmed.storageKey;
       if (threadKey.isEmpty) continue;
-      var payload = jsonEncode(trimmed.toJson());
-      if (payload.length > _maxSqlitePayloadChars) {
-        trimmed = _trimThread(thread, minimal: true);
-        payload = jsonEncode(trimmed.toJson());
+      // Split large histories into bounded SQLite rows. Dropping an oversized
+      // thread would otherwise commit a valid sync cursor with missing history.
+      final metadata = trimmed.toJson()..['messages'] = <Object>[];
+      final baseBytes = utf8.encode(jsonEncode(metadata)).length;
+      if (baseBytes >= _maxSqlitePayloadChars) {
+        throw StateError('Chat metadata exceeds cache row limit');
       }
-      if (payload.length > _maxSqlitePayloadChars) continue;
-      prepared[threadKey] = {
-        'session_key': sessionKey,
-        'thread_key': threadKey,
-        'is_group': trimmed.isGroup ? 1 : 0,
-        'updated_at': (trimmed.lastMessage?.createdAt ?? DateTime.now())
-            .millisecondsSinceEpoch,
-        'payload': payload,
-      };
+      var messages = <Map<String, dynamic>>[];
+      var bytes = baseBytes;
+      var chunk = 0;
+      void appendChunk() {
+        final key = chunk == 0
+            ? threadKey
+            : jsonEncode(['chunk-v1', threadKey, chunk]);
+        prepared[key] = {
+          'session_key': sessionKey,
+          'thread_key': key,
+          'is_group': trimmed.isGroup ? 1 : 0,
+          'updated_at': (trimmed.lastMessage?.createdAt ?? DateTime.now())
+              .millisecondsSinceEpoch,
+          'payload': jsonEncode({...metadata, 'messages': messages}),
+        };
+        chunk++;
+        messages = [];
+        bytes = baseBytes;
+      }
+
+      for (final message in trimmed.messages) {
+        final encoded = message.toJson();
+        final size = utf8.encode(jsonEncode(encoded)).length + 1;
+        if (baseBytes + size > _maxSqlitePayloadChars) {
+          throw StateError('Message exceeds cache row limit');
+        }
+        if (messages.isNotEmpty && bytes + size > _maxSqlitePayloadChars) {
+          appendChunk();
+        }
+        messages.add(encoded);
+        bytes += size;
+      }
+      appendChunk();
     }
     return prepared;
   }
@@ -331,11 +374,44 @@ class ChatCacheStore {
       await _deleteBrokenGroupThread(session, db, thread);
       return;
     }
-    await db.delete(
-      'chat_threads',
-      where: 'session_key=? AND thread_key=?',
-      whereArgs: [_key(session), threadKey],
-    );
+    await db.transaction((transaction) async {
+      final rows = await transaction.query(
+        'chat_threads',
+        columns: ['thread_key'],
+        where: 'session_key=?',
+        whereArgs: [_key(session)],
+      );
+      final batch = transaction.batch();
+      for (final row in rows) {
+        final key = row['thread_key']?.toString() ?? '';
+        if (_logicalThreadKey(key) == threadKey) {
+          batch.delete(
+            'chat_threads',
+            where: 'session_key=? AND thread_key=?',
+            whereArgs: [_key(session), key],
+          );
+        }
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  String _logicalThreadKey(String key) {
+    if (key.startsWith('["chunk-v1",')) {
+      try {
+        final value = jsonDecode(key);
+        if (value is List &&
+            value.length == 3 &&
+            value[0] == 'chunk-v1' &&
+            value[1] is String &&
+            value[2] is int) {
+          return value[1] as String;
+        }
+      } catch (_) {
+        /* An ordinary row key is left unchanged. */
+      }
+    }
+    return key;
   }
 
   Future<void> _deleteBrokenGroupThread(
@@ -396,7 +472,7 @@ class ChatCacheStore {
     final db = await _db();
     final rows = await db.query(
       'chat_threads',
-      columns: ['payload'],
+      columns: ['thread_key', 'payload'],
       where: 'session_key=?',
       whereArgs: [_key(session)],
     );
@@ -415,7 +491,14 @@ class ChatCacheStore {
       }
     }
 
-    return CacheStats(threads: rows.length, messages: messages, bytes: bytes);
+    return CacheStats(
+      threads: rows
+          .map((row) => _logicalThreadKey(row['thread_key']?.toString() ?? ''))
+          .toSet()
+          .length,
+      messages: messages,
+      bytes: bytes,
+    );
   }
 
   Future<Database> _db() async {
@@ -594,10 +677,11 @@ class ChatCacheStore {
     };
     final key = _key(session);
     try {
-      await prefs.setString(key, jsonEncode(payload));
+      if (!await prefs.setString(key, jsonEncode(payload))) {
+        throw StateError('Could not save chat cache');
+      }
       await _refreshWebDigestIfCheckpointed(session, prefs);
     } catch (_) {
-      await prefs.remove(key);
       final minimalPayload = {
         'version': 3,
         'threads': threads
@@ -607,10 +691,13 @@ class ChatCacheStore {
             .toList(),
       };
       try {
-        await prefs.setString(key, jsonEncode(minimalPayload));
+        if (!await prefs.setString(key, jsonEncode(minimalPayload))) {
+          throw StateError('Could not save chat cache');
+        }
         await _refreshWebDigestIfCheckpointed(session, prefs);
       } catch (_) {
-        await prefs.remove(key);
+        // Leave the previous complete cache and cursor intact on quota failure.
+        rethrow;
       }
     }
   }
@@ -654,9 +741,34 @@ class ChatCacheStore {
         : forWeb
         ? _maxWebMessagesPerThread
         : _maxMessagesPerThread;
-    final messages = thread.messages.length > maxMessages
-        ? thread.messages.sublist(thread.messages.length - maxMessages)
-        : List.of(thread.messages);
+    final start = (thread.messages.length - maxMessages).clamp(
+      0,
+      thread.messages.length,
+    );
+    final messages = [
+      for (var i = 0; i < thread.messages.length; i++)
+        if (i >= start ||
+            thread.messages[i].pending ||
+            thread.messages[i].failed)
+          thread.messages[i],
+    ];
+    final references = <String>{};
+    for (final message in messages) {
+      final rich = RichMessageDocument.decode(
+        message.richContent,
+        expectedText: message.text,
+      );
+      references.addAll(
+        rich?.attachments.map((item) => item['id'] as String) ?? <String>[],
+      );
+    }
+    final retainedIds = messages.map((m) => m.id).toSet();
+    messages.addAll(
+      thread.messages.where(
+        (m) => references.contains(m.id) && !retainedIds.contains(m.id),
+      ),
+    );
+    messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     final cachedMessages = messages
         .map(
           (message) => forWeb
@@ -688,6 +800,10 @@ class ChatCacheStore {
       archived: thread.archived,
       pinned: thread.pinned,
       muted: thread.muted,
+      commentsEnabled: thread.commentsEnabled,
+      themeId: thread.themeId,
+      bubbleStyle: thread.bubbleStyle,
+      animatedBackground: thread.animatedBackground,
     );
     trimmed.unread = thread.unread;
     return trimmed;

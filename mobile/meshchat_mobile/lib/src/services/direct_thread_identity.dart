@@ -50,6 +50,16 @@ void mergeDirectHistory(
     final delivered =
         old.delivered || incoming.delivered || old.read || incoming.read;
     messages[incoming.id] = preferred.copyWith(
+      richContent:
+          preferred.richContent.isNotEmpty ||
+              preferred.edited ||
+              preferred.deleted
+          ? preferred.richContent
+          : old.text == incoming.text
+          ? (old.richContent.isNotEmpty
+                ? old.richContent
+                : incoming.richContent)
+          : '',
       deleted: old.deleted || incoming.deleted,
       edited: old.edited || incoming.edited,
       read: old.read || incoming.read,

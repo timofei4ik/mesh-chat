@@ -8,6 +8,8 @@ import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/chat_message.dart';
+import '../models/rich_message_document.dart';
+import '../utils/media_request_encoder.dart';
 import '../models/ai_context.dart';
 import '../models/chat_thread.dart';
 import '../services/direct_thread_identity.dart';
@@ -2140,6 +2142,12 @@ class AppController extends ChangeNotifier {
     if (current == null || !_socket.isConnected) {
       throw const AiSummaryException('offline', 'Connect to the server first');
     }
+    if (payload['mode'] == 'compose' && !_socket.supportsAiCompose) {
+      throw const AiSummaryException(
+        'server_upgrade_required',
+        'AI drafting requires a server update. Your draft has not been sent.',
+      );
+    }
     if (feature == null || !await _refreshMeshProFeature(feature)) {
       throw const AiSummaryException(
         'meshpro_required',
@@ -2181,6 +2189,11 @@ class AppController extends ChangeNotifier {
         throw const AiSummaryException('session_changed', 'Account changed');
       }
       return AiContextResult.decode(response.text);
+    } on TimeoutException {
+      throw const AiSummaryException(
+        'timeout',
+        'The AI request timed out. Your draft is still available.',
+      );
     } finally {
       _aiSummaryCompleters.remove(id);
     }
@@ -3625,6 +3638,7 @@ class AppController extends ChangeNotifier {
   Future<void> _applySync(Map<String, dynamic> packet) async {
     var addedMessages = 0;
     var skippedMessages = 0;
+    final pendingEdits = await _socket.pendingEditMessageIds();
 
     if (packet['profile'] is Map) {
       final profile = Profile.fromJson(
@@ -3707,7 +3721,19 @@ class AppController extends ChangeNotifier {
       );
       if (existingIndex >= 0) {
         final current = thread.messages[existingIndex];
+        final incomingText = await _decryptHistoryText(
+          data['message']?.toString() ?? '',
+        );
+        final usable =
+            !pendingEdits.contains(id) &&
+            incomingText.isNotEmpty &&
+            !incomingText.startsWith(MeshCrypto.encryptedPrefix) &&
+            !incomingText.startsWith('[Не удалось');
         thread.messages[existingIndex] = current.copyWith(
+          text: usable ? incomingText : null,
+          richContent: usable && data.containsKey('rich_content')
+              ? await _incomingRich(data, incomingText)
+              : current.richContent,
           replyToMessageId:
               data['reply_to_message_id']?.toString() ??
               current.replyToMessageId,
@@ -3735,6 +3761,7 @@ class AppController extends ChangeNotifier {
           senderNode: sentByMe ? myNodeId : sender,
           receiverNode: receiver,
           text: text,
+          richContent: await _incomingRich(data, text),
           createdAt: _parsePacketDate(data),
           replyToMessageId: data['reply_to_message_id']?.toString() ?? '',
           replyToText: data['reply_to_text']?.toString() ?? '',
@@ -3760,6 +3787,9 @@ class AppController extends ChangeNotifier {
       await _receiveGroupMessage(
         Map<String, dynamic>.from(raw),
         fromSync: true,
+        preserveLocalEdit: pendingEdits.contains(
+          (raw['message_id'] ?? raw['group_message_id'])?.toString(),
+        ),
       );
     }
     for (final raw
@@ -4248,6 +4278,12 @@ class AppController extends ChangeNotifier {
   }
 
   ChatMessage _preferRicherMessage(ChatMessage a, ChatMessage b) {
+    if (a.edited != b.edited) return a.edited ? a : b;
+    if (!a.edited &&
+        a.text == b.text &&
+        a.richContent.isEmpty != b.richContent.isEmpty) {
+      return a.richContent.isNotEmpty ? a : b;
+    }
     final aScore = _messageRichnessScore(a);
     final bScore = _messageRichnessScore(b);
     if (aScore != bScore) return aScore > bScore ? a : b;
@@ -4468,7 +4504,12 @@ class AppController extends ChangeNotifier {
     String text, {
     ChatMessage? replyTo,
     ChatMessage? retryingMessage,
+    String? richContent,
   }) async {
+    final rich = _outgoingRich(
+      text,
+      richContent ?? retryingMessage?.richContent ?? '',
+    );
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null || !group.isGroup) return null;
     final replyToMessageId =
@@ -4500,6 +4541,7 @@ class AppController extends ChangeNotifier {
           senderNode: myNodeId,
           receiverNode: group.groupId,
           text: trimmed,
+          richContent: rich,
           senderName: ownProfile.displayName,
           createdAt: DateTime.now(),
           replyToMessageId: replyToMessageId,
@@ -4543,6 +4585,9 @@ class AppController extends ChangeNotifier {
       'owner_node': group.ownerNode,
       'admins': group.admins,
       'message': encryptedText,
+      'rich_content': rich.isEmpty
+          ? ''
+          : await _crypto.encryptGroupText(groupKey.key, rich),
       'reply_to_message_id': replyToMessageId,
       'reply_to_text': replyToText,
       'message_effect': messageEffect,
@@ -4580,6 +4625,7 @@ class AppController extends ChangeNotifier {
   Future<void> _receiveGroupMessage(
     Map<String, dynamic> packet, {
     required bool fromSync,
+    bool preserveLocalEdit = false,
   }) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
@@ -4614,9 +4660,23 @@ class AppController extends ChangeNotifier {
     );
     if (existingIndex >= 0) {
       final current = group.messages[existingIndex];
+      final incomingText = await _crypto.decryptGroupText(
+        _groupKeyForPacket(groupId, packet['group_key_id']?.toString() ?? ''),
+        packet['message']?.toString() ?? '',
+      );
+      final usable =
+          fromSync &&
+          !preserveLocalEdit &&
+          incomingText.isNotEmpty &&
+          !incomingText.startsWith(MeshCrypto.groupPrefix) &&
+          !_isGroupDecryptFailure(incomingText);
       final replyToMessageId =
           packet['reply_to_message_id']?.toString() ?? current.replyToMessageId;
       group.messages[existingIndex] = current.copyWith(
+        text: usable ? incomingText : null,
+        richContent: usable && packet.containsKey('rich_content')
+            ? await _incomingRich(packet, incomingText)
+            : current.richContent,
         replyToMessageId: replyToMessageId,
         replyToText: packet['reply_to_text']?.toString() ?? current.replyToText,
         isChannelComment:
@@ -4663,6 +4723,7 @@ class AppController extends ChangeNotifier {
         senderNode: sender,
         receiverNode: groupId,
         text: displayText,
+        richContent: await _incomingRich(packet, displayText),
         senderName: isServicePayload ? '' : senderName,
         createdAt: _parsePacketDate(packet),
         replyToMessageId: replyToMessageId,
@@ -4723,7 +4784,10 @@ class AppController extends ChangeNotifier {
         _isGroupDecryptFailure(text)) {
       return;
     }
-    group.messages[messageIndex] = current.copyWith(text: text);
+    group.messages[messageIndex] = current.copyWith(
+      text: text,
+      richContent: await _incomingRich(packet, text),
+    );
     await _saveCache();
     notifyListeners();
   }
@@ -5119,8 +5183,11 @@ class AppController extends ChangeNotifier {
   Future<void> editMessage(
     ChatThread thread,
     ChatMessage message,
-    String text,
-  ) async {
+    String text, {
+    String richContent = '',
+  }) async {
+    final localOnly = isSavedMessagesProfile(thread.profile);
+    final rich = _outgoingRich(text, richContent, localOnly: localOnly);
     final trimmed = text.trim();
     final isCaption =
         message.kind == ChatMessageKind.file ||
@@ -5131,12 +5198,25 @@ class AppController extends ChangeNotifier {
     if (!isCaption && trimmed.isEmpty) {
       return;
     }
+    if (rich.isNotEmpty &&
+        !localOnly &&
+        !thread.isGroup &&
+        thread.profile.publicKey.trim().isEmpty) {
+      throw StateError('Recipient encryption key is unavailable');
+    }
     final updated = _replaceMessage(
       message.id,
-      (current) => current.copyWith(text: trimmed, edited: true),
+      (current) =>
+          current.copyWith(text: trimmed, richContent: rich, edited: true),
     );
     if (updated != null) {
       _refreshReplyPreviews(message.id, _replyPreview(updated));
+    }
+    if (localOnly) {
+      await _saveCache();
+      notifyListeners();
+      await _removeUnusedRichAttachments(thread, message);
+      return;
     }
     if (thread.isBluetooth) {
       final publicKey = thread.profile.publicKey.trim();
@@ -5151,6 +5231,9 @@ class AppController extends ChangeNotifier {
         'type': 'message_edit',
         'message_id': message.id,
         'message': await _crypto.encryptText(publicKey, trimmed),
+        'rich_content': rich.isEmpty
+            ? ''
+            : await _crypto.encryptText(publicKey, rich),
         if (isCaption) 'file_caption': trimmed,
       });
       return;
@@ -5175,6 +5258,9 @@ class AppController extends ChangeNotifier {
         'group_id': thread.groupId,
         'group_message_id': message.id,
         'message': encryptedText,
+        'rich_content': rich.isEmpty
+            ? ''
+            : await _crypto.encryptGroupText(groupKey.key, rich),
         'group_key_id': groupKey.id,
         'group_key_sender_envelope': senderEnvelope,
       };
@@ -5203,6 +5289,7 @@ class AppController extends ChangeNotifier {
           'group_key_envelope': senderEnvelope,
         });
       }
+      await _removeUnusedRichAttachments(thread, message);
       return;
     }
 
@@ -5227,8 +5314,51 @@ class AppController extends ChangeNotifier {
       'sender': session!.login,
       'message_id': message.id,
       'message': encryptedText,
+      'rich_content': rich.isEmpty
+          ? ''
+          : await _crypto.encryptText(thread.profile.publicKey, rich),
       if (isCaption) 'file_caption': trimmed,
     });
+    await _removeUnusedRichAttachments(thread, message);
+  }
+
+  Future<void> _removeUnusedRichAttachments(
+    ChatThread thread,
+    ChatMessage previous, {
+    bool localOnly = false,
+  }) async {
+    final document = RichMessageDocument.decode(
+      previous.richContent,
+      expectedText: previous.text,
+    );
+    if (document == null) return;
+    final retained = <String>{};
+    for (final parent in thread.messages) {
+      if (parent.deleted) continue;
+      final rich = RichMessageDocument.decode(
+        parent.richContent,
+        expectedText: parent.text,
+      );
+      retained.addAll(
+        rich?.attachments.map((item) => item['id'] as String) ?? <String>[],
+      );
+    }
+    for (final item in document.attachments) {
+      final id = item['id'] as String;
+      final file = messageInThread(thread, id);
+      if (retained.contains(id) ||
+          file == null ||
+          file.deleted ||
+          file.kind != ChatMessageKind.file ||
+          file.senderNode != previous.senderNode) {
+        continue;
+      }
+      if (localOnly) {
+        await deleteMessageForMe(thread, file);
+      } else {
+        await deleteMessage(thread, file);
+      }
+    }
   }
 
   Future<void> deleteMessage(ChatThread thread, ChatMessage message) async {
@@ -5240,6 +5370,7 @@ class AppController extends ChangeNotifier {
     }
     await _rememberDeletedMessage(message.id);
     _deleteLocalMessage(thread, message.id);
+    await _removeUnusedRichAttachments(thread, message);
     if (thread.isBluetooth) {
       await ble.cancelQueuedMessage(message.id);
       await _sendBluetoothThreadPacket(thread, {
@@ -5293,6 +5424,7 @@ class AppController extends ChangeNotifier {
     }
     await _rememberDeletedMessage(message.id);
     _deleteLocalMessage(thread, message.id);
+    await _removeUnusedRichAttachments(thread, message, localOnly: true);
   }
 
   void togglePin(ChatThread thread, ChatMessage message) {
@@ -6748,9 +6880,11 @@ class AppController extends ChangeNotifier {
     } else {
       text = await _crypto.decryptText(text);
     }
+    final rich = await _incomingRich(packet, text);
     final updated = _replaceMessage(
       messageId,
-      (message) => message.copyWith(text: text, edited: true),
+      (message) =>
+          message.copyWith(text: text, richContent: rich, edited: true),
     );
     if (updated != null) {
       _refreshReplyPreviews(messageId, _replyPreview(updated));
@@ -9386,10 +9520,21 @@ class AppController extends ChangeNotifier {
     ChatMessage? retryingMessage,
     String? messageId,
     bool businessAutoReply = false,
+    String? richContent,
   }) async {
+    final rich = _outgoingRich(
+      text,
+      richContent ?? retryingMessage?.richContent ?? '',
+      localOnly: isSavedMessagesProfile(recipient),
+    );
     final trimmed = text.trim();
     if (trimmed.isEmpty || session == null) return;
     if (threadOverride?.isBluetooth == true) {
+      if (rich.isNotEmpty) {
+        throw StateError(
+          'Rich messages are not available in Bluetooth mode yet',
+        );
+      }
       final sendError = await sendBluetoothMessageToThread(
         threadOverride!,
         trimmed,
@@ -9414,6 +9559,7 @@ class AppController extends ChangeNotifier {
           senderNode: myNodeId,
           receiverNode: savedMessagesNodeId,
           text: trimmed,
+          richContent: rich,
           createdAt: DateTime.now(),
           replyToMessageId: replyTo?.id ?? '',
           replyToText: replyTo == null ? '' : _replyPreview(replyTo),
@@ -9436,6 +9582,7 @@ class AppController extends ChangeNotifier {
           senderNode: myNodeId,
           receiverNode: recipient.nodeId,
           text: trimmed,
+          richContent: rich,
           createdAt: DateTime.now(),
           replyToMessageId: replyToMessageId,
           replyToText: replyToText,
@@ -9471,6 +9618,9 @@ class AppController extends ChangeNotifier {
       'ttl': 5,
       'sender': session!.login,
       'message': wireText,
+      'rich_content': rich.isEmpty
+          ? ''
+          : await _crypto.encryptText(recipient.publicKey, rich),
       'chat_kind': thread.chatKind,
       'chat_id': thread.threadId,
       'reply_to_message_id': replyToMessageId,
@@ -9839,7 +9989,9 @@ class AppController extends ChangeNotifier {
     final replyToText =
         retryingMessage?.replyToText ??
         (replyTo == null ? '' : _replyPreview(replyTo));
-    final data = _hexEncode(bytes);
+    final data = retryingMessage?.fileData.isNotEmpty == true
+        ? retryingMessage!.fileData
+        : await compute(encodeMediaHex, bytes);
     final trimmedCaption = caption.trim();
     final thread = threadOverride ?? _ensureThread(recipient);
     final createdAt = retryingMessage?.createdAt ?? DateTime.now();
@@ -9930,6 +10082,151 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> prepareRichAttachments(
+    ChatThread thread,
+    RichMessageDocument document,
+    Future<Uint8List?> Function(String) readDraft, {
+    ChatMessage? replyTo,
+  }) async {
+    final account = session;
+    if (account == null) throw StateError('No active session');
+    _outgoingRich(
+      document.text,
+      document.encode(),
+      localOnly: isSavedMessagesProfile(thread.profile),
+    );
+    final unique = {
+      for (final item in document.attachments) item['id'] as String: item,
+    };
+    // Preflight every reference before starting a transfer. Draft bytes never
+    // enter the document or the server's text history.
+    final staged = <String, Uint8List>{};
+    for (final entry in unique.entries) {
+      final current = messageInThread(thread, entry.key);
+      if (current != null &&
+          current.senderNode == myNodeId &&
+          current.kind == ChatMessageKind.file &&
+          !current.deleted) {
+        if (!current.failed &&
+            (current.delivered ||
+                await _socket.hasQueuedFileTransfer(current.id))) {
+          continue;
+        }
+        if (current.fileData.isNotEmpty) {
+          staged[entry.key] = _hexDecode(current.fileData);
+          continue;
+        }
+      }
+      final bytes = await readDraft(entry.key);
+      if (bytes == null) {
+        throw StateError(
+          'Attachment ${entry.value['name']} is unavailable. Attach it again.',
+        );
+      }
+      staged[entry.key] = bytes;
+    }
+    for (final entry in staged.entries) {
+      if (session != account) throw StateError('Account changed');
+      await _sendRichAttachment(
+        thread,
+        entry.key,
+        unique[entry.key]!['name'] as String,
+        entry.value,
+        replyTo: replyTo,
+      );
+    }
+  }
+
+  Future<void> _sendRichAttachment(
+    ChatThread thread,
+    String id,
+    String name,
+    Uint8List bytes, {
+    ChatMessage? replyTo,
+  }) async {
+    final account = session;
+    final data = await compute(encodeMediaHex, bytes);
+    if (session != account) throw StateError('Account changed');
+    final message = ChatMessage(
+      id: id,
+      senderNode: myNodeId,
+      receiverNode: thread.isGroup ? thread.groupId : thread.profile.nodeId,
+      text: '',
+      createdAt: DateTime.now(),
+      kind: ChatMessageKind.file,
+      fileName: name,
+      fileData: data,
+      fileSize: bytes.length,
+      replyToMessageId: replyTo?.id ?? '',
+      replyToText: replyTo == null ? '' : _replyPreview(replyTo),
+    );
+    final failure = thread.isGroup
+        ? await sendGroupFile(thread, name, bytes, retryingMessage: message)
+        : await sendFile(
+            thread.profile,
+            name,
+            bytes,
+            threadOverride: thread,
+            retryingMessage: message,
+          );
+    if (failure != null) throw StateError(failure);
+  }
+
+  Future<String> _forwardRichContent(
+    ChatMessage message,
+    ChatThread target,
+  ) async {
+    final document = RichMessageDocument.decode(
+      message.richContent,
+      expectedText: message.text,
+    );
+    if (document == null || document.attachments.isEmpty) {
+      return message.richContent;
+    }
+    _outgoingRich(
+      document.text,
+      document.encode(),
+      localOnly: isSavedMessagesProfile(target.profile),
+    );
+    final account = session;
+    ChatThread? source;
+    for (final thread in [...threads.values, ...groups.values]) {
+      if (thread.messages.any(
+        (item) =>
+            item.id == message.id && item.senderNode == message.senderNode,
+      )) {
+        source = thread;
+        break;
+      }
+    }
+    if (source == null) throw StateError('Source chat is unavailable');
+    final staged = <String, ({String name, Uint8List bytes})>{};
+    for (final item in document.attachments) {
+      final id = item['id'] as String;
+      if (staged.containsKey(id)) continue;
+      var file = messageInThread(source, id);
+      if (file == null ||
+          file.deleted ||
+          file.kind != ChatMessageKind.file ||
+          file.senderNode != message.senderNode) {
+        throw StateError('An attachment is unavailable');
+      }
+      if (!await ensureMediaAvailable(source, file)) {
+        throw StateError('Could not download ${file.fileName}');
+      }
+      file = messageInThread(source, id) ?? file;
+      staged[id] = (name: file.fileName, bytes: _hexDecode(file.fileData));
+    }
+    final replacements = <String, String>{};
+    for (final item in staged.entries) {
+      if (session != account) throw StateError('Account changed');
+      final id = const Uuid().v4();
+      await _sendRichAttachment(target, id, item.value.name, item.value.bytes);
+      replacements[item.key] = id;
+    }
+    return document.replaceAttachmentIds(replacements).encode();
+  }
+
   Future<String?> forwardMessage(ChatMessage message, ChatThread target) async {
     if (session == null) return 'No active session';
     if (message.deleted) return 'Message was deleted';
@@ -9968,10 +10265,21 @@ class AppController extends ChangeNotifier {
     if (text.isEmpty) return 'Message is empty';
     if (target.isBluetooth) {
       return sendBluetoothMessageToThread(target, text);
-    } else if (target.isGroup) {
-      await sendGroupMessage(target, text);
-    } else {
-      await sendMessage(target.profile, text);
+    }
+    try {
+      final rich = await _forwardRichContent(message, target);
+      if (target.isGroup) {
+        await sendGroupMessage(target, text, richContent: rich);
+      } else {
+        await sendMessage(
+          target.profile,
+          text,
+          threadOverride: target,
+          richContent: rich,
+        );
+      }
+    } catch (e) {
+      return e.toString();
     }
     return null;
   }
@@ -9997,7 +10305,12 @@ class AppController extends ChangeNotifier {
     }
     final text = message.text.trim();
     if (text.isEmpty) return 'Message is empty';
-    await sendMessage(target.profile, text);
+    try {
+      final rich = await _forwardRichContent(message, target);
+      await sendMessage(target.profile, text, richContent: rich);
+    } catch (e) {
+      return e.toString();
+    }
     return null;
   }
 
@@ -10077,6 +10390,13 @@ class AppController extends ChangeNotifier {
         );
       }
       return null;
+    } catch (error) {
+      _replaceMessage(
+        message.id,
+        (current) => current.copyWith(pending: false, failed: true),
+      );
+      addDiagnostic('send', 'Could not retry message ${message.id}: $error');
+      return error.toString();
     } finally {
       _resendingMessageIds.remove(message.id);
     }
@@ -10736,6 +11056,7 @@ class AppController extends ChangeNotifier {
         senderNode: sentByMe ? myNodeId : sender,
         receiverNode: receiver,
         text: text,
+        richContent: await _incomingRich(packet, text),
         createdAt: _parsePacketDate(packet),
         replyToMessageId: packet['reply_to_message_id']?.toString() ?? '',
         replyToText: packet['reply_to_text']?.toString() ?? '',
@@ -11569,6 +11890,43 @@ class AppController extends ChangeNotifier {
       return await _crypto.decryptText(rawText);
     } catch (_) {
       return '[Не удалось расшифровать сообщение]';
+    }
+  }
+
+  String _outgoingRich(String text, String raw, {bool localOnly = false}) {
+    if (raw.isEmpty) return '';
+    final doc = RichMessageDocument.decode(raw, expectedText: text);
+    if (doc == null) throw const FormatException('Invalid rich message');
+    if (!localOnly && _socket.isConnected && !_socket.supportsRichMessages) {
+      throw StateError(
+        'The server must be updated before sending rich messages',
+      );
+    }
+    return doc.encode();
+  }
+
+  Future<String> _incomingRich(Map<String, dynamic> packet, String text) async {
+    final raw = packet['rich_content'];
+    if (raw is! String || raw.isEmpty || raw.length > 768 * 1024) return '';
+    try {
+      final groupId = packet['group_id']?.toString() ?? '';
+      final decoded = groupId.isEmpty
+          ? await _crypto.decryptText(raw)
+          : await _crypto.decryptGroupText(
+              _groupKeyForPacket(
+                groupId,
+                packet['group_key_id']?.toString() ?? '',
+              ),
+              raw,
+            );
+      return RichMessageDocument.decode(
+            decoded,
+            expectedText: text,
+          )?.encode() ??
+          '';
+    } catch (_) {
+      // The readable message must survive an unknown or damaged rich payload.
+      return '';
     }
   }
 

@@ -31,6 +31,7 @@ DELTA_SHADOW_EVENT_TYPES = frozenset(
 )
 
 _DIRECT_FIELDS = (
+    "rich_content",
     "sender_node",
     "receiver_node",
     "message",
@@ -51,6 +52,7 @@ _GROUP_FIELDS = (
     "comments_enabled",
 )
 _GROUP_MESSAGE_FIELDS = (
+    "rich_content",
     "group_id",
     "group_name",
     "sender_node",
@@ -76,6 +78,7 @@ def _sorted_texts(value):
 
 def _canonical_direct(item):
     return {
+        "rich_content": _text(item.get("rich_content")),
         "sender_node": _text(
             item.get("sender_node") or item.get("source_node")
         ),
@@ -114,6 +117,7 @@ def _canonical_group(item):
 def _canonical_group_message(item):
     reply_id = _text(item.get("reply_to_message_id"))
     return {
+        "rich_content": _text(item.get("rich_content")),
         "group_id": _text(item.get("group_id")),
         "group_name": _text(item.get("group_name")),
         "sender_node": _text(
@@ -307,6 +311,7 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
             message_id = _text(payload.get("message_id"))
             message = state["direct_messages"].get(message_id)
             if message is not None:
+                message["rich_content"] = _text(payload.get("rich_content"))
                 message["message"] = _text(
                     payload.get("file_caption")
                     if payload.get("file_caption") is not None
@@ -375,6 +380,7 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
             message_id = _text(payload.get("group_message_id"))
             message = state["group_messages"].get(message_id)
             if message is not None:
+                message["rich_content"] = _text(payload.get("rich_content"))
                 message["message"] = _text(payload.get("message"))
                 if payload.get("group_key_id") is not None:
                     message["group_key_id"] = _text(

@@ -852,7 +852,8 @@ class ServerSyncMixin:
                    COALESCE(chat_kind, 'normal'),
                    COALESCE(chat_id, ''),
                    COALESCE(message_effect, 'none'),
-                   created_at
+                   created_at,
+                   COALESCE(rich_content, '')
             FROM direct_messages
             WHERE sender_login=?
                OR receiver_login=?
@@ -885,7 +886,8 @@ class ServerSyncMixin:
                 "chat_kind": row[9],
                 "chat_id": row[10],
                 "message_effect": row[11],
-                "created_at": row[12]
+                "created_at": row[12],
+                "rich_content": row[13],
             }
             for row in cursor.fetchall()
         ]
@@ -1120,7 +1122,8 @@ class ServerSyncMixin:
                        group_key_id,
                        COALESCE(message_effect, 'none'),
                        COALESCE(is_channel_comment, 0),
-                       created_at
+                       created_at,
+                       COALESCE(rich_content, '')
                 FROM server_group_messages
                 WHERE group_id IN ({placeholders})
                 ORDER BY created_at
@@ -1145,7 +1148,8 @@ class ServerSyncMixin:
                     "group_key_id": row[10],
                     "message_effect": row[11],
                     "is_channel_comment": bool(row[12]) or bool(row[7]),
-                    "created_at": row[13]
+                    "created_at": row[13],
+                    "rich_content": row[14],
                 }
                 for row in cursor.fetchall()
             ]

@@ -1048,6 +1048,8 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE direct_messages ADD COLUMN message_effect TEXT DEFAULT 'none'"
             )
+        if "rich_content" not in direct_columns:
+            conn.execute("ALTER TABLE direct_messages ADD COLUMN rich_content TEXT DEFAULT ''")
 
         conn.execute(
             """
@@ -1302,6 +1304,8 @@ class ServerStorageMixin:
             conn.execute(
                 "ALTER TABLE server_group_messages ADD COLUMN message_effect TEXT DEFAULT 'none'"
             )
+        if "rich_content" not in group_message_columns:
+            conn.execute("ALTER TABLE server_group_messages ADD COLUMN rich_content TEXT DEFAULT ''")
         if "is_channel_comment" not in group_message_columns:
             conn.execute(
                 "ALTER TABLE server_group_messages ADD COLUMN is_channel_comment INTEGER DEFAULT 0"
@@ -4479,6 +4483,13 @@ class ServerStorageMixin:
     ):
 
         packet_type = packet.get("type")
+        rich = packet.get("rich_content", "")
+        if packet_type in {"chat_message", "group_message", "message_edit", "group_message_edit"}:
+            if not isinstance(rich, str) or len(rich.encode("utf-8")) > 768 * 1024:
+                return False
+            prefix = "MCGRP1:" if packet_type.startswith("group_") else "MCENC1:"
+            if rich and not rich.startswith(prefix):
+                return False
 
         self.save_group_key_envelopes(
             packet
@@ -4509,9 +4520,10 @@ class ServerStorageMixin:
                     chat_kind,
                     chat_id,
                     message_effect,
+                    rich_content,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     message_id,
@@ -4526,6 +4538,7 @@ class ServerStorageMixin:
                     packet.get("chat_kind") or "normal",
                     packet.get("chat_id") or "",
                     packet.get("message_effect") or "none",
+                    packet.get("rich_content") or "",
                     _history_created_at(packet),
                 )
             )
@@ -5103,7 +5116,7 @@ class ServerStorageMixin:
             message_cursor = self.db.execute(
                 """
                 UPDATE direct_messages
-                SET message=?
+                SET message=?, rich_content=?
                 WHERE message_id=?
                 AND (
                     sender_node=?
@@ -5112,6 +5125,7 @@ class ServerStorageMixin:
                 """,
                 (
                     file_caption if file_caption is not None else message,
+                    packet.get("rich_content") or "",
                     message_id,
                     sender_node,
                     sender_login
@@ -5401,9 +5415,10 @@ class ServerStorageMixin:
                     group_key_id,
                     message_effect,
                     is_channel_comment,
+                    rich_content,
                     created_at
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     message_id,
@@ -5424,6 +5439,7 @@ class ServerStorageMixin:
                         or bool(packet.get("reply_to_message_id"))
                     )
                     else 0,
+                    packet.get("rich_content") or "",
                     _history_created_at(packet),
                 )
             )
@@ -5642,6 +5658,7 @@ class ServerStorageMixin:
                 """
                 UPDATE server_group_messages
                 SET message=?,
+                    rich_content=?,
                     group_key_id=COALESCE(?, group_key_id)
                 WHERE message_id=?
                 AND (
@@ -5651,6 +5668,7 @@ class ServerStorageMixin:
                 """,
                 (
                     message,
+                    packet.get("rich_content") or "",
                     packet.get("group_key_id"),
                     message_id,
                     sender_node,

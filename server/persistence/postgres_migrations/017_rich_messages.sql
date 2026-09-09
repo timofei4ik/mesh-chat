@@ -1,0 +1,2 @@
+ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS rich_content TEXT NOT NULL DEFAULT '';
+ALTER TABLE server_group_messages ADD COLUMN IF NOT EXISTS rich_content TEXT NOT NULL DEFAULT '';

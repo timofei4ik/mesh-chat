@@ -7,6 +7,7 @@ const aiContextFeatures = {
   'reply': 'ai_smart_replies',
   'document': 'ai_person_memory',
   'style': 'ai_text_rewrite',
+  'compose': 'ai_text_rewrite',
   'notes': 'ai_call_summary',
 };
 

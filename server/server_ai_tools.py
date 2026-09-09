@@ -15,9 +15,11 @@ TOOL_FEATURES = {
     'reply': ('ai_smart_replies', 'ai_smart_replies_month'),
     'document': ('ai_person_memory', 'ai_person_memory_month'),
     'style': ('ai_text_rewrite', 'ai_text_rewrites_month'),
+    'compose': ('ai_text_rewrite', 'ai_text_rewrites_month'),
     'notes': ('ai_call_summary', 'ai_call_summaries_month'),
 }
 TASKS = {
+    'compose': 'Write a draft message following the explicit instruction. Output only the proposed message in answer, without Markdown or tool actions. Do not claim to send it. Do not invent personal facts, dates or commitments not supplied by the user. Use the language of the instruction unless requested otherwise.',
     'search': 'Find messages relevant by meaning to the question, including supplied attachment descriptions/OCR. Return a concise answer and matching source_ids. If absent, say not found. Do not pretend to search beyond supplied sources.',
     'plan': 'Extract explicit agreements and tasks. Return items with text, source_ids, and due (ISO 8601 only if an unambiguous date was explicitly agreed, otherwise null). Never assign invented deadlines or owners.',
     'reply': 'Suggest three short draft replies to the source marked target: agree, clarify, politely decline. Preserve context. Return replies as strings. Do not claim the user has already agreed or sent anything.',
@@ -38,6 +40,8 @@ def normalize_tool_request(raw):
         raise ValueError('context_too_large')
     if mode in ('search', 'document') and not question:
         raise ValueError('empty_question')
+    if mode == 'compose' and not instruction:
+        raise ValueError('empty_instruction')
     sources = raw.get('sources', [])
     if not isinstance(sources, list) or len(sources) > 120:
         raise ValueError('context_too_large')
@@ -163,7 +167,7 @@ class AiToolsMixin:
                                 raise ValueError('ai_vision_unavailable')
                             text = await self._request_ai_ocr(data, mime)
                             request['sources'] = [{'id': 'page:1', 'text': text[:24000]}] if text else []
-                    if not request['sources']:
+                    if not request['sources'] and request['mode'] != 'compose':
                         raise ValueError('no_document_text' if request['mode'] == 'document' else 'no_messages')
                     output = await self._perform_chat_completion([
                         {'role': 'system', 'content': (

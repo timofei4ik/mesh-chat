@@ -38,6 +38,83 @@ void main() {
     );
   });
 
+  test(
+    'rich outbox waits for a capable server and replays without losing content',
+    () async {
+      var capable = false;
+      final received = <Map<String, dynamic>>[];
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          final welcome = _welcomePacket();
+          (welcome['capabilities'] as Map)['rich_messages_v1'] = capable;
+          if (capable) {
+            (welcome['capabilities'] as Map)['ai_compose_v1'] = true;
+          }
+          socket.add(jsonEncode(welcome));
+        } else if (packet['type'] == 'chat_message') {
+          received.add(packet);
+          socket.add(
+            jsonEncode({
+              'type': 'mutation_ack',
+              'ok': true,
+              'outbox_id': packet['outbox_id'],
+              'operation_id': packet['operation_id'],
+              'packet_type': packet['type'],
+              'packet_id': packet['packet_id'],
+            }),
+          );
+        }
+      });
+      addTearDown(server.close);
+      final session = _session(server.url, 'rich-capability');
+      Future<MeshSocket> connect() async {
+        final ready = Completer<void>();
+        final socket = MeshSocket();
+        addTearDown(socket.close);
+        await socket.connect(
+          session: session,
+          publicKey: 'key',
+          profile: _profile('rich-capability'),
+          onPacket: (packet) {
+            if (packet['type'] == 'server_welcome' && !ready.isCompleted) {
+              ready.complete();
+            }
+          },
+          onStatus: (_) {},
+        );
+        await ready.future.timeout(const Duration(seconds: 2));
+        return socket;
+      }
+
+      final first = await connect();
+      expect(first.supportsAiCompose, isFalse);
+      first.send({
+        ..._chatPacket(session, 'rich-wait'),
+        'rich_content': 'MCENC1:opaque-rich-document',
+      });
+      await _waitUntilAsync(
+        () async => (await MutationOutboxStore().load(session)).isNotEmpty,
+        timeout: const Duration(seconds: 2),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(received, isEmpty);
+      await first.close();
+      expect(first.supportsAiCompose, isFalse);
+      capable = true;
+      final upgraded = await connect();
+      expect(upgraded.supportsAiCompose, isTrue);
+      await _waitUntil(
+        () => received.isNotEmpty,
+        timeout: const Duration(seconds: 3),
+      );
+      expect(received.single['rich_content'], 'MCENC1:opaque-rich-document');
+      await _waitUntilAsync(
+        () async => (await MutationOutboxStore().load(session)).isEmpty,
+        timeout: const Duration(seconds: 2),
+      );
+    },
+  );
+
   test('one malformed frame does not block following packets', () async {
     final server = await _LocalWebSocketServer.start((socket, packet) {
       if (packet['type'] != 'server_hello') return;

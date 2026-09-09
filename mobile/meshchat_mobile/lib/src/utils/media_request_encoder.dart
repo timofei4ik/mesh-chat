@@ -1,6 +1,16 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+String encodeMediaHex(Uint8List bytes) {
+  const digits = '0123456789abcdef';
+  final codes = Uint8List(bytes.length * 2);
+  for (var i = 0; i < bytes.length; i++) {
+    codes[i * 2] = digits.codeUnitAt(bytes[i] >> 4);
+    codes[i * 2 + 1] = digits.codeUnitAt(bytes[i] & 15);
+  }
+  return String.fromCharCodes(codes);
+}
+
 /// Pure worker entry point: neither the controller nor socket crosses isolates.
 String encodeMediaRequest(Map<String, dynamic> input) {
   final hex = input['hex'] as String;

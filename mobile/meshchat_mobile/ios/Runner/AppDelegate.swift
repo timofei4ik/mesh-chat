@@ -31,7 +31,7 @@ import UIKit
       installPlatformStyleChannel(registrar.messenger())
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MeshChatLiquidGlass") {
-      registrar.register(MeshChatLiquidGlassFactory(), withId: liquidGlassViewType)
+      registrar.register(MeshChatLiquidGlassFactory(messenger: registrar.messenger()), withId: liquidGlassViewType)
     }
   }
 
@@ -193,12 +193,19 @@ private final class MeshSystemCallBridge: NSObject, CXProviderDelegate {
 }
 
 private final class MeshChatLiquidGlassFactory: NSObject, FlutterPlatformViewFactory {
+  private let messenger: FlutterBinaryMessenger
+
+  init(messenger: FlutterBinaryMessenger) {
+    self.messenger = messenger
+    super.init()
+  }
+
   func create(
     withFrame frame: CGRect,
     viewIdentifier viewId: Int64,
     arguments args: Any?
   ) -> FlutterPlatformView {
-    return MeshChatLiquidGlassView(frame: frame, arguments: args)
+    return MeshChatLiquidGlassView(frame: frame, arguments: args, viewId: viewId, messenger: messenger)
   }
 
   func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
@@ -209,10 +216,12 @@ private final class MeshChatLiquidGlassFactory: NSObject, FlutterPlatformViewFac
 private final class MeshChatLiquidGlassView: NSObject, FlutterPlatformView {
   private let rootView: UIView
   private let effectView: UIVisualEffectView
+  private let channel: FlutterMethodChannel
 
-  init(frame: CGRect, arguments args: Any?) {
+  init(frame: CGRect, arguments args: Any?, viewId: Int64, messenger: FlutterBinaryMessenger) {
     rootView = UIView(frame: frame)
     effectView = UIVisualEffectView(effect: nil)
+    channel = FlutterMethodChannel(name: "meshchat/liquid_glass/\(viewId)", binaryMessenger: messenger)
     super.init()
 
     let values = args as? [String: Any]
@@ -256,7 +265,31 @@ private final class MeshChatLiquidGlassView: NSObject, FlutterPlatformView {
     #else
       effectView.effect = UIBlurEffect(style: .systemUltraThinMaterialDark)
     #endif
+
+    // Capture only the material, never Flutter labels or chat contents. During
+    // interactive routes Flutter displays this image below the foreground page.
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard call.method == "snapshot" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      guard let self = self, self.rootView.window != nil else { result(nil); return }
+      let size = self.rootView.bounds.size
+      guard size.width > 0, size.height > 0,
+            size.width <= 2048, size.height <= 2048 else { result(nil); return }
+      let format = UIGraphicsImageRendererFormat()
+      format.scale = min(self.rootView.window?.screen.scale ?? 2, 2)
+      format.opaque = false
+      let renderer = UIGraphicsImageRenderer(size: size, format: format)
+      let image = renderer.image { _ in
+        self.rootView.drawHierarchy(in: self.rootView.bounds, afterScreenUpdates: false)
+      }
+      if let data = image.pngData() { result(FlutterStandardTypedData(bytes: data)) }
+      else { result(nil) }
+    }
   }
+
+  deinit { channel.setMethodCallHandler(nil) }
 
   func view() -> UIView {
     return rootView

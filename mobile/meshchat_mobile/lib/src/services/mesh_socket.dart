@@ -80,6 +80,8 @@ class MeshSocket {
   bool _supportsSyncV2Delta = false;
   bool _supportsSyncV2DeltaBatch = false;
   bool _supportsMultiDeviceState = false;
+  bool _supportsRichMessages = false;
+  bool _supportsAiCompose = false;
   String _lastIdentityRecovery = '';
   bool _flushingOutbox = false;
   bool _flushingFileOutbox = false;
@@ -111,7 +113,31 @@ class MeshSocket {
   bool get supportsSyncV2Delta => _supportsSyncV2Delta;
   bool get supportsSyncV2DeltaBatch => _supportsSyncV2DeltaBatch;
   bool get supportsMultiDeviceState => _supportsMultiDeviceState;
+  bool get supportsRichMessages =>
+      _connected && _serverCapabilitiesKnown && _supportsRichMessages;
+  bool get supportsAiCompose =>
+      _connected && _serverCapabilitiesKnown && _supportsAiCompose;
   String get lastIdentityRecovery => _lastIdentityRecovery;
+
+  Future<Set<String>> pendingEditMessageIds() async {
+    final current = _session;
+    if (current == null) return {};
+    final result = <String>{};
+    await _serializeOutbox(() async {
+      for (final entry in await _outboxStore.load(current)) {
+        final packet = entry.packet;
+        if (packet['type'] == 'message_edit' ||
+            packet['type'] == 'group_message_edit') {
+          final id =
+              (packet['message_id'] ?? packet['group_message_id'])
+                  ?.toString() ??
+              '';
+          if (id.isNotEmpty) result.add(id);
+        }
+      }
+    });
+    return result;
+  }
 
   Future<MutationOutboxStats> mutationOutboxStats() async {
     final current = _session;
@@ -304,6 +330,8 @@ class MeshSocket {
                   capabilities['sync_v2_delta_batch'] == true;
               _supportsMultiDeviceState =
                   capabilities['multi_device_state'] == true;
+              _supportsRichMessages = capabilities['rich_messages_v1'] == true;
+              _supportsAiCompose = capabilities['ai_compose_v1'] == true;
             }
             if (packetType == 'file_chunk_ack') {
               await _serializeFileOutbox(() async {
@@ -1252,6 +1280,12 @@ class MeshSocket {
     int generation,
   ) async {
     if (!_isCurrentGeneration(generation) || !_serverCapabilitiesKnown) return;
+    // Do not let an older server acknowledge a document after dropping its
+    // formatting. Keep it durable until a capable server is available.
+    if (!_supportsRichMessages &&
+        (entry.packet['rich_content']?.toString() ?? '').isNotEmpty) {
+      return;
+    }
     if (!_sendRaw(entry.packet)) {
       await _outboxStore.markQueued(
         current,
@@ -1295,6 +1329,14 @@ class MeshSocket {
       try {
         await _serializeOutbox(() async {
           entries = await _outboxStore.load(current);
+          if (!_supportsRichMessages) {
+            entries = entries
+                .where(
+                  (entry) =>
+                      (entry.packet['rich_content']?.toString() ?? '').isEmpty,
+                )
+                .toList();
+          }
         });
       } catch (_) {
         return;

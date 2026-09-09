@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 47,
-  "updatedAt": "2026-09-08T20:30:00Z",
+  "catalogVersion": 48,
+  "updatedAt": "2026-09-09T18:09:51Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-rich-messages-1-1-0",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Message editor and rich messages",
+      "summary": "Message editor opens over the chat with its conversation background: formatting, lists, tables, formulas, links and attachments. Tables support row and column deletion, moving blocks and typing before or after them. Sent tables adapt to bubble width and wide tables can scroll. Rich message content is preserved across server history, cache reloads, edits and forwarding. Drafts remain local to each account and chat. AI drafting is enabled on the updated server with explicit user instructions and review before sending. MeshPro requirements still apply. Grouped messages show a tail only on the last bubble. iOS Liquid Glass and folder swipes are included in source for Codemagic; iOS binaries are distributed separately.",
+      "publishedAt": "2026-09-09"
+    },
     {
       "id": "meshchat-history-calls-1-0-99",
       "appId": "meshchat",
@@ -124,7 +132,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.0.99",
+      "version": "1.1.0",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -140,27 +148,20 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 202,
+      "build": 207,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-08T20:30:00Z",
+      "updated_at": "2026-09-09T18:09:51Z",
       "release": {
-        "title": "More reliable chat history and calls",
-        "publishedAt": "2026-09-08",
+        "title": "Message editor and rich messages",
+        "publishedAt": "2026-09-09",
         "notes": [
-          "Windows and Android: merge same-account device histories instead of hiding older conversations",
-          "Preserve readable cached history and request resynchronization after cache verification errors",
-          "Wait for authenticated connection before sending call setup; ignore duplicate offers for the same call",
-          "Local enhanced noise suppression is available to everyone without MeshPro",
-          "Update both participants. iOS source is included; iOS binaries are distributed separately",
-          "Search selected loaded messages by meaning and jump to the original sources",
-          "Save personal writing styles with instructions and examples",
-          "Turn selected messages into a plan and review suggested reminders before creating them",
-          "Get contextual reply drafts without sending them automatically",
-          "Ask questions about PDF text and PNG/JPEG documents with page references (up to 3 MB; first 12 PDF pages)",
-          "Edit, organize and save personal call notes, or send them to Saved Messages; no automatic call recording",
-          "Choose the context before external AI processing. Styles and notes are stored locally for each account"
+          "Message editor opens over the chat with its conversation background: formatting, lists, tables, formulas, links and attachments.",
+          "Tables support row and column deletion, moving blocks and typing before or after them. Sent tables adapt to bubble width and wide tables can scroll.",
+          "Rich message content is preserved across server history, cache reloads, edits and forwarding. Drafts remain local to each account and chat.",
+          "AI drafting is enabled on the updated server with explicit user instructions and review before sending. MeshPro requirements still apply.",
+          "Grouped messages show a tail only on the last bubble. iOS Liquid Glass and folder swipes are included in source for Codemagic; iOS binaries are distributed separately."
         ]
       }
     },
