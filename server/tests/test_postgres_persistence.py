@@ -134,6 +134,7 @@ class PostgresPersistenceTests(unittest.TestCase):
                 "015_call_sfu_sessions.sql",
                 "016_message_bubbles.sql",
                 "017_rich_messages.sql",
+                "018_privacy_controls.sql",
             ],
             [item.name for item in migrations],
         )

@@ -14,6 +14,7 @@ import '../utils/mesh_page_route.dart';
 import '../widgets/profile_avatar.dart';
 import '../widgets/report_content_dialog.dart';
 import 'chat_media_page.dart';
+import 'chat_page.dart';
 import 'meeting_point_map_page.dart';
 import 'profile_page.dart';
 
@@ -210,11 +211,44 @@ class GroupInfoPage extends StatelessWidget {
   }
 
   void openProfile(BuildContext context, Profile profile) {
+    final existingThread = controller.threadForProfile(profile);
+    final canMessage =
+        existingThread?.messages.isNotEmpty == true ||
+        profile.directMessagePrivacy != 'nobody';
     Navigator.push<void>(
       context,
       meshPageRoute<void>(
-        builder: (_) => ProfilePage(profile: profile),
+        builder: (profileContext) => ProfilePage(
+          profile: profile,
+          controller: controller,
+          thread: existingThread,
+          onMessage: !canMessage
+              ? null
+              : () => _openDirectChat(
+                  context,
+                  profileContext,
+                  profile,
+                  existingThread,
+                ),
+        ),
         preserveLiquidGlass: true,
+      ),
+    );
+  }
+
+  void _openDirectChat(
+    BuildContext context,
+    BuildContext profileContext,
+    Profile profile,
+    ChatThread? existingThread,
+  ) {
+    final directThread = existingThread ?? ChatThread(profile: profile);
+    controller.threads[profile.nodeId] = directThread;
+    Navigator.of(profileContext).pop();
+    Navigator.push<void>(
+      context,
+      meshPageRoute<void>(
+        builder: (_) => ChatPage(controller: controller, thread: directThread),
       ),
     );
   }

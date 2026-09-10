@@ -170,6 +170,117 @@ class SyncV2ContractTests(unittest.TestCase):
             all(event["event_id"] == event["cursor"] for event in events)
         )
 
+    def test_direct_recipient_can_delete_message_for_everyone(self):
+        self.register_device("alice", "alice-phone")
+        self.register_device("bob", "bob-phone")
+        self.persist_packet(
+            {
+                "type": "chat_message",
+                "packet_id": "recipient-delete-message",
+                "source_node": "alice-phone",
+                "destination_node": "bob-phone",
+                "sender": "Alice",
+                "message": "ciphertext:hello",
+            }
+        )
+
+        self.persist_packet(
+            {
+                "type": "message_delete",
+                "packet_id": "recipient-delete-operation",
+                "message_id": "recipient-delete-message",
+                "source_node": "bob-phone",
+                "destination_node": "alice-phone",
+            }
+        )
+
+        remaining = self.relay.db.execute(
+            "SELECT COUNT(*) FROM direct_messages WHERE message_id=?",
+            ("recipient-delete-message",),
+        ).fetchone()[0]
+        self.assertEqual(0, remaining)
+
+    def test_group_admin_can_delete_foreign_message_but_member_cannot(self):
+        for login in ("alice", "bob", "charlie"):
+            self.register_device(login, f"{login}-phone-device")
+        self.relay.save_group_members(
+            "delete-role-group",
+            "Delete roles",
+            [
+                "alice-phone-device",
+                "bob-phone-device",
+                "charlie-phone-device",
+            ],
+            "alice-phone-device",
+            ["bob-phone-device"],
+        )
+        for message_id, sender in (
+            ("foreign-admin-delete", "charlie-phone-device"),
+            ("foreign-member-delete", "bob-phone-device"),
+        ):
+            self.persist_packet(
+                {
+                    "type": "group_message",
+                    "packet_id": message_id,
+                    "group_message_id": message_id,
+                    "group_id": "delete-role-group",
+                    "group_name": "Delete roles",
+                    "members": [
+                        "alice-phone-device",
+                        "bob-phone-device",
+                        "charlie-phone-device",
+                    ],
+                    "source_node": sender,
+                    "message": f"ciphertext:{message_id}",
+                }
+            )
+
+        self.assertEqual(
+            ("alice-phone-device", ["bob-phone-device"]),
+            self.relay.get_group_roles("delete-role-group"),
+        )
+        stored_senders = dict(
+            self.relay.db.execute(
+                "SELECT message_id, sender_node FROM server_group_messages"
+            ).fetchall()
+        )
+        self.assertEqual(
+            "bob-phone-device",
+            stored_senders["foreign-member-delete"],
+        )
+
+        admin_delete = self.relay.persist_history_mutation(
+            {
+                "type": "group_message_delete",
+                "packet_id": "admin-delete-operation",
+                "group_message_id": "foreign-admin-delete",
+                "group_id": "delete-role-group",
+                "source_node": "bob-phone-device",
+            },
+            ("alice", "bob", "charlie"),
+        )
+        member_delete = self.relay.persist_history_mutation(
+            {
+                "type": "group_message_delete",
+                "packet_id": "member-delete-operation",
+                "group_message_id": "foreign-member-delete",
+                "group_id": "delete-role-group",
+                "source_node": "charlie-phone-device",
+            },
+            ("alice", "bob", "charlie"),
+        )
+
+        self.assertIsNot(admin_delete["saved"], False)
+        self.assertIs(member_delete["saved"], False)
+        remaining = {
+            row[0]
+            for row in self.relay.db.execute(
+                "SELECT message_id FROM server_group_messages"
+            ).fetchall()
+        }
+        self.assertNotIn("foreign-admin-delete", remaining)
+        self.assertIn("foreign-member-delete", remaining)
+
     def test_every_delta_safe_event_has_a_shadow_reducer(self):
         self.assertEqual(
             server_sync.SYNC_V2_EVENT_PACKET_TYPES

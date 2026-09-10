@@ -27,6 +27,10 @@ class Profile {
     this.profileGlow,
     this.profileAccent,
     this.emojiStatus = '',
+    this.directMessagePrivacy = 'everyone',
+    this.privacyShowOnline = true,
+    this.privacyShowAvatar = true,
+    this.privacyShowAbout = true,
   });
 
   final String nodeId;
@@ -50,6 +54,10 @@ class Profile {
   final bool? profileGlow;
   final int? profileAccent;
   final String emojiStatus;
+  final String directMessagePrivacy;
+  final bool privacyShowOnline;
+  final bool privacyShowAvatar;
+  final bool privacyShowAbout;
 
   String get effectiveProfileBackground {
     return normalizeBackground(profileBackground);
@@ -242,6 +250,10 @@ class Profile {
     bool? profileGlow,
     int? profileAccent,
     String? emojiStatus,
+    String? directMessagePrivacy,
+    bool? privacyShowOnline,
+    bool? privacyShowAvatar,
+    bool? privacyShowAbout,
   }) {
     return Profile(
       nodeId: nodeId ?? this.nodeId,
@@ -262,6 +274,10 @@ class Profile {
       profileGlow: profileGlow ?? this.profileGlow,
       profileAccent: profileAccent ?? this.profileAccent,
       emojiStatus: emojiStatus ?? this.emojiStatus,
+      directMessagePrivacy: directMessagePrivacy ?? this.directMessagePrivacy,
+      privacyShowOnline: privacyShowOnline ?? this.privacyShowOnline,
+      privacyShowAvatar: privacyShowAvatar ?? this.privacyShowAvatar,
+      privacyShowAbout: privacyShowAbout ?? this.privacyShowAbout,
     );
   }
 
@@ -313,6 +329,11 @@ class Profile {
           ? int.tryParse(json['profile_accent']?.toString() ?? '')
           : null,
       emojiStatus: json['emoji_status']?.toString() ?? '',
+      directMessagePrivacy:
+          json['direct_message_privacy']?.toString() ?? 'everyone',
+      privacyShowOnline: json['privacy_show_online'] != false,
+      privacyShowAvatar: json['privacy_show_avatar'] != false,
+      privacyShowAbout: json['privacy_show_about'] != false,
     );
   }
 
@@ -337,6 +358,10 @@ class Profile {
       if (profileGlow != null) 'profile_glow': profileGlow,
       if (profileAccent != null) 'profile_accent': profileAccent,
       if (emojiStatus.isNotEmpty) 'emoji_status': emojiStatus,
+      'direct_message_privacy': directMessagePrivacy,
+      'privacy_show_online': privacyShowOnline,
+      'privacy_show_avatar': privacyShowAvatar,
+      'privacy_show_about': privacyShowAbout,
     };
   }
 }

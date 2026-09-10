@@ -631,6 +631,10 @@ class SQLiteIdentityRepository:
                 profile_glow=COALESCE(?, profile_glow),
                 profile_accent=COALESCE(?, profile_accent),
                 emoji_status=COALESCE(?, emoji_status),
+                privacy_show_online=COALESCE(?, privacy_show_online),
+                privacy_show_avatar=COALESCE(?, privacy_show_avatar),
+                privacy_show_about=COALESCE(?, privacy_show_about),
+                direct_message_privacy=COALESCE(?, direct_message_privacy),
                 last_login=CURRENT_TIMESTAMP
             WHERE login=?
             """,
@@ -648,6 +652,10 @@ class SQLiteIdentityRepository:
                 profile.get("profile_glow"),
                 profile.get("profile_accent"),
                 profile.get("emoji_status"),
+                profile.get("privacy_show_online"),
+                profile.get("privacy_show_avatar"),
+                profile.get("privacy_show_about"),
+                profile.get("direct_message_privacy"),
                 self._login(login),
             ),
         )
@@ -671,6 +679,10 @@ class SQLiteIdentityRepository:
             "profile_glow": bool(row[11]),
             "profile_accent": row[12],
             "emoji_status": row[13] or "",
+            "privacy_show_online": bool(row[14]),
+            "privacy_show_avatar": bool(row[15]),
+            "privacy_show_about": bool(row[16]),
+            "direct_message_privacy": row[17] or "everyone",
         }
 
     def profile_by_public_username(self, public_username):
@@ -690,6 +702,10 @@ class SQLiteIdentityRepository:
                    COALESCE(a.profile_glow, 0),
                    COALESCE(a.profile_accent, 4282557941),
                    COALESCE(a.emoji_status, '')
+                   , COALESCE(a.privacy_show_online, 1)
+                   , COALESCE(a.privacy_show_avatar, 1)
+                   , COALESCE(a.privacy_show_about, 1)
+                   , COALESCE(a.direct_message_privacy, 'everyone')
             FROM accounts a
             LEFT JOIN account_devices d
               ON d.login=a.login
@@ -727,6 +743,10 @@ class SQLiteIdentityRepository:
                    COALESCE(a.profile_glow, 0),
                    COALESCE(a.profile_accent, 4282557941),
                    COALESCE(a.emoji_status, '')
+                   , COALESCE(a.privacy_show_online, 1)
+                   , COALESCE(a.privacy_show_avatar, 1)
+                   , COALESCE(a.privacy_show_about, 1)
+                   , COALESCE(a.direct_message_privacy, 'everyone')
             FROM accounts a
             LEFT JOIN account_devices d
               ON d.login=a.login

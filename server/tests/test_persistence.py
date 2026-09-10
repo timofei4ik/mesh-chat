@@ -27,6 +27,10 @@ class SQLiteUnitOfWorkTests(unittest.TestCase):
                 profile_glow INTEGER NOT NULL DEFAULT 0,
                 profile_accent INTEGER NOT NULL DEFAULT 4282557941,
                 emoji_status TEXT DEFAULT '',
+                privacy_show_online INTEGER NOT NULL DEFAULT 1,
+                privacy_show_avatar INTEGER NOT NULL DEFAULT 1,
+                privacy_show_about INTEGER NOT NULL DEFAULT 1,
+                direct_message_privacy TEXT NOT NULL DEFAULT 'everyone',
                 last_login DATETIME
             )
             """

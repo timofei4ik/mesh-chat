@@ -636,6 +636,7 @@ class AppController extends ChangeNotifier {
   Timer? _draftCacheSaveTimer;
   Future<void>? _cacheSaveFuture;
   bool _cacheSavePending = false;
+  Future<void> _deletedMessageSave = Future<void>.value();
   final Map<String, int> _draftVersions = {};
   final Map<String, int> _archiveVersions = {};
   final Map<String, bool> _archiveStates = {};
@@ -1057,6 +1058,10 @@ class AppController extends ChangeNotifier {
       about: appSettings.showAbout ? profile.about : '',
       avatarData: appSettings.showAvatar ? profile.avatarData : '',
       online: appSettings.showOnline && profile.online,
+      privacyShowOnline: appSettings.showOnline,
+      privacyShowAvatar: appSettings.showAvatar,
+      privacyShowAbout: appSettings.showAbout,
+      directMessagePrivacy: appSettings.directMessagePrivacy.name,
     );
   }
 
@@ -1122,8 +1127,16 @@ class AppController extends ChangeNotifier {
       nodeAliases: incoming.nodeAliases.isEmpty
           ? existing.nodeAliases
           : <String>{...existing.nodeAliases, ...incoming.nodeAliases}.toList(),
-      about: incoming.about.trim().isEmpty ? existing.about : null,
-      avatarData: incoming.avatarData.isEmpty ? existing.avatarData : null,
+      about: !incoming.privacyShowAbout
+          ? ''
+          : incoming.about.trim().isEmpty
+          ? existing.about
+          : null,
+      avatarData: !incoming.privacyShowAvatar
+          ? ''
+          : incoming.avatarData.isEmpty
+          ? existing.avatarData
+          : null,
       publicKey: incoming.publicKey.isEmpty ? existing.publicKey : null,
       online: online ?? incoming.online || existing.online,
       meshProBadge: incoming.meshProBadge ?? existing.meshProBadge,
@@ -1140,6 +1153,10 @@ class AppController extends ChangeNotifier {
       emojiStatus: incoming.emojiStatus.trim().isEmpty
           ? existing.emojiStatus
           : incoming.emojiStatus,
+      directMessagePrivacy: incoming.directMessagePrivacy,
+      privacyShowOnline: incoming.privacyShowOnline,
+      privacyShowAvatar: incoming.privacyShowAvatar,
+      privacyShowAbout: incoming.privacyShowAbout,
     );
   }
 
@@ -3612,10 +3629,10 @@ class AppController extends ChangeNotifier {
       if (raw is! Map) continue;
       final profile = Profile.fromJson(Map<String, dynamic>.from(raw));
       if (profile.nodeId.isEmpty || _isOwnProfileAlias(profile)) continue;
-      onlineIds.add(profile.nodeId);
+      if (profile.online) onlineIds.add(profile.nodeId);
       final username = profile.publicUsername.trim().toLowerCase();
       if (username.isNotEmpty) onlineUsernames.add(username);
-      final onlineProfile = _mergeProfile(profile, online: true);
+      final onlineProfile = _mergeProfile(profile, online: profile.online);
       profiles[profile.nodeId] = onlineProfile;
       _applyProfileToThreads(onlineProfile);
     }
@@ -5362,14 +5379,15 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> deleteMessage(ChatThread thread, ChatMessage message) async {
-    if (session == null || message.senderNode != myNodeId) return;
+    if (!canDeleteMessageForEveryone(thread, message)) return;
+    _deleteLocalMessage(thread, message.id);
+    final remember = _rememberDeletedMessage(message.id);
     if (!thread.isBluetooth &&
         (message.kind == ChatMessageKind.file ||
             message.kind == ChatMessageKind.sticker)) {
       await _socket.cancelFileTransfer(message.id);
     }
-    await _rememberDeletedMessage(message.id);
-    _deleteLocalMessage(thread, message.id);
+    await remember;
     await _removeUnusedRichAttachments(thread, message);
     if (thread.isBluetooth) {
       await ble.cancelQueuedMessage(message.id);
@@ -5415,15 +5433,24 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  bool canDeleteMessageForEveryone(ChatThread thread, ChatMessage message) {
+    if (session == null) return false;
+    if (_isOwnAccountNode(message.senderNode)) return true;
+    if (!thread.isGroup) return true;
+    return _isOwnAccountNode(thread.ownerNode) ||
+        thread.admins.any(_isOwnAccountNode);
+  }
+
   Future<void> deleteMessageForMe(
     ChatThread thread,
     ChatMessage message,
   ) async {
+    _deleteLocalMessage(thread, message.id);
+    final remember = _rememberDeletedMessage(message.id);
     if (thread.isBluetooth) {
       await ble.cancelQueuedMessage(message.id);
     }
-    await _rememberDeletedMessage(message.id);
-    _deleteLocalMessage(thread, message.id);
+    await remember;
     await _removeUnusedRichAttachments(thread, message, localOnly: true);
   }
 
@@ -6763,7 +6790,17 @@ class AppController extends ChangeNotifier {
         ? deleted.sublist(deleted.length - 3000)
         : deleted;
     appSettings = appSettings.copyWith(deletedMessageIds: trimmed);
-    await _settingsStore.save(appSettings);
+    final snapshot = appSettings;
+    final previous = _deletedMessageSave;
+    _deletedMessageSave = () async {
+      try {
+        await previous;
+      } catch (_) {
+        // A failed older write must not prevent later deletions from persisting.
+      }
+      await _settingsStore.saveDeletedMessageIds(snapshot.deletedMessageIds);
+    }();
+    await _deletedMessageSave;
   }
 
   List<ChatMessage> searchMessages(ChatThread thread, String query) {
@@ -6897,15 +6934,58 @@ class AppController extends ChangeNotifier {
         packet['group_message_id']?.toString() ??
         '';
     if (messageId.isEmpty) return;
-    await _rememberDeletedMessage(messageId);
-    pollsByMessageId.remove(messageId);
     for (final thread in [...threads.values, ...groups.values]) {
-      if (_deleteLocalMessage(thread, messageId)) {
-        notifyListeners();
-        return;
-      }
+      final message = messageInThread(thread, messageId);
+      if (message == null) continue;
+      if (!_deletePacketIsAuthorized(packet, thread, message)) return;
+      final remember = _rememberDeletedMessage(messageId);
+      pollsByMessageId.remove(messageId);
+      _deleteLocalMessage(thread, messageId);
+      await remember;
+      return;
     }
-    notifyListeners();
+  }
+
+  bool _deletePacketIsAuthorized(
+    Map<String, dynamic> packet,
+    ChatThread thread,
+    ChatMessage message,
+  ) {
+    final source = packet['source_node']?.toString().trim() ?? '';
+    if (source.isEmpty) return false;
+    if (_isOwnAccountNode(source)) return true;
+    if (!thread.isGroup) {
+      return source == thread.profile.nodeId ||
+          thread.profile.nodeAliases.contains(source);
+    }
+    return _nodesShareKnownAccount(source, message.senderNode) ||
+        _nodesShareKnownAccount(source, thread.ownerNode) ||
+        thread.admins.any((admin) => _nodesShareKnownAccount(source, admin));
+  }
+
+  bool _nodesShareKnownAccount(String first, String second) {
+    final firstNode = first.trim();
+    final secondNode = second.trim();
+    if (firstNode.isEmpty || secondNode.isEmpty) return false;
+    if (firstNode == secondNode) return true;
+    if (_isOwnAccountNode(firstNode) && _isOwnAccountNode(secondNode)) {
+      return true;
+    }
+
+    Profile? profileFor(String nodeId) {
+      for (final profile in profiles.values) {
+        if (profile.nodeId == nodeId || profile.nodeAliases.contains(nodeId)) {
+          return profile;
+        }
+      }
+      return null;
+    }
+
+    final firstProfile = profileFor(firstNode);
+    final secondProfile = profileFor(secondNode);
+    final firstLogin = firstProfile?.accountLogin.trim().toLowerCase() ?? '';
+    final secondLogin = secondProfile?.accountLogin.trim().toLowerCase() ?? '';
+    return firstLogin.isNotEmpty && firstLogin == secondLogin;
   }
 
   void _applyPinPacket(Map<String, dynamic> packet, {bool fromSync = false}) {
@@ -12403,6 +12483,13 @@ class AppController extends ChangeNotifier {
     final messageId = packet['packet_id']?.toString() ?? '';
     if (messageId.isEmpty) return;
     final accepted = packet['ok'] != false;
+    if (!accepted && packet['reason'] == 'direct_messages_restricted') {
+      addDiagnostic(
+        'privacy',
+        'The recipient does not accept new private messages',
+      );
+      status = 'The recipient does not accept new private messages';
+    }
     _replaceMessage(
       messageId,
       (message) => message.copyWith(pending: false, failed: !accepted),
@@ -12486,7 +12573,6 @@ class AppController extends ChangeNotifier {
     thread.messages.removeWhere((message) => message.id == messageId);
     thread.pinnedMessageIds.remove(messageId);
     if (thread.messages.length == before) return false;
-    unawaited(_saveCache());
     notifyListeners();
     return true;
   }
@@ -12555,9 +12641,29 @@ class AppController extends ChangeNotifier {
         appSettings.windowsCloseToTray != settings.windowsCloseToTray;
     final launchAtStartupChanged =
         appSettings.windowsLaunchAtStartup != settings.windowsLaunchAtStartup;
+    final privacyChanged =
+        appSettings.showOnline != settings.showOnline ||
+        appSettings.showAvatar != settings.showAvatar ||
+        appSettings.showAbout != settings.showAbout ||
+        appSettings.directMessagePrivacy != settings.directMessagePrivacy;
     appSettings = settings;
     await _configureSystemCallNotifications();
     await _settingsStore.save(settings);
+    if (privacyChanged && session != null && _socket.isConnected) {
+      _socket.send({
+        'type': 'profile_update',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': 'SERVER',
+        'ttl': 5,
+        'login': session!.login,
+        'privacy_show_online': settings.showOnline,
+        'privacy_show_avatar': settings.showAvatar,
+        'privacy_show_about': settings.showAbout,
+        'direct_message_privacy': settings.directMessagePrivacy.name,
+      });
+    }
     if (closeToTrayChanged) {
       unawaited(_windowsBackground.setCloseToTray(settings.windowsCloseToTray));
     }

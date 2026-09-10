@@ -138,8 +138,8 @@ class _ChatPageState extends State<ChatPage>
   DateTime? liveLocationUntil;
   String? liveLocationMessageId;
   String? highlightedMessageId;
-  final deletingMessageIds = <String>{};
   final selectedMessageIds = <String>{};
+  final collapsingMessageIds = <String>{};
   final messageTintRefresh = ValueNotifier<int>(0);
   final messageListRefresh = ValueNotifier<int>(0);
   final chatChromeRefresh = ValueNotifier<int>(0);
@@ -1183,6 +1183,59 @@ class _ChatPageState extends State<ChatPage>
     }
   }
 
+  Future<void> showLocationMenu() async {
+    if (!widget.thread.isGroup || !canPostToThread) return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      constraints: const BoxConstraints(maxWidth: 460),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+          child: _ChatGlassSurface(
+            radius: 26,
+            useNativeGlass: true,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const ListTile(
+                    leading: Icon(
+                      Icons.location_on_rounded,
+                      color: Color(0xFF54F2C7),
+                    ),
+                    title: Text('Location'),
+                    subtitle: Text('Suggest a point or share where you are.'),
+                  ),
+                  _LocationDurationTile(
+                    icon: Icons.add_location_alt_rounded,
+                    title: 'Suggest meeting point',
+                    subtitle: 'Choose a point for the group',
+                    onTap: () => Navigator.pop(context, 'meeting'),
+                  ),
+                  _LocationDurationTile(
+                    icon: Icons.my_location_rounded,
+                    title: 'Share my location',
+                    subtitle: 'Send once or keep it updating',
+                    onTap: () => Navigator.pop(context, 'live'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'meeting') {
+      await sendMeetingPoint();
+    } else if (action == 'live') {
+      await shareMyLocation();
+    }
+  }
+
   Future<Duration?> chooseLocationShareDuration() {
     return showModalBottomSheet<Duration>(
       context: context,
@@ -1513,6 +1566,8 @@ class _ChatPageState extends State<ChatPage>
         ),
       ),
     );
+    // The bottom sheet still paints during its reverse transition.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
     titleInput.dispose();
     locationInput.dispose();
     noteInput.dispose();
@@ -1652,7 +1707,7 @@ class _ChatPageState extends State<ChatPage>
     } else if (action == _AttachAction.poll) {
       await showPollComposer();
     } else if (action == _AttachAction.shareLocation) {
-      await shareMyLocation();
+      await showLocationMenu();
     }
   }
 
@@ -3012,28 +3067,42 @@ class _ChatPageState extends State<ChatPage>
     if (messages.isEmpty) return;
     if (forEveryone &&
         messages.any(
-          (message) => message.senderNode != widget.controller.myNodeId,
+          (message) => !widget.controller.canDeleteMessageForEveryone(
+            widget.thread,
+            message,
+          ),
         )) {
-      showSnack('Only your messages can be deleted for everyone');
+      showSnack('You cannot delete one of these messages for everyone');
       return;
     }
-    final ids = messages.map((message) => message.id).toSet();
+    final keepAtBottom = isNearBottom(180);
     setState(() {
-      deletingMessageIds.addAll(ids);
       selectedMessageIds.clear();
+      collapsingMessageIds.addAll(messages.map((message) => message.id));
     });
-    await Future.delayed(const Duration(milliseconds: 540));
+    await Future<void>.delayed(const Duration(milliseconds: 180));
     if (!mounted) return;
-    for (final message in messages) {
-      if (forEveryone) {
-        await widget.controller.deleteMessage(widget.thread, message);
-      } else {
-        await widget.controller.deleteMessageForMe(widget.thread, message);
-      }
-    }
-    if (mounted) {
-      setState(() => deletingMessageIds.removeAll(ids));
-    }
+    final deletions = <Future<void>>[
+      for (final message in messages)
+        if (forEveryone)
+          widget.controller.deleteMessage(widget.thread, message)
+        else
+          widget.controller.deleteMessageForMe(widget.thread, message),
+    ];
+    _refreshAfterLocalDeletion(keepAtBottom: keepAtBottom);
+    await Future.wait(deletions);
+  }
+
+  void _refreshAfterLocalDeletion({required bool keepAtBottom}) {
+    if (!mounted) return;
+    _syncMessageListNow();
+    if (!keepAtBottom) return;
+    followLatestMessages = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scroll.hasClients) return;
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      messageTintRefresh.value++;
+    });
   }
 
   Future<void> copySelectedMessages() async {
@@ -3065,6 +3134,10 @@ class _ChatPageState extends State<ChatPage>
   }) async {
     HapticFeedback.selectionClick();
     final mine = message.senderNode == widget.controller.myNodeId;
+    final canDeleteForEveryone = widget.controller.canDeleteMessageForEveryone(
+      widget.thread,
+      message,
+    );
     final pinned = widget.thread.pinnedMessageIds.contains(message.id);
     final canDownload =
         (message.kind == ChatMessageKind.file ||
@@ -3171,7 +3244,7 @@ class _ChatPageState extends State<ChatPage>
         Icons.delete_sweep_outlined,
         destructive: true,
       ),
-      if (mine)
+      if (canDeleteForEveryone)
         const _MessageActionSpec(
           'delete_everyone',
           'Delete for everyone',
@@ -3288,17 +3361,15 @@ class _ChatPageState extends State<ChatPage>
       return;
     }
     if (action == 'delete_me' || action == 'delete_everyone') {
-      setState(() => deletingMessageIds.add(message.id));
-      await Future.delayed(const Duration(milliseconds: 540));
+      final keepAtBottom = isNearBottom(180);
+      setState(() => collapsingMessageIds.add(message.id));
+      await Future<void>.delayed(const Duration(milliseconds: 180));
       if (!mounted) return;
-      if (action == 'delete_everyone') {
-        await widget.controller.deleteMessage(widget.thread, message);
-      } else {
-        await widget.controller.deleteMessageForMe(widget.thread, message);
-      }
-      if (mounted) {
-        setState(() => deletingMessageIds.remove(message.id));
-      }
+      final deletion = action == 'delete_everyone'
+          ? widget.controller.deleteMessage(widget.thread, message)
+          : widget.controller.deleteMessageForMe(widget.thread, message);
+      _refreshAfterLocalDeletion(keepAtBottom: keepAtBottom);
+      await deletion;
       return;
     }
     if (action == 'pin') {
@@ -4290,27 +4361,31 @@ class _ChatPageState extends State<ChatPage>
                                         return _ViewportMessageTint(
                                           refreshListenable: messageTintRefresh,
                                           builder: (context, positionTint) =>
-                                              _MessageDisintegrator(
-                                                deleting: deletingMessageIds
-                                                    .contains(message.id),
-                                                child: bubble(positionTint),
-                                              ),
+                                              bubble(positionTint),
                                         );
                                       },
                                     ),
                                 ],
                               );
+                              final animatedRow = AnimatedSize(
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeOutCubic,
+                                alignment: Alignment.topCenter,
+                                child: collapsingMessageIds.contains(message.id)
+                                    ? const SizedBox(width: double.infinity)
+                                    : messageRow,
+                              );
                               if (!messageScrollSpringEnabled) {
                                 return ChatDateAnchor(
                                   date: message.createdAt,
-                                  child: messageRow,
+                                  child: animatedRow,
                                 );
                               }
                               return ChatDateAnchor(
                                 date: message.createdAt,
                                 child: _ChatScrollSpringLayer(
                                   motion: messageScrollMotion,
-                                  child: messageRow,
+                                  child: animatedRow,
                                 ),
                               );
                             },
@@ -4329,8 +4404,10 @@ class _ChatPageState extends State<ChatPage>
                             count: selectedMessageIds.length,
                             canDeleteForEveryone: selectedMessages().every(
                               (message) =>
-                                  message.senderNode ==
-                                  widget.controller.myNodeId,
+                                  widget.controller.canDeleteMessageForEveryone(
+                                    widget.thread,
+                                    message,
+                                  ),
                             ),
                             canCopy: selectedMessages().any(
                               (message) => message.text.trim().isNotEmpty,
@@ -7477,87 +7554,6 @@ class _StickerTile extends StatelessWidget {
   }
 }
 
-class _MessageDisintegrator extends StatelessWidget {
-  const _MessageDisintegrator({required this.deleting, required this.child});
-
-  final bool deleting;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(end: deleting ? 1 : 0),
-      duration: const Duration(milliseconds: 520),
-      curve: Curves.easeInOutCubic,
-      builder: (context, value, child) {
-        final opacity = (1 - value * 1.15).clamp(0.0, 1.0);
-        return Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Opacity(
-              opacity: opacity,
-              child: Transform.scale(
-                scale: 1 - value * 0.045,
-                alignment: Alignment.center,
-                child: child,
-              ),
-            ),
-            if (value > 0)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: CustomPaint(
-                    painter: _DisintegratePainter(progress: value),
-                  ),
-                ),
-              ),
-          ],
-        );
-      },
-      child: child,
-    );
-  }
-}
-
-class _DisintegratePainter extends CustomPainter {
-  const _DisintegratePainter({required this.progress});
-
-  final double progress;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.isEmpty) return;
-    final fade = (1 - progress).clamp(0.0, 1.0);
-    final colors = [
-      Colors.white.withValues(alpha: 0.72 * fade),
-      Colors.lightBlueAccent.withValues(alpha: 0.82 * fade),
-      const Color(0xFFA56CFF).withValues(alpha: 0.72 * fade),
-    ];
-    for (var i = 0; i < 28; i++) {
-      final seed = i * 12.9898;
-      final x = (math.sin(seed) * 0.5 + 0.5) * size.width;
-      final y = (math.cos(seed * 1.71) * 0.5 + 0.5) * size.height;
-      final angle = -math.pi / 2 + math.sin(seed * 0.37) * math.pi;
-      final distance = progress * (12 + (i % 7) * 5);
-      final offset = Offset(
-        x + math.cos(angle) * distance,
-        y + math.sin(angle) * distance,
-      );
-      final radius = (1.3 + (i % 4) * 0.45) * (0.5 + fade * 0.5);
-      canvas.drawCircle(
-        offset,
-        radius,
-        Paint()
-          ..color = colors[i % colors.length]
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.6),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _DisintegratePainter oldDelegate) =>
-      oldDelegate.progress != progress;
-}
-
 class _AttachmentTile extends StatelessWidget {
   const _AttachmentTile({
     required this.icon,
@@ -9248,12 +9244,7 @@ class _MessageBubbleBody extends StatelessWidget {
                       )
                     : meetingPoint == null
                     ? _SharedLocationPreview(location: sharedLocation!)
-                    : _MeetingPointPreview(
-                        controller: controller,
-                        thread: thread,
-                        message: message,
-                        point: meetingPoint,
-                      ),
+                    : _MeetingPointPreview(point: meetingPoint),
               if ((message.kind == ChatMessageKind.file ||
                       message.kind == ChatMessageKind.sticker) &&
                   message.pending &&
@@ -10346,141 +10337,12 @@ class _LocationDurationTile extends StatelessWidget {
 }
 
 class _MeetingPointPreview extends StatelessWidget {
-  const _MeetingPointPreview({
-    required this.controller,
-    required this.thread,
-    required this.message,
-    required this.point,
-  });
+  const _MeetingPointPreview({required this.point});
 
-  final AppController controller;
-  final ChatThread thread;
-  final ChatMessage message;
   final _MeetingPoint point;
-
-  bool get canEdit => message.senderNode == controller.myNodeId;
-
-  Map<String, String> get responseStatuses {
-    final statuses = Map<String, String>.from(point.statuses);
-    const choices = <String>['\u2705', '\u{1F6AB}', '\u{1F4CD}'];
-    for (final reaction in choices) {
-      for (final actor
-          in message.reactionActors[reaction] ?? const <String>[]) {
-        statuses[actor] = reaction;
-      }
-    }
-    return statuses;
-  }
-
-  String statusName(String actor) {
-    if (actor == controller.myNodeId) return 'You';
-    if (actor.startsWith('login:')) {
-      final login = actor.substring('login:'.length);
-      if (login == controller.session?.login.trim().toLowerCase()) return 'You';
-      for (final profile in controller.profiles.values) {
-        if (profile.accountLogin.trim().toLowerCase() == login) {
-          return profile.displayName;
-        }
-      }
-      return '@$login';
-    }
-    return controller.profiles[actor]?.displayName ?? 'Guest';
-  }
-
-  Future<void> setStatus(String reaction) {
-    return controller.sendMeetingResponse(thread, message, reaction);
-  }
-
-  Future<void> editPoint(BuildContext context) async {
-    final titleInput = TextEditingController(text: point.title);
-    final noteInput = TextEditingController(text: point.note);
-    final latInput = TextEditingController(
-      text: point.latitude.toStringAsFixed(6),
-    );
-    final lngInput = TextEditingController(
-      text: point.longitude.toStringAsFixed(6),
-    );
-    final result = await showDialog<_MeetingPoint>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit meeting point'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: titleInput,
-                decoration: const InputDecoration(labelText: 'Title'),
-              ),
-              TextField(
-                controller: noteInput,
-                decoration: const InputDecoration(labelText: 'Note'),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: latInput,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Lat'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: TextField(
-                      controller: lngInput,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Lng'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final lat = double.tryParse(latInput.text.trim());
-              final lng = double.tryParse(lngInput.text.trim());
-              if (lat == null ||
-                  lng == null ||
-                  lat < -90 ||
-                  lat > 90 ||
-                  lng < -180 ||
-                  lng > 180) {
-                return;
-              }
-              Navigator.pop(
-                context,
-                point.copyWith(
-                  title: titleInput.text.trim(),
-                  note: noteInput.text.trim(),
-                  latitude: lat,
-                  longitude: lng,
-                ),
-              );
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    titleInput.dispose();
-    noteInput.dispose();
-    latInput.dispose();
-    lngInput.dispose();
-    if (result == null) return;
-    await controller.editMessage(thread, message, result.toMessageText());
-  }
 
   @override
   Widget build(BuildContext context) {
-    final statuses = responseStatuses;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 300),
       child: Container(
@@ -10585,48 +10447,6 @@ class _MeetingPointPreview extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            if (statuses.isNotEmpty) ...[
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final entry in statuses.entries)
-                    _MeetingStatusChip(
-                      status: entry.value,
-                      name: statusName(entry.key),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-            ],
-            Wrap(
-              spacing: 7,
-              runSpacing: 7,
-              children: [
-                _MeetingPointButton(
-                  icon: Icons.check_circle_outline_rounded,
-                  label: 'I will come',
-                  onTap: () => setStatus('\u2705'),
-                ),
-                _MeetingPointButton(
-                  icon: Icons.cancel_outlined,
-                  label: 'Can not',
-                  onTap: () => setStatus('\u{1F6AB}'),
-                ),
-                _MeetingPointButton(
-                  icon: Icons.flag_circle_outlined,
-                  label: 'Here',
-                  onTap: () => setStatus('\u{1F4CD}'),
-                ),
-                if (canEdit)
-                  _MeetingPointButton(
-                    icon: Icons.edit_location_alt_outlined,
-                    label: 'Edit',
-                    onTap: () => editPoint(context),
-                  ),
-              ],
-            ),
           ],
         ),
       ),
@@ -10673,36 +10493,6 @@ class _MeetingPointButton extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MeetingStatusChip extends StatelessWidget {
-  const _MeetingStatusChip({required this.status, required this.name});
-
-  final String status;
-  final String name;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 180),
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
-      ),
-      child: Text(
-        '$status $name',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Colors.white70,
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
         ),
       ),
     );
@@ -12023,10 +11813,9 @@ class _MessageContextOverlayState extends State<_MessageContextOverlay>
     super.dispose();
   }
 
-  Future<void> closeWith(String value) async {
+  void closeWith(String value) {
     if (!mounted) return;
-    await animation.reverse();
-    if (mounted) Navigator.pop(context, value);
+    Navigator.pop(context, value);
   }
 
   @override
@@ -12059,10 +11848,7 @@ class _MessageContextOverlayState extends State<_MessageContextOverlay>
           children: [
             GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () async {
-                await animation.reverse();
-                if (context.mounted) Navigator.pop(context);
-              },
+              onTap: () => Navigator.pop(context),
               child: BackdropFilter(
                 filter: ImageFilter.blur(
                   sigmaX: 15 * fade.value,

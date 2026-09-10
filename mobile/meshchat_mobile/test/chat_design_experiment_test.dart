@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:meshchat_mobile/src/controllers/app_controller.dart';
 import 'package:meshchat_mobile/src/models/chat_message.dart';
 import 'package:meshchat_mobile/src/models/rich_message_document.dart';
@@ -21,10 +22,24 @@ import 'package:meshchat_mobile/src/services/platform_capabilities.dart';
 import 'package:meshchat_mobile/src/utils/mesh_page_route.dart';
 
 class _PreviewController extends AppController {
+  final sentGroupMessages = <String>[];
+
   @override
   void markRead(ChatThread thread) {}
   @override
   void setActiveThread(ChatThread? thread) {}
+
+  @override
+  Future<String?> sendGroupMessage(
+    ChatThread group,
+    String text, {
+    ChatMessage? replyTo,
+    ChatMessage? retryingMessage,
+    String? richContent,
+  }) async {
+    sentGroupMessages.add(text);
+    return 'preview-${sentGroupMessages.length}';
+  }
 }
 
 void main() {
@@ -49,8 +64,29 @@ void main() {
     }
   });
   setUp(() {
+    SharedPreferences.setMockInitialValues({});
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('flutter.baseflow.com/geolocator'),
+      (call) async => switch (call.method) {
+        'isLocationServiceEnabled' => true,
+        'checkPermission' || 'requestPermission' => 2,
+        'getCurrentPosition' => <String, Object>{
+          'latitude': 60.03652,
+          'longitude': 30.35266,
+          'timestamp': DateTime(2026, 9, 10).millisecondsSinceEpoch,
+          'accuracy': 4.0,
+          'altitude': 0.0,
+          'altitude_accuracy': 0.0,
+          'heading': 0.0,
+          'heading_accuracy': 0.0,
+          'speed': 0.0,
+          'speed_accuracy': 0.0,
+        },
+        _ => null,
+      },
+    );
     for (final name in [
       'xyz.luan/audioplayers.global',
       'xyz.luan/audioplayers.global/events',
@@ -94,6 +130,147 @@ void main() {
           const MethodChannel('com.llfbandit.record/messages'),
           null,
         );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('flutter.baseflow.com/geolocator'),
+          null,
+        );
+  });
+
+  testWidgets(
+    'folder taps jump directly and rapid taps settle on the last folder',
+    (tester) async {
+      tester.view.physicalSize = const Size(1100, 780);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = _PreviewController();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: MeshPerformanceScope(
+            lowEndDeviceMode: true,
+            child: ChatsPage(controller: controller),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      final pages = tester.widget<PageView>(find.byType(PageView));
+      await tester.tap(find.text('Channels'));
+      await tester.pump();
+      expect(pages.controller!.page, 3);
+      await tester.tap(find.text('Personal'));
+      await tester.pump();
+      await tester.tap(find.text('Groups'));
+      await tester.pump();
+      expect(pages.controller!.page, 2);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('local deletion removes a message before persistence completes', (
+    tester,
+  ) async {
+    final controller = _PreviewController();
+    final message = ChatMessage(
+      id: 'delete-now',
+      senderNode: 'friend',
+      receiverNode: '',
+      text: 'Delete me',
+      createdAt: DateTime(2026, 9, 10),
+    );
+    final thread = ChatThread(
+      profile: const Profile(nodeId: 'friend', displayName: 'Friend'),
+      messages: [message],
+    );
+    final deletion = controller.deleteMessageForMe(thread, message);
+    expect(thread.messages, isEmpty);
+    await deletion;
+    await tester.pump(const Duration(milliseconds: 120));
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList('deleted_message_ids'), contains('delete-now'));
+  });
+
+  testWidgets('group location offers point and live-location paths', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(402, 874);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = _PreviewController();
+    final point =
+        '::meshchat_meeting_v1::{"title":"Entrance","lat":60.03652,'
+        '"lng":30.35266,"statuses":{"old":"✅"}}';
+    final thread = ChatThread(
+      profile: const Profile(nodeId: 'group', displayName: 'Friends'),
+      isGroup: true,
+      groupId: 'group',
+      messages: [
+        ChatMessage(
+          id: 'point',
+          senderNode: 'friend',
+          receiverNode: '',
+          text: point,
+          createdAt: DateTime(2026, 9, 10),
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: MeshPerformanceScope(
+          lowEndDeviceMode: true,
+          child: ChatPage(controller: controller, thread: thread),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Open'), findsOneWidget);
+    expect(find.text('Route'), findsOneWidget);
+    expect(find.text('I will come'), findsNothing);
+    expect(find.text('Can not'), findsNothing);
+    expect(find.text('Here'), findsNothing);
+
+    Future<void> openLocation() async {
+      await tester.tap(find.byIcon(Icons.attach_file_rounded).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Location'));
+      await tester.pumpAndSettle();
+      expect(find.text('Suggest meeting point'), findsOneWidget);
+      expect(find.text('Share my location'), findsOneWidget);
+    }
+
+    await openLocation();
+    await tester.tap(find.text('Suggest meeting point'));
+    await tester.pumpAndSettle();
+    final coordinateField = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          widget.decoration?.labelText == 'Coordinates or link',
+    );
+    await tester.enterText(coordinateField, '60.03652, 30.35266');
+    await tester.tap(find.text('Send'));
+    await tester.pumpAndSettle();
+    expect(
+      controller.sentGroupMessages.single,
+      startsWith('::meshchat_meeting_v1::'),
+    );
+
+    await openLocation();
+    await tester.tap(find.text('Share my location'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Send once'));
+    await tester.pumpAndSettle();
+    expect(
+      controller.sentGroupMessages.last,
+      startsWith('::meshchat_location_v1::'),
+    );
+    expect(controller.sentGroupMessages.last, contains('60.03652'));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
   });
   testWidgets('timeline date follows visible variable-height rows and fades', (
     tester,

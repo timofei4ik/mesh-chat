@@ -285,6 +285,10 @@ class ServerStorageMixin:
                 profile_glow INTEGER NOT NULL DEFAULT 0,
                 profile_accent INTEGER NOT NULL DEFAULT 4282557941,
                 emoji_status TEXT DEFAULT '',
+                privacy_show_online INTEGER NOT NULL DEFAULT 1,
+                privacy_show_avatar INTEGER NOT NULL DEFAULT 1,
+                privacy_show_about INTEGER NOT NULL DEFAULT 1,
+                direct_message_privacy TEXT NOT NULL DEFAULT 'everyone',
                 email TEXT DEFAULT '',
                 email_verified_at DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -513,6 +517,23 @@ class ServerStorageMixin:
 
             conn.execute(
                 "ALTER TABLE accounts ADD COLUMN emoji_status TEXT DEFAULT ''"
+            )
+
+        for column in (
+            "privacy_show_online",
+            "privacy_show_avatar",
+            "privacy_show_about",
+        ):
+            if column not in account_columns:
+                conn.execute(
+                    f"ALTER TABLE accounts ADD COLUMN {column} "
+                    "INTEGER NOT NULL DEFAULT 1"
+                )
+
+        if "direct_message_privacy" not in account_columns:
+            conn.execute(
+                "ALTER TABLE accounts ADD COLUMN direct_message_privacy "
+                "TEXT NOT NULL DEFAULT 'everyone'"
             )
 
         if "email" not in account_columns:
@@ -2622,7 +2643,11 @@ class ServerStorageMixin:
         avatar_decoration=None,
         profile_glow=None,
         profile_accent=None,
-        emoji_status=None
+        emoji_status=None,
+        privacy_show_online=None,
+        privacy_show_avatar=None,
+        privacy_show_about=None,
+        direct_message_privacy=None,
     ):
 
         authenticated_login = (
@@ -2712,6 +2737,33 @@ class ServerStorageMixin:
             ):
                 return False, "meshpro_required"
 
+        privacy_flags = []
+        for value in (
+            privacy_show_online,
+            privacy_show_avatar,
+            privacy_show_about,
+        ):
+            if value is None:
+                privacy_flags.append(None)
+            elif isinstance(value, bool):
+                privacy_flags.append(int(value))
+            elif value in (0, 1):
+                privacy_flags.append(int(value))
+            else:
+                return False, "invalid privacy setting"
+        privacy_show_online, privacy_show_avatar, privacy_show_about = (
+            privacy_flags
+        )
+
+        if direct_message_privacy is not None:
+            direct_message_privacy = str(direct_message_privacy).strip()
+            if direct_message_privacy not in {
+                "everyone",
+                "sharedGroups",
+                "nobody",
+            }:
+                return False, "invalid direct message privacy"
+
         avatar_raw = str(avatar_data or "").strip()
         avatar_value = avatar_raw.lower()
         if (
@@ -2770,6 +2822,10 @@ class ServerStorageMixin:
                     ),
                     "profile_accent": profile_accent,
                     "emoji_status": emoji_status,
+                    "privacy_show_online": privacy_show_online,
+                    "privacy_show_avatar": privacy_show_avatar,
+                    "privacy_show_about": privacy_show_about,
+                    "direct_message_privacy": direct_message_privacy,
                 },
             )
         return True, "ok"
@@ -2811,9 +2867,12 @@ class ServerStorageMixin:
             "node_id": profile["node_id"],
             "display_name": profile["display_name"],
             "public_username": profile["public_username"],
-            "about": profile["about"],
-            "avatar_data": profile["avatar_data"],
+            "about": profile["about"] if profile["privacy_show_about"] else "",
+            "avatar_data": (
+                profile["avatar_data"] if profile["privacy_show_avatar"] else ""
+            ),
             "encryption_public_key": profile["encryption_public_key"],
+            "direct_message_privacy": profile["direct_message_privacy"],
             **premium_fields
         }
 
@@ -3305,6 +3364,10 @@ class ServerStorageMixin:
             "about": profile["about"],
             "avatar_data": profile["avatar_data"],
             "encryption_public_key": profile["encryption_public_key"],
+            "privacy_show_online": profile["privacy_show_online"],
+            "privacy_show_avatar": profile["privacy_show_avatar"],
+            "privacy_show_about": profile["privacy_show_about"],
+            "direct_message_privacy": profile["direct_message_privacy"],
             **premium_fields
         }
 
@@ -3529,6 +3592,57 @@ class ServerStorageMixin:
                 targets.add(node_id)
 
         return sorted(targets)
+
+    def authorize_direct_message(self, packet):
+        if packet.get("type") != "chat_message":
+            return True
+        sender_login = str(packet.get("sender_login") or "").strip().lower()
+        receiver_login = str(packet.get("receiver_login") or "").strip().lower()
+        if not sender_login or not receiver_login:
+            return False
+        if sender_login == receiver_login:
+            return True
+
+        existing = self.db.execute(
+            """
+            SELECT 1
+            FROM direct_messages
+            WHERE (sender_login=? AND receiver_login=?)
+               OR (sender_login=? AND receiver_login=?)
+            LIMIT 1
+            """,
+            (sender_login, receiver_login, receiver_login, sender_login),
+        ).fetchone()
+        if existing:
+            return True
+
+        row = self.db.execute(
+            """
+            SELECT COALESCE(direct_message_privacy, 'everyone')
+            FROM accounts
+            WHERE login=?
+            """,
+            (receiver_login,),
+        ).fetchone()
+        policy = str(row[0] if row else "everyone")
+        if policy == "everyone":
+            return True
+        if policy == "nobody":
+            return False
+        if policy != "sharedGroups":
+            return False
+
+        return self.db.execute(
+            """
+            SELECT 1
+            FROM server_group_members sender
+            JOIN server_group_members receiver
+              ON receiver.group_id=sender.group_id
+            WHERE sender.login=? AND receiver.login=?
+            LIMIT 1
+            """,
+            (sender_login, receiver_login),
+        ).fetchone() is not None
 
     def authorize_group_management(
         self,
@@ -4783,7 +4897,11 @@ class ServerStorageMixin:
                 packet.get("avatar_decoration"),
                 packet.get("profile_glow"),
                 packet.get("profile_accent"),
-                packet.get("emoji_status")
+                packet.get("emoji_status"),
+                packet.get("privacy_show_online"),
+                packet.get("privacy_show_avatar"),
+                packet.get("privacy_show_about"),
+                packet.get("direct_message_privacy"),
             )
 
         elif packet_type == "sticker_library_update":
@@ -5177,10 +5295,14 @@ class ServerStorageMixin:
                 AND (
                     sender_node=?
                     OR (sender_login!='' AND sender_login=?)
+                    OR receiver_node=?
+                    OR (receiver_login!='' AND receiver_login=?)
                 )
                 """,
                 (
                     message_id,
+                    sender_node,
+                    sender_login,
                     sender_node,
                     sender_login
                 )
@@ -5192,9 +5314,17 @@ class ServerStorageMixin:
                 AND (
                     sender_node=?
                     OR (sender_login!='' AND sender_login=?)
+                    OR receiver_node=?
+                    OR (receiver_login!='' AND receiver_login=?)
                 )
                 """,
-                (message_id, sender_node, sender_login),
+                (
+                    message_id,
+                    sender_node,
+                    sender_login,
+                    sender_node,
+                    sender_login,
+                ),
             )
 
             if message_cursor.rowcount <= 0 and deleted_files <= 0:
@@ -5716,31 +5846,54 @@ class ServerStorageMixin:
 
             sender_login = self.get_login_by_node(sender_node) or ""
 
-            message_cursor = self.db.execute(
+            stored_scope = self.db.execute(
                 """
-                DELETE FROM server_group_messages
-                WHERE message_id=?
-                AND (
-                    sender_node=?
-                    OR (sender_login!='' AND sender_login=?)
-                )
+                SELECT group_id FROM server_group_messages WHERE message_id=?
+                UNION ALL
+                SELECT group_id FROM server_files WHERE file_id=?
+                LIMIT 1
                 """,
-                (
-                    message_id,
-                    sender_node,
-                    sender_login
+                (message_id, message_id),
+            ).fetchone()
+            stored_group_id = (stored_scope[0] if stored_scope else "") or ""
+            group_id = packet.get("group_id") or stored_group_id
+            if not group_id or (
+                stored_group_id and group_id != stored_group_id
+            ):
+                return False
+
+            owner_node, admins = self.get_group_roles(group_id)
+            can_moderate = (
+                self._same_account_nodes(sender_node, owner_node)
+                or any(
+                    self._same_account_nodes(sender_node, admin_node)
+                    for admin_node in admins
                 )
             )
 
-            deleted_files = self._delete_server_files(
-                """
-                file_id=?
+            ownership_clause = "" if can_moderate else """
                 AND (
                     sender_node=?
                     OR (sender_login!='' AND sender_login=?)
                 )
+            """
+            ownership_parameters = () if can_moderate else (
+                sender_node,
+                sender_login,
+            )
+
+            message_cursor = self.db.execute(
+                f"""
+                DELETE FROM server_group_messages
+                WHERE message_id=? AND group_id=?
+                {ownership_clause}
                 """,
-                (message_id, sender_node, sender_login),
+                (message_id, group_id, *ownership_parameters)
+            )
+
+            deleted_files = self._delete_server_files(
+                f"""file_id=? AND group_id=? {ownership_clause}""",
+                (message_id, group_id, *ownership_parameters),
             )
 
             if message_cursor.rowcount <= 0 and deleted_files <= 0:

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:meshchat_mobile/src/controllers/app_controller.dart';
 import 'package:meshchat_mobile/src/models/chat_message.dart';
 import 'package:meshchat_mobile/src/models/chat_thread.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
@@ -67,5 +68,38 @@ void main() {
     expect(restored[normal.storageKey], isFalse);
     expect(restored[bluetooth.storageKey], isTrue);
     expect(normal.storageKey, isNot(bluetooth.storageKey));
+  });
+
+  test('Bluetooth chat stays distinct and supports peer deletion', () {
+    final controller = AppController()
+      ..session = const Session(
+        serverUrl: 'wss://meshchat-losa.ru/ws',
+        serverToken: 'token',
+        login: 'owner',
+        password: 'password',
+        publicUsername: 'owner',
+        nodeId: 'owner-node',
+      );
+    const peer = Profile(nodeId: 'peer-node', displayName: 'Nearby peer');
+    final incoming = ChatMessage(
+      id: 'ble-incoming',
+      senderNode: peer.nodeId,
+      receiverNode: controller.myNodeId,
+      text: 'Nearby message',
+      createdAt: DateTime.utc(2026, 9, 10),
+    );
+    final normal = ChatThread(profile: peer);
+    final bluetooth = ChatThread(
+      profile: peer,
+      threadId: 'bluetooth:peer-node',
+      chatKind: 'bluetooth',
+      messages: [incoming],
+    );
+    controller.threads[normal.storageKey] = normal;
+    controller.threads['bluetooth:peer-node'] = bluetooth;
+
+    expect(controller.sortedThreads, containsAll([normal, bluetooth]));
+    expect(normal.storageKey, isNot(bluetooth.storageKey));
+    expect(controller.canDeleteMessageForEveryone(bluetooth, incoming), isTrue);
   });
 }

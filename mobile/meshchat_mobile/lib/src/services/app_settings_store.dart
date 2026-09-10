@@ -30,6 +30,10 @@ class AppSettingsStore {
       showAbout: prefs.getBool('privacy_show_about') ?? true,
       allowCalls: prefs.getBool('privacy_allow_calls') ?? true,
       allowGroupInvites: prefs.getBool('privacy_allow_group_invites') ?? true,
+      directMessagePrivacy: DirectMessagePrivacy.values.firstWhere(
+        (value) => value.name == prefs.getString('privacy_direct_messages'),
+        orElse: () => DirectMessagePrivacy.everyone,
+      ),
       quickReactions:
           prefs.getStringList('meshpro_quick_reactions') ??
           const ['\u2764\uFE0F', '\u{1F44C}', '\u{1FACE}', '\u{1F44D}'],
@@ -82,6 +86,10 @@ class AppSettingsStore {
       'privacy_allow_group_invites',
       settings.allowGroupInvites,
     );
+    await prefs.setString(
+      'privacy_direct_messages',
+      settings.directMessagePrivacy.name,
+    );
     await prefs.setStringList(
       'meshpro_quick_reactions',
       settings.quickReactions,
@@ -105,6 +113,11 @@ class AppSettingsStore {
       'deleted_message_ids',
       settings.deletedMessageIds,
     );
+  }
+
+  Future<void> saveDeletedMessageIds(List<String> messageIds) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('deleted_message_ids', messageIds);
   }
 
   ThemeMode _themeModeFromName(String? value) {

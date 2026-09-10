@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 48,
-  "updatedAt": "2026-09-09T18:09:51Z",
+  "catalogVersion": 49,
+  "updatedAt": "2026-09-10T15:29:20Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-privacy-performance-1-1-0",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Privacy controls and smoother chats",
+      "summary": "Online status, avatar and About visibility are now enforced by the server. You can allow new private chats from everyone, only people in shared groups, or nobody new; existing conversations remain available. A group member's profile can now open a private chat without a username lookup. Message deletion no longer blocks the interface, nearby messages close the gap smoothly, and authorized participants can delete messages for everyone. Folder switching is more stable under rapid taps, while location cards keep the useful Open and Route actions.",
+      "publishedAt": "2026-09-10"
+    },
     {
       "id": "meshchat-rich-messages-1-1-0",
       "appId": "meshchat",
@@ -148,20 +156,20 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 207,
+      "build": 212,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-09T18:09:51Z",
+      "updated_at": "2026-09-10T15:29:20Z",
       "release": {
-        "title": "Message editor and rich messages",
-        "publishedAt": "2026-09-09",
+        "title": "Privacy controls and smoother chats",
+        "publishedAt": "2026-09-10",
         "notes": [
-          "Message editor opens over the chat with its conversation background: formatting, lists, tables, formulas, links and attachments.",
-          "Tables support row and column deletion, moving blocks and typing before or after them. Sent tables adapt to bubble width and wide tables can scroll.",
-          "Rich message content is preserved across server history, cache reloads, edits and forwarding. Drafts remain local to each account and chat.",
-          "AI drafting is enabled on the updated server with explicit user instructions and review before sending. MeshPro requirements still apply.",
-          "Grouped messages show a tail only on the last bubble. iOS Liquid Glass and folder swipes are included in source for Codemagic; iOS binaries are distributed separately."
+          "Online status, avatar and About visibility are enforced per viewer by the server.",
+          "Choose who may start a private chat: everyone, people in shared groups, or nobody new. Existing conversations continue normally.",
+          "Open a private conversation directly from a common group member's profile without adding their username first.",
+          "Deleting messages stays responsive, nearby bubbles close the gap smoothly, and authorized participants can delete messages for everyone.",
+          "Rapid folder switching is stable and location cards retain only the useful Open and Route actions."
         ]
       }
     },

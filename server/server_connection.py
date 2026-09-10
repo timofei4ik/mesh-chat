@@ -297,6 +297,25 @@ async def handle_server_hello(
             await websocket.close(code=1008, reason=reason)
             return HandshakeOutcome(node_id, terminate_handler=True)
 
+        if not auth_check:
+            privacy_ok, privacy_reason = server.save_account_profile(
+                login,
+                node_id,
+                None,
+                privacy_show_online=packet.get("privacy_show_online"),
+                privacy_show_avatar=packet.get("privacy_show_avatar"),
+                privacy_show_about=packet.get("privacy_show_about"),
+                direct_message_privacy=packet.get("direct_message_privacy"),
+            )
+            if not privacy_ok:
+                await server.send_server_error(
+                    websocket,
+                    "invalid_privacy_settings",
+                    privacy_reason,
+                )
+                await websocket.close(code=1008, reason=privacy_reason)
+                return HandshakeOutcome(node_id, terminate_handler=True)
+
         if verified_email:
             server.trust_email_device(login, node_id)
         if service and not auth_check:

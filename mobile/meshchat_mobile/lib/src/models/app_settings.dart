@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'business_settings.dart';
 
+enum DirectMessagePrivacy { everyone, sharedGroups, nobody }
+
 class AppSettings {
   const AppSettings({
     this.themeMode = ThemeMode.dark,
@@ -23,6 +25,7 @@ class AppSettings {
     this.showAbout = true,
     this.allowCalls = true,
     this.allowGroupInvites = true,
+    this.directMessagePrivacy = DirectMessagePrivacy.everyone,
     this.quickReactions = const [
       '\u2764\uFE0F',
       '\u{1F44C}',
@@ -57,6 +60,7 @@ class AppSettings {
   final bool showAbout;
   final bool allowCalls;
   final bool allowGroupInvites;
+  final DirectMessagePrivacy directMessagePrivacy;
   final List<String> quickReactions;
   final bool meshProHdAudio;
   final bool meshProEnhancedNoiseSuppression;
@@ -86,6 +90,7 @@ class AppSettings {
     bool? showAbout,
     bool? allowCalls,
     bool? allowGroupInvites,
+    DirectMessagePrivacy? directMessagePrivacy,
     List<String>? quickReactions,
     bool? meshProHdAudio,
     bool? meshProEnhancedNoiseSuppression,
@@ -118,6 +123,7 @@ class AppSettings {
       showAbout: showAbout ?? this.showAbout,
       allowCalls: allowCalls ?? this.allowCalls,
       allowGroupInvites: allowGroupInvites ?? this.allowGroupInvites,
+      directMessagePrivacy: directMessagePrivacy ?? this.directMessagePrivacy,
       quickReactions: quickReactions ?? this.quickReactions,
       meshProHdAudio: meshProHdAudio ?? this.meshProHdAudio,
       meshProEnhancedNoiseSuppression:

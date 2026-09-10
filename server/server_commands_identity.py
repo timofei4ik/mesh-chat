@@ -43,6 +43,10 @@ async def handle_profile_update(server, packet, context):
         packet.get("profile_glow"),
         packet.get("profile_accent"),
         packet.get("emoji_status"),
+        packet.get("privacy_show_online"),
+        packet.get("privacy_show_avatar"),
+        packet.get("privacy_show_about"),
+        packet.get("direct_message_privacy"),
     )
     await send_json(
         context.websocket,

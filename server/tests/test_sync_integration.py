@@ -1028,6 +1028,56 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises((TimeoutError, asyncio.TimeoutError)):
             await receiver.receive_type("chat_message", timeout=0.25)
 
+    async def test_recipient_privacy_rejects_a_new_direct_conversation(self):
+        sender = await self.connect(
+            "privacy_sender",
+            supports_mutation_ack=True,
+        )
+        recipient = await self.connect("privacy_recipient")
+        await recipient.send(
+            {
+                "type": "profile_update",
+                "packet_id": str(uuid.uuid4()),
+                "protocol_version": 5,
+                "source_node": recipient.node_id,
+                "destination_node": "SERVER",
+                "login": recipient.login,
+                "direct_message_privacy": "nobody",
+                "ttl": 5,
+            }
+        )
+        updated = await recipient.receive_type("profile_update_result")
+        self.assertTrue(updated["ok"])
+
+        packet_id = str(uuid.uuid4())
+        operation_id = f"chat_message:{packet_id}"
+        await sender.send(
+            {
+                "type": "chat_message",
+                "packet_id": packet_id,
+                "operation_id": operation_id,
+                "outbox_id": f"{operation_id}|{recipient.node_id}|",
+                "protocol_version": 5,
+                "source_node": sender.node_id,
+                "destination_node": recipient.node_id,
+                "sender": sender.login,
+                "message": "must-not-be-stored",
+                "ttl": 5,
+            }
+        )
+
+        ack = await sender.receive_type("mutation_ack")
+        self.assertFalse(ack["ok"])
+        self.assertEqual("direct_messages_restricted", ack["reason"])
+        self.assertIsNone(
+            self.relay.db.execute(
+                "SELECT 1 FROM direct_messages WHERE message_id=?",
+                (packet_id,),
+            ).fetchone()
+        )
+        with self.assertRaises((TimeoutError, asyncio.TimeoutError)):
+            await recipient.receive_type("chat_message", timeout=0.25)
+
     async def test_two_device_endurance_recovers_from_network_faults(self):
         iterations = max(
             8,
@@ -1640,7 +1690,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ).fetchone()
         )
 
-    async def test_recipient_cannot_delete_senders_direct_message_state(self):
+    async def test_recipient_can_delete_senders_direct_message_for_everyone(self):
         sender = await self.connect("protected_direct_sender")
         recipient = await self.connect(
             "protected_direct_recipient",
@@ -1688,15 +1738,16 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         ack = await recipient.receive_type("mutation_ack")
-        self.assertFalse(ack["ok"])
-        self.assertEqual("rejected", ack["reason"])
-        self.assertIsNotNone(
+        self.assertTrue(ack["ok"])
+        deleted = await sender.receive_type("message_delete")
+        self.assertEqual(message_id, deleted["message_id"])
+        self.assertIsNone(
             self.relay.db.execute(
                 "SELECT 1 FROM direct_messages WHERE message_id=?",
                 (message_id,),
             ).fetchone()
         )
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.relay.db.execute(
                 "SELECT 1 FROM server_reactions WHERE message_id=?",
                 (message_id,),

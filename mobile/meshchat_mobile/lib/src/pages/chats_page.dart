@@ -1225,6 +1225,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
   bool opening = false;
   bool dragging = false;
   bool openingNotification = false;
+  final chatVisible = ValueNotifier<bool>(false);
 
   @override
   void initState() {
@@ -1254,6 +1255,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
   Future<void> open(ChatThread thread) async {
     if (activeThread != null || opening) return;
     opening = true;
+    chatVisible.value = true;
     transition.value = 0;
     chatSnapshot.allowSnapshotting = false;
     chatReady = Completer<void>();
@@ -1295,6 +1297,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
     chatSnapshot.allowSnapshotting = false;
     chatReady = null;
     setState(() => activeThread = null);
+    chatVisible.value = false;
   }
 
   void startBackDrag(DragStartDetails details) {
@@ -1330,6 +1333,7 @@ class _ChatStackHostState extends State<_ChatStackHost>
     widget.controller.removeListener(_handleNotificationTarget);
     chatSnapshot.dispose();
     transition.dispose();
+    chatVisible.dispose();
     super.dispose();
   }
 
@@ -1362,68 +1366,79 @@ class _ChatStackHostState extends State<_ChatStackHost>
                   ),
                 ),
               );
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            AnimatedBuilder(
-              animation: transition,
-              child: MeshGlassCompositionScope(
-                nativeAllowed: thread == null,
-                child: RepaintBoundary(child: widget.home),
+        return _ChatVisibilityScope(
+          notifier: chatVisible,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              AnimatedBuilder(
+                animation: transition,
+                child: MeshGlassCompositionScope(
+                  nativeAllowed: thread == null,
+                  child: RepaintBoundary(child: widget.home),
+                ),
+                builder: (context, child) {
+                  final hiddenBehindSettledChat =
+                      thread != null &&
+                      !opening &&
+                      !dragging &&
+                      transition.value >= 0.999;
+                  return Offstage(
+                    offstage: hiddenBehindSettledChat,
+                    child: TickerMode(enabled: thread == null, child: child!),
+                  );
+                },
               ),
-              builder: (context, child) {
-                final hiddenBehindSettledChat =
-                    thread != null &&
-                    !opening &&
-                    !dragging &&
-                    transition.value >= 0.999;
-                return Offstage(
-                  offstage: hiddenBehindSettledChat,
-                  child: TickerMode(enabled: thread == null, child: child!),
-                );
-              },
-            ),
-            if (chatLayer != null)
-              IgnorePointer(
-                ignoring: opening,
-                child: AnimatedBuilder(
-                  animation: transition,
-                  child: chatLayer,
-                  builder: (context, child) => Transform.translate(
-                    offset: Offset(width * (1 - transition.value), 0),
-                    child: child,
+              if (chatLayer != null)
+                IgnorePointer(
+                  ignoring: opening,
+                  child: AnimatedBuilder(
+                    animation: transition,
+                    child: chatLayer,
+                    builder: (context, child) => Transform.translate(
+                      offset: Offset(width * (1 - transition.value), 0),
+                      child: child,
+                    ),
                   ),
                 ),
-              ),
-            if (thread != null && !opening)
-              Positioned(
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: 28,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onHorizontalDragStart: startBackDrag,
-                  onHorizontalDragUpdate: (details) =>
-                      updateBackDrag(details, width),
-                  onHorizontalDragEnd: endBackDrag,
-                  onHorizontalDragCancel: () {
-                    dragging = false;
-                    unawaited(
-                      transition
-                          .animateTo(1, curve: Curves.linear)
-                          .whenComplete(() {
-                            chatSnapshot.allowSnapshotting = false;
-                          }),
-                    );
-                  },
+              if (thread != null && !opening)
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 28,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragStart: startBackDrag,
+                    onHorizontalDragUpdate: (details) =>
+                        updateBackDrag(details, width),
+                    onHorizontalDragEnd: endBackDrag,
+                    onHorizontalDragCancel: () {
+                      dragging = false;
+                      unawaited(
+                        transition
+                            .animateTo(1, curve: Curves.linear)
+                            .whenComplete(() {
+                              chatSnapshot.allowSnapshotting = false;
+                            }),
+                      );
+                    },
+                  ),
                 ),
-              ),
-          ],
+            ],
+          ),
         );
       },
     );
   }
+}
+
+class _ChatVisibilityScope extends InheritedNotifier<ValueNotifier<bool>> {
+  const _ChatVisibilityScope({required super.notifier, required super.child});
+
+  static ValueNotifier<bool>? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<_ChatVisibilityScope>()
+      ?.notifier;
 }
 
 class _HomeShell extends StatefulWidget {
@@ -1447,11 +1462,15 @@ class _HomeShellState extends State<_HomeShell> {
   Timer? lowEndRefreshTimer;
   bool lowEndMode = false;
   late int homeFingerprint;
+  ValueNotifier<bool>? chatVisible;
+  bool refreshPendingWhileChatVisible = false;
+  int activeCallFingerprint = 0;
 
   @override
   void initState() {
     super.initState();
     homeFingerprint = _computeHomeFingerprint();
+    activeCallFingerprint = identityHashCode(widget.controller.activeCall);
     widget.controller.addListener(_handleControllerChange);
     syncCallAlert();
   }
@@ -1460,11 +1479,18 @@ class _HomeShellState extends State<_HomeShell> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
+    final nextChatVisible = _ChatVisibilityScope.maybeOf(context);
+    if (chatVisible != nextChatVisible) {
+      chatVisible?.removeListener(_handleChatVisibilityChange);
+      chatVisible = nextChatVisible;
+      chatVisible?.addListener(_handleChatVisibilityChange);
+    }
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_handleControllerChange);
+    chatVisible?.removeListener(_handleChatVisibilityChange);
     lowEndRefreshTimer?.cancel();
     folderPages.dispose();
     unawaited(callAlert.dispose());
@@ -1473,6 +1499,17 @@ class _HomeShellState extends State<_HomeShell> {
 
   void _handleControllerChange() {
     if (!mounted) return;
+    if (chatVisible?.value == true) {
+      refreshPendingWhileChatVisible = true;
+      final nextCallFingerprint = identityHashCode(
+        widget.controller.activeCall,
+      );
+      if (activeCallFingerprint != nextCallFingerprint) {
+        activeCallFingerprint = nextCallFingerprint;
+        syncCallAlert();
+      }
+      return;
+    }
     if (lowEndMode) {
       if (lowEndRefreshTimer != null) return;
       lowEndRefreshTimer = Timer(const Duration(milliseconds: 100), () {
@@ -1498,6 +1535,18 @@ class _HomeShellState extends State<_HomeShell> {
       setState(() {});
     });
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _handleChatVisibilityChange() {
+    if (!mounted || chatVisible?.value != false) return;
+    if (!refreshPendingWhileChatVisible) return;
+    refreshPendingWhileChatVisible = false;
+    final nextFingerprint = _computeHomeFingerprint();
+    if (homeFingerprint == nextFingerprint) return;
+    homeFingerprint = nextFingerprint;
+    activeCallFingerprint = identityHashCode(widget.controller.activeCall);
+    syncCallAlert();
+    setState(() {});
   }
 
   int _computeHomeFingerprint() {
@@ -1569,20 +1618,13 @@ class _HomeShellState extends State<_HomeShell> {
   }
 
   void selectFilter(_HomeFilter value) {
-    if (folderPages.hasClients) {
-      if (widget.controller.appSettings.reducedAnimations || lowEndMode) {
-        folderPages.jumpToPage(_filterIndex(value));
-      } else {
-        unawaited(
-          folderPages.animateToPage(
-            _filterIndex(value),
-            duration: const Duration(milliseconds: 260),
-            curve: Curves.linear,
-          ),
-        );
-      }
-    }
+    if (value == filter) return;
     updateFilter(value);
+    if (folderPages.hasClients) {
+      // A direct tap should not build and select every folder in between.
+      // PageView remains animated and interactive for horizontal swipes.
+      folderPages.jumpToPage(_filterIndex(value));
+    }
   }
 
   void updateFilter(_HomeFilter value) {

@@ -101,6 +101,20 @@ async def execute_history_mutation(
     )
 
     enrich_mutation_identity(server, node_id, packet)
+    direct_authorizer = getattr(server, "authorize_direct_message", None)
+    if callable(direct_authorizer) and not direct_authorizer(packet):
+        if mutation_context:
+            await server.send_mutation_ack(
+                websocket,
+                packet,
+                mutation_context,
+                ok=False,
+                reason="direct_messages_restricted",
+            )
+        return MutationOutcome(
+            accepted=False,
+            reason="direct_messages_restricted",
+        )
     sync_event_accounts = server.sync_v2_accounts_for_packet(
         packet,
         group_delete_targets,

@@ -798,7 +798,11 @@ class ServerSyncMixin:
                    COALESCE(profile_blink_shape, 'auto'),
                    COALESCE(avatar_decoration, 'none'),
                    COALESCE(profile_glow, 0),
-                   COALESCE(profile_accent, 4282557941)
+                   COALESCE(profile_accent, 4282557941),
+                   COALESCE(privacy_show_online, 1),
+                   COALESCE(privacy_show_avatar, 1),
+                   COALESCE(privacy_show_about, 1),
+                   COALESCE(direct_message_privacy, 'everyone')
             FROM accounts
             WHERE login=?
                OR node_id=?
@@ -827,6 +831,10 @@ class ServerSyncMixin:
                 "avatar_data": row[5],
                 "encryption_public_key": row[6],
                 "node_aliases": self.get_account_node_ids(row[0]),
+                "privacy_show_online": bool(row[13]),
+                "privacy_show_avatar": bool(row[14]),
+                "privacy_show_about": bool(row[15]),
+                "direct_message_privacy": row[16] or "everyone",
                 **self._meshpro_public_profile_fields(
                     row[0],
                     row[7],
@@ -1579,7 +1587,11 @@ class ServerSyncMixin:
                        COALESCE(a.profile_blink_shape, 'auto'),
                        COALESCE(a.avatar_decoration, 'none'),
                        COALESCE(a.profile_glow, 0),
-                       COALESCE(a.profile_accent, 4282557941)
+                       COALESCE(a.profile_accent, 4282557941),
+                       COALESCE(a.privacy_show_online, 1),
+                       COALESCE(a.privacy_show_avatar, 1),
+                       COALESCE(a.privacy_show_about, 1),
+                       COALESCE(a.direct_message_privacy, 'everyone')
                 FROM (
                     SELECT ? AS node_id
                     {''.join([' UNION SELECT ?' for _ in profile_nodes[1:]])}
@@ -1601,7 +1613,11 @@ class ServerSyncMixin:
                        COALESCE(a.profile_blink_shape, 'auto'),
                        COALESCE(a.avatar_decoration, 'none'),
                        COALESCE(a.profile_glow, 0),
-                       COALESCE(a.profile_accent, 4282557941)
+                       COALESCE(a.profile_accent, 4282557941),
+                       COALESCE(a.privacy_show_online, 1),
+                       COALESCE(a.privacy_show_avatar, 1),
+                       COALESCE(a.privacy_show_about, 1),
+                       COALESCE(a.direct_message_privacy, 'everyone')
                 FROM accounts a
                 WHERE a.node_id IN ({placeholders})
                 """,
@@ -1614,10 +1630,14 @@ class ServerSyncMixin:
                     "node_id": row[1],
                     "display_name": row[2],
                     "public_username": row[3],
-                    "about": row[4],
-                    "avatar_data": row[5],
+                    "about": row[4] if row[15] else "",
+                    "avatar_data": row[5] if row[14] else "",
                     "encryption_public_key": row[6],
                     "node_aliases": self.get_account_node_ids(row[0]),
+                    "privacy_show_online": bool(row[13]),
+                    "privacy_show_avatar": bool(row[14]),
+                    "privacy_show_about": bool(row[15]),
+                    "direct_message_privacy": row[16] or "everyone",
                     **self._meshpro_public_profile_fields(
                         row[0],
                         row[7],
@@ -2042,20 +2062,55 @@ class ServerSyncMixin:
                     "profile_accent": profile.get(
                         "profile_accent",
                         4282557941
-                    )
+                    ),
+                    "privacy_show_online": profile.get(
+                        "privacy_show_online", True
+                    ),
+                    "privacy_show_avatar": profile.get(
+                        "privacy_show_avatar", True
+                    ),
+                    "privacy_show_about": profile.get(
+                        "privacy_show_about", True
+                    ),
+                    "direct_message_privacy": profile.get(
+                        "direct_message_privacy", "everyone"
+                    ),
                 }
             )
 
-        packet = {
-            "type": "server_users",
-            "users": users
-        }
+        def packet_for(viewer_node):
+            viewer_login = str(
+                self.client_logins.get(viewer_node) or ""
+            ).strip().lower()
+            visible_users = []
+            for user in users:
+                own_account = (
+                    viewer_login
+                    and viewer_login == str(user.get("login") or "").lower()
+                )
+                visible_users.append(
+                    {
+                        **user,
+                        "online": own_account or user["privacy_show_online"],
+                        "about": (
+                            user["about"]
+                            if own_account or user["privacy_show_about"]
+                            else ""
+                        ),
+                        "avatar_data": (
+                            user["avatar_data"]
+                            if own_account or user["privacy_show_avatar"]
+                            else ""
+                        ),
+                    }
+                )
+            return {"type": "server_users", "users": visible_users}
 
         sender = getattr(self, "send_packet_to_node", None)
         if callable(sender):
             await asyncio.gather(
                 *(
-                    sender(node_id, packet)
+                    sender(node_id, packet_for(node_id))
                     for node_id in seen_nodes
                 ),
                 return_exceptions=True,
@@ -2065,7 +2120,7 @@ class ServerSyncMixin:
         for node_id, websocket in list(self.clients.items()):
             try:
                 await websocket.send(
-                    json.dumps(packet, ensure_ascii=False)
+                    json.dumps(packet_for(node_id), ensure_ascii=False)
                 )
             except websockets.ConnectionClosed:
                 self.clients.pop(node_id, None)

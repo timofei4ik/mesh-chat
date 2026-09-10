@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/controllers/app_controller.dart';
+import 'package:meshchat_mobile/src/models/chat_message.dart';
 import 'package:meshchat_mobile/src/models/chat_thread.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
 import 'package:meshchat_mobile/src/models/session.dart';
@@ -101,6 +102,42 @@ void main() {
     expect(restored.accountLogin, 'alice');
     expect(restored.nodeAliases, ['device-old', 'device-new']);
     expect(restored.avatarData, 'avatar-payload');
+  });
+
+  test('secret chat stays hidden and supports two-sided deletion', () async {
+    final controller = AppController()
+      ..session = const Session(
+        serverUrl: 'wss://example.test/ws',
+        serverToken: 'token',
+        login: 'alice',
+        password: 'password',
+        publicUsername: 'alice',
+        nodeId: 'alice-device',
+      );
+    const peer = Profile(
+      nodeId: 'bob-device',
+      displayName: 'Bob',
+      accountLogin: 'bob',
+    );
+    final secret = await controller.ensureSecretThread(peer, 'private code');
+    final incoming = ChatMessage(
+      id: 'secret-incoming',
+      senderNode: peer.nodeId,
+      receiverNode: controller.myNodeId,
+      text: 'Hidden message',
+      createdAt: DateTime.utc(2026, 9, 10),
+    );
+    secret.messages.add(incoming);
+
+    expect(secret.isSecret, isTrue);
+    expect(controller.sortedThreads, isNot(contains(secret)));
+    expect(controller.searchAllChats('Hidden message'), isEmpty);
+    expect(controller.canDeleteMessageForEveryone(secret, incoming), isTrue);
+
+    final restored = ChatThread.fromJson(secret.toJson());
+    expect(restored.isSecret, isTrue);
+    expect(restored.accessCode, 'private-code');
+    expect(restored.messages.single.id, incoming.id);
   });
 }
 

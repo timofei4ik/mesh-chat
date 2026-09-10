@@ -1731,6 +1731,22 @@ class _PrivacySettings extends StatelessWidget {
 
   final AppController controller;
 
+  String _directMessageLabel(DirectMessagePrivacy value) => switch (value) {
+    DirectMessagePrivacy.everyone => 'Everyone',
+    DirectMessagePrivacy.sharedGroups => 'Shared groups',
+    DirectMessagePrivacy.nobody => 'Nobody new',
+  };
+
+  String _directMessageDescription(DirectMessagePrivacy value) =>
+      switch (value) {
+        DirectMessagePrivacy.everyone =>
+          'Anyone who finds your profile can start a chat',
+        DirectMessagePrivacy.sharedGroups =>
+          'Only people who share a group with you',
+        DirectMessagePrivacy.nobody =>
+          'Only people already in your chat history',
+      };
+
   @override
   Widget build(BuildContext context) {
     final settings = controller.appSettings;
@@ -1764,6 +1780,44 @@ class _PrivacySettings extends StatelessWidget {
             value: settings.showAbout,
             onChanged: (value) => controller.updateAppSettings(
               settings.copyWith(showAbout: value),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.mark_chat_unread_outlined),
+            title: const Text('Who can message me'),
+            subtitle: Text(switch (settings.directMessagePrivacy) {
+              DirectMessagePrivacy.everyone => 'Everyone',
+              DirectMessagePrivacy.sharedGroups => 'People in shared groups',
+              DirectMessagePrivacy.nobody => 'Existing chats only',
+            }),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => showModalBottomSheet<void>(
+              context: context,
+              showDragHandle: true,
+              builder: (sheetContext) => SafeArea(
+                child: RadioGroup<DirectMessagePrivacy>(
+                  groupValue: settings.directMessagePrivacy,
+                  onChanged: (selected) {
+                    if (selected == null) return;
+                    Navigator.pop(sheetContext);
+                    controller.updateAppSettings(
+                      settings.copyWith(directMessagePrivacy: selected),
+                    );
+                  },
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: DirectMessagePrivacy.values
+                        .map(
+                          (value) => RadioListTile<DirectMessagePrivacy>(
+                            value: value,
+                            title: Text(_directMessageLabel(value)),
+                            subtitle: Text(_directMessageDescription(value)),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ),
             ),
           ),
           SwitchListTile(
