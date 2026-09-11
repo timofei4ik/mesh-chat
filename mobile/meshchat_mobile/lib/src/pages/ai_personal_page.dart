@@ -33,7 +33,8 @@ class _AiPersonalPageState extends State<AiPersonalPage> {
   Future<void> load() async {
     try {
       final data = await store.read(collection);
-      if (mounted && widget.controller.session == session) {
+      if (mounted &&
+          session?.isSameAccountAs(widget.controller.session) == true) {
         setState(() => entries = data);
       }
     } catch (_) {
@@ -46,11 +47,12 @@ class _AiPersonalPageState extends State<AiPersonalPage> {
   Future<void> persist(
     List<Map<String, dynamic>> Function(List<Map<String, dynamic>>) change,
   ) async {
-    if (widget.controller.session != session) {
+    if (session?.isSameAccountAs(widget.controller.session) != true) {
       throw StateError('Account changed');
     }
     final next = await store.update(collection, change);
-    if (mounted && widget.controller.session == session) {
+    if (mounted &&
+        session?.isSameAccountAs(widget.controller.session) == true) {
       setState(() {
         entries = next;
         error = null;
@@ -59,7 +61,7 @@ class _AiPersonalPageState extends State<AiPersonalPage> {
   }
 
   Future<void> edit([Map<String, dynamic>? entry]) async {
-    if (widget.controller.session != session) return;
+    if (session?.isSameAccountAs(widget.controller.session) != true) return;
     final value = await showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
@@ -160,7 +162,10 @@ class _AiPersonalPageState extends State<AiPersonalPage> {
                       ),
                       onTap: () {
                         if (widget.presets) {
-                          if (widget.controller.session == session) {
+                          if (session?.isSameAccountAs(
+                                widget.controller.session,
+                              ) ==
+                              true) {
                             Navigator.pop(context, entry);
                           }
                         } else {
@@ -238,7 +243,9 @@ class _PersonalEditorState extends State<_PersonalEditor> {
         ],
       ),
     );
-    if (consent != true || !mounted || widget.controller.session != session) {
+    if (consent != true ||
+        !mounted ||
+        session?.isSameAccountAs(widget.controller.session) != true) {
       return;
     }
     setState(() {
@@ -252,7 +259,8 @@ class _PersonalEditorState extends State<_PersonalEditor> {
           {'id': 'notes', 'text': text.text},
         ],
       });
-      if (mounted && widget.controller.session == session) {
+      if (mounted &&
+          session?.isSameAccountAs(widget.controller.session) == true) {
         text.text = result.answer;
       }
     } catch (exception) {
@@ -269,7 +277,8 @@ class _PersonalEditorState extends State<_PersonalEditor> {
   }
 
   Future<void> favorite() async {
-    if (text.text.trim().isEmpty || widget.controller.session != session) {
+    if (text.text.trim().isEmpty ||
+        session?.isSameAccountAs(widget.controller.session) != true) {
       return;
     }
     await widget.controller.sendMessage(
@@ -351,7 +360,8 @@ class _PersonalEditorState extends State<_PersonalEditor> {
         onPressed: busy
             ? null
             : () {
-                if (widget.controller.session != session) {
+                if (session?.isSameAccountAs(widget.controller.session) !=
+                    true) {
                   setState(() => error = 'Account changed');
                   return;
                 }

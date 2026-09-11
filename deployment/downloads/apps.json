@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 49,
-  "updatedAt": "2026-09-10T15:29:20Z",
+  "catalogVersion": 50,
+  "updatedAt": "2026-09-11T16:40:01Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-message-editor-session-fix-1-1-0",
+      "appId": "meshchat",
+      "badge": "Fix",
+      "title": "Message editor session fix",
+      "summary": "The message editor no longer reports Account changed when the same account refreshes its token, profile, email or device identity in the background. Rich attachments and AI actions use the same stable account check, while a real switch to another account or server still safely stops the pending action.",
+      "publishedAt": "2026-09-11"
+    },
     {
       "id": "meshchat-privacy-performance-1-1-0",
       "appId": "meshchat",
@@ -156,20 +164,18 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 212,
+      "build": 213,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-10T15:29:20Z",
+      "updated_at": "2026-09-11T16:40:01Z",
       "release": {
-        "title": "Privacy controls and smoother chats",
-        "publishedAt": "2026-09-10",
+        "title": "Message editor session fix",
+        "publishedAt": "2026-09-11",
         "notes": [
-          "Online status, avatar and About visibility are enforced per viewer by the server.",
-          "Choose who may start a private chat: everyone, people in shared groups, or nobody new. Existing conversations continue normally.",
-          "Open a private conversation directly from a common group member's profile without adding their username first.",
-          "Deleting messages stays responsive, nearby bubbles close the gap smoothly, and authorized participants can delete messages for everyone.",
-          "Rapid folder switching is stable and location cards retain only the useful Open and Route actions."
+          "The message editor remains usable while the same account refreshes its session data in the background.",
+          "Rich attachment uploads and AI actions now use the same stable account identity check.",
+          "Switching to a different account or server still stops pending editor actions safely."
         ]
       }
     },

@@ -90,7 +90,7 @@ class _AiContextPageState extends State<AiContextPage> {
       result = null;
     });
     try {
-      if (widget.controller.session != session) {
+      if (session?.isSameAccountAs(widget.controller.session) != true) {
         throw StateError('Account changed');
       }
       final messages = candidates
@@ -131,7 +131,7 @@ class _AiContextPageState extends State<AiContextPage> {
           throw StateError('Attachment is unavailable or larger than 3 MB');
         }
       }
-      if (widget.controller.session != session) {
+      if (session?.isSameAccountAs(widget.controller.session) != true) {
         throw StateError('Account changed');
       }
       final sources = widget.mode == 'document'
@@ -149,7 +149,10 @@ class _AiContextPageState extends State<AiContextPage> {
         'question': question.text.trim(),
         'sources': sources,
       }, attachmentHex: hex);
-      if (!mounted || widget.controller.session != session) return;
+      if (!mounted ||
+          session?.isSameAccountAs(widget.controller.session) != true) {
+        return;
+      }
       setState(() => result = response);
     } catch (exception) {
       if (mounted) {
@@ -165,7 +168,7 @@ class _AiContextPageState extends State<AiContextPage> {
   }
 
   void openSource(String id) {
-    if (widget.controller.session != session) return;
+    if (session?.isSameAccountAs(widget.controller.session) != true) return;
     final source = result?.sources.where((s) => s['id'] == id).firstOrNull;
     if (source == null) return;
     if (id.startsWith('page:')) {
@@ -352,7 +355,10 @@ class _AiContextPageState extends State<AiContextPage> {
                     tooltip: 'Review reminder',
                     icon: const Icon(Icons.alarm_add_rounded),
                     onPressed: () {
-                      if (widget.controller.session != session) return;
+                      if (session?.isSameAccountAs(widget.controller.session) !=
+                          true) {
+                        return;
+                      }
                       widget.onReminder(item['text']?.toString() ?? '');
                     },
                   ),
@@ -369,7 +375,10 @@ class _AiContextPageState extends State<AiContextPage> {
                   title: Text(reply),
                   trailing: const Icon(Icons.edit_note_rounded),
                   onTap: () {
-                    if (widget.controller.session != session) return;
+                    if (session?.isSameAccountAs(widget.controller.session) !=
+                        true) {
+                      return;
+                    }
                     Navigator.pop(context);
                     widget.onDraft(reply);
                   },

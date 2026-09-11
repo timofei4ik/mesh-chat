@@ -13,6 +13,7 @@ import 'package:meshchat_mobile/src/models/chat_message.dart';
 import 'package:meshchat_mobile/src/models/rich_message_document.dart';
 import 'package:meshchat_mobile/src/models/chat_thread.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
+import 'package:meshchat_mobile/src/models/session.dart';
 import 'package:meshchat_mobile/src/pages/chat_page.dart';
 import 'package:meshchat_mobile/src/pages/chats_page.dart';
 import 'package:meshchat_mobile/src/widgets/chat_timeline_date.dart';
@@ -39,6 +40,20 @@ class _PreviewController extends AppController {
   }) async {
     sentGroupMessages.add(text);
     return 'preview-${sentGroupMessages.length}';
+  }
+}
+
+class _RichPreviewController extends _PreviewController {
+  @override
+  Future<String?> sendGroupMessage(
+    ChatThread group,
+    String text, {
+    ChatMessage? replyTo,
+    ChatMessage? retryingMessage,
+    String? richContent,
+  }) async {
+    sentGroupMessages.add(text);
+    return null;
   }
 }
 
@@ -268,6 +283,64 @@ void main() {
       startsWith('::meshchat_location_v1::'),
     );
     expect(controller.sentGroupMessages.last, contains('60.03652'));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('message editor survives same-account session refresh', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = _RichPreviewController()
+      ..session = const Session(
+        serverUrl: 'wss://meshchat.example/ws',
+        serverToken: 'first-token',
+        login: 'alice',
+        password: 'secret',
+        publicUsername: 'alice',
+        nodeId: 'alice-phone',
+      );
+    final thread = ChatThread(
+      profile: const Profile(nodeId: 'group', displayName: 'Friends'),
+      isGroup: true,
+      groupId: 'group',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: MeshPerformanceScope(
+          lowEndDeviceMode: true,
+          child: ChatPage(controller: controller, thread: thread),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.hintText == 'Message',
+      ),
+      'Hello after refresh',
+    );
+    await tester.tap(find.byIcon(Icons.attach_file_rounded).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Message editor'));
+    await tester.pumpAndSettle();
+    controller.session = controller.session!.copyWith(
+      serverToken: 'refreshed-token',
+      publicUsername: 'alice-new',
+      email: 'alice@example.com',
+    );
+    controller.notifyListeners();
+    await tester.pump();
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pumpAndSettle();
+    expect(controller.sentGroupMessages, ['Hello after refresh']);
+    expect(find.textContaining('Account changed'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));

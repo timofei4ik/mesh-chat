@@ -2171,7 +2171,7 @@ class AppController extends ChangeNotifier {
         'This action requires MeshPro',
       );
     }
-    if (session != current) {
+    if (!current.isSameAccountAs(session)) {
       throw const AiSummaryException('session_changed', 'Account changed');
     }
     final id = const Uuid().v4();
@@ -2202,7 +2202,7 @@ class AppController extends ChangeNotifier {
       final response = await completer.future.timeout(
         const Duration(seconds: 60),
       );
-      if (session != current) {
+      if (!current.isSameAccountAs(session)) {
         throw const AiSummaryException('session_changed', 'Account changed');
       }
       return AiContextResult.decode(response.text);
@@ -5633,7 +5633,7 @@ class AppController extends ChangeNotifier {
         const Duration(seconds: 12),
         onTimeout: () => 'Server did not confirm the bubble style',
       );
-      if (session != current) return 'Account changed';
+      if (!current.isSameAccountAs(session)) return 'Account changed';
       if (error != null) return error;
       final profile = ownProfile.copyWith(messageBubbleStyle: style);
       profiles[current.nodeId] = profile;
@@ -10206,7 +10206,9 @@ class AppController extends ChangeNotifier {
       staged[entry.key] = bytes;
     }
     for (final entry in staged.entries) {
-      if (session != account) throw StateError('Account changed');
+      if (!account.isSameAccountAs(session)) {
+        throw StateError('Account changed');
+      }
       await _sendRichAttachment(
         thread,
         entry.key,
@@ -10225,8 +10227,9 @@ class AppController extends ChangeNotifier {
     ChatMessage? replyTo,
   }) async {
     final account = session;
+    if (account == null) throw StateError('No active session');
     final data = await compute(encodeMediaHex, bytes);
-    if (session != account) throw StateError('Account changed');
+    if (!account.isSameAccountAs(session)) throw StateError('Account changed');
     final message = ChatMessage(
       id: id,
       senderNode: myNodeId,
@@ -10269,6 +10272,7 @@ class AppController extends ChangeNotifier {
       localOnly: isSavedMessagesProfile(target.profile),
     );
     final account = session;
+    if (account == null) throw StateError('No active session');
     ChatThread? source;
     for (final thread in [...threads.values, ...groups.values]) {
       if (thread.messages.any(
@@ -10299,7 +10303,9 @@ class AppController extends ChangeNotifier {
     }
     final replacements = <String, String>{};
     for (final item in staged.entries) {
-      if (session != account) throw StateError('Account changed');
+      if (!account.isSameAccountAs(session)) {
+        throw StateError('Account changed');
+      }
       final id = const Uuid().v4();
       await _sendRichAttachment(target, id, item.value.name, item.value.bytes);
       replacements[item.key] = id;

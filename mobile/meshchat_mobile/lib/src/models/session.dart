@@ -19,6 +19,21 @@ class Session {
   final String email;
   final String identityRecovery;
 
+  bool isSameAccountAs(Session? other) {
+    if (other == null) return false;
+    return _normalizeServerUrl(serverUrl) ==
+            _normalizeServerUrl(other.serverUrl) &&
+        login.trim().toLowerCase() == other.login.trim().toLowerCase();
+  }
+
+  static String _normalizeServerUrl(String value) {
+    var normalized = value.trim().toLowerCase();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized;
+  }
+
   Session copyWith({
     String? serverUrl,
     String? serverToken,

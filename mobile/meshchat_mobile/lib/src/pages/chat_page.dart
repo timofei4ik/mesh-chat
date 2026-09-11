@@ -601,7 +601,7 @@ class _ChatPageState extends State<ChatPage>
                     'sources': <Object>[],
                   })).answer,
               onSend: (document) async {
-                if (widget.controller.session != session) {
+                if (!session.isSameAccountAs(widget.controller.session)) {
                   throw StateError('Account changed');
                 }
                 await widget.controller.prepareRichAttachments(
@@ -610,7 +610,7 @@ class _ChatPageState extends State<ChatPage>
                   drafts.readAttachment,
                   replyTo: quote,
                 );
-                if (widget.controller.session != session) {
+                if (!session.isSameAccountAs(widget.controller.session)) {
                   throw StateError('Account changed');
                 }
                 if (editing != null) {
