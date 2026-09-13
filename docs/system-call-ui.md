@@ -1,15 +1,30 @@
 # System call UI preparation
 
-The dormant iOS CallKit bridge in AppDelegate and the opt-in SystemCallUi Dart adapter can report an incoming UUID, receive answer/end actions and report a remote end. They are deliberately NOT connected to the active call coordinator yet. No PushKit registration or APNs token upload is enabled. Existing notifications remain unchanged. The audio background mode allows ongoing audio sessions while the phone is locked; it does not wake a terminated app.
+The iOS target now contains a dormant APNs/PushKit/CallKit path. It registers
+alert and VoIP tokens only in builds created with
+`--dart-define=MESH_ENABLE_APPLE_PUSH=true`, synchronizes both tokens to the
+authenticated account device, and reports a valid incoming VoIP call UUID to
+CallKit before waking Flutter. Ordinary builds keep the bridge disabled and
+retain the existing notification behavior.
+
+The relay path is independently gated by `MESH_APNS_ENABLED=true` and valid
+provider credentials. Message notifications use the app bundle topic; only
+`call_offer` and `call_end` use `<bundle-id>.voip`. Encrypted message text is
+not included in push payloads.
 
 Before activation:
 
 1. Configure Apple signing, Push Notifications capability and APNs provider credentials for the app bundle; keep credentials server-side.
-2. Implement authenticated per-device VoIP token registration, revocation on logout, expiry and call-only APNs pushes with topic <bundle-id>.voip.
-3. Add PushKit native handling that immediately reports valid incoming VoIP pushes to CallKit, before waiting for Flutter or network sync. Do not use VoIP pushes for messages or keep-alives.
-4. Persist a bounded pending-call/action queue across Flutter engine startup. Match the authenticated server call UUID and active account before answering. Handle ended, expired and answered-elsewhere calls.
-5. Connect SystemCallUi actions to accept/end with actual success acknowledgements. Add WebRTC RTCAudioSession handoff from CXProvider didActivate/didDeactivate, and implement mute/interruption/reset/timeout handling before enabling system call UI. Do not start audio ahead of CallKit activation.
-6. Validate on signed real iPhones: locked, suspended, terminated, offline, expired push, Focus mode, Bluetooth and competing cellular calls.
+2. Add the generated `aps-environment` entitlement through Xcode signing. Do
+   not hard-code it for unsigned builds.
+3. Persist a bounded pending-call/action queue across Flutter engine startup.
+   Match the authenticated server call UUID and active account before
+   answering. Handle expired and answered-elsewhere calls.
+4. Add WebRTC audio-session handoff from `CXProvider` activation and
+   deactivation, plus interruption and mute handling.
+5. Enable the server variables and Flutter build flag only for a signed test
+   build, then validate locked, suspended, terminated, offline, expired push,
+   Focus mode, Bluetooth and competing cellular calls on real iPhones.
 
 ## Android incoming calls
 

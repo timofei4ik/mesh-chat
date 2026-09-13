@@ -42,6 +42,7 @@ OFFLINE_QUEUE_PACKET_TYPES = frozenset(
         "group_message_delete",
         "chat_delete",
         "group_delete",
+        "call_offer",
     }
 )
 OFFLINE_PACKET_MAX_AGE_DAYS = 30
@@ -2106,6 +2107,25 @@ class ServerStorageMixin:
             ON android_push_tokens(node_id)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS apple_push_tokens(
+                token TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'alert',
+                environment TEXT NOT NULL DEFAULT 'production',
+                login TEXT,
+                node_id TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(token, kind)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_apple_push_tokens_node
+            ON apple_push_tokens(node_id)
+            """
+        )
 
         conn.execute(
             """
@@ -2464,6 +2484,98 @@ class ServerStorageMixin:
         )
         return [row[0] for row in cursor.fetchall() if row[0]]
 
+    def save_apple_push_token(
+        self,
+        login,
+        node_id,
+        token,
+        kind="alert",
+        environment="production",
+    ):
+        normalized = str(token or "").strip().lower()
+        normalized_kind = str(kind or "alert").strip().lower()
+        normalized_environment = str(
+            environment or "production"
+        ).strip().lower()
+        if (
+            not node_id
+            or not normalized
+            or len(normalized) > 512
+            or normalized_kind not in {"alert", "voip"}
+            or normalized_environment not in {"sandbox", "production"}
+        ):
+            return False
+        self.db.execute(
+            """
+            DELETE FROM apple_push_tokens
+            WHERE node_id=? AND kind=? AND token<>?
+            """,
+            (node_id, normalized_kind, normalized),
+        )
+        self.db.execute(
+            """
+            INSERT INTO apple_push_tokens(
+                token, kind, environment, login, node_id, updated_at
+            )
+            VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(token, kind) DO UPDATE SET
+                environment=excluded.environment,
+                login=excluded.login,
+                node_id=excluded.node_id,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                normalized,
+                normalized_kind,
+                normalized_environment,
+                login,
+                node_id,
+            ),
+        )
+        self.db.commit()
+        return True
+
+    def delete_apple_push_token(self, token=None, node_id=None, kind=None):
+        normalized = str(token or "").strip().lower()
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized:
+            if normalized_kind:
+                self.db.execute(
+                    "DELETE FROM apple_push_tokens WHERE token=? AND kind=?",
+                    (normalized, normalized_kind),
+                )
+            else:
+                self.db.execute(
+                    "DELETE FROM apple_push_tokens WHERE token=?",
+                    (normalized,),
+                )
+        elif node_id:
+            self.db.execute(
+                "DELETE FROM apple_push_tokens WHERE node_id=?",
+                (node_id,),
+            )
+        else:
+            return
+        self.db.commit()
+
+    def apple_push_tokens_for_node(self, node_id):
+        if not node_id:
+            return []
+        cursor = self.db.execute(
+            """
+            SELECT token, kind, environment
+            FROM apple_push_tokens
+            WHERE node_id=?
+            ORDER BY updated_at DESC
+            """,
+            (node_id,),
+        )
+        return [
+            (token, kind, environment)
+            for token, kind, environment in cursor.fetchall()
+            if token
+        ]
+
     def save_account_device(
         self,
         login,
@@ -2565,6 +2677,7 @@ class ServerStorageMixin:
                 if node_id and node_id != target_node:
                     self.delete_android_push_token(node_id=node_id)
                     self.delete_web_push_subscription(node_id=node_id)
+                    self.delete_apple_push_token(node_id=node_id)
             return True, "ok"
         with self.unit_of_work_factory() as unit_of_work:
             device_exists = unit_of_work.identity.account_device_exists(
@@ -2581,6 +2694,7 @@ class ServerStorageMixin:
                 )
             self.delete_android_push_token(node_id=target_node)
             self.delete_web_push_subscription(node_id=target_node)
+            self.delete_apple_push_token(node_id=target_node)
         elif action == "rename":
             if not self.subscription_feature_enabled(
                 login,
@@ -6278,6 +6392,39 @@ class ServerStorageMixin:
 
         return True
 
+    def delete_pending_call_offer(self, destination_node, call_id):
+        destination = str(destination_node or "").strip()
+        normalized_call_id = str(call_id or "").strip()
+        if not destination or not normalized_call_id:
+            return 0
+        rows = self.db.execute(
+            """
+            SELECT id, packet_json
+            FROM offline_packets
+            WHERE destination_node=?
+            """,
+            (destination,),
+        ).fetchall()
+        matches = []
+        for packet_id, packet_json in rows:
+            try:
+                packet = json.loads(packet_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                packet.get("type") == "call_offer"
+                and str(packet.get("call_id") or "") == normalized_call_id
+            ):
+                matches.append(packet_id)
+        if not matches:
+            return 0
+        self.db.executemany(
+            "DELETE FROM offline_packets WHERE id=?",
+            [(packet_id,) for packet_id in matches],
+        )
+        self._commit_storage()
+        return len(matches)
+
     async def flush_offline_packets(
         self,
         node_id,
@@ -6306,12 +6453,28 @@ class ServerStorageMixin:
         rows = cursor.fetchall()
 
         for packet_id, packet_json in rows:
+            try:
+                decoded_packet = json.loads(packet_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded_packet = None
+            if isinstance(decoded_packet, dict):
+                try:
+                    expires_at = int(decoded_packet.get("expires_at") or 0)
+                except (TypeError, ValueError):
+                    expires_at = 0
+                if (
+                    decoded_packet.get("type") == "call_offer"
+                    and expires_at > 0
+                    and expires_at <= int(datetime.now(timezone.utc).timestamp())
+                ):
+                    self.db.execute(
+                        "DELETE FROM offline_packets WHERE id=?",
+                        (packet_id,),
+                    )
+                    continue
 
             if require_ack:
-                try:
-                    packet = json.loads(packet_json)
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    packet = None
+                packet = decoded_packet
 
                 if not isinstance(packet, dict):
                     self.db.execute(

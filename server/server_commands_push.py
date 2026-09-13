@@ -51,8 +51,36 @@ async def handle_fcm_unsubscribe(server, packet, context):
     )
 
 
+async def handle_apns_subscribe(server, packet, context):
+    saved = server.save_apple_push_token(
+        account_login(server, context.node_id),
+        context.node_id,
+        packet.get("token"),
+        packet.get("kind") or "alert",
+        packet.get("environment") or server.apple_push_environment,
+    )
+    await send_json(
+        context.websocket,
+        {"type": "apns_subscribe_result", "ok": bool(saved)},
+    )
+
+
+async def handle_apns_unsubscribe(server, packet, context):
+    server.delete_apple_push_token(
+        token=packet.get("token"),
+        node_id=context.node_id if not packet.get("token") else None,
+        kind=packet.get("kind"),
+    )
+    await send_json(
+        context.websocket,
+        {"type": "apns_unsubscribe_result", "ok": True},
+    )
+
+
 def register_push_commands(registry):
     registry.register("push_subscribe", handle_web_push_subscribe)
     registry.register("fcm_subscribe", handle_fcm_subscribe)
     registry.register("push_unsubscribe", handle_web_push_unsubscribe)
     registry.register("fcm_unsubscribe", handle_fcm_unsubscribe)
+    registry.register("apns_subscribe", handle_apns_subscribe)
+    registry.register("apns_unsubscribe", handle_apns_unsubscribe)

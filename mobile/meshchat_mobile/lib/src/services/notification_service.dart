@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'android_push_service.dart';
 import 'android_call_ui.dart';
+import 'apple_push_service.dart';
 import 'notification_web_stub.dart'
     if (dart.library.html) 'notification_web.dart'
     as web_notifications;
@@ -62,7 +63,9 @@ class NotificationService {
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
   final AndroidPushService _androidPush = AndroidPushService();
+  final ApplePushService _applePush = ApplePushService();
   ValueChanged<String>? onAndroidPushToken;
+  ValueChanged<ApplePushToken>? onApplePushToken;
   ValueChanged<NotificationTarget>? onActivated;
   final Map<String, DateTime> _recentNotifications = {};
   final Map<String, int> _callNotificationIds = {};
@@ -70,6 +73,13 @@ class NotificationService {
   Future<void> refreshAndroidPushToken() async {
     await _androidPush.initialize(
       onTokenChanged: (token) => onAndroidPushToken?.call(token),
+      onNotificationOpened: _activateFromMap,
+    );
+  }
+
+  Future<void> refreshApplePushTokens() async {
+    await _applePush.initialize(
+      onTokenChanged: (token) => onApplePushToken?.call(token),
       onNotificationOpened: _activateFromMap,
     );
   }
@@ -107,6 +117,7 @@ class NotificationService {
     _initialized = true;
     if (!await AndroidCallUi.isBackgroundEngine()) await requestPermissions();
     await refreshAndroidPushToken();
+    await refreshApplePushTokens();
   }
 
   Future<void> _handleNotificationResponse(

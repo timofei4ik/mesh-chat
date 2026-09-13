@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -18,12 +19,25 @@ except ModuleNotFoundError:
     messaging = None
 
 try:
+    import httpx
+    import jwt
+except ModuleNotFoundError:
+    httpx = None
+    jwt = None
+
+try:
     from server.config import (
         WEB_PUSH_VAPID_PRIVATE_KEY,
         WEB_PUSH_VAPID_PUBLIC_KEY,
         WEB_PUSH_VAPID_SUBJECT,
         FIREBASE_CREDENTIALS,
         FIREBASE_PROJECT_ID,
+        APNS_ENABLED,
+        APNS_KEY_FILE,
+        APNS_KEY_ID,
+        APNS_TEAM_ID,
+        APNS_BUNDLE_ID,
+        APNS_ENVIRONMENT,
     )
 except ModuleNotFoundError:
     from config import (
@@ -32,11 +46,19 @@ except ModuleNotFoundError:
         WEB_PUSH_VAPID_SUBJECT,
         FIREBASE_CREDENTIALS,
         FIREBASE_PROJECT_ID,
+        APNS_ENABLED,
+        APNS_KEY_FILE,
+        APNS_KEY_ID,
+        APNS_TEAM_ID,
+        APNS_BUNDLE_ID,
+        APNS_ENVIRONMENT,
     )
 
 
 class ServerPushMixin:
     _firebase_app_instance = None
+    _apns_provider_token_value = ""
+    _apns_provider_token_created_at = 0
 
     @property
     def web_push_enabled(self):
@@ -106,6 +128,45 @@ class ServerPushMixin:
         )
         return self._firebase_app_instance
 
+    @property
+    def apple_push_enabled(self):
+        return bool(
+            APNS_ENABLED
+            and httpx
+            and jwt
+            and APNS_KEY_FILE
+            and Path(APNS_KEY_FILE).is_file()
+            and APNS_KEY_ID
+            and APNS_TEAM_ID
+            and APNS_BUNDLE_ID
+        )
+
+    @property
+    def apple_push_environment(self):
+        return (
+            APNS_ENVIRONMENT
+            if APNS_ENVIRONMENT in {"sandbox", "production"}
+            else "production"
+        )
+
+    def _apns_provider_token(self):
+        now = int(time.time())
+        if (
+            self._apns_provider_token_value
+            and now - self._apns_provider_token_created_at < 45 * 60
+        ):
+            return self._apns_provider_token_value
+        key = Path(APNS_KEY_FILE).read_text(encoding="utf-8")
+        value = jwt.encode(
+            {"iss": APNS_TEAM_ID, "iat": now},
+            key,
+            algorithm="ES256",
+            headers={"kid": APNS_KEY_ID},
+        )
+        self._apns_provider_token_value = value
+        self._apns_provider_token_created_at = now
+        return value
+
     async def send_web_push_for_packet(
         self,
         destination_node,
@@ -163,6 +224,124 @@ class ServerPushMixin:
 
             if self.android_push_enabled:
                 await self._send_android_push(target_node, notification)
+
+            if self.apple_push_enabled:
+                await self._send_apple_push(target_node, notification)
+
+    @staticmethod
+    def _apple_push_kind(notification):
+        packet_type = str(notification.get("packet_type") or "")
+        if packet_type in {"call_offer", "call_end"}:
+            return "voip"
+        return "alert"
+
+    def _apple_push_request(self, notification, kind=None):
+        kind = str(kind or self._apple_push_kind(notification)).lower()
+        if kind not in {"alert", "voip"}:
+            return None
+        packet_type = str(notification.get("packet_type") or "message")
+        call_id = str(notification.get("call_id") or "")
+        custom = {
+            "type": packet_type,
+            "packet_id": str(notification.get("packet_id") or ""),
+            "call_id": call_id,
+            "source_node": str(notification.get("source_node") or ""),
+            "group_id": str(notification.get("group_id") or ""),
+            "cancel": bool(notification.get("cancel")),
+            "expires_at": int(notification.get("expires_at") or 0),
+        }
+        if kind == "voip":
+            payload = {
+                "aps": {"content-available": 1},
+                **custom,
+                "caller_name": str(
+                    notification.get("title") or "MeshChat"
+                ),
+            }
+            topic = f"{APNS_BUNDLE_ID}.voip"
+            priority = "10"
+        else:
+            payload = {
+                "aps": {
+                    "alert": {
+                        "title": str(
+                            notification.get("title") or "MeshChat"
+                        ),
+                        "body": str(
+                            notification.get("body") or "New message"
+                        ),
+                    },
+                    "sound": "default",
+                    "thread-id": str(notification.get("tag") or "meshchat"),
+                },
+                **custom,
+            }
+            topic = APNS_BUNDLE_ID
+            priority = "10"
+        return {
+            "topic": topic,
+            "push_type": kind,
+            "priority": priority,
+            "collapse_id": str(notification.get("tag") or "")[:64],
+            "payload": payload,
+        }
+
+    async def _send_apple_push(self, destination_node, notification):
+        kind = self._apple_push_kind(notification)
+        request = self._apple_push_request(notification, kind)
+        if request is None:
+            return
+        provider_token = self._apns_provider_token()
+        for token, token_kind, environment in (
+            self.apple_push_tokens_for_node(destination_node)
+        ):
+            if token_kind != kind:
+                continue
+            host = (
+                "https://api.sandbox.push.apple.com"
+                if environment == "sandbox"
+                else "https://api.push.apple.com"
+            )
+            headers = {
+                "authorization": f"bearer {provider_token}",
+                "apns-topic": request["topic"],
+                "apns-push-type": request["push_type"],
+                "apns-priority": request["priority"],
+                "apns-expiration": "0",
+            }
+            if request["collapse_id"]:
+                headers["apns-collapse-id"] = request["collapse_id"]
+            try:
+                async with httpx.AsyncClient(
+                    http2=True,
+                    timeout=5,
+                ) as client:
+                    response = await client.post(
+                        f"{host}/3/device/{token}",
+                        headers=headers,
+                        json=request["payload"],
+                    )
+                reason = ""
+                try:
+                    reason = str(response.json().get("reason") or "")
+                except (ValueError, AttributeError):
+                    pass
+                if response.status_code == 410 or reason in {
+                    "BadDeviceToken",
+                    "Unregistered",
+                    "DeviceTokenNotForTopic",
+                }:
+                    self.delete_apple_push_token(
+                        token=token,
+                        kind=kind,
+                    )
+                elif response.status_code >= 400:
+                    print(
+                        "Apple push failed: "
+                        f"{response.status_code} {reason}"
+                    )
+            except Exception as error:
+                print(f"Apple push failed: {error}")
 
     async def _send_android_push(self, destination_node, notification):
         app = self._firebase_app()
@@ -306,6 +485,7 @@ class ServerPushMixin:
                 "tag": f"call:{packet.get('call_id') or sender}",
                 "source_node": source_node,
                 "group_id": group_id,
+                "expires_at": int(packet.get("expires_at") or 0),
             }
 
         if packet_type == "call_end":

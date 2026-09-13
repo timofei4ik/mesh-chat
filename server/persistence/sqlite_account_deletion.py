@@ -422,13 +422,18 @@ class SQLitePushDeletionOwner:
     policies = (
         AccountDataPolicy("push", "web_push_subscriptions"),
         AccountDataPolicy("push", "android_push_tokens"),
+        AccountDataPolicy("push", "apple_push_tokens"),
     )
 
     def __init__(self, connection):
         self._connection = connection
 
     def delete_account(self, context):
-        for table in ("web_push_subscriptions", "android_push_tokens"):
+        for table in (
+            "web_push_subscriptions",
+            "android_push_tokens",
+            "apple_push_tokens",
+        ):
             self._connection.execute(
                 f"DELETE FROM {table} WHERE login=?",
                 (context.login,),

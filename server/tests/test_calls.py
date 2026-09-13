@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import time
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,8 @@ class FakeCallServer:
         self.client_logins = {"caller": "alice", "callee": "bob"}
         self.errors = []
         self.pushes = []
+        self.offline_packets = []
+        self.deleted_offers = []
         self.group_nodes = {"group-1": {"caller", "callee"}}
         self.capabilities = {"caller": True, "callee": True}
         self.db = sqlite3.connect(":memory:")
@@ -54,8 +57,22 @@ class FakeCallServer:
         return [
             node_id
             for node_id, value in self.client_logins.items()
+            if value == login and node_id in self.clients
+        ]
+
+    def get_account_node_ids(self, login):
+        return [
+            node_id
+            for node_id, value in self.client_logins.items()
             if value == login
         ]
+
+    def save_offline_packet(self, node_id, packet):
+        self.offline_packets.append((node_id, dict(packet)))
+        return True
+
+    def delete_pending_call_offer(self, node_id, call_id):
+        self.deleted_offers.append((node_id, call_id))
 
     def get_group_delivery_nodes(self, group_id):
         return list(self.group_nodes.get(group_id, set()))
@@ -269,6 +286,53 @@ class CallDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertEqual("caller", target.sent[0]["source_node"])
         self.assertEqual("alice", target.sent[0]["sender_login"])
+
+    async def test_offline_call_offer_is_bounded_and_recoverable(self):
+        server = FakeCallServer()
+
+        handled = await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_offer",
+                "destination_node": "callee",
+                "call_id": "call-offline",
+                "sdp": "v=0\r\n",
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(1, len(server.offline_packets))
+        node_id, queued = server.offline_packets[0]
+        self.assertEqual("callee", node_id)
+        self.assertEqual("caller", queued["source_node"])
+        self.assertGreater(queued["expires_at"], int(time.time()))
+        self.assertLessEqual(
+            queued["expires_at"] - queued["sent_at"] // 1000,
+            45,
+        )
+
+    async def test_call_end_clears_pending_offer_for_every_account_device(self):
+        server = FakeCallServer()
+        server.client_logins["callee-desktop"] = "bob"
+
+        await build_command_registry().dispatch(
+            server,
+            {
+                "type": "call_end",
+                "destination_node": "callee",
+                "call_id": "call-offline",
+            },
+            ConnectionContext(FakeSocket(), "caller"),
+        )
+
+        self.assertEqual(
+            {
+                ("callee", "call-offline"),
+                ("callee-desktop", "call-offline"),
+            },
+            set(server.deleted_offers),
+        )
 
     async def test_invalid_call_signal_is_rejected(self):
         server = FakeCallServer()

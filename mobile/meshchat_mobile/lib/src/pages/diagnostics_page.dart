@@ -295,7 +295,49 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                       value: controller.callQualityLabel.isEmpty
                           ? 'No call'
                           : controller.callQualityLabel,
-                      ok: call?.quality == 2,
+                      ok: call != null && call.quality >= 2,
+                    ),
+                    _DiagRow(
+                      label: 'Route / codec',
+                      value: call == null
+                          ? 'No call'
+                          : '${call.networkRoute.isEmpty ? 'unknown' : call.networkRoute} / '
+                                '${call.codec.isEmpty ? 'unknown' : call.codec}',
+                      ok: call != null && call.networkRoute.isNotEmpty,
+                    ),
+                    _DiagRow(
+                      label: 'Inbound audio',
+                      value: call == null
+                          ? 'No call'
+                          : '${call.inboundBitrateKbps} kb/s, '
+                                '${call.packetsReceived} received',
+                      ok: call != null && call.packetsReceived > 0,
+                    ),
+                    _DiagRow(
+                      label: 'Network timing',
+                      value: call == null
+                          ? 'No call'
+                          : '${call.roundTripTimeMs} ms RTT, '
+                                '${call.jitterMs} ms jitter',
+                      ok:
+                          call != null &&
+                          call.roundTripTimeMs < 350 &&
+                          call.jitterMs < 70,
+                    ),
+                    _DiagRow(
+                      label: 'Packet loss',
+                      value: call == null
+                          ? 'No call'
+                          : '${call.packetLossPercent.toStringAsFixed(1)}%, '
+                                '${call.packetsLost} total lost',
+                      ok: call != null && call.packetLossPercent < 6,
+                    ),
+                    _DiagRow(
+                      label: 'Recovery',
+                      value: call == null || call.reconnectAttempt == 0
+                          ? 'Idle'
+                          : 'Attempt ${call.reconnectAttempt}',
+                      ok: call == null || call.reconnectAttempt == 0,
                     ),
                     _DiagRow(
                       label: 'Participants',

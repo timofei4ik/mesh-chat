@@ -1,6 +1,7 @@
 import AVFoundation
 import CallKit
 import Flutter
+import PushKit
 import UIKit
 
 @main
@@ -10,6 +11,7 @@ import UIKit
   private let platformStyleChannel = "meshchat/platform_style"
   private let liquidGlassViewType = "meshchat/liquid_glass"
   private var systemCallBridge: MeshSystemCallBridge?
+  private var applePushBridge: MeshApplePushBridge?
 
   override func application(
     _ application: UIApplication,
@@ -19,6 +21,7 @@ import UIKit
       installAudioSessionChannel(controller.binaryMessenger)
       installProximityScreenChannel(controller.binaryMessenger)
       installPlatformStyleChannel(controller.binaryMessenger)
+      installApplePushChannel(controller.binaryMessenger)
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
@@ -29,6 +32,7 @@ import UIKit
       installAudioSessionChannel(registrar.messenger())
       installProximityScreenChannel(registrar.messenger())
       installPlatformStyleChannel(registrar.messenger())
+      installApplePushChannel(registrar.messenger())
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MeshChatLiquidGlass") {
       registrar.register(MeshChatLiquidGlassFactory(messenger: registrar.messenger()), withId: liquidGlassViewType)
@@ -98,6 +102,37 @@ import UIKit
     }
   }
 
+  private func installApplePushChannel(_ messenger: FlutterBinaryMessenger) {
+    if applePushBridge == nil {
+      applePushBridge = MeshApplePushBridge(
+        messenger: messenger,
+        systemCalls: systemCallBridge
+      )
+    }
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    super.application(
+      application,
+      didRegisterForRemoteNotificationsWithDeviceToken: deviceToken
+    )
+    applePushBridge?.didRegisterAlertToken(deviceToken)
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    super.application(
+      application,
+      didFailToRegisterForRemoteNotificationsWithError: error
+    )
+    applePushBridge?.didFailToRegister(error)
+  }
+
   private func activateCallAudio(speakerEnabled: Bool) throws {
     let session = AVAudioSession.sharedInstance()
     try session.setCategory(
@@ -133,21 +168,11 @@ private final class MeshSystemCallBridge: NSObject, CXProviderDelegate {
       }
       switch call.method {
       case "incoming":
-        if self.calls[uuid] != nil { result(true); return }
-        let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: args["name"] as? String ?? "MeshChat")
-        update.localizedCallerName = args["name"] as? String ?? "MeshChat"
-        update.hasVideo = false
-        update.supportsHolding = false
-        update.supportsGrouping = false
-        update.supportsUngrouping = false
-        update.supportsDTMF = false
-        self.calls[uuid] = id
-        self.callProvider().reportNewIncomingCall(with: uuid, update: update) { error in
-          DispatchQueue.main.async {
-            if error != nil { self.calls.removeValue(forKey: uuid) }
-            result(error == nil)
-          }
+        self.reportIncoming(
+          callId: id,
+          name: args["name"] as? String ?? "MeshChat"
+        ) { accepted in
+          result(accepted)
         }
       case "ended":
         self.calls.removeValue(forKey: uuid)
@@ -156,6 +181,43 @@ private final class MeshSystemCallBridge: NSObject, CXProviderDelegate {
       default: result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  func reportIncoming(
+    callId: String,
+    name: String,
+    completion: @escaping (Bool) -> Void
+  ) {
+    guard let uuid = UUID(uuidString: callId) else {
+      completion(false)
+      return
+    }
+    if calls[uuid] != nil {
+      completion(true)
+      return
+    }
+    let update = CXCallUpdate()
+    update.remoteHandle = CXHandle(type: .generic, value: name)
+    update.localizedCallerName = name
+    update.hasVideo = false
+    update.supportsHolding = false
+    update.supportsGrouping = false
+    update.supportsUngrouping = false
+    update.supportsDTMF = false
+    calls[uuid] = callId
+    callProvider().reportNewIncomingCall(with: uuid, update: update) {
+      [weak self] error in
+      DispatchQueue.main.async {
+        if error != nil { self?.calls.removeValue(forKey: uuid) }
+        completion(error == nil)
+      }
+    }
+  }
+
+  func reportEnded(callId: String) {
+    guard let uuid = UUID(uuidString: callId) else { return }
+    calls.removeValue(forKey: uuid)
+    provider?.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
   }
 
   private func callProvider() -> CXProvider {
@@ -189,6 +251,149 @@ private final class MeshSystemCallBridge: NSObject, CXProviderDelegate {
         action.fulfill()
       } else { action.fail() }
     }
+  }
+}
+
+// Registration stays dormant until Flutter is built with
+// --dart-define=MESH_ENABLE_APPLE_PUSH=true.
+private final class MeshApplePushBridge: NSObject, PKPushRegistryDelegate {
+  private let channel: FlutterMethodChannel
+  private weak var systemCalls: MeshSystemCallBridge?
+  private var voipRegistry: PKPushRegistry?
+
+  init(
+    messenger: FlutterBinaryMessenger,
+    systemCalls: MeshSystemCallBridge?
+  ) {
+    channel = FlutterMethodChannel(
+      name: "meshchat/apple_push",
+      binaryMessenger: messenger
+    )
+    self.systemCalls = systemCalls
+    super.init()
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard call.method == "initialize" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      DispatchQueue.main.async {
+        UIApplication.shared.registerForRemoteNotifications()
+        let args = call.arguments as? [String: Any]
+        if args?["enableVoip"] as? Bool == true {
+          self?.registerVoipPushes()
+        }
+        result(nil)
+      }
+    }
+  }
+
+  func didRegisterAlertToken(_ data: Data) {
+    emitToken(data, kind: "alert")
+  }
+
+  func didFailToRegister(_ error: Error) {
+    channel.invokeMethod(
+      "registrationFailed",
+      arguments: ["message": error.localizedDescription]
+    )
+  }
+
+  private func registerVoipPushes() {
+    if voipRegistry != nil { return }
+    let registry = PKPushRegistry(queue: .main)
+    registry.delegate = self
+    registry.desiredPushTypes = [.voIP]
+    voipRegistry = registry
+  }
+
+  private func emitToken(_ data: Data, kind: String) {
+    let token = data.map { String(format: "%02x", $0) }.joined()
+    #if DEBUG
+      let environment = "sandbox"
+    #else
+      let environment = "production"
+    #endif
+    channel.invokeMethod(
+      "token",
+      arguments: [
+        "token": token,
+        "kind": kind,
+        "environment": environment,
+      ]
+    )
+  }
+
+  func pushRegistry(
+    _ registry: PKPushRegistry,
+    didUpdate pushCredentials: PKPushCredentials,
+    for type: PKPushType
+  ) {
+    guard type == .voIP else { return }
+    emitToken(pushCredentials.token, kind: "voip")
+  }
+
+  func pushRegistry(
+    _ registry: PKPushRegistry,
+    didInvalidatePushTokenFor type: PKPushType
+  ) {
+    guard type == .voIP else { return }
+    channel.invokeMethod(
+      "tokenInvalidated",
+      arguments: ["kind": "voip"]
+    )
+  }
+
+  func pushRegistry(
+    _ registry: PKPushRegistry,
+    didReceiveIncomingPushWith payload: PKPushPayload,
+    for type: PKPushType,
+    completion: @escaping () -> Void
+  ) {
+    guard type == .voIP else {
+      completion()
+      return
+    }
+    let raw = payload.dictionaryPayload
+    let packetType = raw["type"] as? String ?? ""
+    let callId = raw["call_id"] as? String ?? ""
+    if packetType == "call_end" {
+      systemCalls?.reportEnded(callId: callId)
+      completion()
+      return
+    }
+    guard packetType == "call_offer", UUID(uuidString: callId) != nil else {
+      completion()
+      return
+    }
+    let expiresAt = (raw["expires_at"] as? NSNumber)?.doubleValue ?? 0
+    if expiresAt > 0 && expiresAt <= Date().timeIntervalSince1970 {
+      completion()
+      return
+    }
+    guard let systemCalls = systemCalls else {
+      completion()
+      return
+    }
+    let caller = raw["caller_name"] as? String ?? "MeshChat"
+    systemCalls.reportIncoming(callId: callId, name: caller) {
+      [weak self] _ in
+      self?.channel.invokeMethod(
+        "notificationOpened",
+        arguments: self?.flutterPayload(raw) ?? [:]
+      )
+      completion()
+    }
+  }
+
+  private func flutterPayload(
+    _ raw: [AnyHashable: Any]
+  ) -> [String: Any] {
+    var result: [String: Any] = [:]
+    for (key, value) in raw {
+      guard let key = key as? String else { continue }
+      result[key] = value
+    }
+    return result
   }
 }
 

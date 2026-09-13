@@ -27,6 +27,8 @@ import '../services/ai_personal_store.dart';
 import '../services/ble_chat_service.dart';
 import '../services/call_alert_service.dart';
 import '../services/call_caption_service.dart';
+import '../services/call_opus_config.dart';
+import '../services/apple_push_service.dart';
 import '../services/group_call_mesh.dart';
 import '../services/call_service.dart';
 import '../services/chat_cache_store.dart';
@@ -350,6 +352,11 @@ class ActiveCall {
     this.jitterMs = 0,
     this.packetLossPercent = 0,
     this.networkRoute = 'unknown',
+    this.codec = '',
+    this.inboundBitrateKbps = 0,
+    this.packetsReceived = 0,
+    this.packetsLost = 0,
+    this.reconnectAttempt = 0,
     this.hdAudio = false,
     this.enhancedNoiseSuppression = false,
     this.screenSharing = false,
@@ -380,6 +387,11 @@ class ActiveCall {
   final int jitterMs;
   final double packetLossPercent;
   final String networkRoute;
+  final String codec;
+  final int inboundBitrateKbps;
+  final int packetsReceived;
+  final int packetsLost;
+  final int reconnectAttempt;
   final bool hdAudio;
   final bool enhancedNoiseSuppression;
   final bool screenSharing;
@@ -423,6 +435,11 @@ class ActiveCall {
     int? jitterMs,
     double? packetLossPercent,
     String? networkRoute,
+    String? codec,
+    int? inboundBitrateKbps,
+    int? packetsReceived,
+    int? packetsLost,
+    int? reconnectAttempt,
     bool? screenSharing,
     bool? remoteScreenSharing,
     String? handoffSourceNode,
@@ -451,6 +468,11 @@ class ActiveCall {
       jitterMs: jitterMs ?? this.jitterMs,
       packetLossPercent: packetLossPercent ?? this.packetLossPercent,
       networkRoute: networkRoute ?? this.networkRoute,
+      codec: codec ?? this.codec,
+      inboundBitrateKbps: inboundBitrateKbps ?? this.inboundBitrateKbps,
+      packetsReceived: packetsReceived ?? this.packetsReceived,
+      packetsLost: packetsLost ?? this.packetsLost,
+      reconnectAttempt: reconnectAttempt ?? this.reconnectAttempt,
       hdAudio: hdAudio,
       enhancedNoiseSuppression: enhancedNoiseSuppression,
       screenSharing: screenSharing ?? this.screenSharing,
@@ -612,6 +634,9 @@ class AppController extends ChangeNotifier {
   bool _webPushSubscribeInFlight = false;
   String _androidPushToken = '';
   String _androidPushSubscribedToken = '';
+  final Map<String, ApplePushToken> _applePushTokens = {};
+  final Map<String, String> _applePushSubscribedTokens = {};
+  bool _applePushServerEnabled = false;
   bool _retryingQueuedMessages = false;
   final Set<String> _resendingMessageIds = {};
   bool _ownProfileHydrated = false;
@@ -652,6 +677,7 @@ class AppController extends ChangeNotifier {
 
   AppController() {
     _notifications.onAndroidPushToken = _handleAndroidPushToken;
+    _notifications.onApplePushToken = _handleApplePushToken;
     _notifications.onActivated = _handleNotificationActivation;
     _notifications.systemCalls.onAction = (action) async {
       final call = activeCall;
@@ -1462,6 +1488,7 @@ class AppController extends ChangeNotifier {
   Future<void> handleAppResumed() async {
     unawaited(_notifications.initialize());
     unawaited(_notifications.refreshAndroidPushToken());
+    unawaited(_notifications.refreshApplePushTokens());
     if (session == null) return;
     if (!_socket.isConnected) {
       await _connect();
@@ -2592,6 +2619,7 @@ class AppController extends ChangeNotifier {
     await _notifications.requestPermissions();
     await _syncWebPushSubscription();
     await _syncAndroidPushToken();
+    await _syncApplePushTokens();
   }
 
   void _handleAndroidPushToken(String token) {
@@ -2640,6 +2668,66 @@ class AppController extends ChangeNotifier {
       'ttl': 5,
     });
     _androidPushSubscribedToken = '';
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+  }
+
+  void _handleApplePushToken(ApplePushToken token) {
+    final normalized = token.token.trim().toLowerCase();
+    if (normalized.isEmpty) return;
+    final current = _applePushTokens[token.kind];
+    if (current?.token == normalized &&
+        current?.environment == token.environment) {
+      return;
+    }
+    _applePushTokens[token.kind] = ApplePushToken(
+      token: normalized,
+      kind: token.kind,
+      environment: token.environment,
+    );
+    _applePushSubscribedTokens.remove(token.kind);
+    unawaited(_syncApplePushTokens());
+  }
+
+  Future<void> _syncApplePushTokens() async {
+    if (kIsWeb ||
+        !_applePushServerEnabled ||
+        session == null ||
+        !_socket.isConnected ||
+        !appSettings.notificationsEnabled) {
+      return;
+    }
+    for (final token in _applePushTokens.values) {
+      if (_applePushSubscribedTokens[token.kind] == token.token) continue;
+      _socket.send({
+        'type': 'apns_subscribe',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': 'SERVER',
+        'token': token.token,
+        'kind': token.kind,
+        'environment': token.environment,
+        'ttl': 5,
+      });
+      _applePushSubscribedTokens[token.kind] = token.token;
+    }
+  }
+
+  Future<void> _unsubscribeApplePush() async {
+    if (kIsWeb || session == null || !_socket.isConnected) return;
+    for (final token in _applePushTokens.values) {
+      _socket.send({
+        'type': 'apns_unsubscribe',
+        'packet_id': const Uuid().v4(),
+        'protocol_version': MeshSocket.protocolVersion,
+        'source_node': myNodeId,
+        'destination_node': 'SERVER',
+        'token': token.token,
+        'kind': token.kind,
+        'ttl': 5,
+      });
+    }
+    _applePushSubscribedTokens.clear();
     await Future<void>.delayed(const Duration(milliseconds: 80));
   }
 
@@ -3133,6 +3221,7 @@ class AppController extends ChangeNotifier {
         _applyingSyncDelta = false;
         _livePacketsDuringDeltaApply.clear();
         _applyMeshProSubscription(packet['subscription']);
+        _applePushServerEnabled = packet['apple_push_enabled'] == true;
         emailBindingRequired = packet['email_binding_required'] == true;
         await _reconcileServerGroupIds(packet['account_group_ids']);
         if (!MeshSocket.isProtocolCompatible(packet)) {
@@ -3144,6 +3233,7 @@ class AppController extends ChangeNotifier {
               packet['web_push_vapid_public_key']?.toString() ?? '';
           unawaited(_syncWebPushSubscription());
           unawaited(_syncAndroidPushToken());
+          unawaited(_syncApplePushTokens());
           unawaited(_retryQueuedMessages());
           _socket.send({
             'type': 'call_ice_servers_request',
@@ -3151,6 +3241,12 @@ class AppController extends ChangeNotifier {
             'source_node': myNodeId,
             'protocol_version': MeshSocket.protocolVersion,
           });
+          final interruptedCall = activeCall;
+          if (interruptedCall != null &&
+              interruptedCall.status == CallStatus.connecting &&
+              !interruptedCall.groupSfu) {
+            _scheduleCallReconnect(interruptedCall.callId, '');
+          }
         }
       case 'server_error':
         if (packet['code'] == 'incompatible_protocol') {
@@ -8812,6 +8908,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> _handleCallOffer(Map<String, dynamic> packet) async {
     await _callFinishing;
+    final expiresAt = int.tryParse(packet['expires_at']?.toString() ?? '') ?? 0;
+    if (expiresAt > 0 &&
+        expiresAt <= DateTime.now().millisecondsSinceEpoch ~/ 1000) {
+      return;
+    }
     final sender = packet['source_node']?.toString() ?? '';
     if (sender.isEmpty || sender == myNodeId) return;
     final callId = packet['call_id']?.toString() ?? '';
@@ -9227,8 +9328,15 @@ class AppController extends ChangeNotifier {
     switch (phase) {
       case CallConnectionPhase.connected:
         final connectedNode = nodeId.isEmpty ? call.peer.nodeId : nodeId;
+        final recoveredAfter = _callReconnectAttempts[connectedNode] ?? 0;
         _callReconnectTimers.remove(connectedNode)?.cancel();
         _callReconnectAttempts.remove(connectedNode);
+        if (recoveredAfter > 0) {
+          addDiagnostic(
+            'call',
+            'Connection recovered after $recoveredAfter attempt(s)',
+          );
+        }
         unawaited(
           FirebaseTelemetryService.recordLatency(
             'call_connection_latency',
@@ -9246,6 +9354,7 @@ class AppController extends ChangeNotifier {
             status: CallStatus.active,
             connectedNodes: {...call.connectedNodes, connectedNode},
             quality: call.quality == 0 ? 2 : call.quality,
+            reconnectAttempt: 0,
           ),
         );
         notifyListeners();
@@ -9298,6 +9407,10 @@ class AppController extends ChangeNotifier {
         jitterMs: quality.jitterMs,
         packetLossPercent: quality.packetLossPercent,
         networkRoute: quality.route,
+        codec: quality.codec,
+        inboundBitrateKbps: quality.inboundBitrateKbps,
+        packetsReceived: quality.packetsReceived,
+        packetsLost: quality.packetsLost,
       ),
     );
     notifyListeners();
@@ -9316,11 +9429,16 @@ class AppController extends ChangeNotifier {
     _callReconnectTimers.remove(key)?.cancel();
     final attempt = (_callReconnectAttempts[key] ?? 0) + 1;
     _callReconnectAttempts[key] = attempt;
-    final delaySeconds = switch (attempt) {
-      1 => 1,
-      2 => 3,
-      _ => 7,
-    };
+    final delay = callReconnectDelay(attempt);
+    addDiagnostic(
+      'call',
+      'Recovery attempt $attempt scheduled in ${delay.inSeconds}s',
+    );
+    final current = activeCall;
+    if (current != null && current.callId == callId) {
+      _setActiveCall(current.copyWith(reconnectAttempt: attempt));
+      notifyListeners();
+    }
     if (attempt == 1 && _socket.isConnected) {
       _socket.send({
         'type': 'call_ice_servers_request',
@@ -9329,23 +9447,32 @@ class AppController extends ChangeNotifier {
         'protocol_version': MeshSocket.protocolVersion,
       });
     }
-    _callReconnectTimers[key] = Timer(
-      Duration(seconds: delaySeconds),
-      () async {
-        _callReconnectTimers.remove(key);
-        final call = activeCall;
-        if (call == null ||
-            call.callId != callId ||
-            call.status == CallStatus.ended) {
-          return;
+    _callReconnectTimers[key] = Timer(delay, () async {
+      _callReconnectTimers.remove(key);
+      final call = activeCall;
+      if (call == null ||
+          call.callId != callId ||
+          call.status == CallStatus.ended) {
+        return;
+      }
+      if (!_socket.isConnected) {
+        _scheduleCallReconnect(callId, nodeId);
+        return;
+      }
+      final initiatesRestart = call.groupMesh
+          ? (_groupMesh?.shouldRestart(key) ?? false)
+          : !call.incoming;
+      if (initiatesRestart) {
+        await _sendCallRestartOffer(call, nodeId);
+        final latest = activeCall;
+        final connected = nodeId.isEmpty
+            ? latest?.status == CallStatus.active
+            : latest?.connectedNodes.contains(nodeId) == true;
+        if (latest?.callId == callId && !connected) {
+          _scheduleCallReconnect(callId, nodeId);
         }
-        if (call.groupMesh
-            ? (_groupMesh?.shouldRestart(key) ?? false)
-            : !call.incoming) {
-          await _sendCallRestartOffer(call, nodeId);
-        }
-      },
-    );
+      }
+    });
   }
 
   Future<void> _sendCallRestartOffer(ActiveCall call, String nodeId) async {
@@ -12642,6 +12769,7 @@ class AppController extends ChangeNotifier {
         !settings.notificationsEnabled) {
       unawaited(_unsubscribeWebPush());
       unawaited(_unsubscribeAndroidPush());
+      unawaited(_unsubscribeApplePush());
     }
     final closeToTrayChanged =
         appSettings.windowsCloseToTray != settings.windowsCloseToTray;
@@ -13102,6 +13230,7 @@ class AppController extends ChangeNotifier {
   Future<void> logout() async {
     await ble.stop();
     await _unsubscribeAndroidPush();
+    await _unsubscribeApplePush();
     await _socket.close();
     await _endCallMedia();
     _setActiveCall(null);
@@ -13149,6 +13278,10 @@ class AppController extends ChangeNotifier {
 
   void _clearLocalState() {
     if (session == null) unawaited(_notifications.systemCalls.clear());
+    _webPushVapidPublicKey = '';
+    _androidPushSubscribedToken = '';
+    _applePushServerEnabled = false;
+    _applePushSubscribedTokens.clear();
     for (final completer in _sfuAccessRequests.values) {
       if (!completer.isCompleted) completer.complete(null);
     }

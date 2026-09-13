@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
 import 'call_models.dart';
+import 'call_opus_config.dart';
 import 'call_audio_constraints.dart';
 import 'shared_call_resource.dart';
 
@@ -59,6 +60,12 @@ class CallService {
   final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
   Timer? _statsTimer;
   bool _collectingStats = false;
+  int _lastInboundBytes = 0;
+  int _lastPacketsReceived = 0;
+  int _lastPacketsLost = 0;
+  DateTime? _lastStatsAt;
+  int _audioBitrateBps = 0;
+  int _healthyQualitySamples = 0;
   void Function()? onRemoteScreenChanged;
   void Function()? onLocalScreenEnded;
   void Function(CallConnectionPhase phase)? onConnectionStateChanged;
@@ -352,6 +359,8 @@ class CallService {
       track.enabled = !_localMuted;
       await peerConnection.addTrack(track, stream);
     }
+    _audioBitrateBps = hdAudio ? 96000 : 40000;
+    _healthyQualitySamples = 0;
     _localStream = stream;
     _peerConnection = peerConnection;
   }
@@ -433,6 +442,10 @@ class CallService {
   void _stopStats() {
     _statsTimer?.cancel();
     _statsTimer = null;
+    _lastInboundBytes = 0;
+    _lastPacketsReceived = 0;
+    _lastPacketsLost = 0;
+    _lastStatsAt = null;
   }
 
   Future<void> _collectQuality() async {
@@ -466,7 +479,30 @@ class CallService {
     final inboundValues = inboundAudio?.values ?? const <dynamic, dynamic>{};
     final received = _asDouble(inboundValues['packetsReceived']);
     final lost = _asDouble(inboundValues['packetsLost']);
-    final total = received + lost;
+    final receivedCount = received.round();
+    final lostCount = lost.round();
+    final receivedDelta = receivedCount >= _lastPacketsReceived
+        ? receivedCount - _lastPacketsReceived
+        : 0;
+    final lostDelta = lostCount >= _lastPacketsLost
+        ? lostCount - _lastPacketsLost
+        : 0;
+    final packetDelta = receivedDelta + lostDelta;
+    _lastPacketsReceived = receivedCount;
+    _lastPacketsLost = lostCount;
+    final bytesReceived = _asDouble(inboundValues['bytesReceived']).round();
+    final sampledAt = DateTime.now();
+    final elapsedMs = _lastStatsAt == null
+        ? 0
+        : sampledAt.difference(_lastStatsAt!).inMilliseconds;
+    final byteDelta = bytesReceived >= _lastInboundBytes
+        ? bytesReceived - _lastInboundBytes
+        : 0;
+    final bitrateKbps = elapsedMs <= 0
+        ? 0
+        : (byteDelta * 8 / elapsedMs).round();
+    _lastInboundBytes = bytesReceived;
+    _lastStatsAt = sampledAt;
     final rttSeconds = _asDouble(pairValues['currentRoundTripTime']) > 0
         ? _asDouble(pairValues['currentRoundTripTime'])
         : _asDouble(pairValues['totalRoundTripTime']);
@@ -475,18 +511,62 @@ class CallService {
     final localType = localCandidate?.values['candidateType']?.toString() ?? '';
     final remoteType =
         remoteCandidate?.values['candidateType']?.toString() ?? '';
-    onQualityChanged?.call(
-      CallQualitySnapshot(
-        roundTripTimeMs: (rttSeconds * 1000).round(),
-        jitterMs: (_asDouble(inboundValues['jitter']) * 1000).round(),
-        packetLossPercent: total <= 0 ? 0 : (lost / total * 100),
-        route: localType == 'relay' || remoteType == 'relay'
-            ? 'turn'
-            : selectedPair == null
-            ? 'unknown'
-            : 'direct',
-      ),
+    final codecReport = byId[inboundValues['codecId']?.toString()];
+    final codec = (codecReport?.values['mimeType']?.toString() ?? '')
+        .replaceFirst(RegExp(r'^audio/', caseSensitive: false), '');
+    final quality = CallQualitySnapshot(
+      roundTripTimeMs: (rttSeconds * 1000).round(),
+      jitterMs: (_asDouble(inboundValues['jitter']) * 1000).round(),
+      packetLossPercent: packetDelta <= 0 ? 0 : (lostDelta / packetDelta * 100),
+      route: localType == 'relay' || remoteType == 'relay'
+          ? 'turn'
+          : selectedPair == null
+          ? 'unknown'
+          : 'direct',
+      codec: codec,
+      inboundBitrateKbps: bitrateKbps,
+      packetsReceived: receivedCount,
+      packetsLost: lostCount,
     );
+    onQualityChanged?.call(quality);
+    unawaited(_adaptAudioBitrate(quality));
+  }
+
+  Future<void> _adaptAudioBitrate(CallQualitySnapshot quality) async {
+    final target = recommendedCallBitrateBps(
+      packetLossPercent: quality.packetLossPercent,
+      jitterMs: quality.jitterMs,
+      roundTripTimeMs: quality.roundTripTimeMs,
+      hd: _hdAudio,
+    );
+    if (_audioBitrateBps > 0 && target > _audioBitrateBps) {
+      _healthyQualitySamples++;
+      if (_healthyQualitySamples < 3) return;
+    } else {
+      _healthyQualitySamples = 0;
+    }
+    if (target == _audioBitrateBps) return;
+    final peerConnection = _peerConnection;
+    if (peerConnection == null) return;
+    final senders = await peerConnection.getSenders().catchError(
+      (_) => <RTCRtpSender>[],
+    );
+    for (final sender in senders) {
+      if (sender.track?.kind != 'audio') continue;
+      final parameters = sender.parameters;
+      final encodings = parameters.encodings;
+      if (encodings == null || encodings.isEmpty) continue;
+      for (final encoding in encodings) {
+        encoding.maxBitrate = target;
+        encoding.priority = RTCPriorityType.high;
+        encoding.networkPriority = RTCPriorityType.high;
+      }
+      final applied = await sender
+          .setParameters(parameters)
+          .catchError((_) => false);
+      if (applied) _audioBitrateBps = target;
+    }
+    _healthyQualitySamples = 0;
   }
 
   double _asDouble(dynamic value) {
@@ -664,31 +744,7 @@ class CallService {
   );
 
   String _enhanceOpusSdp(String sdp) {
-    if (!_hdAudio || sdp.isEmpty) return sdp;
-    final lines = sdp.split('\r\n');
-    final opusPayloads = <String>{};
-    for (final line in lines) {
-      final match = RegExp(
-        r'^a=rtpmap:(\d+) opus/48000',
-        caseSensitive: false,
-      ).firstMatch(line);
-      if (match != null) opusPayloads.add(match.group(1)!);
-    }
-    for (var index = 0; index < lines.length; index++) {
-      for (final payload in opusPayloads) {
-        if (!lines[index].startsWith('a=fmtp:$payload ')) continue;
-        final additions = <String>[
-          if (!lines[index].contains('maxaveragebitrate='))
-            'maxaveragebitrate=96000',
-          if (!lines[index].contains('useinbandfec=')) 'useinbandfec=1',
-          if (!lines[index].contains('usedtx=')) 'usedtx=1',
-        ];
-        if (additions.isNotEmpty) {
-          lines[index] = '${lines[index]};${additions.join(';')}';
-        }
-      }
-    }
-    return lines.join('\r\n');
+    return configureCallOpusSdp(sdp, hd: _hdAudio);
   }
 
   Future<List<CallAudioDevice>> _devicesOfKind(String kind) async {

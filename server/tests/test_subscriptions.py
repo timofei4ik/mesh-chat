@@ -282,6 +282,15 @@ class SubscriptionTests(unittest.TestCase):
             "Travel phone",
             self.relay.get_account_devices("subscriber")[0]["device_name"],
         )
+        self.assertTrue(
+            self.relay.save_apple_push_token(
+                "subscriber",
+                "phone-node",
+                "ios-token",
+                "voip",
+                "sandbox",
+            )
+        )
 
         ok, reason = self.relay.update_account_device(
             "subscriber",
@@ -297,6 +306,10 @@ class SubscriptionTests(unittest.TestCase):
             )
         )
         self.assertEqual([], self.relay.get_online_account_nodes("subscriber"))
+        self.assertEqual(
+            [],
+            self.relay.apple_push_tokens_for_node("phone-node"),
+        )
 
     def test_chat_appearance_and_emoji_status_are_server_gated(self):
         ok, reason = self.relay.save_chat_preferences(

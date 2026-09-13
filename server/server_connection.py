@@ -463,6 +463,7 @@ async def handle_server_hello(
     welcome = {
         "type": "server_welcome",
         "web_push_vapid_public_key": server.web_push_public_key(),
+        "apple_push_enabled": server.apple_push_enabled,
         "capabilities": {
             "sync_v2": True,
             "sync_v2_delta": delta_enabled,
@@ -481,6 +482,7 @@ async def handle_server_hello(
             "call_signaling_v2": True,
             "call_handoff_v1": True,
             "call_sfu_v1": True,
+            "apple_push_v1": True,
         },
         **version_payload(),
     }

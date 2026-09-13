@@ -151,10 +151,28 @@ class AiTests(unittest.IsolatedAsyncioTestCase):
         self.relay.grant_subscription('subscriber', days=7)
         self.relay._perform_chat_completion = AsyncMock(return_value='{"answer":"Result","source_ids":["m1"],"replies":["Yes","When?","Sorry, no"]}')
         for mode in TOOL_FEATURES:
-            result = await self.relay.run_context_ai_tool('subscriber', {'mode': mode, 'question': 'Question',
-                'sources': [{'id': 'm1', 'text': 'Source', 'target': mode == 'reply'}]})
+            request = {
+                'mode': mode,
+                'question': 'Question',
+                'sources': [
+                    {
+                        'id': 'm1',
+                        'text': 'Source',
+                        'target': mode == 'reply',
+                    }
+                ],
+            }
+            if mode == 'compose':
+                request['instruction'] = 'Question'
+            result = await self.relay.run_context_ai_tool(
+                'subscriber',
+                request,
+            )
             self.assertTrue(result['ok'], (mode, result))
-        self.assertEqual(6, self.relay._perform_chat_completion.await_count)
+        self.assertEqual(
+            len(TOOL_FEATURES),
+            self.relay._perform_chat_completion.await_count,
+        )
 
     async def test_context_failure_and_cancellation_refund_usage(self):
         self.relay.grant_subscription('subscriber', days=7)

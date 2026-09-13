@@ -154,6 +154,66 @@ class ServerSchemaMigrationTests(unittest.TestCase):
                     [],
                     relay.android_push_tokens_for_node("android-node"),
                 )
+                self.assertTrue(
+                    relay.save_apple_push_token(
+                        "tester",
+                        "ios-node",
+                        "alert-token",
+                        "alert",
+                        "sandbox",
+                    )
+                )
+                self.assertTrue(
+                    relay.save_apple_push_token(
+                        "tester",
+                        "ios-node",
+                        "voip-token",
+                        "voip",
+                        "sandbox",
+                    )
+                )
+                self.assertEqual(
+                    {
+                        ("alert-token", "alert", "sandbox"),
+                        ("voip-token", "voip", "sandbox"),
+                    },
+                    set(relay.apple_push_tokens_for_node("ios-node")),
+                )
+                relay.delete_apple_push_token(
+                    token="voip-token",
+                    kind="voip",
+                )
+                self.assertEqual(
+                    [("alert-token", "alert", "sandbox")],
+                    relay.apple_push_tokens_for_node("ios-node"),
+                )
+                relay.save_offline_packet(
+                    "ios-node",
+                    {
+                        "type": "call_offer",
+                        "call_id": "expired-call",
+                        "expires_at": 1,
+                    },
+                )
+
+                class Capture:
+                    def __init__(self):
+                        self.sent = []
+
+                    async def send(self, value):
+                        self.sent.append(value)
+
+                capture = Capture()
+                asyncio.run(
+                    relay.flush_offline_packets("ios-node", capture)
+                )
+                self.assertEqual([], capture.sent)
+                self.assertEqual(
+                    0,
+                    relay.db.execute(
+                        "SELECT COUNT(*) FROM offline_packets"
+                    ).fetchone()[0],
+                )
             finally:
                 if relay is not None:
                     relay.db.close()

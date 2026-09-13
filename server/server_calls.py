@@ -92,6 +92,7 @@ _MAX_SDP_LENGTH = 2 * 1024 * 1024
 _MAX_ICE_CANDIDATE_LENGTH = 16 * 1024
 _MAX_CAPTION_ID_LENGTH = 128
 _MAX_CAPTION_TEXT_LENGTH = 800
+_CALL_OFFER_TTL_SECONDS = 45
 
 
 def _claim_operation(operation_id, now=None):
@@ -204,6 +205,50 @@ async def route_call_signal(server, packet):
     if not destination_node or destination_node.upper() == "SERVER":
         return False
 
+    destination_login = str(
+        server.get_login_by_node(destination_node) or ""
+    ).strip().lower()
+    packet_type = str(packet.get("type") or "")
+    exact_device_signal = bool(packet.get("group_id")) or packet_type in {
+        "call_handoff_request",
+        "call_handoff_accept",
+    } or (
+        packet_type == "call_offer"
+        and bool(str(packet.get("handoff_from_call_id") or "").strip())
+    )
+    known_nodes = [destination_node]
+    if destination_login and not exact_device_signal:
+        resolver = getattr(server, "get_account_node_ids", None)
+        if callable(resolver):
+            known_nodes.extend(resolver(destination_login))
+    known_nodes = list(dict.fromkeys(
+        str(node_id or "").strip()
+        for node_id in known_nodes
+        if str(node_id or "").strip()
+    ))
+
+    if packet_type == "call_end":
+        delete_offer = getattr(server, "delete_pending_call_offer", None)
+        if callable(delete_offer):
+            for target_node in known_nodes:
+                delete_offer(target_node, packet.get("call_id"))
+
+    if packet_type == "call_offer":
+        online_resolver = getattr(server, "get_realtime_account_nodes", None)
+        if destination_login and callable(online_resolver):
+            online_nodes = set(await online_resolver(destination_login))
+        elif destination_login:
+            online_nodes = set(server.get_online_account_nodes(
+                destination_login
+            ))
+        else:
+            online_nodes = set(getattr(server, "clients", {}))
+        save_offline = getattr(server, "save_offline_packet", None)
+        if callable(save_offline):
+            for target_node in known_nodes:
+                if target_node not in online_nodes:
+                    save_offline(target_node, packet)
+
     signaling = getattr(server, "call_signaling", None)
     if signaling is not None and await signaling.submit(packet):
         if str(packet.get("type") or "") not in {"call_caption", "call_group_ready", "call_group_offer", "call_caption_session"}:
@@ -238,15 +283,6 @@ async def route_call_signal(server, packet):
 
     delivered = await deliver(destination_node)
     source_node = str(packet.get("source_node") or "").strip()
-    destination_login = server.get_login_by_node(destination_node)
-    packet_type = str(packet.get("type") or "")
-    exact_device_signal = bool(packet.get("group_id")) or packet_type in {
-        "call_handoff_request",
-        "call_handoff_accept",
-    } or (
-        packet_type == "call_offer"
-        and bool(str(packet.get("handoff_from_call_id") or "").strip())
-    )
     if destination_login and not exact_device_signal:
         resolver = getattr(server, "get_realtime_account_nodes", None)
         target_nodes = (
@@ -340,6 +376,9 @@ async def handle_call_signal(server, packet, context):
     sender_login = account_login(server, context.node_id)
     if sender_login:
         packet["sender_login"] = sender_login
+    if packet_type == "call_offer":
+        packet["sent_at"] = int(time.time() * 1000)
+        packet["expires_at"] = int(time.time()) + _CALL_OFFER_TTL_SECONDS
     if packet_type == "call_caption":
         feature = getattr(server, "subscription_feature_enabled", None)
         permitted = bool(sender_login and callable(feature) and feature(sender_login, "ai_voice_transcription"))

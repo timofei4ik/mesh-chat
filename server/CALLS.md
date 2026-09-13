@@ -18,6 +18,25 @@ The relay returns time-limited credentials generated with the coturn REST API
 HMAC formula. The shared secret must remain on the server and must never be
 included in a client build.
 
+## Client recovery
+
+Direct calls negotiate Opus in-band FEC and DTX on Android, Windows, iOS and
+web. Standard audio starts at 40 kbit/s and HD audio at 96 kbit/s. The client
+uses interval packet loss, jitter and RTT to reduce the sender cap under poor
+conditions and restores quality only after several healthy samples.
+
+Disconnected direct calls request fresh ICE servers and retry ICE restart with
+a bounded 1, 3, 7 and 10 second backoff. The in-call strip and Diagnostics page
+show route, codec, inbound bitrate, RTT, jitter, packet loss and the current
+recovery attempt. WebRTC's jitter buffer and Opus FEC recover short gaps; old
+live audio is not replayed after a long outage because doing so would increase
+latency and make conversation timing unusable.
+
+An initial `call_offer` is also queued for offline account devices for up to
+45 seconds. This lets a push-woken client reconnect and receive the original
+offer without resurrecting an expired call. A matching `call_end` removes the
+queued offer from every device on the destination account.
+
 ## Network
 
 Open UDP/TCP 3478 and UDP 49160-49260. If TLS TURN is enabled, also open TCP

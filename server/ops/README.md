@@ -93,15 +93,29 @@ encrypted chat content is never sent to Firebase.
 
 ## iOS push readiness
 
-The iOS target declares the `remote-notification` background mode, but real
-terminated-state delivery cannot be enabled by source code alone. It requires
-an Apple Developer membership, the Push Notifications capability, a signed
-provisioning profile containing the `aps-environment` entitlement, and an APNs
-authentication key uploaded to the MeshChat Firebase project. Do not add a
-fake `aps-environment` entitlement to unsigned builds: it cannot authorize
-APNs and can make signing fail. Once those credentials exist, add Firebase
-Messaging token registration using the same account-device token model as
-Android.
+The relay has an opt-in direct APNs HTTP/2 provider. Keep the `.p8` key outside
+Git and configure:
+
+```bash
+MESH_APNS_ENABLED=true
+MESH_APNS_KEY_FILE=/etc/mesh-messenger/AuthKey_XXXXXXXXXX.p8
+MESH_APNS_KEY_ID=XXXXXXXXXX
+MESH_APNS_TEAM_ID=YYYYYYYYYY
+MESH_APNS_BUNDLE_ID=com.meshchat.mobile
+MESH_APNS_ENVIRONMENT=production
+```
+
+The iOS app must be signed with Push Notifications and the generated
+`aps-environment` entitlement, then built with:
+
+```text
+--dart-define=MESH_ENABLE_APPLE_PUSH=true
+```
+
+Until both sides are enabled, the new APNs path stays dormant. VoIP pushes are
+reserved for calls and use the `<bundle-id>.voip` topic. Do not add a fake
+`aps-environment` entitlement to unsigned builds: it cannot authorize APNs and
+can make signing fail.
 
 ## Redis and multiple relay workers
 

@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 50,
-  "updatedAt": "2026-09-11T16:40:01Z",
+  "catalogVersion": 51,
+  "updatedAt": "2026-09-13T22:55:57Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-call-recovery-1-1-1",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Clearer and more reliable calls",
+      "summary": "Calls now use Opus loss recovery, adaptive bitrate and repeated ICE recovery on Android, Windows, iOS and Web. Short network gaps are handled more gracefully, an offline device can recover a fresh incoming offer after push wake-up, and expired calls are discarded. The call panel and Diagnostics page show route, codec, bitrate, delay, jitter, packet loss and recovery attempts. Source also includes a dormant APNs, PushKit and CallKit path for a future signed iPhone release.",
+      "publishedAt": "2026-09-14"
+    },
     {
       "id": "meshchat-message-editor-session-fix-1-1-0",
       "appId": "meshchat",
@@ -148,7 +156,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -164,18 +172,20 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 213,
+      "build": 214,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-11T16:40:01Z",
+      "updated_at": "2026-09-13T22:55:57Z",
       "release": {
-        "title": "Message editor session fix",
-        "publishedAt": "2026-09-11",
+        "title": "Clearer and more reliable calls",
+        "publishedAt": "2026-09-14",
         "notes": [
-          "The message editor remains usable while the same account refreshes its session data in the background.",
-          "Rich attachment uploads and AI actions now use the same stable account identity check.",
-          "Switching to a different account or server still stops pending editor actions safely."
+          "Opus packet-loss recovery, DTX and adaptive bitrate now apply to calls on Android, Windows, iOS and Web.",
+          "Interrupted direct calls retry ICE recovery with bounded backoff and expose each recovery attempt in the interface.",
+          "Incoming call offers survive a short offline push wake-up window and expired offers are removed safely.",
+          "Diagnostics now show the active route, codec, bitrate, latency, jitter and packet loss.",
+          "The source includes an opt-in APNs, PushKit and CallKit foundation for future signed iPhone builds."
         ]
       }
     },

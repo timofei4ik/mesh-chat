@@ -13,12 +13,20 @@ class CallQualitySnapshot {
     this.jitterMs = 0,
     this.packetLossPercent = 0,
     this.route = 'unknown',
+    this.codec = '',
+    this.inboundBitrateKbps = 0,
+    this.packetsReceived = 0,
+    this.packetsLost = 0,
   });
 
   final int roundTripTimeMs;
   final int jitterMs;
   final double packetLossPercent;
   final String route;
+  final String codec;
+  final int inboundBitrateKbps;
+  final int packetsReceived;
+  final int packetsLost;
 
   int get qualityLevel {
     if (route == 'unknown') return 0;

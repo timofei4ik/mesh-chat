@@ -24,6 +24,7 @@ class FakePushServer(server_push.ServerPushMixin):
             ],
         }
         self.android_sends = []
+        self.apple_sends = []
         self.deleted_endpoints = []
 
     def get_login_by_node(self, node_id):
@@ -58,6 +59,13 @@ class FakePushServer(server_push.ServerPushMixin):
 
     async def _send_android_push(self, destination_node, notification):
         self.android_sends.append((destination_node, notification))
+
+    @property
+    def apple_push_enabled(self):
+        return True
+
+    async def _send_apple_push(self, destination_node, notification):
+        self.apple_sends.append((destination_node, notification))
 
 
 class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -120,6 +128,10 @@ class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ["device-primary", "device-pwa"],
             [item[0] for item in relay.android_sends],
+        )
+        self.assertEqual(
+            ["device-primary", "device-pwa"],
+            [item[0] for item in relay.apple_sends],
         )
         payload = json.loads(web_sends[0]["data"])
         self.assertEqual("chat:alice-device", payload["tag"])
@@ -211,6 +223,61 @@ class PushDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("call-42", data["call_id"])
         self.assertEqual("call:call-42", data["tag"])
         self.assertEqual("true", data["cancel"])
+
+    def test_apple_alert_payload_has_navigation_and_thread_identity(self):
+        relay = FakePushServer()
+        notification = relay._web_push_payload(
+            {
+                "type": "group_message",
+                "packet_id": "packet-group",
+                "source_node": "alice-device",
+                "group_id": "group-7",
+                "group_name": "Friends",
+            }
+        )
+
+        request = relay._apple_push_request(notification)
+
+        self.assertEqual("alert", request["push_type"])
+        self.assertEqual("com.meshchat.mobile", request["topic"])
+        self.assertEqual("group:group-7", request["collapse_id"])
+        self.assertEqual(
+            "group_message",
+            request["payload"]["type"],
+        )
+        self.assertEqual("group-7", request["payload"]["group_id"])
+        self.assertEqual(
+            "Friends",
+            request["payload"]["aps"]["alert"]["title"],
+        )
+
+    def test_apple_voip_payload_is_callkit_ready(self):
+        relay = FakePushServer()
+        notification = relay._web_push_payload(
+            {
+                "type": "call_offer",
+                "packet_id": "packet-call",
+                "call_id": "8ed295cf-be65-4a63-97f1-4fc97131c309",
+                "source_node": "alice-device",
+                "sender": "Alice",
+                "expires_at": 1_900_000_000,
+            }
+        )
+
+        request = relay._apple_push_request(notification)
+
+        self.assertEqual("voip", request["push_type"])
+        self.assertEqual("com.meshchat.mobile.voip", request["topic"])
+        self.assertEqual(
+            1,
+            request["payload"]["aps"]["content-available"],
+        )
+        self.assertEqual("Alice", request["payload"]["caller_name"])
+        self.assertEqual(
+            "8ed295cf-be65-4a63-97f1-4fc97131c309",
+            request["payload"]["call_id"],
+        )
+        self.assertEqual(1_900_000_000, request["payload"]["expires_at"])
 
 
 if __name__ == "__main__":

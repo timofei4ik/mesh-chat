@@ -649,6 +649,22 @@ FIREBASE_PROJECT_ID = os.environ.get(
     ""
 ).strip()
 
+APNS_ENABLED = os.environ.get(
+    "MESH_APNS_ENABLED",
+    "",
+).strip().lower() in ("1", "true", "yes", "on")
+APNS_KEY_FILE = os.environ.get("MESH_APNS_KEY_FILE", "").strip()
+APNS_KEY_ID = os.environ.get("MESH_APNS_KEY_ID", "").strip()
+APNS_TEAM_ID = os.environ.get("MESH_APNS_TEAM_ID", "").strip()
+APNS_BUNDLE_ID = os.environ.get(
+    "MESH_APNS_BUNDLE_ID",
+    "com.meshchat.mobile",
+).strip()
+APNS_ENVIRONMENT = os.environ.get(
+    "MESH_APNS_ENVIRONMENT",
+    "production",
+).strip().lower()
+
 REQUIRE_LOGIN = os.environ.get(
     "MESH_SERVER_REQUIRE_LOGIN",
     ""

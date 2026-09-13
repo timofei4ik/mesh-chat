@@ -6215,6 +6215,9 @@ class _CallStatusStrip extends StatelessWidget {
                 ? 'Fair'
                 : 'Good',
             if (call.roundTripTimeMs > 0) '${call.roundTripTimeMs} ms',
+            if (call.packetLossPercent > 0.05)
+              '${call.packetLossPercent.toStringAsFixed(1)}% loss',
+            if (call.jitterMs > 0) '${call.jitterMs} ms jitter',
           ].join(' · ')
         : 'Waiting audio';
     final participants = controller.callParticipantsLabel;
@@ -6235,6 +6238,12 @@ class _CallStatusStrip extends StatelessWidget {
           label: qualityText,
           accent: call.quality <= 1 ? Colors.orangeAccent : Colors.greenAccent,
         ),
+        if (!connected && call.reconnectAttempt > 0)
+          _CallInfoPill(
+            icon: Icons.settings_backup_restore_rounded,
+            label: 'Recovery ${call.reconnectAttempt}',
+            accent: Colors.orangeAccent,
+          ),
         if (connected && call.networkRoute != 'unknown')
           _CallInfoPill(
             icon: call.networkRoute == 'turn'
@@ -6244,6 +6253,16 @@ class _CallStatusStrip extends StatelessWidget {
             accent: call.networkRoute == 'turn'
                 ? Colors.purpleAccent
                 : Colors.cyanAccent,
+          ),
+        if (connected && (call.codec.isNotEmpty || call.inboundBitrateKbps > 0))
+          _CallInfoPill(
+            icon: Icons.graphic_eq_rounded,
+            label: [
+              if (call.codec.isNotEmpty) call.codec.toUpperCase(),
+              if (call.inboundBitrateKbps > 0)
+                '${call.inboundBitrateKbps} kb/s',
+            ].join(' · '),
+            accent: Colors.lightBlueAccent,
           ),
         if (call.hdAudio)
           const _CallInfoPill(
