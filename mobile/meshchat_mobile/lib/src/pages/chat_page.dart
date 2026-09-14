@@ -37,6 +37,8 @@ import '../models/profile.dart';
 import '../models/poll_item.dart';
 import '../models/sticker_pack.dart';
 import '../services/call_alert_service.dart';
+import '../services/audio_playback_source.dart';
+import '../services/message_audio_player.dart';
 import '../utils/mesh_page_route.dart';
 import '../utils/message_grouping.dart';
 import '../utils/media_request_encoder.dart';
@@ -110,7 +112,9 @@ class _ChatPageState extends State<ChatPage>
   final recordLevels = List<double>.filled(22, 0.25);
   StreamSubscription<Amplitude>? amplitudeSubscription;
   AudioPlayer? ringbackPlayer;
+  PreparedAudioSource? ringbackSource;
   bool ringbackRunning = false;
+  int ringbackGeneration = 0;
   final incomingCallAlert = CallAlertService();
   bool recording = false;
   bool voicePointerDown = false;
@@ -333,7 +337,7 @@ class _ChatPageState extends State<ChatPage>
     widget.controller.removeListener(syncChatChrome);
     widget.controller.removeListener(syncMessageList);
     unawaited(incomingCallAlert.dispose());
-    unawaited(stopRingback());
+    unawaited(disposeRingback());
     widget.controller.setActiveThread(null);
     inputFocus.dispose();
     input.dispose();
@@ -345,7 +349,6 @@ class _ChatPageState extends State<ChatPage>
     messageScrollSpring.dispose();
     messageScrollMotion.dispose();
     recorder.dispose();
-    ringbackPlayer?.dispose();
     super.dispose();
   }
 
@@ -435,17 +438,65 @@ class _ChatPageState extends State<ChatPage>
   Future<void> startRingback() async {
     if (ringbackRunning) return;
     ringbackRunning = true;
+    final generation = ++ringbackGeneration;
     final player = ringbackPlayer ??= AudioPlayer();
-    await player.setReleaseMode(ReleaseMode.loop).catchError((_) {});
-    await player
-        .play(BytesSource(_softRingbackWav()), volume: 0.30)
-        .catchError((_) {});
+    try {
+      await player.setReleaseMode(ReleaseMode.loop);
+      if (ringbackSource == null) {
+        final prepared = await prepareAudioPlaybackSource(
+          bytes: _softRingbackWav(),
+          filename: 'meshchat_ringback.wav',
+        );
+        if (!mounted || !ringbackRunning || generation != ringbackGeneration) {
+          await prepared.dispose();
+          return;
+        }
+        try {
+          await player.setSource(prepared.source);
+          if (!mounted ||
+              !ringbackRunning ||
+              generation != ringbackGeneration ||
+              ringbackPlayer != player) {
+            await player.release().catchError((_) {});
+            await prepared.dispose();
+            return;
+          }
+          ringbackSource = prepared;
+        } catch (_) {
+          await prepared.dispose();
+          rethrow;
+        }
+      }
+      if (!mounted || !ringbackRunning || generation != ringbackGeneration) {
+        return;
+      }
+      await player.setVolume(0.30);
+      await player.resume();
+    } catch (_) {
+      if (generation == ringbackGeneration) ringbackRunning = false;
+    }
   }
 
   Future<void> stopRingback() async {
     if (!ringbackRunning && ringbackPlayer == null) return;
     ringbackRunning = false;
+    ringbackGeneration++;
     await ringbackPlayer?.stop().catchError((_) {});
+  }
+
+  Future<void> disposeRingback() async {
+    ringbackRunning = false;
+    ringbackGeneration++;
+    final player = ringbackPlayer;
+    final source = ringbackSource;
+    ringbackPlayer = null;
+    ringbackSource = null;
+    try {
+      await player?.stop().catchError((_) {});
+      await player?.dispose().catchError((_) {});
+    } finally {
+      await source?.dispose();
+    }
   }
 
   Uint8List _softRingbackWav() {
@@ -11315,7 +11366,7 @@ class _AudioPreview extends StatefulWidget {
 }
 
 class _AudioPreviewState extends State<_AudioPreview> {
-  late final AudioPlayer player;
+  late final MessageAudioPlayer player;
   StreamSubscription<Duration>? durationSubscription;
   StreamSubscription<Duration>? positionSubscription;
   StreamSubscription<void>? completeSubscription;
@@ -11330,12 +11381,14 @@ class _AudioPreviewState extends State<_AudioPreview> {
   String voiceSummary = '';
   Duration duration = Duration.zero;
   Duration position = Duration.zero;
+  int sourceGeneration = 0;
+  bool playerDisposed = false;
 
   @override
   void initState() {
     super.initState();
     localTranscription = widget.message.transcription;
-    player = AudioPlayer();
+    player = MessageAudioPlayer();
     durationSubscription = player.onDurationChanged.listen((value) {
       if (mounted) setState(() => duration = value);
     });
@@ -11357,15 +11410,41 @@ class _AudioPreviewState extends State<_AudioPreview> {
     if (oldWidget.message.transcription != widget.message.transcription) {
       localTranscription = widget.message.transcription;
     }
+    if (oldWidget.message.id != widget.message.id ||
+        oldWidget.message.fileName != widget.message.fileName ||
+        oldWidget.message.fileData != widget.message.fileData) {
+      unawaited(resetSource());
+    }
   }
 
   @override
   void dispose() {
+    playerDisposed = true;
+    sourceGeneration++;
     durationSubscription?.cancel();
     positionSubscription?.cancel();
     completeSubscription?.cancel();
-    player.dispose();
+    unawaited(disposePlayer());
     super.dispose();
+  }
+
+  Future<void> disposePlayer() async {
+    await player.dispose();
+  }
+
+  Future<void> resetSource() async {
+    sourceGeneration++;
+    sourceReady = false;
+    playing = false;
+    duration = Duration.zero;
+    position = Duration.zero;
+    try {
+      await player.stop();
+      await player.release();
+    } catch (_) {
+      // The source may already have been released during a widget transition.
+    }
+    if (mounted) setState(() {});
   }
 
   Future<void> ensureSource() async {
@@ -11379,9 +11458,18 @@ class _AudioPreviewState extends State<_AudioPreview> {
   }
 
   Future<void> prepareSource() async {
+    final generation = sourceGeneration;
+    final messageId = widget.message.id;
     final bytes = await compute(decodeMediaHex, widget.message.fileData);
-    if (!mounted) return;
-    await player.setSource(BytesSource(bytes));
+    if (!mounted || playerDisposed || generation != sourceGeneration) return;
+    await player.setSource(bytes: bytes, filename: widget.message.fileName);
+    if (!mounted ||
+        playerDisposed ||
+        generation != sourceGeneration ||
+        messageId != widget.message.id) {
+      await player.release().catchError((_) {});
+      return;
+    }
     sourceReady = true;
   }
 
@@ -11403,7 +11491,7 @@ class _AudioPreviewState extends State<_AudioPreview> {
     }
     try {
       await ensureSource();
-      if (!mounted) return;
+      if (!mounted || !sourceReady) return;
       await player.resume();
       if (mounted) setState(() => playing = true);
     } catch (_) {

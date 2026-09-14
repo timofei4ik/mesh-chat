@@ -1,7 +1,7 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:cross_file/cross_file.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../utils/mesh_page_route.dart';
@@ -12,6 +12,8 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
+import '../services/message_audio_player.dart';
+import '../utils/media_request_encoder.dart';
 
 enum MediaSection { media, files, voice, links }
 
@@ -552,23 +554,30 @@ class _VoiceListTile extends StatefulWidget {
 }
 
 class _VoiceListTileState extends State<_VoiceListTile> {
-  late final AudioPlayer player;
+  late final MessageAudioPlayer player;
+  StreamSubscription<Duration>? durationSubscription;
+  StreamSubscription<Duration>? positionSubscription;
+  StreamSubscription<void>? completeSubscription;
   Duration duration = Duration.zero;
   Duration position = Duration.zero;
   bool playing = false;
   bool sourceReady = false;
+  bool playbackChanging = false;
+  bool playerDisposed = false;
+  int sourceGeneration = 0;
+  Future<void>? sourcePreparation;
 
   @override
   void initState() {
     super.initState();
-    player = AudioPlayer();
-    player.onDurationChanged.listen((value) {
+    player = MessageAudioPlayer();
+    durationSubscription = player.onDurationChanged.listen((value) {
       if (mounted) setState(() => duration = value);
     });
-    player.onPositionChanged.listen((value) {
+    positionSubscription = player.onPositionChanged.listen((value) {
       if (mounted) setState(() => position = value);
     });
-    player.onPlayerComplete.listen((_) {
+    completeSubscription = player.onPlayerComplete.listen((_) {
       if (!mounted) return;
       setState(() {
         playing = false;
@@ -578,24 +587,92 @@ class _VoiceListTileState extends State<_VoiceListTile> {
   }
 
   @override
+  void didUpdateWidget(covariant _VoiceListTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldMessage = oldWidget.item.message;
+    final message = widget.item.message;
+    if (oldMessage.id != message.id ||
+        oldMessage.fileName != message.fileName ||
+        oldMessage.fileData != message.fileData) {
+      unawaited(resetSource());
+    }
+  }
+
+  @override
   void dispose() {
-    player.dispose();
+    playerDisposed = true;
+    sourceGeneration++;
+    durationSubscription?.cancel();
+    positionSubscription?.cancel();
+    completeSubscription?.cancel();
+    unawaited(disposePlayer());
     super.dispose();
   }
 
+  Future<void> disposePlayer() async {
+    await player.dispose();
+  }
+
+  Future<void> resetSource() async {
+    sourceGeneration++;
+    sourceReady = false;
+    playing = false;
+    duration = Duration.zero;
+    position = Duration.zero;
+    try {
+      await player.stop();
+      await player.release();
+    } catch (_) {
+      // The old source may already be gone while the media list is rebuilding.
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> ensureSource() async {
+    if (sourceReady) return;
+    final pending = sourcePreparation ??= prepareSource();
+    try {
+      await pending;
+    } finally {
+      if (identical(sourcePreparation, pending)) sourcePreparation = null;
+    }
+  }
+
+  Future<void> prepareSource() async {
+    final generation = sourceGeneration;
+    final message = widget.item.message;
+    final bytes = await compute(decodeMediaHex, message.fileData);
+    if (!mounted || playerDisposed || generation != sourceGeneration) return;
+    await player.setSource(bytes: bytes, filename: message.fileName);
+    if (!mounted ||
+        playerDisposed ||
+        generation != sourceGeneration ||
+        message.id != widget.item.message.id) {
+      await player.release().catchError((_) {});
+      return;
+    }
+    sourceReady = true;
+  }
+
   Future<void> toggle() async {
+    if (playbackChanging) return;
+    playbackChanging = true;
+    try {
+      await togglePlayback();
+    } finally {
+      playbackChanging = false;
+    }
+  }
+
+  Future<void> togglePlayback() async {
     if (playing) {
       await player.pause();
       if (mounted) setState(() => playing = false);
       return;
     }
     try {
-      if (!sourceReady) {
-        await player.setSource(
-          BytesSource(_hexDecode(widget.item.message.fileData)),
-        );
-        sourceReady = true;
-      }
+      await ensureSource();
+      if (!mounted || !sourceReady) return;
       await player.resume();
       if (mounted) setState(() => playing = true);
     } catch (_) {

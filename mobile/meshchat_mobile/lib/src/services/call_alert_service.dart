@@ -6,9 +6,11 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
 
 import '../controllers/app_controller.dart';
+import 'audio_playback_source.dart';
 
 class CallAlertService {
   static AudioPlayer? _player;
+  static PreparedAudioSource? _audioSource;
   static Timer? _vibrationTimer;
   static String _activeCallId = '';
   static int _generation = 0;
@@ -52,16 +54,50 @@ class CallAlertService {
 
   Future<void> dispose() async {
     await stop();
-    await _player?.dispose();
+    final player = _player;
+    final source = _audioSource;
     _player = null;
+    _audioSource = null;
+    try {
+      await player?.dispose();
+    } finally {
+      await source?.dispose();
+    }
   }
 
   Future<void> _startSound() async {
+    final callId = _activeCallId;
     final player = _player ??= AudioPlayer();
-    await player.setReleaseMode(ReleaseMode.loop).catchError((_) {});
-    await player
-        .play(BytesSource(_incomingRingtoneWav()), volume: 0.42)
-        .catchError((_) {});
+    try {
+      await player.setReleaseMode(ReleaseMode.loop);
+      if (_audioSource == null) {
+        final prepared = await prepareAudioPlaybackSource(
+          bytes: _incomingRingtoneWav(),
+          filename: 'meshchat_incoming_call.wav',
+        );
+        if (callId.isEmpty || callId != _activeCallId) {
+          await prepared.dispose();
+          return;
+        }
+        try {
+          await player.setSource(prepared.source);
+          if (callId.isEmpty || callId != _activeCallId || _player != player) {
+            await player.release().catchError((_) {});
+            await prepared.dispose();
+            return;
+          }
+          _audioSource = prepared;
+        } catch (_) {
+          await prepared.dispose();
+          rethrow;
+        }
+      }
+      if (callId.isEmpty || callId != _activeCallId) return;
+      await player.setVolume(0.42);
+      await player.resume();
+    } catch (_) {
+      // Vibration and the system call surface remain available without audio.
+    }
   }
 
   void _startVibration() {
