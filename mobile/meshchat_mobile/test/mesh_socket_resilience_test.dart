@@ -142,6 +142,43 @@ void main() {
     expect(socket.isConnected, isTrue);
   });
 
+  test('large sync frames are decoded without losing their payload', () async {
+    final largeMessage = 'x' * (300 * 1024);
+    final server = await _LocalWebSocketServer.start((socket, packet) {
+      if (packet['type'] != 'server_hello') return;
+      socket.add(jsonEncode(_welcomePacket()));
+      socket.add(
+        jsonEncode({
+          'type': 'server_sync',
+          'direct_messages': [
+            {'message_id': 'large-message', 'message': largeMessage},
+          ],
+        }),
+      );
+    });
+    addTearDown(server.close);
+
+    final sync = Completer<Map<String, dynamic>>();
+    final socket = MeshSocket();
+    addTearDown(socket.close);
+    await socket.connect(
+      session: _session(server.url, 'large-sync'),
+      publicKey: 'public-key',
+      profile: _profile('large-sync'),
+      onPacket: (packet) {
+        if (packet['type'] == 'server_sync' && !sync.isCompleted) {
+          sync.complete(packet);
+        }
+      },
+      onStatus: (_) {},
+    );
+
+    final packet = await sync.future.timeout(const Duration(seconds: 5));
+    final messages = packet['direct_messages'] as List;
+    expect((messages.single as Map)['message'], largeMessage);
+    expect(socket.isConnected, isTrue);
+  });
+
   for (final cancel in [false, true]) {
     test(
       'call signaling waits for authenticated welcome (cancel=$cancel)',

@@ -641,6 +641,8 @@ class AppController extends ChangeNotifier {
   final Set<String> _resendingMessageIds = {};
   bool _ownProfileHydrated = false;
   int _lastAppliedSyncCursor = 0;
+  bool _accountSyncInProgress = false;
+  bool _snapshotRepairRequested = false;
   bool _applyingSyncDelta = false;
   final List<Map<String, dynamic>> _livePacketsDuringDeltaApply = [];
   Timer? _incomingPreviewTimer;
@@ -1495,8 +1497,10 @@ class AppController extends ChangeNotifier {
     } else {
       unawaited(refreshMeshProSubscription());
       final lastSync = lastSyncAt;
-      if (lastSync == null ||
-          DateTime.now().difference(lastSync) > const Duration(seconds: 20)) {
+      if (!_accountSyncInProgress &&
+          (lastSync == null ||
+              DateTime.now().difference(lastSync) >
+                  const Duration(seconds: 20))) {
         _scheduleSoftResync('App resumed: requesting missed delta events');
       }
     }
@@ -2608,8 +2612,12 @@ class AppController extends ChangeNotifier {
 
   void _scheduleSoftResync(String reason) {
     if (session == null || !_socket.isConnected) return;
+    if (_accountSyncInProgress) return;
     if (_softResyncTimer?.isActive == true) return;
     _softResyncTimer = Timer(const Duration(milliseconds: 700), () {
+      if (_accountSyncInProgress || session == null || !_socket.isConnected) {
+        return;
+      }
       addDiagnostic('sync', reason);
       unawaited(forceResync());
     });
@@ -3217,6 +3225,10 @@ class AppController extends ChangeNotifier {
     switch (packet['type']) {
       case 'server_welcome':
         _syncStartedAt = DateTime.now();
+        _softResyncTimer?.cancel();
+        _softResyncTimer = null;
+        _accountSyncInProgress = true;
+        _snapshotRepairRequested = false;
         _syncDeltaBuffer.abort();
         _applyingSyncDelta = false;
         _livePacketsDuringDeltaApply.clear();
@@ -3282,6 +3294,7 @@ class AppController extends ChangeNotifier {
       case 'server_users':
         _applyOnlineUsers(packet['users']);
       case 'server_sync':
+        _accountSyncInProgress = true;
         status = 'Syncing messages...';
         await _applySync(packet);
       case 'server_sync_done':
@@ -3304,6 +3317,8 @@ class AppController extends ChangeNotifier {
             'protocol_version': MeshSocket.protocolVersion,
           });
         }
+        _accountSyncInProgress = false;
+        _snapshotRepairRequested = false;
         status = 'Online';
         lastSyncAt = DateTime.now();
         _recordSyncLatency('snapshot');
@@ -3572,6 +3587,8 @@ class AppController extends ChangeNotifier {
         await _handlePacket(livePacket);
       }
       status = 'Online';
+      _accountSyncInProgress = false;
+      _snapshotRepairRequested = false;
       lastSyncAt = DateTime.now();
       _recordSyncLatency('delta');
       addDiagnostic('sync', 'Delta sync applied through ${batch.targetCursor}');
@@ -3620,7 +3637,13 @@ class AppController extends ChangeNotifier {
   }
 
   void _requestAuthoritativeSnapshot(String reason) {
+    if (_snapshotRepairRequested) {
+      addDiagnostic('sync', 'Snapshot repair already requested: $reason');
+      return;
+    }
     _syncDeltaBuffer.abort();
+    _accountSyncInProgress = true;
+    _snapshotRepairRequested = true;
     status = 'Repairing sync...';
     addDiagnostic('sync', reason);
     if (_socket.isConnected) {
@@ -3655,6 +3678,13 @@ class AppController extends ChangeNotifier {
 
     for (final groupId in hiddenServerGroups) {
       await _forgetDeletedGroup(groupId);
+    }
+    if (_accountSyncInProgress) {
+      addDiagnostic(
+        'sync',
+        'Server group membership differs; current account sync will reconcile it',
+      );
+      return;
     }
     _requestAuthoritativeSnapshot(
       'server group membership differs from local cache',
@@ -3751,7 +3781,9 @@ class AppController extends ChangeNotifier {
   Future<void> _applySync(Map<String, dynamic> packet) async {
     var addedMessages = 0;
     var skippedMessages = 0;
+    var processedMessages = 0;
     final pendingEdits = await _socket.pendingEditMessageIds();
+    final directMessageIndexes = <String, Map<String, int>>{};
 
     if (packet['profile'] is Map) {
       final profile = Profile.fromJson(
@@ -3829,9 +3861,14 @@ class AppController extends ChangeNotifier {
       final thread = _ensurePacketThread(profile, data);
       final id = data['message_id']?.toString() ?? const Uuid().v4();
       if (_isDeletedMessage(id)) continue;
-      final existingIndex = thread.messages.indexWhere(
-        (message) => message.id == id,
+      final messageIndexes = directMessageIndexes.putIfAbsent(
+        thread.storageKey,
+        () => <String, int>{
+          for (var index = 0; index < thread.messages.length; index++)
+            thread.messages[index].id: index,
+        },
       );
+      final existingIndex = messageIndexes[id] ?? -1;
       if (existingIndex >= 0) {
         final current = thread.messages[existingIndex];
         final incomingText = await _decryptHistoryText(
@@ -3855,6 +3892,10 @@ class AppController extends ChangeNotifier {
           delivered: true,
           failed: false,
         );
+        processedMessages++;
+        if (processedMessages % 128 == 0) {
+          await Future<void>.delayed(Duration.zero);
+        }
         continue;
       }
       final rawText = _firstString(data, const [
@@ -3882,8 +3923,12 @@ class AppController extends ChangeNotifier {
           delivered: true,
         ),
       );
+      messageIndexes[id] = thread.messages.length - 1;
       addedMessages++;
-      thread.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      processedMessages++;
+      if (processedMessages % 128 == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
     }
     if (addedMessages > 0 || skippedMessages > 0) {
       status = skippedMessages > 0
@@ -3892,18 +3937,35 @@ class AppController extends ChangeNotifier {
     }
 
     await _applyGroups(packet['groups']);
+    final groupMessageIndexes = <String, Map<String, int>>{};
     for (final raw
         in packet['group_messages'] is List
             ? packet['group_messages'] as List
             : const []) {
       if (raw is! Map) continue;
+      final groupId = raw['group_id']?.toString() ?? '';
+      final group = groups[groupId];
+      final messageIndexes = group == null
+          ? null
+          : groupMessageIndexes.putIfAbsent(
+              groupId,
+              () => <String, int>{
+                for (var index = 0; index < group.messages.length; index++)
+                  group.messages[index].id: index,
+              },
+            );
       await _receiveGroupMessage(
         Map<String, dynamic>.from(raw),
         fromSync: true,
+        messageIndexes: messageIndexes,
         preserveLocalEdit: pendingEdits.contains(
           (raw['message_id'] ?? raw['group_message_id'])?.toString(),
         ),
       );
+      processedMessages++;
+      if (processedMessages % 128 == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
     }
     for (final raw
         in packet['files'] is List ? packet['files'] as List : const []) {
@@ -3924,9 +3986,9 @@ class AppController extends ChangeNotifier {
     _applyScheduledMessages(packet['scheduled_messages']);
     _applyPolls(packet['polls']);
     _applyArchiveStatesToThreads();
-    await _repairCachedGroups();
-    await _repairCachedMessages();
-    await _saveCache();
+    await _repairCachedGroups(persist: false);
+    await _repairCachedMessages(persist: false);
+    if (packet['sync_v2'] is! Map) await _saveCache();
     notifyListeners();
   }
 
@@ -4320,10 +4382,9 @@ class AppController extends ChangeNotifier {
         activityKinds.remove(groupId);
       }
     }
-    unawaited(_saveCache());
   }
 
-  Future<void> _repairCachedGroups() async {
+  Future<void> _repairCachedGroups({bool persist = true}) async {
     if (session == null || groups.isEmpty) return;
     var changed = false;
     final deletedGroupIds = appSettings.deletedGroupIds.toSet();
@@ -4358,17 +4419,17 @@ class AppController extends ChangeNotifier {
     for (final group in groups.values) {
       changed = _ensureOwnGroupMembership(group) || changed;
     }
-    if (changed) await _saveCache();
+    if (changed && persist) await _saveCache();
   }
 
-  Future<void> _repairCachedMessages() async {
+  Future<void> _repairCachedMessages({bool persist = true}) async {
     var changed = false;
     for (final thread in [...threads.values, ...groups.values]) {
       changed = _dedupeThreadMessages(thread) || changed;
     }
     if (changed) {
       addDiagnostic('sync', 'Removed duplicate cached messages');
-      await _saveCache();
+      if (persist) await _saveCache();
     }
   }
 
@@ -4739,6 +4800,7 @@ class AppController extends ChangeNotifier {
     Map<String, dynamic> packet, {
     required bool fromSync,
     bool preserveLocalEdit = false,
+    Map<String, int>? messageIndexes,
   }) async {
     final groupId = packet['group_id']?.toString() ?? '';
     if (groupId.isEmpty) return;
@@ -4768,9 +4830,9 @@ class AppController extends ChangeNotifier {
           packet['group_key_sender_envelope']?.toString() ??
           '',
     );
-    final existingIndex = group.messages.indexWhere(
-      (message) => message.id == id,
-    );
+    final existingIndex =
+        messageIndexes?[id] ??
+        group.messages.indexWhere((message) => message.id == id);
     if (existingIndex >= 0) {
       final current = group.messages[existingIndex];
       final incomingText = await _crypto.decryptGroupText(
@@ -4800,9 +4862,16 @@ class AppController extends ChangeNotifier {
         delivered: true,
         failed: false,
       );
-      await _repairGroupMessageText(group, existingIndex, packet);
-      await _saveCache();
-      notifyListeners();
+      await _repairGroupMessageText(
+        group,
+        existingIndex,
+        packet,
+        persist: !fromSync,
+      );
+      if (!fromSync) {
+        await _saveCache();
+        notifyListeners();
+      }
       return;
     }
     final packetSender = packet['sender_node']?.toString().isNotEmpty == true
@@ -4848,8 +4917,11 @@ class AppController extends ChangeNotifier {
         delivered: true,
       ),
     );
+    messageIndexes?[id] = group.messages.length - 1;
     final received = group.messages.last;
-    group.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    if (!fromSync) {
+      group.messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    }
     if (!fromSync && !_isOwnAccountNode(sender)) {
       final active = _isThreadActive(group);
       if (active) {
@@ -4870,14 +4942,15 @@ class AppController extends ChangeNotifier {
       }
       _publishIncomingPreview(group, received);
     }
-    await _saveCache();
+    if (!fromSync) await _saveCache();
   }
 
   Future<void> _repairGroupMessageText(
     ChatThread group,
     int messageIndex,
-    Map<String, dynamic> packet,
-  ) async {
+    Map<String, dynamic> packet, {
+    bool persist = true,
+  }) async {
     final current = group.messages[messageIndex];
     if (!current.text.startsWith(MeshCrypto.groupPrefix) &&
         !_isGroupDecryptFailure(current.text)) {
@@ -4901,8 +4974,10 @@ class AppController extends ChangeNotifier {
       text: text,
       richContent: await _incomingRich(packet, text),
     );
-    await _saveCache();
-    notifyListeners();
+    if (persist) {
+      await _saveCache();
+      notifyListeners();
+    }
   }
 
   bool _isGroupDecryptFailure(String text) {
@@ -11485,8 +11560,10 @@ class AppController extends ChangeNotifier {
     if (!fromSync && !sentByMe) {
       await _sendDeliveryReceipt(packet, sender, fileId);
     }
-    await _saveCache();
-    notifyListeners();
+    if (!fromSync) {
+      await _saveCache();
+      notifyListeners();
+    }
   }
 
   Future<void> _receiveFileChunk(

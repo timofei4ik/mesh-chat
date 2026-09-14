@@ -19,6 +19,11 @@ typedef ReconnectDelayFactory = Duration Function(int attempt);
 typedef DeliveryTraceHandler =
     FutureOr<void> Function(Map<String, dynamic> trace);
 
+Map<String, dynamic>? _decodeSocketPacket(String raw) {
+  final decoded = jsonDecode(raw);
+  return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+}
+
 class MeshSocket {
   static const protocolVersion = 5;
   static const minProtocolVersion = 5;
@@ -250,8 +255,11 @@ class MeshSocket {
           return;
         }
         try {
-          final decoded = jsonDecode(raw.toString());
-          if (decoded is Map<String, dynamic>) {
+          final rawPacket = raw.toString();
+          final decoded = !kIsWeb && rawPacket.length >= 256 * 1024
+              ? await compute(_decodeSocketPacket, rawPacket)
+              : _decodeSocketPacket(rawPacket);
+          if (decoded != null) {
             final packetType = decoded['type']?.toString() ?? '';
             if (packetType == 'reliable_sync_hint') {
               final target = decoded['cursor'];
