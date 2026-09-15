@@ -440,7 +440,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
       [adapter removeProcessing:_meshNoise];
       _meshNoise = nil;
     }
-    result(@(_meshNoise != nil));
+    result([NSNumber numberWithBool:_meshNoise != nil]);
     return;
   }
   if ([@"meshNoiseStatus" isEqualToString:call.method]) {

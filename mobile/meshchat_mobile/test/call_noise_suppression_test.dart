@@ -140,6 +140,27 @@ void main() {
       expect(rtcCalls[2].arguments['enabled'], false);
     });
   }
+  test('iOS numeric filter result does not abort call preparation', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    messenger.setMockMethodCallHandler(rtc, (call) async {
+      rtcCalls.add(call);
+      if (call.method == 'meshNoiseConfigure') {
+        return (call.arguments as Map)['enabled'] == true ? 1 : 0;
+      }
+      return null;
+    });
+    final basic = owner(), enhanced = owner();
+    await CallNoiseSuppression.acquire(basic, enhanced: false);
+    await CallNoiseSuppression.acquire(enhanced, enhanced: true);
+    await CallNoiseSuppression.release(enhanced);
+    await CallNoiseSuppression.release(basic);
+    expect(rtcCalls.map((call) => call.method), [
+      'initialize',
+      'meshNoiseConfigure',
+      'meshNoiseConfigure',
+      'meshNoiseConfigure',
+    ]);
+  });
   test('unsupported platforms retain stock WebRTC processing', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;
     final a = owner();

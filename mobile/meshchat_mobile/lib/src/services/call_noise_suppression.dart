@@ -38,7 +38,7 @@ class CallNoiseSuppression {
             'audioSampleRate': 48000,
           },
         );
-        await _channel.invokeMethod<bool>(_method('configure'), {
+        await _channel.invokeMethod<Object?>(_method('configure'), {
           'enabled': _owners.isNotEmpty,
         });
       } on PlatformException catch (_) {
@@ -52,7 +52,7 @@ class CallNoiseSuppression {
     return _serialize(() async {
       if (!_owners.remove(owner)) return;
       try {
-        await _channel.invokeMethod<bool>(_method('configure'), {
+        await _channel.invokeMethod<Object?>(_method('configure'), {
           'enabled': _owners.isNotEmpty,
         });
       } on PlatformException catch (_) {
