@@ -7416,6 +7416,7 @@ class AppController extends ChangeNotifier {
     // TURN credentials arrive asynchronously after the socket welcome. Ensure
     // a personal call receives the same relay configuration as group calls.
     _calls.setIceServers(_callIceServers);
+    Object? startFailure;
     final offerSdp = await _calls
         .startOutgoing(
           onIceCandidate: (candidate) => _sendCallIce(call, candidate),
@@ -7423,6 +7424,7 @@ class AppController extends ChangeNotifier {
           enhancedNoiseSuppression: enhancedNoiseSuppression,
         )
         .catchError((error) async {
+          startFailure = error;
           _setActiveCall(
             call.copyWith(
               status: CallStatus.ended,
@@ -7433,7 +7435,9 @@ class AppController extends ChangeNotifier {
           return '';
         });
     if (offerSdp.isEmpty) {
-      return 'Call audio is not available on this device yet';
+      return startFailure == null
+          ? 'Call audio is not available on this device yet'
+          : 'Call audio failed: $startFailure';
     }
     _socket.send({
       'type': 'call_offer',

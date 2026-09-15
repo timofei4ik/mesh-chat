@@ -202,7 +202,7 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
             @"id" : track.trackId,
             @"kind" : track.kind,
             @"label" : track.trackId,
-            @"enabled" : @(track.isEnabled),
+            @"enabled" : [NSNumber numberWithBool:track.isEnabled],
             @"remote" : @(YES),
             @"readyState" : @"live",
             @"settings" : track.settings
@@ -214,7 +214,7 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
             @"id" : track.trackId,
             @"kind" : track.kind,
             @"label" : track.trackId,
-            @"enabled" : @(track.isEnabled),
+            @"enabled" : [NSNumber numberWithBool:track.isEnabled],
             @"remote" : @(YES),
             @"readyState" : @"live",
             @"settings" : track.settings

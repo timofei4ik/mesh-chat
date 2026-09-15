@@ -9,9 +9,10 @@ import '../helper.dart';
 import 'utils.dart';
 
 class MediaStreamTrackNative extends MediaStreamTrack {
-  MediaStreamTrackNative(this._trackId, this._label, this._kind, this._enabled,
-      this._peerConnectionId,
-      [this.settings_ = const {}]);
+  MediaStreamTrackNative(this._trackId, this._label, this._kind,
+      Object? enabled, this._peerConnectionId,
+      [this.settings_ = const {}])
+      : _enabled = enabled == true || enabled == 1;
 
   factory MediaStreamTrackNative.fromMap(
       Map<dynamic, dynamic> map, String peerConnectionId) {

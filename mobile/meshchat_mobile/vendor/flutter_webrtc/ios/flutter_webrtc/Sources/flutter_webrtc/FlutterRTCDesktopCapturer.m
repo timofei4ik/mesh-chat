@@ -205,7 +205,7 @@ NSArray<RTCDesktopSource*>* _captureSources;
       @"id" : track.trackId,
       @"kind" : track.kind,
       @"label" : track.trackId,
-      @"enabled" : @(track.isEnabled),
+      @"enabled" : [NSNumber numberWithBool:track.isEnabled],
       @"remote" : @(YES),
       @"readyState" : @"live"
     }];

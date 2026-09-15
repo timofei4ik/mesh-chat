@@ -1911,7 +1911,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
       NSString* trackId = track.trackId;
         [self.localTracks setObject:[[LocalAudioTrack alloc] initWithTrack:(RTCAudioTrack *)track] forKey:trackId];
       [audioTracks addObject:@{
-        @"enabled" : @(track.isEnabled),
+        @"enabled" : [NSNumber numberWithBool:track.isEnabled],
         @"id" : trackId,
         @"kind" : track.kind,
         @"label" : trackId,
@@ -1925,7 +1925,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
       [_localTracks setObject:[[LocalVideoTrack alloc] initWithTrack:(RTCVideoTrack *)track]
                        forKey:trackId];
       [videoTracks addObject:@{
-        @"enabled" : @(track.isEnabled),
+        @"enabled" : [NSNumber numberWithBool:track.isEnabled],
         @"id" : trackId,
         @"kind" : track.kind,
         @"label" : trackId,
@@ -2445,7 +2445,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
   if (track == nil)
     return @{};
   NSDictionary* params = @{
-    @"enabled" : @(track.isEnabled),
+    @"enabled" : [NSNumber numberWithBool:track.isEnabled],
     @"id" : track.trackId,
     @"kind" : track.kind,
     @"label" : track.trackId,
