@@ -25,7 +25,9 @@ except ModuleNotFoundError:
         }
 
 
-WEBSOCKET_MAX_SIZE = 16 * 1024 * 1024
+# A 30 MiB story becomes 40 MiB of base64, plus JSON/profile metadata.
+STORY_VIDEO_MAX_BYTES = 30 * 1024 * 1024
+WEBSOCKET_MAX_SIZE = 48 * 1024 * 1024
 WEBSOCKET_PING_INTERVAL_SECONDS = 30
 WEBSOCKET_PING_TIMEOUT_SECONDS = 120
 SUPPORTED_SERVICES = frozenset({"meshprivacy"})

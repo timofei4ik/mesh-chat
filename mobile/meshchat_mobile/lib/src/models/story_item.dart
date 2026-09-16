@@ -3,6 +3,9 @@ enum StoryVisibility { everyone, chats, selected, excluded }
 enum StoryMediaType { none, image, video }
 
 class StoryItem {
+  static const maxVideoBytes = 30 * 1024 * 1024;
+  static const maxVideoBase64Length = ((maxVideoBytes + 2) ~/ 3) * 4;
+
   const StoryItem({
     required this.id,
     required this.ownerNode,

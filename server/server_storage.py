@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 try:
     from server.config import DATABASE_BACKEND, DATABASE_URL, DB_PATH
+    from server.server_protocol import STORY_VIDEO_MAX_BYTES
     from server.persistence import (
         PostgresCompatibilityConnection,
         PostgresUnitOfWorkFactory,
@@ -20,6 +21,7 @@ try:
     )
 except ModuleNotFoundError:
     from config import DATABASE_BACKEND, DATABASE_URL, DB_PATH
+    from server_protocol import STORY_VIDEO_MAX_BYTES
     from persistence import (
         PostgresCompatibilityConnection,
         PostgresUnitOfWorkFactory,
@@ -5066,6 +5068,12 @@ class ServerStorageMixin:
             story = packet.get("story")
             if not isinstance(story, dict):
                 return
+
+            video_data = story.get("video_data") or ""
+            if not isinstance(video_data, str) or len(video_data) > (
+                (STORY_VIDEO_MAX_BYTES + 2) // 3 * 4
+            ):
+                return False
 
             story_id = story.get("id") or packet.get("packet_id")
             owner_node = story.get("owner_node") or packet.get("source_node")

@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/session.dart';
 import 'package:meshchat_mobile/src/services/app_database_path.dart';
 import 'package:meshchat_mobile/src/services/mesh_socket.dart';
 import 'package:meshchat_mobile/src/services/mutation_outbox_store.dart';
+import 'package:meshchat_mobile/src/services/file_transfer_payload_store.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
@@ -39,6 +41,46 @@ void main() {
       MeshSocket.outboxIdForPacket(first),
       MeshSocket.outboxIdForPacket(Map<String, dynamic>.from(first)),
     );
+  });
+
+  test('30 MiB story stays outside SQLite row and survives retry', () async {
+    final payloads = _StoryPayloads();
+    final writer = MutationOutboxStore(payloadStore: payloads);
+    final session = Session(
+      serverUrl: 'wss://story.example/ws',
+      serverToken: 'token',
+      login: 'story-user',
+      password: 'password',
+      publicUsername: 'story-user',
+      nodeId: 'story-node',
+    );
+    final entry = MutationOutboxEntry(
+      outboxId: 'story|peer',
+      operationId: 'story',
+      packet: {
+        'type': 'story_update',
+        'story': {'video_data': 'AAAA' * (30 * 1024 * 1024 ~/ 3)},
+      },
+      createdAt: DateTime.now().toUtc(),
+    );
+    await writer.put(session, entry);
+    expect(payloads.values.length, 1);
+    final db = await openDatabase(
+      await appDatabasePath('meshchat_mutation_outbox.db'),
+    );
+    final rows = await db.rawQuery(
+      'SELECT LENGTH(packet_json) AS size FROM mutation_outbox WHERE outbox_id=?',
+      [entry.outboxId],
+    );
+    expect(rows.single['size'] as int, lessThan(1024));
+    final reader = MutationOutboxStore(payloadStore: payloads);
+    expect((await reader.load(session)).single.packet, entry.packet);
+    await reader.markSent(session, entry.outboxId);
+    await reader.markQueued(session, entry.outboxId, error: 'disconnected');
+    expect((await reader.load(session)).single.packet, entry.packet);
+    await reader.delete(session, entry.outboxId);
+    expect(payloads.values, isEmpty);
+    expect(await reader.load(session), isEmpty);
   });
 
   test(
@@ -201,4 +243,26 @@ void main() {
       const Duration(seconds: 30),
     );
   });
+}
+
+class _StoryPayloads extends FileTransferPayloadStore {
+  final values = <String, Uint8List>{};
+
+  @override
+  Future<String> write(
+    String sessionKey,
+    String transferId,
+    Uint8List bytes,
+  ) async {
+    final key = '$sessionKey:$transferId';
+    values[key] = bytes;
+    return key;
+  }
+
+  @override
+  Future<Uint8List> readChunk(String reference, int offset, int length) async =>
+      values[reference]!;
+
+  @override
+  Future<void> delete(String reference) async => values.remove(reference);
 }

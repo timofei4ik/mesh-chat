@@ -6375,6 +6375,9 @@ class AppController extends ChangeNotifier {
     if (trimmed.isEmpty && imageData.isEmpty && videoData.isEmpty) {
       return 'Story is empty';
     }
+    if (videoData.length > StoryItem.maxVideoBase64Length) {
+      return 'Story video is too large, choose up to 30 MB';
+    }
     final storyLimit =
         meshProSubscription.entitlements.limitFor('story_parallel_items') ?? 3;
     final ownActiveStories = stories.values

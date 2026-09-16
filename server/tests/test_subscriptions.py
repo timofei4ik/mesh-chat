@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from server import server_scheduler, server_storage, server_subscription
+from server import server_scheduler, server_storage, server_subscription, server_protocol
 
 
 class SubscriptionRelay(
@@ -580,6 +580,38 @@ class SubscriptionTests(unittest.TestCase):
             "SELECT story_json FROM server_stories WHERE story_id='pro-hd'"
         ).fetchone()
         self.assertIn('"hd": true', stored_pro[0])
+
+    def test_story_accepts_30_mib_video_and_rejects_larger_payload(self):
+        import json
+
+        limit = server_protocol.STORY_VIDEO_MAX_BYTES
+        self.assertEqual(30 * 1024 * 1024, limit)
+        packet = {
+            "type": "story_update",
+            "packet_id": "large-video",
+            "source_node": "subscriber-node",
+            "destination_node": "SERVER",
+            "story": {
+                "id": "large-video",
+                "owner_node": "subscriber-node",
+                "media_type": "video",
+                "video_duration_seconds": 20,
+                "video_data": "AAAA" * (limit // 3),
+            },
+        }
+        self.assertLess(len(json.dumps(packet)), server_protocol.WEBSOCKET_MAX_SIZE)
+        self.relay.save_history_packet(packet)
+        stored = self.relay.db.execute(
+            "SELECT story_json FROM server_stories WHERE story_id='large-video'"
+        ).fetchone()
+        self.assertIsNotNone(stored)
+        self.assertEqual(packet["story"]["video_data"], json.loads(stored[0])["video_data"])
+        packet["story"]["video_data"] += "AA=="
+        self.assertFalse(self.relay.save_history_packet(packet))
+        unchanged = self.relay.db.execute(
+            "SELECT LENGTH(story_json) FROM server_stories WHERE story_id='large-video'"
+        ).fetchone()[0]
+        self.assertEqual(len(stored[0]), unchanged)
 
     def test_catalog_is_versioned_and_returned_as_a_defensive_copy(self):
         first = self.relay.subscription_catalog("meshprivacy")

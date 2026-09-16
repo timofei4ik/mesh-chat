@@ -6,6 +6,8 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/session.dart';
 import 'app_database_path.dart';
+import 'large_preference_value.dart';
+import 'file_transfer_payload_store.dart';
 
 enum MutationOutboxState {
   queued,
@@ -106,6 +108,11 @@ class MutationOutboxEntry {
 }
 
 class MutationOutboxStore {
+  MutationOutboxStore({FileTransferPayloadStore? payloadStore})
+    : _payloadStore = payloadStore ?? FileTransferPayloadStore();
+
+  final FileTransferPayloadStore _payloadStore;
+  final _webValues = LargePreferenceValue();
   static const _databaseName = 'meshchat_mutation_outbox.db';
   static const _preferencesPrefix = 'meshchat_mutation_outbox_v1:';
   static Database? _database;
@@ -119,21 +126,22 @@ class MutationOutboxStore {
       whereArgs: [_sessionKey(session)],
       orderBy: 'created_at ASC, outbox_id ASC',
     );
-    return rows
-        .map(
-          (row) => MutationOutboxEntry.fromJson({
-            'outbox_id': row['outbox_id'],
-            'operation_id': row['operation_id'],
-            'packet': _decodePacket(row['packet_json']),
-            'created_at': row['created_at'],
-            'attempts': row['attempts'],
-            'state': row['state'],
-            'last_attempt_at': row['last_attempt_at'],
-            'last_error': row['last_error'],
-          }),
-        )
-        .where(_isValid)
-        .toList();
+    final entries = <MutationOutboxEntry>[];
+    for (final row in rows) {
+      entries.add(
+        MutationOutboxEntry.fromJson({
+          'outbox_id': row['outbox_id'],
+          'operation_id': row['operation_id'],
+          'packet': await _readStoredPacket(row['packet_json']),
+          'created_at': row['created_at'],
+          'attempts': row['attempts'],
+          'state': row['state'],
+          'last_attempt_at': row['last_attempt_at'],
+          'last_error': row['last_error'],
+        }),
+      );
+    }
+    return entries.where(_isValid).toList();
   }
 
   Future<MutationOutboxStats> stats(Session session) async {
@@ -170,11 +178,26 @@ class MutationOutboxStore {
       return;
     }
     final db = await _db();
+    var packetJson = jsonEncode(entry.packet);
+    // Android SQLite cursors cannot load a multi-megabyte story in one row.
+    if (entry.packet['type'] == 'story_update' &&
+        packetJson.length > 512 * 1024) {
+      final bytes = utf8.encode(packetJson);
+      final reference = await _payloadStore.write(
+        'story_outbox:${_sessionKey(session)}',
+        entry.outboxId,
+        bytes,
+      );
+      packetJson = jsonEncode({
+        'local_story_payload': reference,
+        'length': bytes.length,
+      });
+    }
     await db.insert('mutation_outbox', {
       'session_key': _sessionKey(session),
       'outbox_id': entry.outboxId,
       'operation_id': entry.operationId,
-      'packet_json': jsonEncode(entry.packet),
+      'packet_json': packetJson,
       'created_at': entry.createdAt.toUtc().toIso8601String(),
       'attempts': entry.attempts,
       'state': entry.state.name,
@@ -262,11 +285,21 @@ class MutationOutboxStore {
       return;
     }
     final db = await _db();
+    final rows = await db.query(
+      'mutation_outbox',
+      columns: ['packet_json'],
+      where: 'session_key=? AND outbox_id=?',
+      whereArgs: [_sessionKey(session), outboxId],
+    );
+    final reference = rows.isEmpty
+        ? null
+        : _decodePacket(rows.single['packet_json'])['local_story_payload'];
     await db.delete(
       'mutation_outbox',
       where: 'session_key=? AND outbox_id=?',
       whereArgs: [_sessionKey(session), outboxId],
     );
+    if (reference is String) await _payloadStore.delete(reference);
   }
 
   Future<bool> hasOperation(Session session, String operationId) async {
@@ -309,6 +342,18 @@ class MutationOutboxStore {
     } catch (_) {
       return const <String, dynamic>{};
     }
+  }
+
+  Future<Map<String, dynamic>> _readStoredPacket(Object? raw) async {
+    final packet = _decodePacket(raw);
+    final reference = packet['local_story_payload'];
+    if (reference is! String) return packet;
+    final length = packet['length'] as int;
+    final bytes = await _payloadStore.readChunk(reference, 0, length);
+    if (bytes.length != length) {
+      throw StateError('Story outbox payload is missing');
+    }
+    return _decodePacket(utf8.decode(bytes));
   }
 
   Future<Database> _db() async {
@@ -357,7 +402,7 @@ class MutationOutboxStore {
 
   Future<List<MutationOutboxEntry>> _loadWeb(Session session) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_webKey(session));
+    final raw = await _webValues.read(prefs, _webKey(session));
     if (raw == null || raw.isEmpty) return [];
     try {
       final decoded = jsonDecode(raw);
@@ -373,7 +418,7 @@ class MutationOutboxStore {
       entries.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       return entries;
     } catch (_) {
-      await prefs.remove(_webKey(session));
+      await _webValues.remove(prefs, _webKey(session));
       return [];
     }
   }
@@ -385,10 +430,11 @@ class MutationOutboxStore {
     final prefs = await SharedPreferences.getInstance();
     final key = _webKey(session);
     if (entries.isEmpty) {
-      await prefs.remove(key);
+      await _webValues.remove(prefs, key);
       return;
     }
-    await prefs.setString(
+    await _webValues.write(
+      prefs,
       key,
       jsonEncode(entries.map((entry) => entry.toJson()).toList()),
     );

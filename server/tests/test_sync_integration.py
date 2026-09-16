@@ -2640,6 +2640,29 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
+    async def test_30_mib_story_video_is_delivered_and_restored(self):
+        alice = await self.connect("large_story_alice")
+        bob = await self.connect("large_story_bob")
+        video = "AAAA" * (30 * 1024 * 1024 // 3)
+        story = {
+            "id": "large-story-video",
+            "owner_node": alice.node_id,
+            "owner_name": "Alice",
+            "created_at": "2099-01-01T00:00:00Z",
+            "video_data": video,
+            "video_mime": "video/mp4",
+            "media_type": "video",
+            "video_duration_seconds": 20,
+            "visibility": "selected",
+            "allowed_node_ids": [bob.node_id],
+        }
+        received = await self.send_and_receive(alice, bob, "story_update", story=story)
+        self.assertEqual(video, received["story"]["video_data"])
+        await bob.close()
+        reconnected = await self.connect("large_story_bob")
+        restored = next(item for item in reconnected.sync["stories"] if item["id"] == story["id"])
+        self.assertEqual(video, restored["video_data"])
+
     async def test_story_media_reactions_and_views_follow_account_devices(self):
         alice_phone = await self.connect("story_alice")
         bob_phone = await self.connect("story_bob")

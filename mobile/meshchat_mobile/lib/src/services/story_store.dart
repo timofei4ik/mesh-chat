@@ -4,11 +4,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/session.dart';
 import '../models/story_item.dart';
+import 'large_preference_value.dart';
 
 class StoryStore {
+  final _values = LargePreferenceValue();
   Future<Map<String, StoryItem>> load(Session session) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_key(session));
+    final raw = await _values.read(prefs, _key(session));
     if (raw == null || raw.isEmpty) return {};
     try {
       final decoded = jsonDecode(raw);
@@ -22,7 +24,7 @@ class StoryStore {
       }
       return stories;
     } catch (_) {
-      await prefs.remove(_key(session));
+      await _values.remove(prefs, _key(session));
       return {};
     }
   }
@@ -32,7 +34,8 @@ class StoryStore {
     final active = stories.where((story) => !story.expired).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
+    await _values.write(
+      prefs,
       _key(session),
       jsonEncode(active.map((story) => story.toJson()).toList()),
     );
@@ -40,7 +43,7 @@ class StoryStore {
 
   Future<List<StoryItem>> loadArchive(Session session) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_archiveKey(session));
+    final raw = await _values.read(prefs, _archiveKey(session));
     if (raw == null || raw.isEmpty) return const [];
     try {
       final decoded = jsonDecode(raw);
@@ -55,7 +58,7 @@ class StoryStore {
       stories.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       return stories;
     } catch (_) {
-      await prefs.remove(_archiveKey(session));
+      await _values.remove(prefs, _archiveKey(session));
       return const [];
     }
   }
@@ -68,7 +71,8 @@ class StoryStore {
     final archived = stories.toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
+    await _values.write(
+      prefs,
       _archiveKey(session),
       jsonEncode(archived.map((story) => story.toJson()).toList()),
     );

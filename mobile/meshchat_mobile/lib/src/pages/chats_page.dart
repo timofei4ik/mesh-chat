@@ -16,6 +16,7 @@ import '../models/profile.dart';
 import '../models/story_item.dart';
 import '../services/call_alert_service.dart';
 import '../services/store_distribution.dart';
+import '../services/story_video_source.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/app_update_banner.dart';
@@ -628,6 +629,7 @@ class ChatsPage extends StatelessWidget {
     var videoData = '';
     var videoMime = 'video/mp4';
     var videoDurationSeconds = 0;
+    var preparingVideo = false;
     var mediaType = StoryMediaType.none;
     var hd = false;
     final selected = <String>{};
@@ -646,9 +648,7 @@ class ChatsPage extends StatelessWidget {
           final imageLimit = hd && hdAvailable
               ? 5 * 1024 * 1024
               : 2 * 1024 * 1024;
-          final videoLimit = extendedVideoAvailable
-              ? 10 * 1024 * 1024
-              : 8 * 1024 * 1024;
+          const videoLimit = StoryItem.maxVideoBytes;
           final durationLimit =
               controller.meshProSubscription.entitlements.limitFor(
                 'story_video_seconds',
@@ -695,31 +695,34 @@ class ChatsPage extends StatelessWidget {
                     children: [
                       Expanded(
                         child: FilledButton.tonalIcon(
-                          onPressed: () async {
-                            final picked = await FilePicker.platform.pickFiles(
-                              type: FileType.image,
-                              withData: true,
-                            );
-                            final bytes = picked?.files.single.bytes;
-                            if (bytes == null) return;
-                            if (bytes.length > imageLimit) {
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    'Story photo is too large, choose up to ${imageLimit ~/ (1024 * 1024)} MB',
-                                  ),
-                                ),
-                              );
-                              return;
-                            }
-                            setSheetState(() {
-                              imageData = base64Encode(bytes);
-                              videoData = '';
-                              videoDurationSeconds = 0;
-                              mediaType = StoryMediaType.image;
-                            });
-                          },
+                          onPressed: preparingVideo
+                              ? null
+                              : () async {
+                                  final picked = await FilePicker.platform
+                                      .pickFiles(
+                                        type: FileType.image,
+                                        withData: true,
+                                      );
+                                  final bytes = picked?.files.single.bytes;
+                                  if (bytes == null) return;
+                                  if (bytes.length > imageLimit) {
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          'Story photo is too large, choose up to ${imageLimit ~/ (1024 * 1024)} MB',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                  setSheetState(() {
+                                    imageData = base64Encode(bytes);
+                                    videoData = '';
+                                    videoDurationSeconds = 0;
+                                    mediaType = StoryMediaType.image;
+                                  });
+                                },
                           icon: const Icon(Icons.photo_rounded),
                           label: Text(
                             imageData.isEmpty ? 'Add photo' : 'Photo selected',
@@ -729,64 +732,114 @@ class ChatsPage extends StatelessWidget {
                       const SizedBox(width: 8),
                       Expanded(
                         child: FilledButton.tonalIcon(
-                          onPressed: () async {
-                            final picked = await FilePicker.platform.pickFiles(
-                              type: FileType.video,
-                              withData: true,
-                            );
-                            final file = picked?.files.single;
-                            final bytes = file?.bytes;
-                            if (bytes == null) return;
-                            if (bytes.length > videoLimit) {
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    'Story video is too large, choose up to ${videoLimit ~/ (1024 * 1024)} MB',
-                                  ),
-                                ),
-                              );
-                              return;
-                            }
-                            final mime = _videoMime(file?.extension ?? '');
-                            final duration = await _storyVideoDurationSeconds(
-                              bytes,
-                              mime,
-                            );
-                            if (duration > durationLimit) {
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    'Story video can be up to $durationLimit seconds',
-                                  ),
-                                ),
-                              );
-                              return;
-                            }
-                            setSheetState(() {
-                              videoData = base64Encode(bytes);
-                              videoMime = mime;
-                              videoDurationSeconds = duration;
-                              imageData = '';
-                              mediaType = StoryMediaType.video;
-                            });
-                          },
+                          onPressed: preparingVideo
+                              ? null
+                              : () async {
+                                  setSheetState(() => preparingVideo = true);
+                                  try {
+                                    final picked = await FilePicker.platform
+                                        .pickFiles(
+                                          type: FileType.video,
+                                          withData: true,
+                                        );
+                                    final file = picked?.files.single;
+                                    final bytes = file?.bytes;
+                                    if (bytes == null) return;
+                                    if (bytes.length > videoLimit) {
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Story video is too large, choose up to ${videoLimit ~/ (1024 * 1024)} MB',
+                                          ),
+                                        ),
+                                      );
+                                      return;
+                                    }
+                                    final mime = _videoMime(
+                                      file?.extension ?? '',
+                                    );
+                                    final duration =
+                                        await _storyVideoDurationSeconds(
+                                          bytes,
+                                          mime,
+                                        );
+                                    if (!context.mounted) return;
+                                    if (duration == null) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Unable to open this video. Try an MP4 video with H.264 encoding.',
+                                          ),
+                                        ),
+                                      );
+                                      return;
+                                    }
+                                    if (duration > durationLimit) {
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Story video can be up to $durationLimit seconds',
+                                          ),
+                                        ),
+                                      );
+                                      return;
+                                    }
+                                    setSheetState(() {
+                                      videoData = base64Encode(bytes);
+                                      videoMime = mime;
+                                      videoDurationSeconds = duration;
+                                      imageData = '';
+                                      mediaType = StoryMediaType.video;
+                                    });
+                                  } catch (_) {
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Unable to load this video',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (context.mounted) {
+                                      setSheetState(
+                                        () => preparingVideo = false,
+                                      );
+                                    }
+                                  }
+                                },
                           icon: const Icon(Icons.movie_rounded),
                           label: Text(
-                            videoData.isEmpty ? 'Add video' : 'Video selected',
+                            preparingVideo
+                                ? 'Loading video...'
+                                : videoData.isEmpty
+                                ? 'Add video'
+                                : 'Video selected',
                           ),
                         ),
                       ),
                       if (imageData.isNotEmpty || videoData.isNotEmpty) ...[
                         const SizedBox(width: 8),
                         IconButton.filledTonal(
-                          onPressed: () => setSheetState(() {
-                            imageData = '';
-                            videoData = '';
-                            videoDurationSeconds = 0;
-                            mediaType = StoryMediaType.none;
-                          }),
+                          onPressed: preparingVideo
+                              ? null
+                              : () => setSheetState(() {
+                                  imageData = '';
+                                  videoData = '';
+                                  videoDurationSeconds = 0;
+                                  mediaType = StoryMediaType.none;
+                                }),
                           icon: const Icon(Icons.close_rounded),
                         ),
                       ],
@@ -893,7 +946,9 @@ class ChatsPage extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(18, 14, 18, 12),
                   child: FilledButton.icon(
-                    onPressed: () => Navigator.pop(context, 'publish'),
+                    onPressed: preparingVideo
+                        ? null
+                        : () => Navigator.pop(context, 'publish'),
                     icon: const Icon(Icons.auto_awesome_rounded),
                     label: const Text('Publish story'),
                   ),
@@ -2609,6 +2664,8 @@ class _StoryViewerPage extends StatefulWidget {
 
 class _StoryViewerPageState extends State<_StoryViewerPage> {
   VideoPlayerController? videoController;
+  StoryVideoSource? _videoSource;
+  bool _videoFailed = false;
   final TextEditingController replyController = TextEditingController();
 
   @override
@@ -2617,26 +2674,46 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
     widget.controller.addListener(_onControllerChanged);
     final story = widget.story;
     if (story.mediaType == StoryMediaType.video && story.videoData.isNotEmpty) {
-      final raw = story.videoData.contains(',')
-          ? story.videoData.substring(story.videoData.indexOf(',') + 1)
-          : story.videoData;
-      videoController =
-          VideoPlayerController.networkUrl(
-              Uri.parse('data:${story.videoMime};base64,$raw'),
-            )
-            ..setLooping(true)
-            ..initialize().then((_) {
-              if (!mounted) return;
-              setState(() {});
-              videoController?.play();
-            });
+      unawaited(_loadVideo(story));
+    }
+  }
+
+  Future<void> _loadVideo(StoryItem story) async {
+    StoryVideoSource? source;
+    try {
+      final raw = story.videoData.split(',').last;
+      source = await StoryVideoSource.prepare(
+        base64Decode(raw),
+        story.videoMime,
+      );
+      await source.controller.initialize().timeout(const Duration(seconds: 20));
+      await source.controller.setLooping(true);
+      if (!mounted) {
+        await source.dispose();
+        return;
+      }
+      _videoSource = source;
+      videoController = source.controller;
+      videoController!.addListener(_onVideoChanged);
+      setState(() {});
+      await source.controller.play();
+    } catch (_) {
+      if (source != _videoSource) await source?.dispose();
+      if (mounted) setState(() => _videoFailed = true);
+    }
+  }
+
+  void _onVideoChanged() {
+    if (mounted && videoController!.value.hasError && !_videoFailed) {
+      setState(() => _videoFailed = true);
     }
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onControllerChanged);
-    videoController?.dispose();
+    videoController?.removeListener(_onVideoChanged);
+    unawaited(_videoSource?.dispose());
     replyController.dispose();
     super.dispose();
   }
@@ -3025,12 +3102,18 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                         padding: const EdgeInsets.all(16),
                         child: Column(
                           children: [
-                            if (story.mediaType == StoryMediaType.video &&
-                                videoController != null)
+                            if (story.mediaType == StoryMediaType.video)
                               Expanded(
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(24),
-                                  child: videoController!.value.isInitialized
+                                  child: _videoFailed
+                                      ? const Center(
+                                          child: Text(
+                                            'Unable to play this video',
+                                          ),
+                                        )
+                                      : videoController?.value.isInitialized ==
+                                            true
                                       ? AspectRatio(
                                           aspectRatio: videoController!
                                               .value
@@ -3155,18 +3238,17 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
   }
 }
 
-Future<int> _storyVideoDurationSeconds(Uint8List bytes, String mime) async {
-  if (bytes.isEmpty) return 0;
-  final controller = VideoPlayerController.networkUrl(
-    Uri.parse('data:$mime;base64,${base64Encode(bytes)}'),
-  );
+Future<int?> _storyVideoDurationSeconds(Uint8List bytes, String mime) async {
+  if (bytes.isEmpty) return null;
+  StoryVideoSource? source;
   try {
-    await controller.initialize().timeout(const Duration(seconds: 8));
-    return (controller.value.duration.inMilliseconds / 1000).ceil();
+    source = await StoryVideoSource.prepare(bytes, mime);
+    await source.controller.initialize().timeout(const Duration(seconds: 20));
+    return (source.controller.value.duration.inMilliseconds / 1000).ceil();
   } catch (_) {
-    return 0;
+    return null;
   } finally {
-    await controller.dispose();
+    await source?.dispose();
   }
 }
 
