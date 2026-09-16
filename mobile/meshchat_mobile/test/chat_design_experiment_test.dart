@@ -18,9 +18,44 @@ import 'package:meshchat_mobile/src/pages/chat_page.dart';
 import 'package:meshchat_mobile/src/pages/chats_page.dart';
 import 'package:meshchat_mobile/src/widgets/chat_timeline_date.dart';
 import 'package:meshchat_mobile/src/widgets/mesh_performance_scope.dart';
+import 'package:meshchat_mobile/src/widgets/mesh_workspace.dart';
+import 'package:meshchat_mobile/src/widgets/mesh_home_background.dart';
+import 'package:meshchat_mobile/src/widgets/profile_avatar.dart';
+
 import 'package:meshchat_mobile/src/widgets/mesh_liquid_glass.dart';
 import 'package:meshchat_mobile/src/services/platform_capabilities.dart';
 import 'package:meshchat_mobile/src/utils/mesh_page_route.dart';
+
+Future<void> waitForChatViewport(WidgetTester tester) async {
+  final gate = find.byKey(const ValueKey('chat-initial-viewport'));
+  for (var frame = 0; frame < 20; frame++) {
+    if (gate.evaluate().isEmpty || tester.widget<Visibility>(gate).visible) {
+      return;
+    }
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  expect(tester.widget<Visibility>(gate).visible, isTrue);
+}
+
+Future<void> captureRevision(
+  WidgetTester tester,
+  GlobalKey boundary,
+  String name,
+) async {
+  await waitForChatViewport(tester);
+  if (Platform.environment['MESH_DESIGN_SCREENSHOTS'] != '1') return;
+  await tester.runAsync(() async {
+    final image =
+        await (boundary.currentContext!.findRenderObject()
+                as RenderRepaintBoundary)
+            .toImage();
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    final file = File('build/design-review/$name.png');
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes!.buffer.asUint8List());
+    image.dispose();
+  });
+}
 
 class _PreviewController extends AppController {
   final sentGroupMessages = <String>[];
@@ -74,11 +109,7 @@ void main() {
         );
       await font.load();
       final icons = FontLoader('MaterialIcons')
-        ..addFont(
-          File(
-            'D:/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
-          ).readAsBytes().then((bytes) => ByteData.sublistView(bytes)),
-        );
+        ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
       await icons.load();
     }
   });
@@ -187,6 +218,68 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  for (final count in [0, 3, 250]) {
+    testWidgets('chat first visible frame starts at the bottom ($count)', (
+      tester,
+    ) async {
+      final controller = _PreviewController();
+      final thread = ChatThread(
+        profile: const Profile(nodeId: 'friend', displayName: 'Alex'),
+        messages: List.generate(
+          count,
+          (index) => ChatMessage(
+            id: 'initial-$index',
+            senderNode: 'friend',
+            receiverNode: '',
+            text:
+                'Message $index ${List.filled(index % 7 + 1, "variable height text").join(" ")}',
+            createdAt: DateTime(2026, 9, 16, 12, index),
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MeshPerformanceScope(
+            lowEndDeviceMode: true,
+            child: ChatPage(controller: controller, thread: thread),
+          ),
+        ),
+      );
+      final gate = find.byKey(const ValueKey('chat-initial-viewport'));
+      expect(tester.widget<Visibility>(gate).visible, isFalse);
+      var revealed = false;
+      for (var frame = 0; frame < 20; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        if (!tester.widget<Visibility>(gate).visible) continue;
+        final list = tester.widget<ListView>(
+          find.descendant(of: gate, matching: find.byType(ListView)),
+        );
+        expect(
+          list.controller!.offset,
+          closeTo(list.controller!.position.maxScrollExtent, 0.5),
+        );
+        revealed = true;
+      }
+      expect(revealed, isTrue);
+      if (count == 250) {
+        final listFinder = find.descendant(
+          of: gate,
+          matching: find.byType(ListView),
+        );
+        await tester.drag(listFinder, const Offset(0, 250));
+        await tester.pump(const Duration(milliseconds: 300));
+        final position = tester
+            .widget<ListView>(listFinder)
+            .controller!
+            .position;
+        expect(position.pixels, lessThan(position.maxScrollExtent - 100));
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+    });
+  }
 
   testWidgets('long live captions wrap and keep the newest words visible', (
     tester,
@@ -426,6 +519,226 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
   });
+  testWidgets(
+    'desktop workspace switches chats, keeps drafts and opens profile beside chat',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = _PreviewController();
+      final alex = ChatThread(
+        profile: const Profile(nodeId: 'alex', displayName: 'Alex'),
+        messages: [
+          ChatMessage(
+            id: 'a',
+            senderNode: 'alex',
+            receiverNode: 'me',
+            text: 'The updated layout is ready.',
+            createdAt: DateTime(2026, 9, 16),
+          ),
+        ],
+      );
+      final jamie = ChatThread(
+        profile: const Profile(nodeId: 'jamie', displayName: 'Jamie'),
+      );
+      controller.threads[alex.storageKey] = alex;
+      controller.threads[jamie.storageKey] = jamie;
+      final boundary = GlobalKey();
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: boundary,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData.dark().copyWith(
+              textTheme: ThemeData.dark().textTheme.apply(
+                fontFamily: 'PreviewSans',
+              ),
+            ),
+            home: MeshPerformanceScope(
+              lowEndDeviceMode: true,
+              child: ChatsPage(controller: controller),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byType(MeshHomeBackground), findsNWidgets(2));
+      await captureRevision(tester, boundary, 'desktop-empty-revision');
+      await tester.tap(find.text('Alex').first);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byType(MeshWorkspace), findsOneWidget);
+      expect(find.byType(ChatPage), findsOneWidget);
+      expect(find.text('Jamie'), findsOneWidget);
+      final selection = tester.widget<Container>(
+        find.byKey(ValueKey('chat-selection-${alex.storageKey}')),
+      );
+      final outline = selection.foregroundDecoration! as BoxDecoration;
+      expect((outline.border! as Border).top.color, Colors.lightBlueAccent);
+      expect((outline.border! as Border).top.width, 1.5);
+      final unselected = tester.widget<Container>(
+        find.byKey(ValueKey('chat-selection-${jamie.storageKey}')),
+      );
+      expect(
+        ((unselected.foregroundDecoration! as BoxDecoration).border! as Border)
+            .top
+            .color,
+        Colors.transparent,
+      );
+      final composer = find.descendant(
+        of: find.byType(ChatPage),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(composer, 'A draft that stays here');
+      await tester.tap(find.text('Jamie').first);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Alex').first);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('A draft that stays here'), findsOneWidget);
+      await tester.tap(
+        find
+            .descendant(of: find.byType(ChatPage), matching: find.text('Alex'))
+            .first,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      final transition = tester.widget<SizeTransition>(
+        find
+            .ancestor(
+              of: find.byType(MeshDetailPane),
+              matching: find.byType(SizeTransition),
+            )
+            .first,
+      );
+      expect(transition.sizeFactor.value, greaterThan(0));
+      expect(transition.sizeFactor.value, lessThan(1));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(MeshDetailPane), findsOneWidget);
+      final identity = find.byKey(const ValueKey('desktop-chat-identity'));
+      expect(
+        find.descendant(of: identity, matching: find.byType(ProfileAvatar)),
+        findsOneWidget,
+      );
+      final mouse = await tester.createGesture(
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(tester.getCenter(identity));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await captureRevision(tester, boundary, 'desktop-hover-revision');
+      await mouse.removePointer();
+      expect(tester.takeException(), isNull);
+      if (Platform.environment['MESH_DESIGN_SCREENSHOTS'] == '1') {
+        await tester.runAsync(() async {
+          final image =
+              await (boundary.currentContext!.findRenderObject()
+                      as RenderRepaintBoundary)
+                  .toImage();
+          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+          final file = File('build/design-review/workspace-beta.png');
+          await file.parent.create(recursive: true);
+          await file.writeAsBytes(bytes!.buffer.asUint8List());
+          image.dispose();
+        });
+      }
+      await tester.tap(find.byTooltip('Search messages'));
+      await tester.pump(const Duration(milliseconds: 400));
+      final search = find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField &&
+            widget.decoration?.hintText == 'Search messages',
+      );
+      await tester.enterText(search, 'updated');
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byType(MeshDetailPane), findsOneWidget);
+      await tester.tap(find.byTooltip('Close search'));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byType(MeshDetailPane), findsNothing);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(MeshDetailPane), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(MeshDetailPane), findsNothing);
+      expect(find.byType(ChatPage), findsOneWidget);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.digit3);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(
+        tester.widget<PageView>(find.byType(PageView)).controller!.page,
+        2,
+      );
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.digit1);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      tester.view.physicalSize = const Size(390, 844);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byType(MeshWorkspace), findsNothing);
+      expect(find.text('A draft that stays here'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byType(ChatPage), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 2));
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('wide $platform keeps the stable mobile layout', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = _PreviewController();
+      final thread = ChatThread(
+        profile: const Profile(nodeId: 'mobile', displayName: 'Mobile contact'),
+      );
+      controller.threads[thread.storageKey] = thread;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MeshPerformanceScope(
+            lowEndDeviceMode: true,
+            child: ChatsPage(controller: controller),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byType(MeshWorkspace), findsNothing);
+      expect(find.byType(MeshHomeBackground), findsOneWidget);
+      expect(find.text('Personal'), findsOneWidget);
+      expect(find.byTooltip('Personal'), findsNothing);
+      await tester.tap(find.text('Mobile contact'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byType(ChatPage), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-chat-identity')), findsNothing);
+      expect(find.byType(MeshWorkspace), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 2));
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+
   testWidgets('timeline date follows visible variable-height rows and fades', (
     tester,
   ) async {
@@ -729,6 +1042,7 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('agenda.pdf'), findsOneWidget);
+      await waitForChatViewport(tester);
       expect(tester.takeException(), isNull);
       if (Platform.environment['MESH_DESIGN_SCREENSHOTS'] == '1') {
         await tester.runAsync(() async {
@@ -886,6 +1200,7 @@ void main() {
         find.text('I will be there at ten. See you tomorrow!'),
         findsNothing,
       );
+      await waitForChatViewport(tester);
       await tester.tap(find.text('Transcript'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));

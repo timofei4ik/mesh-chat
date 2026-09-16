@@ -61,7 +61,9 @@ class _ProfileEffectBackgroundState extends State<ProfileEffectBackground>
   void didChangeDependencies() {
     super.didChangeDependencies();
     final next = TickerMode.valuesOf(context).enabled;
-    final nextLowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
+    final nextLowEndMode =
+        MeshPerformanceScope.lowEndDeviceModeOf(context) ||
+        MediaQuery.disableAnimationsOf(context);
     if (tickerModeActive == next && lowEndMode == nextLowEndMode) return;
     tickerModeActive = next;
     lowEndMode = nextLowEndMode;

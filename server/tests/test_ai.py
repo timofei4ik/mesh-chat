@@ -5,9 +5,82 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from server import server_ai, server_storage, server_subscription, server_sync
+
+
+class VisionRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ocr_preserves_real_repeated_lines_and_empty_images(self):
+        for text in ("Invoice 12345\nInvoice 12345", "", "NO_TEXT"):
+            relay = server_ai.ServerAiMixin()
+            relay._perform_vision_completion = AsyncMock(return_value=json.dumps({"text": text}))
+            self.assertEqual(await relay._request_ai_ocr(b"test", "image/png"), text)
+
+    async def test_ocr_rejects_malformed_structured_output(self):
+        for output in ('plain text', '[]', '{"text":null}', '{"text":42}'):
+            relay = server_ai.ServerAiMixin()
+            relay._perform_vision_completion = AsyncMock(return_value=output)
+            with self.assertRaises(RuntimeError):
+                await relay._request_ai_ocr(b"test", "image/png")
+
+    async def check_response(self, finish_reason):
+        session = MagicMock()
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value={"choices": [{
+            "message": {"content": "Invoice 12345"}, "finish_reason": finish_reason,
+        }]})
+        session.post.return_value.__aenter__.return_value = response
+        with patch("aiohttp.ClientSession") as factory, \
+             patch.object(server_ai, "AI_API_URL", "https://api.groq.com/openai/v1/chat/completions"), \
+             patch.object(server_ai, "AI_VISION_MODEL", "qwen/qwen3.8-27b"), \
+             patch.object(server_ai, "AI_MAX_OCR_OUTPUT_TOKENS", 768):
+            factory.return_value.__aenter__.return_value = session
+            try:
+                return await server_ai.ServerAiMixin()._perform_vision_completion([])
+            finally:
+                payload = session.post.call_args.kwargs["json"]
+                self.assertEqual(payload["max_tokens"], 768)
+                self.assertEqual(payload["response_format"], {"type": "json_object"})
+                self.assertEqual(payload["reasoning_effort"], "none")
+                self.assertFalse(payload["include_reasoning"])
+
+    async def test_ocr_respects_output_budget(self):
+        self.assertEqual(await self.check_response("stop"), "Invoice 12345")
+
+    async def test_truncated_ocr_is_not_returned_as_complete(self):
+        with self.assertRaisesRegex(RuntimeError, "ocr_output_limit"):
+            await self.check_response("length")
+
+
+class ProviderErrorClassificationTests(unittest.TestCase):
+    def test_invalid_images_and_parameters_are_not_model_errors(self):
+        for detail in (
+            'HTTP 400: {"error":{"message":"invalid image format"}}',
+            'HTTP 400: unsupported parameter for this model',
+            'HTTP 422: invalid request body',
+        ):
+            with self.subTest(detail=detail):
+                self.assertEqual(server_ai._provider_error_code(RuntimeError(detail)),
+                                 "provider_invalid_request")
+
+    def test_model_errors_require_provider_evidence(self):
+        for detail in (
+            'HTTP 400: {"error":{"code":"model_decommissioned"}}',
+            'HTTP 404: {"error":{"code":"model_not_found"}}',
+            'HTTP 400: The model has been decommissioned',
+        ):
+            with self.subTest(detail=detail):
+                self.assertEqual(server_ai._provider_error_code(RuntimeError(detail)),
+                                 "provider_model_error")
+
+    def test_missing_endpoint_is_not_a_missing_model(self):
+        self.assertEqual(server_ai._provider_error_code(RuntimeError('HTTP 404: Not Found')),
+                         "provider_endpoint_error")
+
+    def test_authentication_errors_take_precedence(self):
+        self.assertEqual(server_ai._provider_error_code(RuntimeError('HTTP 403: model_not_found')),
+                         "provider_auth_error")
 
 
 class TranscriptionHallucinationTests(unittest.TestCase):

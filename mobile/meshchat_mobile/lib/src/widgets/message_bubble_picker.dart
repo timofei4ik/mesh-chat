@@ -4,6 +4,7 @@ import '../models/message_bubble_style.dart';
 import '../models/profile.dart';
 import 'collection_message_surface.dart';
 import 'mesh_sheet_surface.dart';
+import 'mesh_workspace.dart';
 
 class MessageBubblePicker extends StatefulWidget {
   const MessageBubblePicker({
@@ -12,11 +13,13 @@ class MessageBubblePicker extends StatefulWidget {
     required this.onSave,
     this.animatedBackground = true,
     this.themeId = 'default',
+    this.onSaveAppearance,
   });
   final Profile profile;
   final Future<String?> Function(String, bool) onSave;
   final bool animatedBackground;
   final String themeId;
+  final Future<String?> Function(String, bool, String)? onSaveAppearance;
 
   @override
   State<MessageBubblePicker> createState() => _MessageBubblePickerState();
@@ -25,6 +28,9 @@ class MessageBubblePicker extends StatefulWidget {
 class _MessageBubblePickerState extends State<MessageBubblePicker> {
   late String selected = widget.profile.effectiveMessageBubbleStyle;
   late bool animatedBackground = widget.animatedBackground;
+  late String themeId = widget.themeId == 'default'
+      ? 'midnight'
+      : widget.themeId;
   bool saving = false;
   String? error;
 
@@ -35,7 +41,13 @@ class _MessageBubblePickerState extends State<MessageBubblePicker> {
     });
     String? result;
     try {
-      result = await widget.onSave(selected, animatedBackground);
+      result = !MeshDesktop.isDesktop || widget.onSaveAppearance == null
+          ? await widget.onSave(selected, animatedBackground)
+          : await widget.onSaveAppearance!(
+              selected,
+              animatedBackground,
+              themeId,
+            );
     } catch (_) {
       result = 'Could not save bubble style. Try again.';
     }
@@ -57,7 +69,9 @@ class _MessageBubblePickerState extends State<MessageBubblePicker> {
       child: SafeArea(
         top: false,
         child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * 0.78,
+          height:
+              MediaQuery.sizeOf(context).height *
+              (MeshDesktop.isDesktop ? 0.90 : 0.78),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
             child: Column(
@@ -73,13 +87,75 @@ class _MessageBubblePickerState extends State<MessageBubblePicker> {
                   style: TextStyle(color: Colors.white70),
                 ),
                 const SizedBox(height: 12),
-                _BubbleConversationPreview(
+                MessageAppearancePreview(
                   profile: widget.profile,
                   style: selected,
-                  themeId: widget.themeId,
+                  themeId: MeshDesktop.isDesktop ? themeId : widget.themeId,
                   animated: animatedBackground,
                 ),
                 const SizedBox(height: 12),
+                Expanded(
+                  flex: 0,
+                  child:
+                      !MeshDesktop.isDesktop || widget.onSaveAppearance == null
+                      ? const SizedBox.shrink()
+                      : Row(
+                          children: [
+                            for (final theme in [
+                              'midnight',
+                              'cyan',
+                              'violet',
+                              'emerald',
+                            ])
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                  right: 8,
+                                  bottom: 8,
+                                ),
+                                child: Tooltip(
+                                  message: theme,
+                                  child: IconButton.filledTonal(
+                                    onPressed: saving
+                                        ? null
+                                        : () => setState(() => themeId = theme),
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: _previewAccent(theme),
+                                    ),
+                                    icon: Icon(
+                                      themeId == theme
+                                          ? Icons.check
+                                          : Icons.circle,
+                                      size: 18,
+                                      color: themeId == theme
+                                          ? Colors.white
+                                          : Colors.transparent,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            const Spacer(),
+                            IconButton(
+                              tooltip: 'Match profile collection',
+                              icon: const Icon(Icons.palette_outlined),
+                              onPressed: saving
+                                  ? null
+                                  : () => setState(() {
+                                      selected = 'auto';
+                                      final hue = HSVColor.fromColor(
+                                        Color(
+                                          widget.profile.effectiveProfileAccent,
+                                        ),
+                                      ).hue;
+                                      themeId = hue >= 245 || hue < 60
+                                          ? 'violet'
+                                          : hue < 170
+                                          ? 'emerald'
+                                          : 'cyan';
+                                    }),
+                            ),
+                          ],
+                        ),
+                ),
                 Expanded(
                   child: ListView.builder(
                     itemCount: messageBubbleStyles.length,
@@ -195,8 +271,9 @@ class _MessageBubblePickerState extends State<MessageBubblePicker> {
   );
 }
 
-class _BubbleConversationPreview extends StatelessWidget {
-  const _BubbleConversationPreview({
+class MessageAppearancePreview extends StatelessWidget {
+  const MessageAppearancePreview({
+    super.key,
     required this.profile,
     required this.style,
     required this.themeId,

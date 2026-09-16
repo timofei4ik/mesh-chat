@@ -11,6 +11,7 @@ import '../utils/media_request_encoder.dart';
 import 'file_transfer_outbox_store.dart';
 import 'mutation_outbox_store.dart';
 import 'call_signal_buffer.dart';
+import 'socket_channel_stub.dart' if (dart.library.io) 'socket_channel_io.dart';
 
 typedef PacketHandler = FutureOr<void> Function(Map<String, dynamic> packet);
 typedef StatusHandler = void Function(String status);
@@ -38,7 +39,7 @@ class MeshSocket {
     this.reconnectDelayFactory,
   }) : _outboxStore = outboxStore ?? MutationOutboxStore(),
        _fileTransferStore = fileTransferStore ?? FileTransferOutboxStore(),
-       _channelFactory = channelFactory ?? WebSocketChannel.connect,
+       _channelFactory = channelFactory ?? connectSocketChannel,
        _reconnectRandom = reconnectRandom ?? Random();
 
   static const fileTransferChunkBytes = 64 * 1024;
@@ -77,6 +78,8 @@ class MeshSocket {
   Timer? _welcomeTimer;
   bool _closed = false;
   bool _connected = false;
+  bool _connecting = false;
+  bool get isConnecting => _connecting;
   bool _serverCapabilitiesKnown = false;
   bool _supportsMutationAck = false;
   bool _supportsMutationReconcile = false;
@@ -110,6 +113,7 @@ class MeshSocket {
   DateTime? _reliableSyncRequestedAt;
 
   bool get isConnected => _connected;
+  bool get isReady => _connected && _serverCapabilitiesKnown;
   final _callSignals = CallSignalBuffer();
   bool get supportsMutationAck => _supportsMutationAck;
   bool get supportsMutationReconcile => _supportsMutationReconcile;
@@ -166,6 +170,7 @@ class MeshSocket {
     int syncCursor = 0,
   }) async {
     final generation = ++_connectionGeneration;
+    _connecting = true;
     _closed = false;
     _connected = false;
     _reconnectTimer?.cancel();
@@ -201,48 +206,31 @@ class MeshSocket {
     final previousChannel = _channel;
     _subscription = null;
     _channel = null;
-    await previousSubscription?.cancel();
-    await previousChannel?.sink.close();
+    await _releaseConnection(previousSubscription, previousChannel);
     if (!_isCurrentGeneration(generation)) return;
     _packetSerial = Future<void>.value();
 
     onStatus('Connecting...');
-    final channel = _channelFactory(Uri.parse(session.serverUrl));
-    _channel = channel;
+    late final WebSocketChannel channel;
     try {
-      await channel.ready.timeout(const Duration(seconds: 10));
+      channel = _channelFactory(Uri.parse(session.serverUrl));
     } catch (_) {
-      if (_isCurrentConnection(generation, channel)) {
-        _connected = false;
-      }
-      rethrow;
-    }
-    if (!_isCurrentConnection(generation, channel)) {
-      await channel.sink.close();
-      return;
-    }
-    _connected = true;
-
-    channel.sink.add(
-      jsonEncode(
-        _helloPacket(
+      if (_isCurrentGeneration(generation)) {
+        _connecting = false;
+        onStatus('Connection error');
+        _scheduleReconnect(
           session,
           publicKey,
           profile,
-          deviceName: deviceName,
-          reactivateDevice: reactivateDevice,
-        ),
-      ),
-    );
-    _welcomeTimer = Timer(welcomeTimeout, () {
-      if (!_isCurrentConnection(generation, channel) ||
-          _serverCapabilitiesKnown) {
-        return;
+          onPacket,
+          onStatus,
+          deviceName,
+          generation: generation,
+        );
       }
-      onStatus('Connection timeout');
-      unawaited(channel.sink.close());
-    });
-
+      rethrow;
+    }
+    _channel = channel;
     _subscription = channel.stream.listen(
       (raw) async {
         if (!_isCurrentConnection(generation, channel)) return;
@@ -437,11 +425,64 @@ class MeshSocket {
           deviceName,
           generation: generation,
           channel: channel,
-          status: 'Offline',
+          status: channel.closeCode == null
+              ? 'Offline'
+              : 'Offline (socket ${channel.closeCode})',
         );
       },
       cancelOnError: false,
     );
+    try {
+      await channel.ready.timeout(const Duration(seconds: 10));
+      if (!_isCurrentConnection(generation, channel) || !_connecting) return;
+      _connecting = false;
+      _connected = true;
+      channel.sink.add(
+        jsonEncode(
+          _helloPacket(
+            session,
+            publicKey,
+            profile,
+            deviceName: deviceName,
+            reactivateDevice: reactivateDevice,
+          ),
+        ),
+      );
+      _welcomeTimer = Timer(welcomeTimeout, () {
+        if (!_isCurrentConnection(generation, channel) ||
+            _serverCapabilitiesKnown) {
+          return;
+        }
+        _handleConnectionLoss(
+          session,
+          publicKey,
+          profile,
+          onPacket,
+          onStatus,
+          deviceName,
+          generation: generation,
+          channel: channel,
+          status: 'Connection timeout',
+        );
+        unawaited(_releaseConnection(null, channel));
+      });
+    } catch (_) {
+      if (_isCurrentConnection(generation, channel)) {
+        _handleConnectionLoss(
+          session,
+          publicKey,
+          profile,
+          onPacket,
+          onStatus,
+          deviceName,
+          generation: generation,
+          channel: channel,
+          status: 'Connection error',
+        );
+      }
+      unawaited(_releaseConnection(null, channel));
+      rethrow;
+    }
   }
 
   Future<String?> check(Session session, String publicKey) async {
@@ -1577,6 +1618,18 @@ class MeshSocket {
     }
   }
 
+  Future<void> _releaseConnection(
+    StreamSubscription<dynamic>? subscription,
+    WebSocketChannel? channel,
+  ) async {
+    try {
+      await subscription?.cancel().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    try {
+      await channel?.sink.close().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
   static Duration reconnectDelayForAttempt(int attempt, {double jitter = 1}) {
     final safeAttempt = attempt.clamp(0, 5);
     final baseSeconds = min(20, 1 << safeAttempt);
@@ -1609,6 +1662,7 @@ class MeshSocket {
     required String status,
   }) {
     if (!_isCurrentConnection(generation, channel)) return;
+    _connecting = false;
     _connected = false;
     _serverCapabilitiesKnown = false;
     _supportsMutationAck = false;
@@ -1687,6 +1741,7 @@ class MeshSocket {
   Future<void> close() async {
     _callSignals.clear();
     _closed = true;
+    _connecting = false;
     _connectionGeneration++;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -1712,8 +1767,7 @@ class MeshSocket {
     _completeMutationStatusRequests();
     _session = null;
     _packetHandler = null;
-    await subscription?.cancel();
-    await channel?.sink.close();
+    await _releaseConnection(subscription, channel);
   }
 
   void _completeMutationStatusRequests() {

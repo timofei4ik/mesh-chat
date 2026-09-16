@@ -38,11 +38,15 @@ class ApplePushService {
         if (token.token.isNotEmpty) onTokenChanged(token);
       } else if (call.method == 'notificationOpened') {
         onNotificationOpened(arguments);
+      } else if (call.method == 'registrationFailed') {
+        _initialized = false;
       }
     });
     try {
       await _channel.invokeMethod<void>('initialize', {'enableVoip': true});
     } on PlatformException {
+      _initialized = false;
+    } on MissingPluginException {
       _initialized = false;
     }
   }

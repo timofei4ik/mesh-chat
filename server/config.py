@@ -422,6 +422,7 @@ AI_API_KEY = os.environ.get(
 ).strip()
 
 _AI_DEPRECATED_TEXT_MODELS = {
+    "qwen/qwen3.6-27b": "qwen/qwen3.8-27b",
     "llama-3.1-8b-instant": "openai/gpt-oss-20b",
     "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
     "qwen/qwen3-32b": "openai/gpt-oss-120b",
@@ -443,7 +444,7 @@ AI_FALLBACK_MODELS = tuple(
         _AI_DEPRECATED_TEXT_MODELS.get(item.strip(), item.strip())
         for item in os.environ.get(
             "MESH_AI_FALLBACK_MODELS",
-            "openai/gpt-oss-120b,qwen/qwen3.6-27b",
+            "openai/gpt-oss-120b,qwen/qwen3.8-27b",
         ).split(",")
         if item.strip()
     )
@@ -452,12 +453,17 @@ AI_FALLBACK_MODELS = tuple(
 
 _configured_vision_model = os.environ.get(
     "MESH_AI_VISION_MODEL",
-    "qwen/qwen3.6-27b",
-).strip() or "qwen/qwen3.6-27b"
+    "qwen/qwen3.8-27b",
+).strip() or "qwen/qwen3.8-27b"
 AI_VISION_MODEL = {
-    "meta-llama/llama-4-scout-17b-16e-instruct": "qwen/qwen3.6-27b",
-    "qwen/qwen3-32b": "qwen/qwen3.6-27b",
+    "meta-llama/llama-4-scout-17b-16e-instruct": "qwen/qwen3.8-27b",
+    "qwen/qwen3-32b": "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b": "qwen/qwen3.8-27b",
 }.get(_configured_vision_model, _configured_vision_model)
+
+AI_MAX_OCR_OUTPUT_TOKENS = max(
+    128, min(16384, int(os.environ.get("MESH_AI_MAX_OCR_OUTPUT_TOKENS", "768"))),
+)
 
 AI_TIMEOUT_SECONDS = max(
     5,

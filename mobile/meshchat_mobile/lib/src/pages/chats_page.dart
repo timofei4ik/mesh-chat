@@ -19,14 +19,15 @@ import '../services/store_distribution.dart';
 import '../utils/mesh_page_route.dart';
 import '../widgets/in_app_message_banner.dart';
 import '../widgets/app_update_banner.dart';
-import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_settings_surface.dart';
 import '../widgets/mesh_sheet_surface.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/mesh_performance_scope.dart';
+import '../widgets/mesh_workspace.dart';
+import '../widgets/mesh_home_background.dart';
+import '../widgets/mesh_call_dock.dart';
 import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
-import '../widgets/mesh_painting.dart';
 import '../widgets/profile_avatar.dart';
 import '../widgets/report_content_dialog.dart';
 import 'bluetooth_nearby_page.dart';
@@ -1226,11 +1227,43 @@ class _ChatStackHostState extends State<_ChatStackHost>
   bool dragging = false;
   bool openingNotification = false;
   final chatVisible = ValueNotifier<bool>(false);
+  _HomeShellState? homeState;
+  VoidCallback? chatEscape;
+
+  void homeShortcut(String command, [int offset = 0]) {
+    final home = homeState;
+    if (home == null || !home.mounted) return;
+    switch (command) {
+      case 'search':
+        home.widget.parent.openGlobalSearch(home.context);
+      case 'new':
+        home.widget.parent.startNew(home.context);
+      case 'settings':
+        home.selectTab(_HomeTab.settings);
+      case 'folder':
+        home.selectTab(_HomeTab.chats);
+        home.selectFilter(_HomeFilter.values[offset]);
+      case 'stepFolder':
+        home.selectTab(_HomeTab.chats);
+        home.selectFilter(
+          _HomeFilter.values[(home.filter.index + offset) %
+              _HomeFilter.values.length],
+        );
+      case 'chat':
+        final threads = widget.controller.sortedThreads;
+        if (threads.isEmpty) return;
+        final index = activeThread == null
+            ? -1
+            : threads.indexOf(activeThread!);
+        unawaited(switchThread(threads[(index + offset) % threads.length]));
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_handleNotificationTarget);
+    transition.value = 0;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _handleNotificationTarget();
     });
@@ -1253,6 +1286,15 @@ class _ChatStackHostState extends State<_ChatStackHost>
   }
 
   Future<void> open(ChatThread thread) async {
+    if (MeshDesktop.workspaceOf(context)) {
+      if (activeThread == thread) return;
+      opening = false;
+      chatSnapshot.allowSnapshotting = false;
+      transition.value = 1;
+      setState(() => activeThread = thread);
+      chatVisible.value = true;
+      return;
+    }
     if (activeThread != null || opening) return;
     opening = true;
     chatVisible.value = true;
@@ -1271,7 +1313,13 @@ class _ChatStackHostState extends State<_ChatStackHost>
       chatSnapshot.clear();
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || activeThread != thread) return;
-      await transition.animateTo(1, curve: Curves.linear);
+      await transition.animateTo(
+        1,
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : meshPageTransitionDuration,
+        curve: MeshDesktop.isDesktop ? Curves.easeOutCubic : Curves.linear,
+      );
       if (mounted) {
         chatSnapshot.allowSnapshotting = false;
         setState(() => opening = false);
@@ -1284,8 +1332,24 @@ class _ChatStackHostState extends State<_ChatStackHost>
     }
   }
 
+  Future<void> switchThread(ChatThread thread) async {
+    if (activeThread == thread) return;
+    if (!MeshDesktop.workspaceOf(context) && activeThread != null) {
+      await close();
+    }
+    if (mounted) await open(thread);
+  }
+
   Future<void> close() async {
     if (activeThread == null) return;
+    if (MeshDesktop.workspaceOf(context) ||
+        MediaQuery.disableAnimationsOf(context)) {
+      transition.value = 0;
+      chatSnapshot.allowSnapshotting = false;
+      setState(() => activeThread = null);
+      chatVisible.value = false;
+      return;
+    }
     opening = false;
     if (!chatSnapshot.allowSnapshotting) {
       chatSnapshot.allowSnapshotting = true;
@@ -1339,10 +1403,105 @@ class _ChatStackHostState extends State<_ChatStackHost>
 
   @override
   Widget build(BuildContext context) {
+    return CallbackShortcuts(
+      bindings: MeshDesktop.isDesktop
+          ? {
+              const SingleActivator(LogicalKeyboardKey.escape): () {
+                if (activeThread != null) {
+                  chatEscape?.call();
+                } else if (homeState?.mounted == true) {
+                  homeState!.selectTab(_HomeTab.chats);
+                }
+              },
+              const SingleActivator(
+                LogicalKeyboardKey.keyK,
+                control: true,
+              ): () =>
+                  homeShortcut('search'),
+              const SingleActivator(
+                LogicalKeyboardKey.keyN,
+                control: true,
+              ): () =>
+                  homeShortcut('new'),
+              const SingleActivator(
+                LogicalKeyboardKey.comma,
+                control: true,
+              ): () =>
+                  homeShortcut('settings'),
+              const SingleActivator(
+                LogicalKeyboardKey.pageDown,
+                control: true,
+              ): () =>
+                  homeShortcut('stepFolder', 1),
+              const SingleActivator(
+                LogicalKeyboardKey.pageUp,
+                control: true,
+              ): () =>
+                  homeShortcut('stepFolder', -1),
+              const SingleActivator(
+                LogicalKeyboardKey.arrowDown,
+                alt: true,
+              ): () =>
+                  homeShortcut('chat', 1),
+              const SingleActivator(
+                LogicalKeyboardKey.arrowUp,
+                alt: true,
+              ): () =>
+                  homeShortcut('chat', -1),
+              for (var i = 0; i < 5; i++)
+                SingleActivator(
+                  [
+                    LogicalKeyboardKey.digit1,
+                    LogicalKeyboardKey.digit2,
+                    LogicalKeyboardKey.digit3,
+                    LogicalKeyboardKey.digit4,
+                    LogicalKeyboardKey.digit5,
+                  ][i],
+                  control: true,
+                ): () =>
+                    homeShortcut('folder', i),
+            }
+          : const {},
+      child: Focus(
+        autofocus: MeshDesktop.isDesktop,
+        skipTraversal: true,
+        child: buildLayout(context),
+      ),
+    );
+  }
+
+  Widget buildLayout(BuildContext context) {
     final thread = activeThread;
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
+        if (MeshDesktop.isDesktop && width >= MeshSurface.desktopBreakpoint) {
+          return MeshWorkspaceSelection(
+            threadKey: thread?.storageKey,
+            child: _ChatVisibilityScope(
+              notifier: chatVisible,
+              child: MeshWorkspace(
+                sidebar: RepaintBoundary(child: widget.home),
+                animateBackground:
+                    !widget.controller.appSettings.reducedAnimations &&
+                    !MeshPerformanceScope.lowEndDeviceModeOf(context),
+                conversation: thread == null
+                    ? null
+                    : ChatPage(
+                        key: ValueKey('desktop-chat-${thread.storageKey}'),
+                        controller: widget.controller,
+                        thread: thread,
+                        onBack: close,
+                        onEscapeHandlerChanged: (handler) {
+                          if (activeThread == thread) chatEscape = handler;
+                        },
+                        onOpenThread: (thread) =>
+                            unawaited(switchThread(thread)),
+                      ),
+              ),
+            ),
+          );
+        }
         final chatLayer = thread == null
             ? null
             : SnapshotWidget(
@@ -1356,6 +1515,10 @@ class _ChatStackHostState extends State<_ChatStackHost>
                       controller: widget.controller,
                       thread: thread,
                       onBack: close,
+                      onEscapeHandlerChanged: (handler) {
+                        if (activeThread == thread) chatEscape = handler;
+                      },
+                      onOpenThread: (thread) => unawaited(switchThread(thread)),
                       onReady: () {
                         final ready = chatReady;
                         if (ready != null && !ready.isCompleted) {
@@ -1479,6 +1642,7 @@ class _HomeShellState extends State<_HomeShell> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    context.findAncestorStateOfType<_ChatStackHostState>()?.homeState = this;
     lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
     final nextChatVisible = _ChatVisibilityScope.maybeOf(context);
     if (chatVisible != nextChatVisible) {
@@ -1500,7 +1664,7 @@ class _HomeShellState extends State<_HomeShell> {
 
   void _handleControllerChange() {
     if (!mounted) return;
-    if (chatVisible?.value == true) {
+    if (chatVisible?.value == true && !MeshDesktop.workspaceOf(context)) {
       refreshPendingWhileChatVisible = true;
       final nextCallFingerprint = identityHashCode(
         widget.controller.activeCall,
@@ -1632,7 +1796,9 @@ class _HomeShellState extends State<_HomeShell> {
       // Adjacent folders glide with the content. Distant taps jump directly so
       // intermediate labels never flash as selected. Rapid taps also jump so
       // the final choice wins without waiting for an earlier animation.
-      if (!rapidSelection && (nextIndex - previousIndex).abs() == 1) {
+      if (!MediaQuery.disableAnimationsOf(context) &&
+          !rapidSelection &&
+          (nextIndex - previousIndex).abs() == 1) {
         unawaited(
           folderPages.animateToPage(
             nextIndex,
@@ -1683,7 +1849,7 @@ class _HomeShellState extends State<_HomeShell> {
     return Stack(
       children: [
         Positioned.fill(
-          child: _HomeLiquidBackground(
+          child: MeshHomeBackground(
             enabled:
                 !widget.controller.appSettings.reducedAnimations &&
                 !MeshPerformanceScope.lowEndDeviceModeOf(context),
@@ -1700,7 +1866,8 @@ class _HomeShellState extends State<_HomeShell> {
               ),
               const AppUpdateBanner(),
               _QueuedMessagesBanner(controller: controller),
-              _HomeCallBanner(controller: controller),
+              if (chatVisible?.value != true)
+                _HomeCallBanner(controller: controller),
               if (tab == _HomeTab.chats)
                 _HomeFilterBar(
                   selected: filter,
@@ -1710,7 +1877,11 @@ class _HomeShellState extends State<_HomeShell> {
                 ),
               Expanded(
                 child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 260),
+                  duration: MediaQuery.disableAnimationsOf(context)
+                      ? Duration.zero
+                      : Duration(
+                          milliseconds: MeshDesktop.isDesktop ? 180 : 260,
+                        ),
                   switchInCurve: Curves.easeOutCubic,
                   switchOutCurve: Curves.easeOutCubic,
                   layoutBuilder: (currentChild, previousChildren) => ClipRect(
@@ -1772,11 +1943,12 @@ class _HomeShellState extends State<_HomeShell> {
             onBluetooth: () => selectTab(_HomeTab.bluetooth),
           ),
         ),
-        InAppMessageBanner(
-          controller: controller,
-          top: MediaQuery.paddingOf(context).top + 8,
-          onOpen: (thread) => widget.parent.openThread(context, thread),
-        ),
+        if (chatVisible?.value != true)
+          InAppMessageBanner(
+            controller: controller,
+            top: MediaQuery.paddingOf(context).top + 8,
+            onOpen: (thread) => widget.parent.openThread(context, thread),
+          ),
       ],
     );
   }
@@ -1825,7 +1997,9 @@ class _HomeTabBody extends StatelessWidget {
         onOpenDetails: () => parent.openBluetoothNearby(context),
       ),
       _HomeTab.chats => AnimatedSwitcher(
-        duration: const Duration(milliseconds: 240),
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : Duration(milliseconds: MeshDesktop.isDesktop ? 180 : 240),
         switchInCurve: Curves.easeOutCubic,
         switchOutCurve: Curves.easeOutCubic,
         layoutBuilder: (currentChild, previousChildren) => ClipRect(
@@ -1948,6 +2122,27 @@ class _StoriesStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final stories = controller.activeStories;
+    if (MeshDesktop.isDesktop && stories.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextButton.icon(
+                onPressed: onAdd,
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                label: const Text('My story'),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Story archive',
+              onPressed: onArchive,
+              icon: const Icon(Icons.history, size: 20),
+            ),
+          ],
+        ),
+      );
+    }
     final showHint = stories.isEmpty;
     return Padding(
       padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
@@ -2249,7 +2444,7 @@ class _StoryArchivePage extends StatelessWidget {
     return Scaffold(
       body: Stack(
         children: [
-          const Positioned.fill(child: _HomeLiquidBackground(enabled: true)),
+          const Positioned.fill(child: MeshHomeBackground(enabled: true)),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(14),
@@ -2692,7 +2887,7 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
     return Scaffold(
       body: Stack(
         children: [
-          const Positioned.fill(child: _HomeLiquidBackground(enabled: true)),
+          const Positioned.fill(child: MeshHomeBackground(enabled: true)),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(14),
@@ -3348,6 +3543,44 @@ class _HomeHeader extends StatelessWidget {
           LayoutBuilder(
             builder: (context, constraints) {
               final compact = constraints.maxWidth < 360;
+              if (MeshDesktop.isDesktop && compact) {
+                return Row(
+                  children: [
+                    const Image(
+                      image: AssetImage('assets/app_icon.png'),
+                      width: 28,
+                      height: 28,
+                    ),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'MeshChat',
+                        maxLines: 1,
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Nearby devices',
+                      onPressed: onBluetooth,
+                      icon: Icon(
+                        Icons.bluetooth,
+                        color: ble.running
+                            ? Colors.lightBlueAccent
+                            : MeshSurface.muted,
+                        size: 21,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'New chat',
+                      onPressed: onNewChat,
+                      icon: const Icon(Icons.edit_square, size: 21),
+                    ),
+                  ],
+                );
+              }
               return Row(
                 children: [
                   Expanded(child: _GlassLogoChip(compact: compact)),
@@ -3375,8 +3608,10 @@ class _HomeHeader extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           _HomeSearchField(onTap: onSearch),
-          const SizedBox(height: 10),
-          _ConnectionStatusPill(status: controller.status),
+          if (!MeshDesktop.isDesktop || !online) ...[
+            const SizedBox(height: 10),
+            _ConnectionStatusPill(status: controller.status),
+          ],
         ],
       ),
     );
@@ -3775,6 +4010,42 @@ class _HomeFilterBarState extends State<_HomeFilterBar> {
 
   @override
   Widget build(BuildContext context) {
+    if (MeshDesktop.workspaceOf(context)) {
+      const labels = ['All', 'Personal', 'Groups', 'Channels', 'Bluetooth'];
+      const icons = [
+        Icons.chat_bubble_outline,
+        Icons.person_outline,
+        Icons.group_outlined,
+        Icons.campaign_outlined,
+        Icons.bluetooth,
+      ];
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Row(
+          children: [
+            for (var i = 0; i < labels.length; i++)
+              Expanded(
+                child: IconButton(
+                  tooltip: labels[i],
+                  isSelected: _selectedIndex() == i,
+                  style: IconButton.styleFrom(
+                    backgroundColor: _selectedIndex() == i
+                        ? Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.16)
+                        : Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: Icon(icons[i], size: 21),
+                  onPressed: () => onChanged(_HomeFilter.values[i]),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
     final liquidGlass = MeshPlatformScope.liquidGlassOf(context);
     const itemWidth = 104.0;
     const itemGap = 5.0;
@@ -4012,160 +4283,187 @@ class _ChatGlassTile extends StatelessWidget {
     final typing = controller.isTyping(thread);
     final drafting = thread.draft.isNotEmpty;
     final outgoing = last != null && last.senderNode == controller.myNodeId;
-    return Padding(
+    final selected = MeshWorkspaceSelection.of(context) == thread.storageKey;
+    final tile = Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: _HomeGlassSurface(
-        accent: thread.unread > 0
-            ? Colors.lightBlueAccent
-            : thread.isChannel
-            ? const Color(0xFF9B7CFF)
-            : thread.isGroup
-            ? Colors.lightBlueAccent
-            : Colors.blueGrey,
-        radius: 24,
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
+      child: Container(
+        key: ValueKey('chat-selection-${thread.storageKey}'),
+        foregroundDecoration: BoxDecoration(
           borderRadius: BorderRadius.circular(24),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-            child: Row(
-              children: [
-                _GlassAvatar(
-                  profile: thread.profile,
-                  isGroup: thread.isGroup,
-                  isChannel: thread.isChannel,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          if (thread.pinned) ...[
-                            const Icon(
-                              Icons.push_pin,
-                              size: 14,
-                              color: Colors.white54,
-                            ),
-                            const SizedBox(width: 4),
-                          ],
-                          Expanded(
-                            child: MeshProProfileName(
-                              profile: thread.profile,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                          if (last != null)
-                            Text(
-                              ChatsPage._time(last.createdAt),
-                              style: const TextStyle(
-                                fontSize: 12,
+          border: Border.all(
+            color: selected ? Colors.lightBlueAccent : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: Colors.lightBlueAccent.withValues(alpha: 0.16),
+                    blurRadius: 12,
+                  ),
+                ]
+              : const [],
+        ),
+        child: _HomeGlassSurface(
+          accent: thread.unread > 0
+              ? Colors.lightBlueAccent
+              : thread.isChannel
+              ? const Color(0xFF9B7CFF)
+              : thread.isGroup
+              ? Colors.lightBlueAccent
+              : Colors.blueGrey,
+          radius: 24,
+          child: InkWell(
+            onTap: onTap,
+            onLongPress: onLongPress,
+            borderRadius: BorderRadius.circular(24),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Row(
+                children: [
+                  _GlassAvatar(
+                    profile: thread.profile,
+                    isGroup: thread.isGroup,
+                    isChannel: thread.isChannel,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            if (thread.pinned) ...[
+                              const Icon(
+                                Icons.push_pin,
+                                size: 14,
                                 color: Colors.white54,
                               ),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 5),
-                      Row(
-                        children: [
-                          if (!typing &&
-                              !drafting &&
-                              last != null &&
-                              ChatsPage._isImageName(last.fileName)) ...[
-                            _ThreadMediaThumbnail(
-                              message: last,
-                              dataSaver: controller.appSettings.dataSaver,
-                            ),
-                            const SizedBox(width: 7),
-                          ] else if (drafting || typing || outgoing) ...[
-                            Icon(
-                              drafting
-                                  ? Icons.edit_outlined
-                                  : typing
-                                  ? Icons.more_horiz_rounded
-                                  : last!.failed
-                                  ? Icons.error_outline_rounded
-                                  : last.pending
-                                  ? Icons.schedule_rounded
-                                  : last.read
-                                  ? Icons.done_all_rounded
-                                  : Icons.check_rounded,
-                              size: 16,
-                              color: drafting
-                                  ? const Color(0xFFF3BF72)
-                                  : typing
-                                  ? const Color(0xFF8CD5B4)
-                                  : last?.failed == true
-                                  ? Colors.redAccent
-                                  : Colors.white54,
-                            ),
-                            const SizedBox(width: 5),
-                          ],
-                          Expanded(
-                            child: Text(
-                              typing
-                                  ? controller.activityLabel(thread)
-                                  : thread.draft.isNotEmpty
-                                  ? 'Draft: ${thread.draft}'
-                                  : ChatsPage._previewText(
-                                      last,
-                                      thread.profile.publicUsername,
-                                    ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: typing
-                                    ? const Color(0xFF8CD5B4)
-                                    : drafting
-                                    ? const Color(0xFFF3BF72)
-                                    : Colors.white60,
+                              const SizedBox(width: 4),
+                            ],
+                            Expanded(
+                              child: MeshProProfileName(
+                                profile: thread.profile,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
+                            if (last != null)
+                              Text(
+                                ChatsPage._time(last.createdAt),
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white54,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            if (!typing &&
+                                !drafting &&
+                                last != null &&
+                                ChatsPage._isImageName(last.fileName)) ...[
+                              _ThreadMediaThumbnail(
+                                message: last,
+                                dataSaver: controller.appSettings.dataSaver,
+                              ),
+                              const SizedBox(width: 7),
+                            ] else if (drafting || typing || outgoing) ...[
+                              Icon(
+                                drafting
+                                    ? Icons.edit_outlined
+                                    : typing
+                                    ? Icons.more_horiz_rounded
+                                    : last!.failed
+                                    ? Icons.error_outline_rounded
+                                    : last.pending
+                                    ? Icons.schedule_rounded
+                                    : last.read
+                                    ? Icons.done_all_rounded
+                                    : Icons.check_rounded,
+                                size: 16,
+                                color: drafting
+                                    ? const Color(0xFFF3BF72)
+                                    : typing
+                                    ? const Color(0xFF8CD5B4)
+                                    : last?.failed == true
+                                    ? Colors.redAccent
+                                    : Colors.white54,
+                              ),
+                              const SizedBox(width: 5),
+                            ],
+                            Expanded(
+                              child: Text(
+                                typing
+                                    ? controller.activityLabel(thread)
+                                    : thread.draft.isNotEmpty
+                                    ? 'Draft: ${thread.draft}'
+                                    : ChatsPage._previewText(
+                                        last,
+                                        thread.profile.publicUsername,
+                                      ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: typing
+                                      ? const Color(0xFF8CD5B4)
+                                      : drafting
+                                      ? const Color(0xFFF3BF72)
+                                      : Colors.white60,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                if (thread.unread > 0)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.lightBlueAccent.withValues(alpha: 0.9),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      thread.unread > 99 ? '99+' : '${thread.unread}',
-                      style: const TextStyle(
-                        color: Color(0xFF06111B),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
+                  const SizedBox(width: 10),
+                  if (thread.unread > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
                       ),
+                      decoration: BoxDecoration(
+                        color: Colors.lightBlueAccent.withValues(alpha: 0.9),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        thread.unread > 99 ? '99+' : '${thread.unread}',
+                        style: const TextStyle(
+                          color: Color(0xFF06111B),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    )
+                  else if (thread.muted)
+                    const Icon(
+                      Icons.notifications_off_outlined,
+                      size: 18,
+                      color: Colors.white38,
+                    )
+                  else if (!thread.isGroup && thread.profile.online)
+                    const Icon(
+                      Icons.circle,
+                      size: 10,
+                      color: Colors.greenAccent,
                     ),
-                  )
-                else if (thread.muted)
-                  const Icon(
-                    Icons.notifications_off_outlined,
-                    size: 18,
-                    color: Colors.white38,
-                  )
-                else if (!thread.isGroup && thread.profile.online)
-                  const Icon(Icons.circle, size: 10, color: Colors.greenAccent),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
+    return tile;
   }
 }
 
@@ -5139,165 +5437,6 @@ class _RoundGlassButton extends StatelessWidget {
   }
 }
 
-class _HomeLiquidBackground extends StatefulWidget {
-  const _HomeLiquidBackground({required this.enabled});
-
-  final bool enabled;
-
-  @override
-  State<_HomeLiquidBackground> createState() => _HomeLiquidBackgroundState();
-}
-
-class _HomeLiquidBackgroundState extends State<_HomeLiquidBackground>
-    with WidgetsBindingObserver {
-  late final MeshFrameClock controller;
-  final double driftPhase = math.Random().nextDouble() * math.pi * 2;
-  bool appActive = true;
-  bool tickerModeActive = true;
-
-  bool get canAnimate => widget.enabled && appActive && tickerModeActive;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    controller = MeshFrameClock(
-      duration: const Duration(seconds: 240),
-      frameInterval: const Duration(milliseconds: 33),
-    );
-    if (canAnimate) controller.repeat();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final next = TickerMode.valuesOf(context).enabled;
-    if (tickerModeActive == next) return;
-    tickerModeActive = next;
-    _syncAnimationActivity();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    appActive = state == AppLifecycleState.resumed;
-    _syncAnimationActivity();
-  }
-
-  void _syncAnimationActivity() {
-    if (!canAnimate) {
-      controller.stop(canceled: false);
-    } else if (!controller.isAnimating) {
-      controller.repeat();
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant _HomeLiquidBackground oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _syncAnimationActivity();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            Color(0xFF06101D),
-            Color(0xFF071422),
-            Color(0xFF111329),
-            Color(0xFF07111E),
-          ],
-          stops: [0, 0.42, 0.72, 1],
-        ),
-      ),
-      child: RepaintBoundary(
-        child: CustomPaint(
-          isComplex: true,
-          willChange: canAnimate,
-          painter: _HomeMeshPainter(clock: controller, driftPhase: driftPhase),
-        ),
-      ),
-    );
-  }
-}
-
-class _HomeMeshPainter extends CustomPainter {
-  _HomeMeshPainter({required this.clock, required this.driftPhase})
-    : super(repaint: clock);
-
-  final MeshFrameClock clock;
-  final double driftPhase;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final phase = clock.value * math.pi * 2 + driftPhase;
-    final cyanPulse = 0.78 + 0.22 * math.sin(phase);
-    final violetPulse = 0.78 + 0.22 * math.sin(phase + math.pi * 0.75);
-    final cyanCenter = Offset(
-      size.width *
-          (0.18 + 0.045 * math.sin(phase) + 0.01 * math.sin(phase * 3)),
-      size.height * (0.14 + 0.04 * math.cos(phase * 2)),
-    );
-    final violetCenter = Offset(
-      size.width * (0.88 + 0.04 * math.cos(phase * 2 + 1)),
-      size.height * (0.30 + 0.045 * math.sin(phase + 2)),
-    );
-    drawRadialGlow(
-      canvas,
-      center: cyanCenter,
-      radius: 330 + 10 * cyanPulse,
-      color: const Color(0xFF40CFFF),
-      opacity: 0.052 * cyanPulse,
-    );
-    drawRadialGlow(
-      canvas,
-      center: violetCenter,
-      radius: 390 + 12 * violetPulse,
-      color: const Color(0xFF9A6BFF),
-      opacity: 0.050 * violetPulse,
-    );
-    drawRadialGlow(
-      canvas,
-      center: cyanCenter,
-      radius: 74 + 4 * cyanPulse,
-      color: const Color(0xFF40CFFF),
-      opacity: 0.10 * cyanPulse,
-    );
-    drawRadialGlow(
-      canvas,
-      center: violetCenter,
-      radius: 82 + 5 * violetPulse,
-      color: const Color(0xFF9A6BFF),
-      opacity: 0.10 * violetPulse,
-    );
-    drawRadialGlow(
-      canvas,
-      center: Offset(
-        size.width * (0.55 + 0.025 * math.sin(phase)),
-        size.height * 0.92,
-      ),
-      radius: 410,
-      color: const Color(0xFF348DFF),
-      opacity: 0.022,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _HomeMeshPainter oldDelegate) {
-    return oldDelegate.clock != clock || oldDelegate.driftPhase != driftPhase;
-  }
-}
-
 class _QueuedMessagesBanner extends StatelessWidget {
   const _QueuedMessagesBanner({required this.controller});
 
@@ -5369,6 +5508,44 @@ class _HomeCallBanner extends StatelessWidget {
     final incoming = call.status == CallStatus.ringing && call.incoming;
     final active = call.status == CallStatus.active;
     final ended = call.status == CallStatus.ended;
+    if (MeshDesktop.isDesktop && !ended) {
+      return MeshCallDock(
+        profile: call.peer,
+        status: incoming
+            ? 'Incoming call'
+            : active
+            ? formatDuration(controller.callElapsed)
+            : 'Connecting...',
+        muted: call.localMuted,
+        onMute: controller.toggleCallMute,
+        onCaptions:
+            controller.callCaptionsEnabled ||
+                controller.sharedCaptionInvitation ||
+                controller.callCaptionLines.isNotEmpty
+            ? () => showCallCompanion(context, controller, captions: true)
+            : null,
+        onParticipants: call.isGroup
+            ? () => showCallCompanion(context, controller, captions: false)
+            : null,
+        onEnd: incoming ? controller.declineCall : controller.endCall,
+        onAccept: incoming ? controller.acceptCall : null,
+        onExpand: () {
+          final thread = call.isGroup
+              ? controller.threads.values
+                    .where(
+                      (thread) =>
+                          thread.isGroup && thread.groupId == call.groupId,
+                    )
+                    .firstOrNull
+              : controller.threadForProfile(call.peer);
+          if (thread != null) {
+            final host = context.findAncestorStateOfType<_ChatStackHostState>();
+            if (host != null) unawaited(host.open(thread));
+          }
+          if (call.collapsed) controller.toggleCallCollapsed();
+        },
+      );
+    }
     final collapsed = call.collapsed && !ended;
     final title = ended
         ? 'Call ended'

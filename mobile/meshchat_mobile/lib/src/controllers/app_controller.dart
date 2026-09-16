@@ -132,6 +132,12 @@ String _aiFailureMessage(String code, String fallback) => switch (code) {
     'The AI model is temporarily overloaded. Please try again shortly.',
   'provider_model_error' =>
     'The configured AI model is unavailable. The server must switch models.',
+  'provider_invalid_request' =>
+    'The AI provider rejected the file or request parameters. The server logs contain the details.',
+  'provider_endpoint_error' =>
+    'The configured AI service endpoint was not found. The server configuration must be checked.',
+  'ocr_output_limit' =>
+    'There is too much text for one request. Crop the image into smaller sections and try again.',
   'provider_timeout' => 'The AI provider did not respond in time.',
   _ => fallback,
 };
@@ -516,7 +522,7 @@ class AppController extends ChangeNotifier {
   final StickerStore _stickerStore = StickerStore();
   final SyncCursorStore _syncCursorStore = SyncCursorStore();
   final SyncDeltaBuffer _syncDeltaBuffer = SyncDeltaBuffer();
-  final MeshSocket _socket = MeshSocket();
+  final MeshSocket _socket;
   final MediaCacheService _mediaCache = MediaCacheService();
   final MeshCrypto _crypto = MeshCrypto();
   final BleChatService ble = BleChatService();
@@ -600,6 +606,26 @@ class AppController extends ChangeNotifier {
   Completer<Map<String, dynamic>>? _emailVerificationCompleter;
   String _webPushVapidPublicKey = '';
   String _activeThreadKey = '';
+  bool _appForeground = true;
+  bool get appForeground => _appForeground;
+  Future<void>? _connectionTask;
+  Session? _connectionSession;
+
+  void setAppForeground(bool foreground) {
+    if (_appForeground == foreground) return;
+    _appForeground = foreground;
+    if (!foreground) {
+      clearIncomingPreview();
+    } else {
+      for (final thread in threads.values) {
+        if (_isThreadActive(thread)) {
+          markRead(thread);
+          break;
+        }
+      }
+    }
+  }
+
   Timer? _callTicker;
   Timer? _callPhaseTimeout;
   final Map<String, Timer> _callReconnectTimers = {};
@@ -677,7 +703,7 @@ class AppController extends ChangeNotifier {
       List<CallCaptionLine>.unmodifiable(_callCaptionLines);
   String get callCaptionStatus => _callCaptionStatus;
 
-  AppController() {
+  AppController({MeshSocket? socket}) : _socket = socket ?? MeshSocket() {
     _notifications.onAndroidPushToken = _handleAndroidPushToken;
     _notifications.onApplePushToken = _handleApplePushToken;
     _notifications.onActivated = _handleNotificationActivation;
@@ -1422,7 +1448,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _publishIncomingPreview(ChatThread thread, ChatMessage message) {
-    if (_isThreadActive(thread)) return;
+    if (!_appForeground || _isThreadActive(thread)) return;
     incomingPreviewThread = thread;
     incomingPreviewMessage = message;
     incomingPreviewVersion++;
@@ -1449,7 +1475,11 @@ class AppController extends ChangeNotifier {
     final key = thread == null ? '' : _threadReadKey(thread);
     if (_activeThreadKey == key) return;
     _activeThreadKey = key;
-    if (thread != null) markRead(thread);
+    if (thread != null && _appForeground) markRead(thread);
+  }
+
+  void clearActiveThread(ChatThread thread) {
+    if (_activeThreadKey == _threadReadKey(thread)) setActiveThread(null);
   }
 
   String _threadReadKey(ChatThread thread) {
@@ -1457,12 +1487,13 @@ class AppController extends ChangeNotifier {
   }
 
   bool _isThreadActive(ChatThread thread) {
-    return _activeThreadKey.isNotEmpty &&
+    return _appForeground &&
+        _activeThreadKey.isNotEmpty &&
         _activeThreadKey == _threadReadKey(thread);
   }
 
   Future<void> restoreSession() async {
-    unawaited(_notifications.initialize());
+    unawaited(_refreshNotifications());
     appSettings = await _settingsStore.load();
     await _configureSystemCallNotifications();
     unawaited(
@@ -1488,13 +1519,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> handleAppResumed() async {
-    unawaited(_notifications.initialize());
-    unawaited(_notifications.refreshAndroidPushToken());
-    unawaited(_notifications.refreshApplePushTokens());
+    setAppForeground(true);
+    unawaited(_refreshNotifications());
     if (session == null) return;
-    if (!_socket.isConnected) {
+    if (!_socket.isConnected && !_socket.isConnecting) {
       await _connect();
-    } else {
+    } else if (_socket.isReady) {
       unawaited(refreshMeshProSubscription());
       final lastSync = lastSyncAt;
       if (!_accountSyncInProgress &&
@@ -1508,7 +1538,21 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> handleAppPaused() async {
+    setAppForeground(false);
     if (ble.running) await ble.setAppForeground(false);
+  }
+
+  Future<void> _refreshNotifications() async {
+    try {
+      await _notifications.initialize();
+      await _notifications.refreshAndroidPushToken();
+      await _notifications.refreshApplePushTokens();
+    } catch (error) {
+      addDiagnostic(
+        'notifications',
+        'Notification setup failed (${error.runtimeType})',
+      );
+    }
   }
 
   Future<MeshProSubscription> refreshMeshProSubscription() async {
@@ -1616,6 +1660,45 @@ class AppController extends ChangeNotifier {
     return _hasMeshProFeature(featureId);
   }
 
+  void _requireAiAccount(
+    Session current,
+    Exception Function(String, String) failure,
+  ) {
+    if (!current.isSameAccountAs(session) ||
+        current.nodeId != session?.nodeId) {
+      throw failure('session_changed', 'Account changed');
+    }
+  }
+
+  Future<void> _prepareAiConnection(
+    Session current,
+    Exception Function(String, String) failure,
+  ) async {
+    _requireAiAccount(current, failure);
+    if (!_socket.isConnected && !_socket.isConnecting) {
+      unawaited(
+        _connect().catchError((Object error) {
+          addDiagnostic(
+            'ai',
+            'Connection preparation failed (${error.runtimeType})',
+          );
+        }),
+      );
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    while (!_socket.isReady) {
+      _requireAiAccount(current, failure);
+      if (!DateTime.now().isBefore(deadline)) {
+        throw failure(
+          'offline',
+          'Could not reconnect to the server. Please try again when connected.',
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    _requireAiAccount(current, failure);
+  }
+
   Future<AiRewriteResult> rewriteTextWithAi({
     required String text,
     required String style,
@@ -1628,18 +1711,14 @@ class AppController extends ChangeNotifier {
     if (normalizedText.isEmpty) {
       throw const AiRewriteException('empty_text', 'Write a message first');
     }
-    if (!_socket.isConnected) {
-      throw const AiRewriteException(
-        'offline',
-        'Connect to the server to use AI tools',
-      );
-    }
+    await _prepareAiConnection(current, AiRewriteException.new);
     if (!await _refreshMeshProFeature('ai_text_rewrite')) {
       throw const AiRewriteException(
         'meshpro_required',
         'AI writing tools require MeshPro',
       );
     }
+    _requireAiAccount(current, AiRewriteException.new);
 
     final requestId = const Uuid().v4();
     final completer = Completer<AiRewriteResult>();
@@ -1726,17 +1805,13 @@ class AppController extends ChangeNotifier {
         'This message has no text to translate',
       );
     }
-    if (!_socket.isConnected) {
-      throw const AiTranslationException(
-        'offline',
-        'Connect to the server to translate messages',
-      );
-    }
+    await _prepareAiConnection(current, AiTranslationException.new);
     // The server is authoritative for entitlement and quota checks. A stale
     // local subscription snapshot must not prevent an otherwise valid request.
     if (liveCallId.isEmpty) {
       await _refreshMeshProFeature('ai_message_translation');
     }
+    _requireAiAccount(current, AiTranslationException.new);
 
     final requestId = const Uuid().v4();
     final completer = Completer<AiTranslationResult>();
@@ -1808,18 +1883,14 @@ class AppController extends ChangeNotifier {
     if (current == null) {
       throw const AiSummaryException('unauthorized', 'Sign in first');
     }
-    if (!_socket.isConnected) {
-      throw const AiSummaryException(
-        'offline',
-        'Connect to the server to create a summary',
-      );
-    }
+    await _prepareAiConnection(current, AiSummaryException.new);
     if (!await _refreshMeshProFeature('ai_chat_summary')) {
       throw const AiSummaryException(
         'meshpro_required',
         'Unread summaries require MeshPro',
       );
     }
+    _requireAiAccount(current, AiSummaryException.new);
 
     final payload = <Map<String, String>>[];
     for (final message in messages.where((item) => !item.deleted).take(80)) {
@@ -1902,18 +1973,14 @@ class AppController extends ChangeNotifier {
         'Add call notes or a transcript first',
       );
     }
-    if (!_socket.isConnected) {
-      throw const AiSummaryException(
-        'offline',
-        'Connect to the server to create a call summary',
-      );
-    }
+    await _prepareAiConnection(current, AiSummaryException.new);
     if (!await _refreshMeshProFeature('ai_call_summary')) {
       throw const AiSummaryException(
         'meshpro_required',
         'AI call summaries require MeshPro',
       );
     }
+    _requireAiAccount(current, AiSummaryException.new);
     final requestId = const Uuid().v4();
     final completer = Completer<AiSummaryResult>();
     _aiSummaryCompleters[requestId] = completer;
@@ -1954,21 +2021,14 @@ class AppController extends ChangeNotifier {
     if (current == null) {
       throw const AiTranscriptionException('unauthorized', 'Sign in first');
     }
-    if (!_socket.isConnected) {
-      throw const AiTranscriptionException(
-        'offline',
-        'Connect to the server to transcribe audio',
-      );
-    }
+    await _prepareAiConnection(current, AiTranscriptionException.new);
     if (!await _refreshMeshProFeature('ai_voice_transcription')) {
       throw const AiTranscriptionException(
         'meshpro_required',
         'Voice transcription requires MeshPro',
       );
     }
-    if (!identical(current, session)) {
-      throw const AiTranscriptionException('unauthorized', 'Account changed');
-    }
+    _requireAiAccount(current, AiTranscriptionException.new);
     if (message.fileData.isEmpty) {
       throw const AiTranscriptionException(
         'empty_audio',
@@ -2031,21 +2091,14 @@ class AppController extends ChangeNotifier {
     if (current == null) {
       throw const AiOcrException('unauthorized', 'Sign in first');
     }
-    if (!_socket.isConnected) {
-      throw const AiOcrException(
-        'offline',
-        'Connect to the server to extract text',
-      );
-    }
+    await _prepareAiConnection(current, AiOcrException.new);
     if (!await _refreshMeshProFeature('ai_image_ocr')) {
       throw const AiOcrException(
         'meshpro_required',
         'Photo and document OCR requires MeshPro',
       );
     }
-    if (!identical(current, session)) {
-      throw const AiOcrException('unauthorized', 'Account changed');
-    }
+    _requireAiAccount(current, AiOcrException.new);
     if (message.fileData.isEmpty) {
       throw const AiOcrException(
         'empty_image',
@@ -2105,18 +2158,14 @@ class AppController extends ChangeNotifier {
     if (current == null) {
       throw const AiSmartRepliesException('unauthorized', 'Sign in first');
     }
-    if (!_socket.isConnected) {
-      throw const AiSmartRepliesException(
-        'offline',
-        'Connect to the server to generate replies',
-      );
-    }
+    await _prepareAiConnection(current, AiSmartRepliesException.new);
     if (!await _refreshMeshProFeature('ai_smart_replies')) {
       throw const AiSmartRepliesException(
         'meshpro_required',
         'Smart replies require MeshPro',
       );
     }
+    _requireAiAccount(current, AiSmartRepliesException.new);
 
     final payload = <Map<String, dynamic>>[];
     for (final message in messages.where((item) => !item.deleted).take(20)) {
@@ -2187,9 +2236,10 @@ class AppController extends ChangeNotifier {
   }) async {
     final current = session;
     final feature = aiContextFeatures[payload['mode']];
-    if (current == null || !_socket.isConnected) {
-      throw const AiSummaryException('offline', 'Connect to the server first');
+    if (current == null) {
+      throw const AiSummaryException('unauthorized', 'Sign in first');
     }
+    await _prepareAiConnection(current, AiSummaryException.new);
     if (payload['mode'] == 'compose' && !_socket.supportsAiCompose) {
       throw const AiSummaryException(
         'server_upgrade_required',
@@ -2202,9 +2252,7 @@ class AppController extends ChangeNotifier {
         'This action requires MeshPro',
       );
     }
-    if (!current.isSameAccountAs(session)) {
-      throw const AiSummaryException('session_changed', 'Account changed');
-    }
+    _requireAiAccount(current, AiSummaryException.new);
     final id = const Uuid().v4();
     final completer = Completer<AiSummaryResult>();
     completer.future.ignore();
@@ -2268,18 +2316,14 @@ class AppController extends ChangeNotifier {
         'Ask a question about this conversation',
       );
     }
-    if (!_socket.isConnected) {
-      throw const AiPersonMemoryException(
-        'offline',
-        'Connect to the server to search chat memory',
-      );
-    }
+    await _prepareAiConnection(current, AiPersonMemoryException.new);
     if (!await _refreshMeshProFeature('ai_person_memory')) {
       throw const AiPersonMemoryException(
         'meshpro_required',
         'Personal AI memory requires MeshPro',
       );
     }
+    _requireAiAccount(current, AiPersonMemoryException.new);
 
     final messages = thread.messages
         .where((message) => !message.deleted)
@@ -3127,6 +3171,30 @@ class AppController extends ChangeNotifier {
   Future<void> _connect({bool reactivateDevice = false}) async {
     final current = session;
     if (current == null) return;
+    final pending = _connectionTask;
+    if (!reactivateDevice &&
+        pending != null &&
+        current.isSameAccountAs(_connectionSession)) {
+      await pending;
+      return;
+    }
+    final task = _connectSession(current, reactivateDevice: reactivateDevice);
+    _connectionTask = task;
+    _connectionSession = current;
+    try {
+      await task;
+    } finally {
+      if (identical(_connectionTask, task)) {
+        _connectionTask = null;
+        _connectionSession = null;
+      }
+    }
+  }
+
+  Future<void> _connectSession(
+    Session current, {
+    required bool reactivateDevice,
+  }) async {
     await _initializeCryptoForSession(current);
     final accountCursor = await _syncCursorStore.load(current);
     final cacheCursor = await _cache.loadSyncCursor(current);
@@ -3152,21 +3220,32 @@ class AppController extends ChangeNotifier {
     deliveryTraces
       ..clear()
       ..addAll(await _deliveryTraceStore.load(current));
-    await _socket.connect(
-      session: current,
-      publicKey: _crypto.publicKey,
-      profile: _publicOwnProfile,
-      deviceName: _defaultDeviceName,
-      reactivateDevice: reactivateDevice,
-      syncCursor: syncCursor,
-      onPacket: _handlePacket,
-      onDeliveryTrace: _recordDeliveryTrace,
-      onStatus: (value) {
-        status = value;
-        addDiagnostic('server', value);
-        notifyListeners();
-      },
-    );
+    if (!current.isSameAccountAs(session)) return;
+    try {
+      await _socket.connect(
+        session: current,
+        publicKey: _crypto.publicKey,
+        profile: _publicOwnProfile,
+        deviceName: _defaultDeviceName,
+        reactivateDevice: reactivateDevice,
+        syncCursor: syncCursor,
+        onPacket: _handlePacket,
+        onDeliveryTrace: _recordDeliveryTrace,
+        onStatus: (value) {
+          if (!current.isSameAccountAs(session)) return;
+          status = value;
+          addDiagnostic('server', value);
+          notifyListeners();
+        },
+      );
+    } catch (error) {
+      if (current.isSameAccountAs(session)) {
+        addDiagnostic(
+          'server',
+          'Transport setup failed; automatic retry scheduled (${error.runtimeType})',
+        );
+      }
+    }
   }
 
   Future<void> _handlePacket(
@@ -4159,6 +4238,7 @@ class AppController extends ChangeNotifier {
         const Duration(seconds: 15),
         onTimeout: () => 'The server did not confirm the appearance',
       );
+      if (!current.isSameAccountAs(session)) return 'Account changed';
       if (result != null) return result;
 
       final existing = ownProfile;
@@ -12247,18 +12327,25 @@ class AppController extends ChangeNotifier {
     String groupId = '',
   }) async {
     if (!appSettings.notificationsEnabled) return;
-    await _notifications.showMessage(
-      title: title,
-      body: appSettings.notificationPreview ? body : 'New message',
-      sound: appSettings.notificationSound,
-      vibration: appSettings.notificationVibration,
-      notificationKey: notificationKey,
-      target: NotificationTarget(
-        packetType: groupId.isEmpty ? 'chat_message' : 'group_message',
-        sourceNode: sourceNode,
-        groupId: groupId,
-      ),
-    );
+    try {
+      await _notifications.showMessage(
+        title: title,
+        body: appSettings.notificationPreview ? body : 'New message',
+        sound: appSettings.notificationSound,
+        vibration: appSettings.notificationVibration,
+        notificationKey: notificationKey,
+        target: NotificationTarget(
+          packetType: groupId.isEmpty ? 'chat_message' : 'group_message',
+          sourceNode: sourceNode,
+          groupId: groupId,
+        ),
+      );
+    } catch (error) {
+      addDiagnostic(
+        'notifications',
+        'Could not display message notification (${error.runtimeType})',
+      );
+    }
   }
 
   Future<void> _showCallNotification({

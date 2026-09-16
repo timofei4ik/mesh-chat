@@ -58,10 +58,13 @@ class NotificationTarget {
 }
 
 class NotificationService {
+  NotificationService({FlutterLocalNotificationsPlugin? plugin})
+    : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
+
   final systemCalls = AndroidCallUi();
-  final FlutterLocalNotificationsPlugin _plugin =
-      FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _plugin;
   bool _initialized = false;
+  Future<void>? _initializing;
   final AndroidPushService _androidPush = AndroidPushService();
   final ApplePushService _applePush = ApplePushService();
   ValueChanged<String>? onAndroidPushToken;
@@ -86,6 +89,18 @@ class NotificationService {
 
   Future<void> initialize() async {
     if (_initialized) return;
+    final pending = _initializing;
+    if (pending != null) return pending;
+    final task = _initialize();
+    _initializing = task;
+    try {
+      await task;
+    } finally {
+      if (identical(_initializing, task)) _initializing = null;
+    }
+  }
+
+  Future<void> _initialize() async {
     await systemCalls.initialize();
     if (kIsWeb) {
       _initialized = true;
@@ -110,10 +125,13 @@ class NotificationService {
       windows: windows,
     );
 
-    await _plugin.initialize(
+    final initialized = await _plugin.initialize(
       settings: settings,
       onDidReceiveNotificationResponse: _handleNotificationResponse,
     );
+    if (initialized == false) {
+      throw StateError('System notification initialization failed');
+    }
     _initialized = true;
     if (!await AndroidCallUi.isBackgroundEngine()) await requestPermissions();
     await refreshAndroidPushToken();

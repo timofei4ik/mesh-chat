@@ -10,6 +10,8 @@ import '../widgets/message_send_effect.dart';
 import '../widgets/mesh_studio_image.dart';
 import '../widgets/profile_avatar.dart';
 import '../widgets/profile_effect_background.dart';
+import '../widgets/message_bubble_picker.dart';
+import '../widgets/mesh_workspace.dart';
 
 class MeshStudioPage extends StatefulWidget {
   const MeshStudioPage({super.key, required this.controller});
@@ -30,6 +32,7 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
   late String selectedCollectionId;
 
   bool saving = false;
+  bool matchCollection = false;
   int messagePreviewRevision = 0;
 
   bool get studioAvailable =>
@@ -52,6 +55,9 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
       avatarDecoration: avatarDecoration,
       profileGlow: profileGlow,
       profileAccent: profileAccent,
+      messageBubbleStyle: matchCollection
+          ? 'auto'
+          : widget.controller.ownProfile.messageBubbleStyle,
     );
   }
 
@@ -91,6 +97,7 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
       profileAccent = preset.accent;
       profileGlow = true;
       selectedCollectionId = preset.collection;
+      matchCollection = MeshDesktop.isDesktop;
       messagePreviewRevision++;
     });
   }
@@ -126,7 +133,23 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
         ).showSnackBar(SnackBar(content: Text(error)));
         return;
       }
-      Navigator.pop(context, true);
+      if (matchCollection) {
+        final styleError = await widget.controller.updateMessageBubbleStyle(
+          'auto',
+        );
+        if (styleError != null) {
+          throw StateError(
+            'Profile saved; message style was not applied: $styleError',
+          );
+        }
+        if (!mounted) return;
+        await widget.controller.updateAppSettings(
+          widget.controller.appSettings.copyWith(
+            accentColor: Color(profileAccent),
+          ),
+        );
+      }
+      if (mounted) Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -173,30 +196,45 @@ class _MeshStudioPageState extends State<MeshStudioPage> {
                     messagePreviewRevision: messagePreviewRevision,
                     onReplay: () => setState(() => messagePreviewRevision++),
                   );
-                  final controls = _StudioControls(
-                    profile: previewProfile,
-                    selectedPresetId: selectedPresetId,
-                    profileBackground: profileBackground,
-                    profileEffect: profileEffect,
-                    profileBlinkShape: profileBlinkShape,
-                    avatarDecoration: avatarDecoration,
-                    profileGlow: profileGlow,
-                    profileAccent: profileAccent,
-                    selectedCollectionId: selectedCollectionId,
-                    onPreset: applyPreset,
-                    onCollection: (value) =>
-                        setState(() => selectedCollectionId = value),
-                    onBackground: (value) =>
-                        setState(() => profileBackground = value),
-                    onEffect: (value) => setState(() => profileEffect = value),
-                    onBlinkShape: (value) =>
-                        setState(() => profileBlinkShape = value),
-                    onDecoration: (value) => setState(() {
-                      avatarDecoration = value;
-                      messagePreviewRevision++;
-                    }),
-                    onGlow: (value) => setState(() => profileGlow = value),
-                    onAccent: (value) => setState(() => profileAccent = value),
+                  final controls = Column(
+                    children: [
+                      if (MeshDesktop.isDesktop)
+                        SwitchListTile.adaptive(
+                          title: const Text('Match messages and app accent'),
+                          value: matchCollection,
+                          onChanged: saving
+                              ? null
+                              : (value) =>
+                                    setState(() => matchCollection = value),
+                        ),
+                      _StudioControls(
+                        profile: previewProfile,
+                        selectedPresetId: selectedPresetId,
+                        profileBackground: profileBackground,
+                        profileEffect: profileEffect,
+                        profileBlinkShape: profileBlinkShape,
+                        avatarDecoration: avatarDecoration,
+                        profileGlow: profileGlow,
+                        profileAccent: profileAccent,
+                        selectedCollectionId: selectedCollectionId,
+                        onPreset: applyPreset,
+                        onCollection: (value) =>
+                            setState(() => selectedCollectionId = value),
+                        onBackground: (value) =>
+                            setState(() => profileBackground = value),
+                        onEffect: (value) =>
+                            setState(() => profileEffect = value),
+                        onBlinkShape: (value) =>
+                            setState(() => profileBlinkShape = value),
+                        onDecoration: (value) => setState(() {
+                          avatarDecoration = value;
+                          messagePreviewRevision++;
+                        }),
+                        onGlow: (value) => setState(() => profileGlow = value),
+                        onAccent: (value) =>
+                            setState(() => profileAccent = value),
+                      ),
+                    ],
                   );
                   return SingleChildScrollView(
                     padding: EdgeInsets.fromLTRB(
@@ -331,6 +369,15 @@ class _StudioPreview extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
+        if (MeshDesktop.isDesktop) ...[
+          MessageAppearancePreview(
+            profile: profile,
+            style: profile.effectiveMessageBubbleStyle,
+            themeId: 'midnight',
+            animated: false,
+          ),
+          const SizedBox(height: 14),
+        ],
         _StudioPanel(
           title: 'Message effect',
           subtitle: messageEffect == 'none'

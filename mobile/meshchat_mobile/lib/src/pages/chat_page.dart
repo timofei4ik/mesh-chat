@@ -47,6 +47,10 @@ import '../widgets/chat_timeline_date.dart';
 import '../widgets/mesh_frame_clock.dart';
 import '../widgets/mesh_liquid_glass.dart';
 import '../widgets/mesh_performance_scope.dart';
+import '../widgets/mesh_workspace.dart';
+import '../widgets/mesh_message_search.dart';
+import '../widgets/mesh_attachment_tile.dart';
+import '../widgets/mesh_call_dock.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
 import '../widgets/message_send_effect.dart';
@@ -89,6 +93,8 @@ class ChatPage extends StatefulWidget {
     this.channelPost,
     this.onBack,
     this.onReady,
+    this.onOpenThread,
+    this.onEscapeHandlerChanged,
   });
 
   final AppController controller;
@@ -96,6 +102,8 @@ class ChatPage extends StatefulWidget {
   final ChatMessage? channelPost;
   final Future<void> Function()? onBack;
   final VoidCallback? onReady;
+  final ValueChanged<ChatThread>? onOpenThread;
+  final ValueChanged<VoidCallback?>? onEscapeHandlerChanged;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -104,6 +112,38 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final input = TextEditingController();
+  WidgetBuilder? detailBuilder;
+  Completer<Object?>? detailResult;
+  int detailRevision = 0;
+
+  Future<T?> openDetail<T>(WidgetBuilder builder) async {
+    if (!MeshDesktop.isDesktop || MediaQuery.sizeOf(context).width < 1240) {
+      return Navigator.push<T>(
+        context,
+        meshPageRoute<T>(builder: builder, preserveLiquidGlass: true),
+      );
+    }
+    detailResult?.complete(null);
+    final result = Completer<Object?>();
+    setState(() {
+      detailResult = result;
+      detailBuilder = builder;
+      detailRevision++;
+    });
+    final value = await result.future;
+    return value is T ? value : null;
+  }
+
+  void closeDetail([Object? result]) {
+    final pending = detailResult;
+    detailResult = null;
+    if (pending != null && !pending.isCompleted) pending.complete(result);
+    if (mounted) {
+      setState(() => detailBuilder = null);
+      inputFocus.requestFocus();
+    }
+  }
+
   final inputFocus = FocusNode();
   final scroll = ScrollController();
   final composerInputKey = GlobalKey();
@@ -243,6 +283,7 @@ class _ChatPageState extends State<ChatPage>
   @override
   void initState() {
     super.initState();
+    widget.onEscapeHandlerChanged?.call(leaveChat);
     messageScrollSpring = AnimationController.unbounded(vsync: this)
       ..addListener(() {
         final current = messageScrollMotion.value;
@@ -305,7 +346,6 @@ class _ChatPageState extends State<ChatPage>
     callAlertFingerprint = _computeCallAlertFingerprint();
     widget.controller.addListener(syncMessageList);
     widget.controller.addListener(syncChatChrome);
-    widget.controller.markRead(widget.thread);
     widget.controller.setActiveThread(widget.thread);
     syncRingback();
   }
@@ -328,6 +368,7 @@ class _ChatPageState extends State<ChatPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (detailResult?.isCompleted == false) detailResult!.complete(null);
     amplitudeSubscription?.cancel();
     voiceRecordingTicker?.cancel();
     initialScrollSettleTimer?.cancel();
@@ -338,7 +379,7 @@ class _ChatPageState extends State<ChatPage>
     widget.controller.removeListener(syncMessageList);
     unawaited(incomingCallAlert.dispose());
     unawaited(disposeRingback());
-    widget.controller.setActiveThread(null);
+    widget.controller.clearActiveThread(widget.thread);
     inputFocus.dispose();
     input.dispose();
     scroll.removeListener(handleScroll);
@@ -2330,9 +2371,8 @@ class _ChatPageState extends State<ChatPage>
 
     double? previousExtent;
     var stableFrames = 0;
-    // The chat is still positioned outside the viewport while this runs. Wait
-    // for the real list geometry instead of guessing with a timer, then freeze
-    // the correctly positioned frame for the route animation.
+    // Keep the timeline unpainted until its lazy list has settled at the end.
+    // Desktop panes do not have the mobile route's off-screen preparation.
     for (var frame = 0; frame < 8 && stableFrames < 2; frame++) {
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || initialScrollInterrupted || !scroll.hasClients) return;
@@ -2354,7 +2394,7 @@ class _ChatPageState extends State<ChatPage>
 
   void reportReady() {
     if (!mounted || didReportReady) return;
-    didReportReady = true;
+    setState(() => didReportReady = true);
     widget.onReady?.call();
   }
 
@@ -2544,10 +2584,7 @@ class _ChatPageState extends State<ChatPage>
       onMedia: openMediaList,
       onAppearance: () => unawaited(showChatAppearance()),
     );
-    await Navigator.push<void>(
-      context,
-      meshPageRoute<void>(builder: buildProfile, preserveLiquidGlass: true),
-    );
+    await openDetail<void>(buildProfile);
   }
 
   Future<void> startCallFromProfile(BuildContext profileContext) async {
@@ -2562,11 +2599,9 @@ class _ChatPageState extends State<ChatPage>
   }
 
   void openGroupInfo() {
-    Navigator.push<void>(
-      context,
-      meshPageRoute<void>(
-        preserveLiquidGlass: true,
-        builder: (_) =>
+    unawaited(
+      openDetail<void>(
+        (_) =>
             GroupInfoPage(controller: widget.controller, thread: widget.thread),
       ),
     );
@@ -2589,6 +2624,16 @@ class _ChatPageState extends State<ChatPage>
         profile: widget.controller.ownProfile,
         animatedBackground: widget.thread.animatedBackground,
         themeId: widget.thread.themeId,
+        onSaveAppearance: (style, animated, theme) async {
+          final error = await widget.controller.updateMessageBubbleStyle(style);
+          if (error != null) return error;
+          return widget.controller.updateChatAppearance(
+            widget.thread,
+            themeId: theme,
+            bubbleStyle: widget.thread.bubbleStyle,
+            animatedBackground: animated,
+          );
+        },
         onSave: (style, animated) async {
           final error = await widget.controller.updateMessageBubbleStyle(style);
           if (error != null || animated == widget.thread.animatedBackground) {
@@ -3948,6 +3993,16 @@ class _ChatPageState extends State<ChatPage>
   }
 
   Future<void> showSearchDialog() async {
+    if (MeshDesktop.isDesktop && MediaQuery.sizeOf(context).width >= 1240) {
+      await openDetail<void>(
+        (_) => MeshMessageSearch(
+          search: (query) =>
+              widget.controller.searchMessages(widget.thread, query),
+          onSelect: jumpToMessage,
+        ),
+      );
+      return;
+    }
     final searchInput = TextEditingController();
     await showDialog<void>(
       context: context,
@@ -4080,11 +4135,8 @@ class _ChatPageState extends State<ChatPage>
   }
 
   Future<void> openMediaList() async {
-    final messageId = await Navigator.push<String>(
-      context,
-      meshPageRoute<String>(
-        builder: (_) => ChatMediaPage(thread: widget.thread),
-      ),
+    final messageId = await openDetail<String>(
+      (_) => ChatMediaPage(thread: widget.thread),
     );
     if (!mounted || messageId == null || messageId.isEmpty) return;
     jumpToMessageById(messageId);
@@ -4144,6 +4196,225 @@ class _ChatPageState extends State<ChatPage>
 
   @override
   Widget build(BuildContext context) {
+    return CallbackShortcuts(
+      bindings: MeshDesktop.isDesktop
+          ? {
+              const SingleActivator(LogicalKeyboardKey.escape): leaveChat,
+              const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
+                  leaveChat,
+              const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+                  showSearchDialog,
+              const SingleActivator(
+                LogicalKeyboardKey.keyL,
+                control: true,
+              ): () =>
+                  inputFocus.requestFocus(),
+              const SingleActivator(
+                LogicalKeyboardKey.keyM,
+                control: true,
+                shift: true,
+              ): openMediaList,
+              const SingleActivator(
+                LogicalKeyboardKey.keyP,
+                control: true,
+                shift: true,
+              ): widget.thread.isGroup
+                  ? openGroupInfo
+                  : openProfile,
+            }
+          : const {},
+      child: Focus(
+        autofocus: MeshDesktop.isDesktop,
+        skipTraversal: true,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 880;
+            final revision = detailRevision;
+            final pane = detailBuilder == null
+                ? null
+                : MeshDetailPane(
+                    key: ValueKey('detail-$detailRevision'),
+                    builder: detailBuilder!,
+                    onClose: (result) {
+                      if (revision == detailRevision) closeDetail(result);
+                    },
+                  );
+            final animatedPane = AnimatedSwitcher(
+              duration:
+                  (MediaQuery.disableAnimationsOf(context) ||
+                      widget.controller.appSettings.reducedAnimations)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 240),
+              reverseDuration:
+                  (MediaQuery.disableAnimationsOf(context) ||
+                      widget.controller.appSettings.reducedAnimations)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              layoutBuilder: (current, previous) => Stack(
+                alignment: Alignment.centerRight,
+                children: [
+                  for (final child in previous)
+                    IgnorePointer(child: ExcludeFocus(child: child)),
+                  ?current,
+                ],
+              ),
+              transitionBuilder: (child, animation) => SizeTransition(
+                sizeFactor: animation,
+                axis: Axis.horizontal,
+                alignment: Alignment.centerRight,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
+              child:
+                  pane ?? const SizedBox.shrink(key: ValueKey('closed-detail')),
+            );
+            return Row(
+              children: [
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      buildConversation(context),
+                      if (!wide)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: animatedPane,
+                        ),
+                    ],
+                  ),
+                ),
+                if (wide) animatedPane,
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget buildDesktopHeader() => ValueListenableBuilder<int>(
+    valueListenable: chatChromeRefresh,
+    builder: (context, _, _) {
+      final profile = widget.thread.profile;
+      final active = widget.controller.isTyping(widget.thread);
+      final subtitle = active
+          ? widget.controller.activityLabel(widget.thread)
+          : widget.thread.isGroup
+          ? '${widget.thread.members.length} members'
+          : widget.controller.isSavedMessagesProfile(profile)
+          ? 'private notes'
+          : profile.online
+          ? 'online'
+          : 'offline';
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: MeshLiquidGlass(
+          forceFlutterSurface: true,
+          radius: 23,
+          accent: const Color(0xFF72D7FF),
+          fallbackBuilder: (context, child) => DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A2533).withValues(alpha: 0.94),
+              borderRadius: BorderRadius.circular(23),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+            ),
+            child: child,
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Close chat',
+                  icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+                  onPressed: leaveChat,
+                ),
+                Expanded(
+                  child: InkWell(
+                    key: const ValueKey('desktop-chat-identity'),
+                    borderRadius: BorderRadius.circular(23),
+                    hoverColor: Colors.white.withValues(alpha: 0.14),
+                    onTap: widget.thread.isGroup ? openGroupInfo : openProfile,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Row(
+                        children: [
+                          ProfileAvatar(profile: profile, radius: 18),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  profile.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                Text(
+                                  subtitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: active || profile.online
+                                        ? Colors.greenAccent
+                                        : Colors.white54,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Search messages',
+                  onPressed: showSearchDialog,
+                  icon: const Icon(Icons.search, size: 21),
+                ),
+                IconButton(
+                  tooltip: 'Shared content',
+                  onPressed: openMediaList,
+                  icon: const Icon(Icons.perm_media_outlined, size: 21),
+                ),
+                IconButton(
+                  tooltip: 'Chat actions',
+                  onPressed: widget.thread.isGroup
+                      ? showGroupActions
+                      : showDirectActions,
+                  icon: const Icon(Icons.more_vert),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+
+  void leaveChat() {
+    if (detailBuilder != null) {
+      closeDetail();
+    } else if (selectingMessages) {
+      clearMessageSelection();
+    } else if (replyTo != null) {
+      setState(() => replyTo = null);
+    } else if (widget.onBack != null) {
+      unawaited(widget.onBack!());
+    } else {
+      Navigator.maybePop(context);
+    }
+  }
+
+  Widget buildConversation(BuildContext context) {
     final headerInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
     return PopScope(
       canPop: widget.onBack == null && !selectingMessages,
@@ -4234,186 +4505,204 @@ class _ChatPageState extends State<ChatPage>
                         }
                       }
                       scheduleInitialScrollToBottom(messages.length);
-                      return ChatTimelineDate(
-                        label: dateLabel,
-                        child: NotificationListener<ScrollNotification>(
-                          onNotification: handleInitialUserScroll,
-                          child: ListView.builder(
-                            controller: scroll,
-                            scrollCacheExtent:
-                                MeshPerformanceScope.lowEndDeviceModeOf(context)
-                                ? const ScrollCacheExtent.pixels(180)
-                                : null,
-                            keyboardDismissBehavior:
-                                ScrollViewKeyboardDismissBehavior.onDrag,
-                            padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
-                            itemCount: messages.length + (typing ? 1 : 0),
-                            itemBuilder: (context, index) {
-                              if (index == messages.length) {
-                                return _TypingBubble(
-                                  label: widget.controller.activityLabel(
-                                    widget.thread,
-                                  ),
-                                );
-                              }
-                              final message = messages[index];
-                              if (isCoveredByAlbum(messages, index)) {
-                                return const SizedBox.shrink();
-                              }
-                              final album = albumFrom(messages, index);
-                              final joinedPrevious =
-                                  index > 0 &&
-                                  !isCoveredByAlbum(messages, index - 1) &&
-                                  messagesShareBubbleGroup(
-                                    messages[index - 1],
-                                    message,
-                                  );
-                              final joinedNext =
-                                  index + 1 < messages.length &&
-                                  !(index + 2 < messages.length &&
-                                      sameAlbumPhoto(
-                                        messages[index + 1],
-                                        messages[index + 2],
-                                      )) &&
-                                  messagesShareBubbleGroup(
-                                    message,
-                                    messages[index + 1],
-                                  );
-                              final showDate =
-                                  index == 0 ||
-                                  !sameDay(
-                                    messages[index - 1].createdAt,
-                                    message.createdAt,
-                                  );
-                              final messageRow = Column(
-                                children: [
-                                  if (showDate)
-                                    _DatePill(date: message.createdAt),
-                                  if (album.length > 1)
-                                    _PhotoAlbumBubble(
-                                      thread: widget.thread,
-                                      messages: album,
-                                      mine:
-                                          message.senderNode ==
-                                          widget.controller.myNodeId,
-                                      dataSaver: widget
-                                          .controller
-                                          .appSettings
-                                          .dataSaver,
-                                      selected: album.every(
-                                        (item) => selectedMessageIds.contains(
-                                          item.id,
-                                        ),
-                                      ),
-                                      onTap: selectingMessages
-                                          ? () => toggleMessageSelection(album)
-                                          : null,
-                                      onLongPress: () => selectingMessages
-                                          ? toggleMessageSelection(album)
-                                          : showMessageActions(
-                                              album.last,
-                                              selectionGroup: album,
-                                            ),
-                                      onReply: () =>
-                                          setState(() => replyTo = album.last),
-                                    )
-                                  else
-                                    Builder(
-                                      builder: (context) {
-                                        Widget bubble(
-                                          double positionTint,
-                                        ) => _MessageBubble(
-                                          key: ValueKey(message.id),
-                                          controller: widget.controller,
-                                          thread: widget.thread,
-                                          message: message,
-                                          joinedPrevious: joinedPrevious,
-                                          joinedNext: joinedNext,
-                                          mine:
-                                              message.senderNode ==
-                                              widget.controller.myNodeId,
-                                          dataSaver: widget
-                                              .controller
-                                              .appSettings
-                                              .dataSaver,
-                                          selected: selectedMessageIds.contains(
-                                            message.id,
-                                          ),
-                                          onTap: selectingMessages
-                                              ? () => toggleMessageSelection([
-                                                  message,
-                                                ])
-                                              : null,
-                                          onLongPress: () => selectingMessages
-                                              ? toggleMessageSelection([
-                                                  message,
-                                                ])
-                                              : showMessageActions(message),
-                                          onReply: () =>
-                                              widget.thread.isChannel &&
-                                                  !isChannelCommentThread
-                                              ? openChannelComments(message)
-                                              : setState(
-                                                  () => replyTo = message,
-                                                ),
-                                          onReplyQuoteTap:
-                                              message.replyToMessageId.isEmpty
-                                              ? null
-                                              : () => jumpToMessageById(
-                                                  message.replyToMessageId,
-                                                ),
-                                          highlighted:
-                                              highlightedMessageId ==
-                                              message.id,
-                                          onOpenComments:
-                                              widget.thread.isChannel &&
-                                                  !isChannelCommentThread &&
-                                                  message
-                                                      .replyToMessageId
-                                                      .isEmpty
-                                              ? () =>
-                                                    openChannelComments(message)
-                                              : null,
-                                          commentCount:
-                                              commentCounts[message.id] ?? 0,
-                                          positionTint: positionTint,
-                                        );
-                                        if (MeshPerformanceScope.lowEndDeviceModeOf(
-                                          context,
-                                        )) {
-                                          return bubble(0.55);
-                                        }
-                                        return _ViewportMessageTint(
-                                          refreshListenable: messageTintRefresh,
-                                          builder: (context, positionTint) =>
-                                              bubble(positionTint),
-                                        );
-                                      },
+                      return Visibility(
+                        key: const ValueKey('chat-initial-viewport'),
+                        visible: didReportReady,
+                        maintainState: true,
+                        maintainAnimation: true,
+                        maintainSize: true,
+                        child: ChatTimelineDate(
+                          label: dateLabel,
+                          child: NotificationListener<ScrollNotification>(
+                            onNotification: handleInitialUserScroll,
+                            child: ListView.builder(
+                              controller: scroll,
+                              scrollCacheExtent:
+                                  MeshPerformanceScope.lowEndDeviceModeOf(
+                                    context,
+                                  )
+                                  ? const ScrollCacheExtent.pixels(180)
+                                  : null,
+                              keyboardDismissBehavior:
+                                  ScrollViewKeyboardDismissBehavior.onDrag,
+                              padding: const EdgeInsets.fromLTRB(
+                                12,
+                                14,
+                                12,
+                                10,
+                              ),
+                              itemCount: messages.length + (typing ? 1 : 0),
+                              itemBuilder: (context, index) {
+                                if (index == messages.length) {
+                                  return _TypingBubble(
+                                    label: widget.controller.activityLabel(
+                                      widget.thread,
                                     ),
-                                ],
-                              );
-                              final animatedRow = AnimatedSize(
-                                duration: const Duration(milliseconds: 180),
-                                curve: Curves.easeOutCubic,
-                                alignment: Alignment.topCenter,
-                                child: collapsingMessageIds.contains(message.id)
-                                    ? const SizedBox(width: double.infinity)
-                                    : messageRow,
-                              );
-                              if (!messageScrollSpringEnabled) {
+                                  );
+                                }
+                                final message = messages[index];
+                                if (isCoveredByAlbum(messages, index)) {
+                                  return const SizedBox.shrink();
+                                }
+                                final album = albumFrom(messages, index);
+                                final joinedPrevious =
+                                    index > 0 &&
+                                    !isCoveredByAlbum(messages, index - 1) &&
+                                    messagesShareBubbleGroup(
+                                      messages[index - 1],
+                                      message,
+                                    );
+                                final joinedNext =
+                                    index + 1 < messages.length &&
+                                    !(index + 2 < messages.length &&
+                                        sameAlbumPhoto(
+                                          messages[index + 1],
+                                          messages[index + 2],
+                                        )) &&
+                                    messagesShareBubbleGroup(
+                                      message,
+                                      messages[index + 1],
+                                    );
+                                final showDate =
+                                    index == 0 ||
+                                    !sameDay(
+                                      messages[index - 1].createdAt,
+                                      message.createdAt,
+                                    );
+                                final messageRow = Column(
+                                  children: [
+                                    if (showDate)
+                                      _DatePill(date: message.createdAt),
+                                    if (album.length > 1)
+                                      _PhotoAlbumBubble(
+                                        thread: widget.thread,
+                                        messages: album,
+                                        mine:
+                                            message.senderNode ==
+                                            widget.controller.myNodeId,
+                                        dataSaver: widget
+                                            .controller
+                                            .appSettings
+                                            .dataSaver,
+                                        selected: album.every(
+                                          (item) => selectedMessageIds.contains(
+                                            item.id,
+                                          ),
+                                        ),
+                                        onTap: selectingMessages
+                                            ? () =>
+                                                  toggleMessageSelection(album)
+                                            : null,
+                                        onLongPress: () => selectingMessages
+                                            ? toggleMessageSelection(album)
+                                            : showMessageActions(
+                                                album.last,
+                                                selectionGroup: album,
+                                              ),
+                                        onReply: () => setState(
+                                          () => replyTo = album.last,
+                                        ),
+                                      )
+                                    else
+                                      Builder(
+                                        builder: (context) {
+                                          Widget bubble(
+                                            double positionTint,
+                                          ) => _MessageBubble(
+                                            key: ValueKey(message.id),
+                                            controller: widget.controller,
+                                            thread: widget.thread,
+                                            message: message,
+                                            joinedPrevious: joinedPrevious,
+                                            joinedNext: joinedNext,
+                                            mine:
+                                                message.senderNode ==
+                                                widget.controller.myNodeId,
+                                            dataSaver: widget
+                                                .controller
+                                                .appSettings
+                                                .dataSaver,
+                                            selected: selectedMessageIds
+                                                .contains(message.id),
+                                            onTap: selectingMessages
+                                                ? () => toggleMessageSelection([
+                                                    message,
+                                                  ])
+                                                : null,
+                                            onLongPress: () => selectingMessages
+                                                ? toggleMessageSelection([
+                                                    message,
+                                                  ])
+                                                : showMessageActions(message),
+                                            onReply: () =>
+                                                widget.thread.isChannel &&
+                                                    !isChannelCommentThread
+                                                ? openChannelComments(message)
+                                                : setState(
+                                                    () => replyTo = message,
+                                                  ),
+                                            onReplyQuoteTap:
+                                                message.replyToMessageId.isEmpty
+                                                ? null
+                                                : () => jumpToMessageById(
+                                                    message.replyToMessageId,
+                                                  ),
+                                            highlighted:
+                                                highlightedMessageId ==
+                                                message.id,
+                                            onOpenComments:
+                                                widget.thread.isChannel &&
+                                                    !isChannelCommentThread &&
+                                                    message
+                                                        .replyToMessageId
+                                                        .isEmpty
+                                                ? () => openChannelComments(
+                                                    message,
+                                                  )
+                                                : null,
+                                            commentCount:
+                                                commentCounts[message.id] ?? 0,
+                                            positionTint: positionTint,
+                                          );
+                                          if (MeshPerformanceScope.lowEndDeviceModeOf(
+                                            context,
+                                          )) {
+                                            return bubble(0.55);
+                                          }
+                                          return _ViewportMessageTint(
+                                            refreshListenable:
+                                                messageTintRefresh,
+                                            builder: (context, positionTint) =>
+                                                bubble(positionTint),
+                                          );
+                                        },
+                                      ),
+                                  ],
+                                );
+                                final animatedRow = AnimatedSize(
+                                  duration: const Duration(milliseconds: 180),
+                                  curve: Curves.easeOutCubic,
+                                  alignment: Alignment.topCenter,
+                                  child:
+                                      collapsingMessageIds.contains(message.id)
+                                      ? const SizedBox(width: double.infinity)
+                                      : messageRow,
+                                );
+                                if (!messageScrollSpringEnabled) {
+                                  return ChatDateAnchor(
+                                    date: message.createdAt,
+                                    child: animatedRow,
+                                  );
+                                }
                                 return ChatDateAnchor(
                                   date: message.createdAt,
-                                  child: animatedRow,
+                                  child: _ChatScrollSpringLayer(
+                                    motion: messageScrollMotion,
+                                    child: animatedRow,
+                                  ),
                                 );
-                              }
-                              return ChatDateAnchor(
-                                date: message.createdAt,
-                                child: _ChatScrollSpringLayer(
-                                  motion: messageScrollMotion,
-                                  child: animatedRow,
-                                ),
-                              );
-                            },
+                              },
+                            ),
                           ),
                         ),
                       );
@@ -4859,86 +5148,91 @@ class _ChatPageState extends State<ChatPage>
                 bottom: false,
                 child: SizedBox(
                   height: kToolbarHeight,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Padding(
-                          padding: const EdgeInsets.only(left: 8),
-                          child: _ChatRoundButton(
-                            tooltip: 'Back',
-                            icon: const Icon(
-                              Icons.arrow_back_ios_new_rounded,
-                              size: 18,
+                  child: MeshDesktop.workspaceOf(context)
+                      ? buildDesktopHeader()
+                      : Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: _ChatRoundButton(
+                                  tooltip: 'Back',
+                                  icon: const Icon(
+                                    Icons.arrow_back_ios_new_rounded,
+                                    size: 18,
+                                  ),
+                                  onPressed: selectingMessages
+                                      ? clearMessageSelection
+                                      : () {
+                                          final onBack = widget.onBack;
+                                          if (onBack != null) {
+                                            unawaited(onBack());
+                                          } else {
+                                            Navigator.maybePop(context);
+                                          }
+                                        },
+                                ),
+                              ),
                             ),
-                            onPressed: selectingMessages
-                                ? clearMessageSelection
-                                : () {
-                                    final onBack = widget.onBack;
-                                    if (onBack != null) {
-                                      unawaited(onBack());
-                                    } else {
-                                      Navigator.maybePop(context);
-                                    }
-                                  },
-                          ),
-                        ),
-                      ),
-                      ValueListenableBuilder<int>(
-                        valueListenable: chatChromeRefresh,
-                        builder: (context, _, _) {
-                          final profile = widget.thread.profile;
-                          final isSavedMessages = widget.controller
-                              .isSavedMessagesProfile(profile);
-                          final active = widget.controller.isTyping(
-                            widget.thread,
-                          );
-                          final subtitle = active
-                              ? widget.controller.activityLabel(widget.thread)
-                              : isChannelCommentThread
-                              ? profile.displayName
-                              : widget.thread.isGroup
-                              ? widget.thread.isChannel
-                                    ? '${widget.thread.members.length} subscribers'
-                                    : '${widget.thread.members.length} members'
-                              : isSavedMessages
-                              ? 'private notes'
-                              : profile.online
-                              ? 'online'
-                              : 'offline';
-                          return _ChatHeaderIdentity(
-                            title: isChannelCommentThread
-                                ? 'Comments'
-                                : profile.displayName,
-                            subtitle: subtitle,
-                            active:
-                                active ||
-                                widget.thread.isGroup ||
-                                profile.online,
-                            onTap: widget.thread.isGroup
-                                ? openGroupInfo
-                                : openProfile,
-                          );
-                        },
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: ValueListenableBuilder<int>(
-                            valueListenable: chatChromeRefresh,
-                            builder: (context, _, _) => _ChatHeaderAvatarButton(
-                              profile: widget.thread.profile,
-                              onTap: widget.thread.isGroup
-                                  ? openGroupInfo
-                                  : openProfile,
+                            ValueListenableBuilder<int>(
+                              valueListenable: chatChromeRefresh,
+                              builder: (context, _, _) {
+                                final profile = widget.thread.profile;
+                                final isSavedMessages = widget.controller
+                                    .isSavedMessagesProfile(profile);
+                                final active = widget.controller.isTyping(
+                                  widget.thread,
+                                );
+                                final subtitle = active
+                                    ? widget.controller.activityLabel(
+                                        widget.thread,
+                                      )
+                                    : isChannelCommentThread
+                                    ? profile.displayName
+                                    : widget.thread.isGroup
+                                    ? widget.thread.isChannel
+                                          ? '${widget.thread.members.length} subscribers'
+                                          : '${widget.thread.members.length} members'
+                                    : isSavedMessages
+                                    ? 'private notes'
+                                    : profile.online
+                                    ? 'online'
+                                    : 'offline';
+                                return _ChatHeaderIdentity(
+                                  title: isChannelCommentThread
+                                      ? 'Comments'
+                                      : profile.displayName,
+                                  subtitle: subtitle,
+                                  active:
+                                      active ||
+                                      widget.thread.isGroup ||
+                                      profile.online,
+                                  onTap: widget.thread.isGroup
+                                      ? openGroupInfo
+                                      : openProfile,
+                                );
+                              },
                             ),
-                          ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ValueListenableBuilder<int>(
+                                  valueListenable: chatChromeRefresh,
+                                  builder: (context, _, _) =>
+                                      _ChatHeaderAvatarButton(
+                                        profile: widget.thread.profile,
+                                        onTap: widget.thread.isGroup
+                                            ? openGroupInfo
+                                            : openProfile,
+                                      ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                    ],
-                  ),
                 ),
               ),
             ),
@@ -4947,6 +5241,10 @@ class _ChatPageState extends State<ChatPage>
               top: MediaQuery.paddingOf(context).top + 8,
               onOpen: (thread) {
                 if (thread == widget.thread) return;
+                if (widget.onOpenThread != null) {
+                  widget.onOpenThread!(thread);
+                  return;
+                }
                 Navigator.pushReplacement(
                   context,
                   meshPageRoute<void>(
@@ -4962,6 +5260,68 @@ class _ChatPageState extends State<ChatPage>
     );
   }
 }
+
+Future<void> showCallCompanion(
+  BuildContext context,
+  AppController controller, {
+  required bool captions,
+}) => showModalBottomSheet<void>(
+  context: context,
+  showDragHandle: true,
+  isScrollControlled: true,
+  builder: (context) => SafeArea(
+    child: SizedBox(
+      height: math.min(MediaQuery.sizeOf(context).height * 0.65, 440),
+      child: Column(
+        children: [
+          ListTile(
+            title: Text(captions ? 'Captions' : 'Participants'),
+            trailing: IconButton(
+              tooltip: 'Close',
+              icon: const Icon(Icons.close),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
+          Expanded(
+            child: ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) => SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: captions
+                    ? _CallCaptions(controller: controller)
+                    : Column(
+                        children: [
+                          for (final profile in controller.callParticipants)
+                            ListTile(
+                              leading: ProfileAvatar(
+                                profile: profile,
+                                radius: 18,
+                              ),
+                              title: Text(
+                                profile.displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                profile.nodeId == controller.myNodeId
+                                    ? 'You'
+                                    : controller.activeCall?.connectedNodes
+                                              .contains(profile.nodeId) ==
+                                          true
+                                    ? 'Connected'
+                                    : 'Connecting...',
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
 
 class _CallBanner extends StatelessWidget {
   const _CallBanner({
@@ -4979,7 +5339,31 @@ class _CallBanner extends StatelessWidget {
     final call = controller.activeCall;
     if (call == null) return const SizedBox.shrink();
     if (call.collapsed && call.status != CallStatus.ended) {
-      return _MiniCallPanel(controller: controller);
+      if (!MeshDesktop.isDesktop) return _MiniCallPanel(controller: controller);
+      return MeshCallDock(
+        profile: call.peer,
+        status: call.status == CallStatus.active
+            ? formatDuration(controller.callElapsed)
+            : 'Connecting...',
+        muted: call.localMuted,
+        onExpand: controller.toggleCallCollapsed,
+        onMute: controller.toggleCallMute,
+        onCaptions:
+            controller.callCaptionsEnabled ||
+                controller.sharedCaptionInvitation ||
+                controller.callCaptionLines.isNotEmpty
+            ? () => showCallCompanion(context, controller, captions: true)
+            : null,
+        onParticipants: call.isGroup
+            ? () => showCallCompanion(context, controller, captions: false)
+            : null,
+        onEnd: call.incoming && call.status == CallStatus.ringing
+            ? controller.declineCall
+            : controller.endCall,
+        onAccept: call.incoming && call.status == CallStatus.ringing
+            ? controller.acceptCall
+            : null,
+      );
     }
     if (!call.collapsed && call.status != CallStatus.ended) {
       return const SizedBox.shrink();
@@ -8495,6 +8879,18 @@ class _TypingBubbleState extends State<_TypingBubble>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context) ||
+        MeshPerformanceScope.lowEndDeviceModeOf(context)) {
+      animation.stop();
+      animation.value = 0;
+    } else if (!animation.isAnimating) {
+      animation.repeat();
+    }
+  }
+
+  @override
   void dispose() {
     animation.dispose();
     super.dispose();
@@ -11473,6 +11869,9 @@ class _UnavailableFilePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (MeshDesktop.isDesktop) {
+      return MeshAttachmentTile(title: title, subtitle: subtitle, icon: icon);
+    }
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [

@@ -577,7 +577,7 @@ class _DocumentScannerPageState extends State<DocumentScannerPage> {
         Row(
           children: [
             Expanded(
-              child: OutlinedButton.icon(
+              child: FilledButton.icon(
                 onPressed: page == null || working ? null : sendImage,
                 icon: const Icon(Icons.image_rounded),
                 label: const Text('Send image'),
@@ -585,7 +585,7 @@ class _DocumentScannerPageState extends State<DocumentScannerPage> {
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: FilledButton.icon(
+              child: OutlinedButton.icon(
                 onPressed: page == null || working ? null : sendPdf,
                 icon: const Icon(Icons.picture_as_pdf_rounded),
                 label: Text(

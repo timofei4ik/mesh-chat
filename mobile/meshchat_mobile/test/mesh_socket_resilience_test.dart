@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:meshchat_mobile/src/models/profile.dart';
 import 'package:meshchat_mobile/src/models/session.dart';
 import 'package:meshchat_mobile/src/services/app_database_path.dart';
@@ -37,6 +38,98 @@ void main() {
       const Duration(seconds: 25),
     );
   });
+
+  test(
+    'first handshake failure retries without resuming an application',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final peers = <WebSocket>[];
+      var attempts = 0;
+      final listener = server.listen((request) async {
+        if (++attempts == 1) {
+          request.response.statusCode = HttpStatus.serviceUnavailable;
+          await request.response.close();
+          return;
+        }
+        final peer = await WebSocketTransformer.upgrade(request);
+        peers.add(peer);
+        peer.listen((raw) {
+          if ((jsonDecode(raw as String) as Map)['type'] == 'server_hello') {
+            peer.add(jsonEncode(_welcomePacket()));
+          }
+        });
+      });
+      addTearDown(() async {
+        await listener.cancel();
+        for (final peer in peers) {
+          await peer.close();
+        }
+        await server.close(force: true);
+      });
+      final socket = MeshSocket(
+        reconnectDelayFactory: (_) => const Duration(milliseconds: 20),
+      );
+      addTearDown(socket.close);
+      final welcome = Completer<void>();
+      await expectLater(
+        socket.connect(
+          session: _session('ws://127.0.0.1:${server.port}', 'first-failure'),
+          publicKey: 'key',
+          profile: _profile('first-failure'),
+          onStatus: (_) {},
+          onPacket: (packet) {
+            if (packet['type'] == 'server_welcome' && !welcome.isCompleted) {
+              welcome.complete();
+            }
+          },
+        ),
+        throwsA(isA<Object>()),
+      );
+      await welcome.future.timeout(const Duration(seconds: 3));
+      expect(attempts, 2);
+      expect(socket.isConnected, isTrue);
+      expect(socket.isConnecting, isFalse);
+    },
+  );
+
+  test(
+    'synchronous connection failure also schedules a background retry',
+    () async {
+      final server = await _LocalWebSocketServer.start((peer, packet) {
+        if (packet['type'] == 'server_hello') {
+          peer.add(jsonEncode(_welcomePacket()));
+        }
+      });
+      addTearDown(server.close);
+      var attempts = 0;
+      final socket = MeshSocket(
+        channelFactory: (uri) {
+          if (++attempts == 1) throw StateError('temporary connector failure');
+          return WebSocketChannel.connect(uri);
+        },
+        reconnectDelayFactory: (_) => const Duration(milliseconds: 20),
+      );
+      addTearDown(socket.close);
+      final welcome = Completer<void>();
+      await expectLater(
+        socket.connect(
+          session: _session(server.url, 'factory-failure'),
+          publicKey: 'key',
+          profile: _profile('factory-failure'),
+          onStatus: (_) {},
+          onPacket: (packet) {
+            if (packet['type'] == 'server_welcome' && !welcome.isCompleted) {
+              welcome.complete();
+            }
+          },
+        ),
+        throwsStateError,
+      );
+      await welcome.future.timeout(const Duration(seconds: 3));
+      expect(attempts, 2);
+      expect(socket.isConnected, isTrue);
+    },
+  );
 
   test(
     'rich outbox waits for a capable server and replays without losing content',

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_quill/flutter_quill.dart' as q;
 import 'package:flutter_quill/quill_delta.dart' as delta;
@@ -13,6 +14,7 @@ import '../services/rich_draft_store.dart';
 import '../widgets/rich_message_view.dart';
 import '../widgets/rich_editor_theme.dart';
 import '../widgets/message_table_editor.dart';
+import '../widgets/mesh_workspace.dart';
 
 class RichMessageEditorPage extends StatefulWidget {
   const RichMessageEditorPage({
@@ -69,6 +71,21 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
   bool closing = false;
   String? error;
   bool adjustingCaret = false;
+  bool previewing = false;
+  final draftStatus = ValueNotifier<String>('Draft');
+
+  void togglePreview() {
+    try {
+      if (!previewing) {
+        document();
+        editorFocus.unfocus();
+      }
+      setState(() => previewing = !previewing);
+      if (!previewing) restoreEditorFocus();
+    } catch (_) {
+      setState(() => error = 'This document cannot be previewed yet.');
+    }
+  }
 
   void guardBlockCaret() {
     if (adjustingCaret || closing || !editor.selection.isCollapsed) return;
@@ -137,6 +154,7 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
   void changed() {
     if (!mounted || closing) return;
     revision++;
+    draftStatus.value = 'Saving...';
     debounce?.cancel();
     debounce = Timer(
       const Duration(milliseconds: 600),
@@ -157,6 +175,9 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
       final value = RichMessageDocument.fromOps(ops);
       await widget.drafts.save(value);
       savedRevision = currentRevision;
+      if (mounted && savedRevision == revision) {
+        draftStatus.value = 'Saved locally';
+      }
       return true;
     } catch (_) {
       if (mounted) {
@@ -182,6 +203,7 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
     editor.dispose();
     editorFocus.dispose();
     editorScroll.dispose();
+    draftStatus.dispose();
     super.dispose();
   }
 
@@ -840,7 +862,20 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
   @override
   Widget build(BuildContext context) => Theme(
     data: richEditorTheme(Theme.of(context)),
-    child: Builder(key: surfaceKey, builder: buildEditor),
+    child: CallbackShortcuts(
+      bindings: MeshDesktop.isDesktop
+          ? {
+              const SingleActivator(LogicalKeyboardKey.escape): () {
+                if (previewing) {
+                  togglePreview();
+                } else {
+                  unawaited(close());
+                }
+              },
+            }
+          : const {},
+      child: Builder(key: surfaceKey, builder: buildEditor),
+    ),
   );
 
   Widget buildEditor(BuildContext context) => PopScope(
@@ -852,6 +887,16 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
       backgroundColor: const Color(0xFF121719),
       appBar: AppBar(
         title: Text(widget.editing ? 'Edit message' : 'Message editor'),
+        actions: [
+          if (MeshDesktop.isDesktop)
+            IconButton(
+              tooltip: previewing ? 'Continue editing' : 'Preview message',
+              onPressed: sending || picking ? null : togglePreview,
+              icon: Icon(
+                previewing ? Icons.edit_outlined : Icons.visibility_outlined,
+              ),
+            ),
+        ],
         leading: IconButton(
           tooltip: 'Close',
           onPressed: close,
@@ -871,7 +916,7 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
                   builder: (context, _) => ColoredBox(
                     color: const Color(0xFF1B2327),
                     child: AbsorbPointer(
-                      absorbing: sending || picking,
+                      absorbing: sending || picking || previewing,
                       child: SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
                         child: Row(
@@ -997,40 +1042,52 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
                     children: [
                       if (widget.background != null)
                         IgnorePointer(child: widget.background!),
-                      Localizations.override(
-                        context: context,
-                        delegates:
-                            q.FlutterQuillLocalizations.localizationsDelegates,
-                        child: q.QuillEditor.basic(
-                          controller: editor,
-                          focusNode: editorFocus,
-                          scrollController: editorScroll,
-                          config: q.QuillEditorConfig(
-                            padding: const EdgeInsets.all(20),
-                            autoFocus: true,
-                            expands: true,
-                            embedBuilders: [
-                              MeshRichEmbedBuilder(
-                                onMove: moveBlock,
-                                onTypeAround: typeAroundBlock,
-                                attachmentBuilder: widget.attachmentBuilder,
-                                onRemove: (embed) => editor.replaceText(
-                                  embed.node.documentOffset,
-                                  1,
-                                  '',
-                                  TextSelection.collapsed(
-                                    offset: embed.node.documentOffset,
+                      if (previewing)
+                        SingleChildScrollView(
+                          padding: const EdgeInsets.all(24),
+                          child: RichMessageView(
+                            document: document(),
+                            attachmentBuilder: widget.attachmentBuilder,
+                          ),
+                        ),
+                      Offstage(
+                        offstage: previewing,
+                        child: Localizations.override(
+                          context: context,
+                          delegates: q
+                              .FlutterQuillLocalizations
+                              .localizationsDelegates,
+                          child: q.QuillEditor.basic(
+                            controller: editor,
+                            focusNode: editorFocus,
+                            scrollController: editorScroll,
+                            config: q.QuillEditorConfig(
+                              padding: const EdgeInsets.all(20),
+                              autoFocus: true,
+                              expands: true,
+                              embedBuilders: [
+                                MeshRichEmbedBuilder(
+                                  onMove: moveBlock,
+                                  onTypeAround: typeAroundBlock,
+                                  attachmentBuilder: widget.attachmentBuilder,
+                                  onRemove: (embed) => editor.replaceText(
+                                    embed.node.documentOffset,
+                                    1,
+                                    '',
+                                    TextSelection.collapsed(
+                                      offset: embed.node.documentOffset,
+                                    ),
+                                  ),
+                                  onEdit: (embed, data) => block(
+                                    data['type'] as String,
+                                    embed: embed,
+                                    initial: data,
                                   ),
                                 ),
-                                onEdit: (embed, data) => block(
-                                  data['type'] as String,
-                                  embed: embed,
-                                  initial: data,
-                                ),
-                              ),
-                              const MeshFormulaBuilder(),
-                            ],
-                            onLaunchUrl: (url) => openRichLink(context, url),
+                                const MeshFormulaBuilder(),
+                              ],
+                              onLaunchUrl: (url) => openRichLink(context, url),
+                            ),
                           ),
                         ),
                       ),
@@ -1057,7 +1114,23 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
                             color: Color(0xFFCAB7ED),
                           ),
                         ),
-                      const Spacer(),
+                      if (!MeshDesktop.isDesktop)
+                        const Spacer()
+                      else
+                        Expanded(
+                          child: ValueListenableBuilder<String>(
+                            valueListenable: draftStatus,
+                            builder: (context, status, _) => Text(
+                              status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.white54,
+                              ),
+                            ),
+                          ),
+                        ),
                       IconButton(
                         tooltip: 'Emoji',
                         onPressed: sending ? null : emoji,

@@ -8,6 +8,7 @@ import 'pages/login_page.dart';
 import 'services/platform_capabilities.dart';
 import 'widgets/mesh_liquid_glass.dart';
 import 'widgets/mesh_performance_scope.dart';
+import 'widgets/mesh_workspace.dart';
 
 const meshChatThemeMode = ThemeMode.dark;
 
@@ -24,6 +25,7 @@ class MeshChatApp extends StatefulWidget {
 }
 
 class _MeshChatAppState extends State<MeshChatApp> {
+  final navigatorKey = GlobalKey<NavigatorState>();
   late final AppController controller;
   late final ValueNotifier<_AppVisualSettings> visualSettings;
   late final ValueNotifier<_RootStage> rootStage;
@@ -54,6 +56,7 @@ class _MeshChatAppState extends State<MeshChatApp> {
       _MeshChatLifecycleObserver(
         onResumed: () => controller.handleAppResumed(),
         onPaused: () => controller.handleAppPaused(),
+        onInactive: () => controller.setAppForeground(false),
       );
 
   @override
@@ -66,6 +69,11 @@ class _MeshChatAppState extends State<MeshChatApp> {
           return MeshPerformanceScope(
             lowEndDeviceMode: settings.lowEndDeviceMode,
             child: MaterialApp(
+              navigatorKey: navigatorKey,
+              builder: (context, child) => MeshDesktopNavigation(
+                navigatorKey: navigatorKey,
+                child: child!,
+              ),
               debugShowCheckedModeBanner: false,
               title: 'MeshChat',
               // MeshChat's current surfaces are intentionally dark. Older
@@ -244,15 +252,22 @@ typedef _AppVisualSettings = ({
 enum _RootStage { loading, login, bindEmail, chats }
 
 class _MeshChatLifecycleObserver extends WidgetsBindingObserver {
-  _MeshChatLifecycleObserver({required this.onResumed, required this.onPaused});
+  _MeshChatLifecycleObserver({
+    required this.onResumed,
+    required this.onPaused,
+    required this.onInactive,
+  });
 
   final Future<void> Function() onResumed;
   final Future<void> Function() onPaused;
+  final VoidCallback onInactive;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       onResumed();
+    } else if (state == AppLifecycleState.inactive) {
+      onInactive();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {

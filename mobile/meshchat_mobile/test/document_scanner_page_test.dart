@@ -53,6 +53,20 @@ void main() {
     expect(find.text('Photo editor'), findsOneWidget);
     expect(find.text('Original'), findsOneWidget);
     expect(find.text('Send image'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.text('Send image'),
+        matching: find.byType(FilledButton),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.text('Send PDF'),
+        matching: find.byType(OutlinedButton),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Add the first page'), findsNothing);
     expect(tester.takeException(), isNull);
 

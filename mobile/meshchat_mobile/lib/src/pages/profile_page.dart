@@ -3,6 +3,7 @@ import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../widgets/mesh_workspace.dart';
 import 'package:flutter/services.dart';
 
 import '../controllers/app_controller.dart';
@@ -450,35 +451,43 @@ class _ProfileActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
+    final actions = <Widget>[
+      _ProfileActionButton(
+        icon: Icons.chat_bubble_outline_rounded,
+        label: 'Message',
+        onTap: onMessage,
+      ),
+      if (onCall != null)
         _ProfileActionButton(
-          icon: Icons.chat_bubble_outline_rounded,
-          label: 'Message',
-          onTap: onMessage,
+          icon: Icons.call_outlined,
+          label: 'Call',
+          onTap: onCall,
         ),
-        if (onCall != null)
-          _ProfileActionButton(
-            icon: Icons.call_outlined,
-            label: 'Call',
-            onTap: onCall,
-          ),
-        if (onAppearance != null)
-          _ProfileActionButton(
-            icon: Icons.palette_outlined,
-            label: 'Appearance',
-            onTap: onAppearance,
-          ),
+      if (onAppearance != null)
         _ProfileActionButton(
-          icon: muted || blocked
-              ? Icons.notifications_off_outlined
-              : Icons.notifications_active_outlined,
-          label: muted ? 'Muted' : 'Mute',
-          onTap: onMute,
+          icon: Icons.palette_outlined,
+          label: 'Appearance',
+          onTap: onAppearance,
         ),
-      ],
-    );
+      _ProfileActionButton(
+        icon: muted || blocked
+            ? Icons.notifications_off_outlined
+            : Icons.notifications_active_outlined,
+        label: muted ? 'Muted' : 'Mute',
+        onTap: onMute,
+      ),
+    ];
+    return MeshDesktop.isDesktop
+        ? Wrap(
+            alignment: WrapAlignment.spaceEvenly,
+            spacing: 12,
+            runSpacing: 12,
+            children: actions,
+          )
+        : Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: actions,
+          );
   }
 }
 
@@ -1139,7 +1148,7 @@ class _ProfileGlassSurface extends StatelessWidget {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(radius),
-        child: child,
+        child: Material(color: Colors.transparent, child: child),
       ),
     );
   }
