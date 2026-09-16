@@ -12,6 +12,7 @@ import '../models/rich_message_document.dart';
 import '../services/rich_draft_store.dart';
 import '../widgets/rich_message_view.dart';
 import '../widgets/rich_editor_theme.dart';
+import '../widgets/message_table_editor.dart';
 
 class RichMessageEditorPage extends StatefulWidget {
   const RichMessageEditorPage({
@@ -946,22 +947,33 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
                               onPressed: () => block('table'),
                               icon: const Icon(Icons.table_chart_outlined),
                             ),
-                            menu(Icons.link, 'Links', {
-                              'Text link': link,
-                              'Button': () => block('button'),
-                              'Location': () => block('location'),
-                            }),
-                            menu(Icons.perm_media_outlined, 'Media', {
-                              'Photo or video': () => attach(FileType.media),
-                              'Audio file': () => attach(FileType.audio),
-                              'File': () => attach(FileType.any),
-                              'Location': () => block('location'),
-                            }),
-                            IconButton(
-                              tooltip: 'Formula',
-                              onPressed: formula,
-                              icon: const Icon(Icons.functions),
-                            ),
+                            if (MediaQuery.sizeOf(context).width >= 640) ...[
+                              menu(Icons.link, 'Links', {
+                                'Text link': link,
+                                'Button': () => block('button'),
+                                'Location': () => block('location'),
+                              }),
+                              menu(Icons.perm_media_outlined, 'Media', {
+                                'Photo or video': () => attach(FileType.media),
+                                'Audio file': () => attach(FileType.audio),
+                                'File': () => attach(FileType.any),
+                                'Location': () => block('location'),
+                              }),
+                              IconButton(
+                                tooltip: 'Formula',
+                                onPressed: formula,
+                                icon: const Icon(Icons.functions),
+                              ),
+                            ] else
+                              menu(Icons.more_horiz_rounded, 'More', {
+                                'Text link': link,
+                                'Button': () => block('button'),
+                                'Photo or video': () => attach(FileType.media),
+                                'Audio file': () => attach(FileType.audio),
+                                'File': () => attach(FileType.any),
+                                'Location': () => block('location'),
+                                'Formula': formula,
+                              }),
                           ],
                         ),
                       ),
@@ -1151,180 +1163,6 @@ class _FormulaDialogState extends State<_FormulaDialog> {
   );
 }
 
-class _TableDialog extends StatefulWidget {
-  const _TableDialog({this.initial});
-  final List? initial;
-  @override
-  State<_TableDialog> createState() => _TableDialogState();
-}
-
-class _TableDialogState extends State<_TableDialog> {
-  late final List<List<TextEditingController>> cells;
-  final removedCells = <TextEditingController>[];
-
-  void removeRow(int index) {
-    if (cells.length <= 1) return;
-    setState(() => removedCells.addAll(cells.removeAt(index)));
-  }
-
-  void removeColumn(int index) {
-    if (cells.first.length <= 1) return;
-    setState(() {
-      for (final row in cells) {
-        removedCells.add(row.removeAt(index));
-      }
-    });
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    cells = [
-      for (final row
-          in widget.initial ??
-              [
-                ['', '', ''],
-                ['', '', ''],
-                ['', '', ''],
-              ])
-        [
-          for (final value in row as List)
-            TextEditingController(text: value as String),
-        ],
-    ];
-    final width = cells
-        .map((row) => row.length)
-        .reduce((a, b) => a > b ? a : b);
-    for (final row in cells) {
-      while (row.length < width) {
-        row.add(TextEditingController());
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    for (final cell in removedCells) {
-      cell.dispose();
-    }
-    for (final row in cells) {
-      for (final cell in row) {
-        cell.dispose();
-      }
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Table'),
-    content: SizedBox(
-      width: 640,
-      height: 330,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                IconButton(
-                  tooltip: 'Add row',
-                  onPressed: cells.length >= 20
-                      ? null
-                      : () => setState(
-                          () => cells.add(
-                            List.generate(
-                              cells.first.length,
-                              (_) => TextEditingController(),
-                            ),
-                          ),
-                        ),
-                  icon: const Icon(Icons.table_rows_outlined),
-                ),
-                IconButton(
-                  tooltip: 'Add column',
-                  onPressed: cells.first.length >= 8
-                      ? null
-                      : () => setState(() {
-                          for (final row in cells) {
-                            row.add(TextEditingController());
-                          }
-                        }),
-                  icon: const Icon(Icons.view_column_outlined),
-                ),
-              ],
-            ),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: cells.first.length * 150 + 48,
-                child: Table(
-                  columnWidths: {
-                    cells.first.length: const FixedColumnWidth(48),
-                  },
-                  children: [
-                    TableRow(
-                      children: [
-                        for (
-                          var column = 0;
-                          column < cells.first.length;
-                          column++
-                        )
-                          IconButton(
-                            tooltip: 'Delete column ${column + 1}',
-                            onPressed: cells.first.length > 1
-                                ? () => removeColumn(column)
-                                : null,
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                          ),
-                        const SizedBox(),
-                      ],
-                    ),
-                    for (var row = 0; row < cells.length; row++)
-                      TableRow(
-                        children: [
-                          for (final cell in cells[row])
-                            Padding(
-                              key: ObjectKey(cell),
-                              padding: const EdgeInsets.all(4),
-                              child: TextField(
-                                controller: cell,
-                                maxLength: 2000,
-                                maxLines: 3,
-                                decoration: const InputDecoration(
-                                  border: OutlineInputBorder(),
-                                  counterText: '',
-                                ),
-                              ),
-                            ),
-                          IconButton(
-                            tooltip: 'Delete row ${row + 1}',
-                            onPressed: cells.length > 1
-                                ? () => removeRow(row)
-                                : null,
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                          ),
-                        ],
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: () => Navigator.pop(context, [
-          for (final row in cells) [for (final cell in row) cell.text],
-        ]),
-        child: const Text('Insert'),
-      ),
-    ],
-  );
+class _TableDialog extends MessageTableEditor {
+  const _TableDialog({super.initial});
 }

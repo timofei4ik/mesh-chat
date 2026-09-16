@@ -24,6 +24,10 @@ import 'package:meshchat_mobile/src/utils/mesh_page_route.dart';
 
 class _PreviewController extends AppController {
   final sentGroupMessages = <String>[];
+  List<CallCaptionLine> previewCaptions = [];
+  @override
+  List<CallCaptionLine> get callCaptionLines => previewCaptions;
+  void refreshCaptions() => notifyListeners();
 
   @override
   void markRead(ChatThread thread) {}
@@ -183,6 +187,83 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('long live captions wrap and keep the newest words visible', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = _PreviewController()
+      ..activeCall = ActiveCall(
+        callId: 'captions',
+        peer: const Profile(nodeId: 'friend', displayName: 'Alex'),
+        status: CallStatus.active,
+        incoming: false,
+        collapsed: false,
+        startedAt: DateTime.now(),
+      );
+    void update(String ending) {
+      controller.previewCaptions = [
+        CallCaptionLine(
+          id: 'continuous',
+          sourceNode: 'friend',
+          speaker: 'Alex',
+          text: '${List.filled(60, "A long spoken phrase").join(" ")} $ending',
+          isFinal: false,
+          updatedAt: DateTime.now(),
+        ),
+      ];
+    }
+
+    update('LATEST');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MeshPerformanceScope(
+          lowEndDeviceMode: true,
+          child: ChatPage(
+            controller: controller,
+            thread: ChatThread(
+              profile: const Profile(nodeId: 'friend', displayName: 'Alex'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    final viewport = find.byKey(const ValueKey('call-caption-scroll'));
+    expect(viewport, findsOneWidget);
+    final text = find.descendant(
+      of: viewport,
+      matching: find.byWidgetPredicate(
+        (w) =>
+            w is Text &&
+            (w.textSpan?.toPlainText().contains('LATEST') ?? false),
+      ),
+    );
+    expect(tester.widget<Text>(text).maxLines, isNull);
+    expect(
+      tester.getBottomLeft(text).dy,
+      lessThanOrEqualTo(tester.getBottomLeft(viewport).dy + 1),
+    );
+    update('NEWEST WORDS');
+    controller.refreshCaptions();
+    await tester.pump(const Duration(seconds: 1));
+    expect(
+      find.descendant(
+        of: viewport,
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is Text &&
+              (w.textSpan?.toPlainText().endsWith('NEWEST WORDS') ?? false),
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('local deletion removes a message before persistence completes', (
     tester,

@@ -150,6 +150,31 @@ class _MeshChatAppState extends State<MeshChatApp> {
       brightness: brightness,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: dark ? const Color(0xFF17191D) : null,
+      dialogTheme: DialogThemeData(
+        backgroundColor: dark ? const Color(0xFF1B2833) : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        titleTextStyle: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.w600,
+          color: colorScheme.onSurface,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: dark ? const Color(0xFF3A4954) : const Color(0xFFD0DAE0),
+          ),
+        ),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: dark ? const Color(0xFF1B2833) : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: dark ? const Color(0xFF3A4954) : const Color(0xFFD0DAE0),
+          ),
+        ),
+      ),
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: Color(0xFF1B2833),
         modalBackgroundColor: Color(0xFF1B2833),

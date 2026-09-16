@@ -91,14 +91,7 @@ class MeshSettingsSurface extends StatelessWidget {
             shape: const CircleBorder(),
           ),
         ),
-        dialogTheme: DialogThemeData(
-          backgroundColor: const Color(0xFF172432),
-          surfaceTintColor: Colors.transparent,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: BorderSide(color: border),
-          ),
-        ),
+        dialogTheme: base.dialogTheme,
       ),
       child: DecoratedBox(
         decoration: const BoxDecoration(

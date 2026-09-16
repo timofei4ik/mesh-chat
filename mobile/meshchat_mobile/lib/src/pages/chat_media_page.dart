@@ -15,7 +15,7 @@ import '../models/chat_thread.dart';
 import '../services/message_audio_player.dart';
 import '../utils/media_request_encoder.dart';
 
-enum MediaSection { media, files, voice, links }
+enum MediaSection { media, videos, files, voice, music, links }
 
 class ChatMediaPage extends StatefulWidget {
   const ChatMediaPage({super.key, required this.thread});
@@ -57,7 +57,7 @@ class _ChatMediaPageState extends State<ChatMediaPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Shared media',
+                          'Shared content',
                           style: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.w900,
@@ -81,41 +81,61 @@ class _ChatMediaPageState extends State<ChatMediaPage> {
                 radius: 22,
                 child: Padding(
                   padding: const EdgeInsets.all(8),
-                  child: Row(
-                    children: [
-                      _TabButton(
-                        icon: Icons.photo_library_outlined,
-                        label: 'Media',
-                        count: buckets.media.length,
-                        selected: selected == MediaSection.media,
-                        onTap: () =>
-                            setState(() => selected = MediaSection.media),
-                      ),
-                      _TabButton(
-                        icon: Icons.insert_drive_file_outlined,
-                        label: 'Files',
-                        count: buckets.files.length,
-                        selected: selected == MediaSection.files,
-                        onTap: () =>
-                            setState(() => selected = MediaSection.files),
-                      ),
-                      _TabButton(
-                        icon: Icons.keyboard_voice_outlined,
-                        label: 'Voice',
-                        count: buckets.voice.length,
-                        selected: selected == MediaSection.voice,
-                        onTap: () =>
-                            setState(() => selected = MediaSection.voice),
-                      ),
-                      _TabButton(
-                        icon: Icons.link_rounded,
-                        label: 'Links',
-                        count: buckets.links.length,
-                        selected: selected == MediaSection.links,
-                        onTap: () =>
-                            setState(() => selected = MediaSection.links),
-                      ),
-                    ],
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    physics: const BouncingScrollPhysics(),
+                    child: Row(
+                      children: [
+                        _TabButton(
+                          icon: Icons.smart_display_outlined,
+                          label: 'Videos',
+                          count: buckets.videos.length,
+                          selected: selected == MediaSection.videos,
+                          onTap: () =>
+                              setState(() => selected = MediaSection.videos),
+                        ),
+                        _TabButton(
+                          icon: Icons.photo_library_outlined,
+                          label: 'Photos',
+                          count: buckets.media.length,
+                          selected: selected == MediaSection.media,
+                          onTap: () =>
+                              setState(() => selected = MediaSection.media),
+                        ),
+                        _TabButton(
+                          icon: Icons.insert_drive_file_outlined,
+                          label: 'Files',
+                          count: buckets.files.length,
+                          selected: selected == MediaSection.files,
+                          onTap: () =>
+                              setState(() => selected = MediaSection.files),
+                        ),
+                        _TabButton(
+                          icon: Icons.keyboard_voice_outlined,
+                          label: 'Voice',
+                          count: buckets.voice.length,
+                          selected: selected == MediaSection.voice,
+                          onTap: () =>
+                              setState(() => selected = MediaSection.voice),
+                        ),
+                        _TabButton(
+                          icon: Icons.music_note_rounded,
+                          label: 'Music',
+                          count: buckets.music.length,
+                          selected: selected == MediaSection.music,
+                          onTap: () =>
+                              setState(() => selected = MediaSection.music),
+                        ),
+                        _TabButton(
+                          icon: Icons.link_rounded,
+                          label: 'Links',
+                          count: buckets.links.length,
+                          selected: selected == MediaSection.links,
+                          onTap: () =>
+                              setState(() => selected = MediaSection.links),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -166,12 +186,15 @@ class _MediaContent extends StatelessWidget {
   Widget build(BuildContext context) {
     if (section == MediaSection.files ||
         section == MediaSection.voice ||
+        section == MediaSection.music ||
         section == MediaSection.links) {
       return ListView.separated(
         padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
         itemCount: items.length,
         separatorBuilder: (_, _) => const SizedBox(height: 8),
-        itemBuilder: (context, index) => items[index].kind == _MediaKind.voice
+        itemBuilder: (context, index) =>
+            items[index].kind == _MediaKind.voice ||
+                items[index].kind == _MediaKind.audio
             ? _VoiceListTile(item: items[index], onOpenMessage: onOpenMessage)
             : _ListMediaTile(item: items[index], onOpenMessage: onOpenMessage),
       );
@@ -357,6 +380,7 @@ class _CenteredPreviewIcon extends StatelessWidget {
         const Color(0xFFA56BFF),
       ),
       _MediaKind.voice => (Icons.graphic_eq_rounded, const Color(0xFF52E0C4)),
+      _MediaKind.audio => (Icons.music_note_rounded, const Color(0xFFFFC857)),
       _MediaKind.link => (Icons.link_rounded, const Color(0xFF3BD6FF)),
       _MediaKind.file => (
         Icons.insert_drive_file_rounded,
@@ -845,9 +869,10 @@ class _TabButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: SizedBox(
+        width: 112,
         child: Material(
           color: selected
               ? Colors.lightBlueAccent.withValues(alpha: 0.14)
@@ -953,20 +978,26 @@ class _GlassSurface extends StatelessWidget {
 class _MediaBuckets {
   const _MediaBuckets({
     required this.media,
+    required this.videos,
     required this.files,
     required this.voice,
+    required this.music,
     required this.links,
   });
 
   final List<_MediaItem> media;
+  final List<_MediaItem> videos;
   final List<_MediaItem> files;
   final List<_MediaItem> voice;
+  final List<_MediaItem> music;
   final List<_MediaItem> links;
 
   factory _MediaBuckets.fromThread(ChatThread thread) {
     final media = <_MediaItem>[];
+    final videos = <_MediaItem>[];
     final files = <_MediaItem>[];
     final voice = <_MediaItem>[];
+    final music = <_MediaItem>[];
     final links = <_MediaItem>[];
     final messages =
         thread.messages.where((message) => !message.deleted).toList()
@@ -993,10 +1024,13 @@ class _MediaBuckets {
         );
         switch (item.kind) {
           case _MediaKind.image:
-          case _MediaKind.video:
             media.add(item);
+          case _MediaKind.video:
+            videos.add(item);
           case _MediaKind.voice:
             voice.add(item);
+          case _MediaKind.audio:
+            music.add(item);
           case _MediaKind.file:
           case _MediaKind.link:
             files.add(item);
@@ -1016,16 +1050,20 @@ class _MediaBuckets {
 
     return _MediaBuckets(
       media: media,
+      videos: videos,
       files: files,
       voice: voice,
+      music: music,
       links: links,
     );
   }
 
   List<_MediaItem> itemsFor(MediaSection section) => switch (section) {
     MediaSection.media => media,
+    MediaSection.videos => videos,
     MediaSection.files => files,
     MediaSection.voice => voice,
+    MediaSection.music => music,
     MediaSection.links => links,
   };
 }
@@ -1046,12 +1084,14 @@ class _MediaItem {
   final Uint8List? bytes;
 }
 
-enum _MediaKind { image, video, file, voice, link }
+enum _MediaKind { image, video, file, voice, audio, link }
 
 _MediaKind _kindForName(String name) {
   if (_isImageName(name)) return _MediaKind.image;
   if (_isVideoName(name)) return _MediaKind.video;
-  if (_isAudioName(name)) return _MediaKind.voice;
+  if (_isAudioName(name)) {
+    return _isVoiceName(name) ? _MediaKind.voice : _MediaKind.audio;
+  }
   return _MediaKind.file;
 }
 
@@ -1083,6 +1123,14 @@ bool _isAudioName(String name) {
       lower.endsWith('.ogg') ||
       lower.endsWith('.opus') ||
       lower.endsWith('.flac');
+}
+
+bool _isVoiceName(String name) {
+  final lower = name.toLowerCase().replaceAll('\\', '/');
+  final filename = lower.split('/').last;
+  return filename.startsWith('voice_') ||
+      filename.startsWith('voice-') ||
+      filename.endsWith('.opus');
 }
 
 List<String> _extractLinks(String text) {

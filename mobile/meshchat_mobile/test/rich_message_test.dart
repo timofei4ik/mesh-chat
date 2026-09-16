@@ -101,7 +101,10 @@ void main() {
         );
         expect(scrollbar.thumbVisibility, count == 8);
         if (count == 8) {
-          await tester.drag(find.byType(Scrollbar).first, const Offset(-400, 0));
+          await tester.drag(
+            find.byType(Scrollbar).first,
+            const Offset(-400, 0),
+          );
           await tester.pumpAndSettle();
           expect(scrollbar.controller!.offset, greaterThan(0));
         }
@@ -193,24 +196,30 @@ void main() {
       expect(find.text('Message editor'), findsOneWidget);
       await tester.tap(find.byTooltip('Table'));
       await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField).at(0), 'A');
-      await tester.enterText(find.byType(TextField).at(2), 'C');
-      await tester.enterText(find.byType(TextField).at(6), 'G');
-      await tester.enterText(find.byType(TextField).at(8), 'I');
-      await tester.ensureVisible(find.byTooltip('Delete column 2'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Delete column 2'));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byTooltip('Delete row 2'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Delete row 2'));
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widgetList<TextField>(find.byType(TextField))
-            .map((field) => field.controller!.text),
-        ['A', 'C', 'G', 'I'],
-      );
+      Future<void> cell(int row, int column, String value) async {
+        await tester.tap(find.byKey(ValueKey('table-cell-$row-$column')));
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.enterText(
+          find.byKey(const ValueKey('table-cell-input')),
+          value,
+        );
+      }
+
+      Future<void> tableAction(String label) async {
+        await tester.ensureVisible(find.byTooltip(label));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip(label));
+        await tester.pumpAndSettle();
+      }
+
+      await cell(0, 0, 'A');
+      await cell(0, 2, 'C');
+      await cell(2, 0, 'G');
+      await cell(2, 2, 'I');
+      await tester.tap(find.text('B'));
+      await tableAction('Delete columns');
+      await tester.tap(find.text('2').last);
+      await tableAction('Delete rows');
       await tester.tap(find.text('Insert'));
       await tester.pumpAndSettle();
       final controller = tester
@@ -230,30 +239,16 @@ void main() {
       ]);
       await tester.tap(find.byTooltip('Edit block'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Delete row 2'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Delete column 2'));
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<IconButton>(
-              find.byWidgetPredicate(
-                (w) => w is IconButton && w.tooltip == 'Delete row 1',
-              ),
-            )
-            .onPressed,
-        isNull,
-      );
-      expect(
-        tester
-            .widget<IconButton>(
-              find.byWidgetPredicate(
-                (w) => w is IconButton && w.tooltip == 'Delete column 1',
-              ),
-            )
-            .onPressed,
-        isNull,
-      );
+      await tester.tap(find.text('2').last);
+      await tableAction('Delete rows');
+      await tester.tap(find.text('B'));
+      await tableAction('Delete columns');
+      for (final label in ['Delete rows', 'Delete columns']) {
+        final item = tester.widget<IconButton>(
+          find.byWidgetPredicate((w) => w is IconButton && w.tooltip == label),
+        );
+        expect(item.onPressed, isNull);
+      }
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(
@@ -707,8 +702,9 @@ void main() {
         TextSelection.collapsed(offset: controller.document.length - 1),
         q.ChangeSource.local,
       );
-      await tester.ensureVisible(find.byTooltip('Formula'));
-      await tester.tap(find.byTooltip('Formula'));
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Formula'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), r'x^2');
       await tester.pumpAndSettle();

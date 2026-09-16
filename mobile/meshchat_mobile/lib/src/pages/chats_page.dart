@@ -1458,6 +1458,7 @@ class _HomeShellState extends State<_HomeShell> {
   double tabDirection = 1;
   double filterDirection = 1;
   final folderPages = PageController();
+  DateTime? lastFolderTapAt;
   final callAlert = CallAlertService();
   Timer? lowEndRefreshTimer;
   bool lowEndMode = false;
@@ -1619,11 +1620,29 @@ class _HomeShellState extends State<_HomeShell> {
 
   void selectFilter(_HomeFilter value) {
     if (value == filter) return;
+    final now = DateTime.now();
+    final rapidSelection =
+        lastFolderTapAt != null &&
+        now.difference(lastFolderTapAt!) < const Duration(milliseconds: 260);
+    lastFolderTapAt = now;
+    final previousIndex = _filterIndex(filter);
+    final nextIndex = _filterIndex(value);
     updateFilter(value);
     if (folderPages.hasClients) {
-      // A direct tap should not build and select every folder in between.
-      // PageView remains animated and interactive for horizontal swipes.
-      folderPages.jumpToPage(_filterIndex(value));
+      // Adjacent folders glide with the content. Distant taps jump directly so
+      // intermediate labels never flash as selected. Rapid taps also jump so
+      // the final choice wins without waiting for an earlier animation.
+      if (!rapidSelection && (nextIndex - previousIndex).abs() == 1) {
+        unawaited(
+          folderPages.animateToPage(
+            nextIndex,
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+          ),
+        );
+      } else {
+        folderPages.jumpToPage(nextIndex);
+      }
     }
   }
 
@@ -3376,62 +3395,80 @@ class _ConnectionStatusPill extends StatelessWidget {
         normalized.contains('online') || normalized.contains('в сети');
     final connecting =
         normalized.contains('connect') || normalized.contains('подключ');
+    final syncing =
+        normalized.contains('sync') || normalized.contains('синхрон');
     final accent = online
         ? Colors.greenAccent
+        : syncing
+        ? Colors.lightBlueAccent
         : connecting
         ? Colors.lightBlueAccent
         : Colors.orangeAccent;
     final label = online
         ? 'Online'
+        : syncing
+        ? 'Syncing'
         : connecting
         ? 'Connecting'
         : status.isEmpty
         ? 'Offline'
         : status;
 
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.055),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: accent.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              width: 7,
-              height: 7,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: accent,
-                boxShadow: [
-                  BoxShadow(
-                    color: accent.withValues(alpha: 0.45),
-                    blurRadius: 12,
+    return Tooltip(
+      message: status,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.055),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: accent.withValues(alpha: 0.25)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (syncing)
+                SizedBox.square(
+                  dimension: 10,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.6,
+                    color: accent,
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 7),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              child: Text(
-                label,
-                key: ValueKey(label),
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
+                )
+              else
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: accent,
+                    boxShadow: [
+                      BoxShadow(
+                        color: accent.withValues(alpha: 0.45),
+                        blurRadius: 12,
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(width: 7),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: Text(
+                  label,
+                  key: ValueKey(label),
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -5361,28 +5398,66 @@ class _HomeCallBanner extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
           child: Row(
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: color.withValues(alpha: 0.15),
-                  border: Border.all(color: Colors.white24),
-                ),
-                child: Icon(
-                  ended ? Icons.call_end_rounded : Icons.call_rounded,
-                  color: color,
-                  size: 19,
-                ),
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  ended
+                      ? Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: color.withValues(alpha: 0.15),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Icon(
+                            Icons.call_end_rounded,
+                            color: color,
+                            size: 19,
+                          ),
+                        )
+                      : ProfileAvatar(profile: call.peer, radius: 18),
+                  if (!ended)
+                    Positioned(
+                      right: -2,
+                      bottom: -2,
+                      child: Container(
+                        width: 12,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFF17232E),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  ended && call.endReason.isNotEmpty
-                      ? '$title: ${call.peer.displayName} - ${call.endReason}'
-                      : '$title: $details',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    Text(
+                      ended && call.endReason.isNotEmpty
+                          ? '${call.peer.displayName} - ${_homeCallEndReason(call.endReason)}'
+                          : details,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               if (collapsed)
@@ -5443,6 +5518,21 @@ class _HomeCallBanner extends StatelessWidget {
       ),
     );
   }
+}
+
+String _homeCallEndReason(String reason) {
+  final value = reason.toLowerCase();
+  if (value.contains('permission') || value.contains('microphone')) {
+    return 'Microphone access is unavailable';
+  }
+  if (value.contains('accept failed') || value.contains('start failed')) {
+    return 'Could not start call audio';
+  }
+  if (value.contains('timeout') || value.contains('unreachable')) {
+    return 'No response';
+  }
+  if (value.contains('declin') || value.contains('reject')) return 'Declined';
+  return reason;
 }
 
 class _HomeGlassCallSurface extends StatelessWidget {

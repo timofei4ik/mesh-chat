@@ -21,12 +21,14 @@ class ProfileAvatar extends StatelessWidget {
     this.radius = 24,
     this.animateDecoration,
     this.squareProgress = 0,
+    this.fillPortrait = false,
   });
 
   final Profile profile;
   final double radius;
   final bool? animateDecoration;
   final double squareProgress;
+  final bool fillPortrait;
 
   static final Map<String, MemoryImage> _imageCache = {};
   static final Map<String, Future<ui.Image?>> _staticFrameCache = {};
@@ -64,6 +66,7 @@ class ProfileAvatar extends StatelessWidget {
       width: radius * 2,
       height: radius * 2,
       child: Stack(
+        clipBehavior: Clip.none,
         alignment: Alignment.center,
         children: [
           SizedBox(
@@ -141,7 +144,10 @@ class ProfileAvatar extends StatelessWidget {
     // that layer alive while the profile route closes can leave a stale frame
     // over the chat until another window or scroll repaint occurs.
     if (radius > 96 || morph > 0.02) return avatar;
-    return RepaintBoundary(child: avatar);
+    final content = fillPortrait && decorated
+        ? Transform.scale(scale: 1 / decorationScale, child: avatar)
+        : avatar;
+    return RepaintBoundary(child: content);
   }
 
   static MemoryImage? _avatarImage(String value, {Uint8List? bytes}) {

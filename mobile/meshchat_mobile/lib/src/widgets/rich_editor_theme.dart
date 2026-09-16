@@ -37,14 +37,7 @@ ThemeData richEditorTheme(ThemeData base) {
       ),
       textStyle: const TextStyle(fontSize: 14, color: text),
     ),
-    dialogTheme: DialogThemeData(
-      backgroundColor: surface,
-      surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: border),
-      ),
-    ),
+    dialogTheme: base.dialogTheme,
     bottomSheetTheme: const BottomSheetThemeData(
       backgroundColor: surface,
       surfaceTintColor: Colors.transparent,

@@ -615,81 +615,71 @@ class _ChatPageState extends State<ChatPage>
       final sent = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
-        builder: (dialogContext) => Dialog(
-          insetPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 24,
-          ),
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          child: SizedBox(
-            width: 900,
-            height: MediaQuery.sizeOf(dialogContext).height * 0.88,
-            child: RichMessageEditorPage(
-              initial: initial,
-              drafts: drafts,
-              background: _LiquidMeshBackground(
-                enabled:
-                    !widget.controller.appSettings.reducedAnimations &&
-                    !MeshPerformanceScope.lowEndDeviceModeOf(context) &&
-                    widget.thread.animatedBackground,
-                themeId: widget.thread.themeId,
-              ),
-              editing: editing != null,
-              attachmentBuilder: (id, name) => _RichAttachmentPreview(
-                key: ValueKey('draft-$id'),
-                controller: widget.controller,
-                thread: widget.thread,
-                id: id,
-                name: name,
-                senderNode: widget.controller.myNodeId,
-                drafts: drafts,
-              ),
-              onGenerate: (instruction) async =>
-                  (await widget.controller.runContextAiTool({
-                    'mode': 'compose',
-                    'instruction': instruction,
-                    'sources': <Object>[],
-                  })).answer,
-              onSend: (document) async {
-                if (!session.isSameAccountAs(widget.controller.session)) {
-                  throw StateError('Account changed');
-                }
-                await widget.controller.prepareRichAttachments(
-                  widget.thread,
-                  document,
-                  drafts.readAttachment,
-                  replyTo: quote,
-                );
-                if (!session.isSameAccountAs(widget.controller.session)) {
-                  throw StateError('Account changed');
-                }
-                if (editing != null) {
-                  await widget.controller.editMessage(
-                    widget.thread,
-                    editing,
-                    document.text,
-                    richContent: document.encode(),
-                  );
-                } else if (widget.thread.isGroup) {
-                  final failure = await widget.controller.sendGroupMessage(
-                    widget.thread,
-                    document.text,
-                    replyTo: quote,
-                    richContent: document.encode(),
-                  );
-                  if (failure != null) throw StateError(failure);
-                } else {
-                  await widget.controller.sendMessage(
-                    widget.thread.profile,
-                    document.text,
-                    replyTo: quote,
-                    threadOverride: widget.thread,
-                    richContent: document.encode(),
-                  );
-                }
-              },
+        builder: (dialogContext) => _ResizableEditorDialog(
+          child: RichMessageEditorPage(
+            initial: initial,
+            drafts: drafts,
+            background: _LiquidMeshBackground(
+              enabled:
+                  !widget.controller.appSettings.reducedAnimations &&
+                  !MeshPerformanceScope.lowEndDeviceModeOf(context) &&
+                  widget.thread.animatedBackground,
+              themeId: widget.thread.themeId,
             ),
+            editing: editing != null,
+            attachmentBuilder: (id, name) => _RichAttachmentPreview(
+              key: ValueKey('draft-$id'),
+              controller: widget.controller,
+              thread: widget.thread,
+              id: id,
+              name: name,
+              senderNode: widget.controller.myNodeId,
+              drafts: drafts,
+            ),
+            onGenerate: (instruction) async =>
+                (await widget.controller.runContextAiTool({
+                  'mode': 'compose',
+                  'instruction': instruction,
+                  'sources': <Object>[],
+                })).answer,
+            onSend: (document) async {
+              if (!session.isSameAccountAs(widget.controller.session)) {
+                throw StateError('Account changed');
+              }
+              await widget.controller.prepareRichAttachments(
+                widget.thread,
+                document,
+                drafts.readAttachment,
+                replyTo: quote,
+              );
+              if (!session.isSameAccountAs(widget.controller.session)) {
+                throw StateError('Account changed');
+              }
+              if (editing != null) {
+                await widget.controller.editMessage(
+                  widget.thread,
+                  editing,
+                  document.text,
+                  richContent: document.encode(),
+                );
+              } else if (widget.thread.isGroup) {
+                final failure = await widget.controller.sendGroupMessage(
+                  widget.thread,
+                  document.text,
+                  replyTo: quote,
+                  richContent: document.encode(),
+                );
+                if (failure != null) throw StateError(failure);
+              } else {
+                await widget.controller.sendMessage(
+                  widget.thread.profile,
+                  document.text,
+                  replyTo: quote,
+                  threadOverride: widget.thread,
+                  richContent: document.encode(),
+                );
+              }
+            },
           ),
         ),
       );
@@ -2598,6 +2588,7 @@ class _ChatPageState extends State<ChatPage>
       builder: (_) => MessageBubblePicker(
         profile: widget.controller.ownProfile,
         animatedBackground: widget.thread.animatedBackground,
+        themeId: widget.thread.themeId,
         onSave: (style, animated) async {
           final error = await widget.controller.updateMessageBubbleStyle(style);
           if (error != null || animated == widget.thread.animatedBackground) {
@@ -4220,31 +4211,6 @@ class _ChatPageState extends State<ChatPage>
                         onSummarize: showCallSummary,
                         summaryLoading: aiCallSummarizing,
                       ),
-                      if (widget.controller.isTyping(widget.thread))
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-                          child: _ChatGlassSurface(
-                            radius: 16,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 7,
-                              ),
-                              child: Align(
-                                alignment: Alignment.centerLeft,
-                                child: Text(
-                                  widget.controller.activityLabel(
-                                    widget.thread,
-                                  ),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.white70,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
                     ],
                   ),
                 ),
@@ -4253,6 +4219,7 @@ class _ChatPageState extends State<ChatPage>
                     valueListenable: messageListRefresh,
                     builder: (context, _, _) {
                       final messages = visibleMessages();
+                      final typing = widget.controller.isTyping(widget.thread);
                       final commentCounts = <String, int>{};
                       if (widget.thread.isChannel && !isChannelCommentThread) {
                         for (final candidate in widget.thread.messages) {
@@ -4280,8 +4247,15 @@ class _ChatPageState extends State<ChatPage>
                             keyboardDismissBehavior:
                                 ScrollViewKeyboardDismissBehavior.onDrag,
                             padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
-                            itemCount: messages.length,
+                            itemCount: messages.length + (typing ? 1 : 0),
                             itemBuilder: (context, index) {
+                              if (index == messages.length) {
+                                return _TypingBubble(
+                                  label: widget.controller.activityLabel(
+                                    widget.thread,
+                                  ),
+                                );
+                              }
                               final message = messages[index];
                               if (isCoveredByAlbum(messages, index)) {
                                 return const SizedBox.shrink();
@@ -5016,9 +4990,27 @@ class _CallBanner extends StatelessWidget {
         title: 'Call ended',
         subtitle: call.endReason.isEmpty
             ? call.peer.displayName
-            : '${call.peer.displayName} - ${call.endReason}',
+            : '${call.peer.displayName} - ${_friendlyCallEndReason(call.endReason)}',
         color: Colors.redAccent,
         actions: [
+          if (call.endReason.isNotEmpty)
+            IconButton(
+              tooltip: 'Technical details',
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Call details'),
+                  content: SelectableText(call.endReason),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              ),
+              icon: const Icon(Icons.info_outline_rounded),
+            ),
           TextButton.icon(
             onPressed: summaryLoading ? null : onSummarize,
             icon: summaryLoading
@@ -5185,7 +5177,7 @@ class _CallBottomSheet extends StatelessWidget {
                 onPressed: controller.toggleCallCollapsed,
               ),
             ),
-            const _CallMeshLogo(),
+            _CallPeerPortrait(profile: call.peer, accent: accent),
             const SizedBox(height: 12),
             Text(
               call.peer.displayName,
@@ -5603,104 +5595,48 @@ class _FullscreenRemoteScreen extends StatelessWidget {
   }
 }
 
-class _CallMeshLogo extends StatelessWidget {
-  const _CallMeshLogo();
+String _friendlyCallEndReason(String reason) {
+  final value = reason.toLowerCase();
+  if (value.contains('permission') || value.contains('microphone')) {
+    return 'Microphone access is unavailable';
+  }
+  if (value.contains('accept failed') || value.contains('start failed')) {
+    return 'Could not start call audio';
+  }
+  if (value.contains('timeout') || value.contains('unreachable')) {
+    return 'No response';
+  }
+  if (value.contains('declin') || value.contains('reject')) return 'Declined';
+  if (value.contains('busy')) return 'Busy';
+  return reason;
+}
+
+class _CallPeerPortrait extends StatelessWidget {
+  const _CallPeerPortrait({required this.profile, required this.accent});
+
+  final Profile profile;
+  final Color accent;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 128,
-      height: 92,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Positioned(
-            left: 0,
-            child: Container(
-              width: 86,
-              height: 86,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF39D6FF).withValues(alpha: 0.30),
-                    blurRadius: 36,
-                    spreadRadius: 6,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            right: 0,
-            child: Container(
-              width: 86,
-              height: 86,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFB463FF).withValues(alpha: 0.28),
-                    blurRadius: 36,
-                    spreadRadius: 6,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const CustomPaint(
-            size: Size(116, 78),
-            painter: _CallMeshLogoPainter(),
+    return Container(
+      width: 104,
+      height: 104,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: accent.withValues(alpha: 0.55), width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withValues(alpha: 0.28),
+            blurRadius: 34,
+            spreadRadius: 4,
           ),
         ],
       ),
+      child: ProfileAvatar(profile: profile, radius: 50, fillPortrait: true),
     );
   }
-}
-
-class _CallMeshLogoPainter extends CustomPainter {
-  const _CallMeshLogoPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final left = Paint()
-      ..shader = const LinearGradient(
-        colors: [Color(0xFF39D6FF), Color(0xFF6B8DFF)],
-      ).createShader(Offset.zero & size)
-      ..strokeWidth = 5.2
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
-    final right = Paint()
-      ..shader = const LinearGradient(
-        colors: [Color(0xFF6B8DFF), Color(0xFFB463FF)],
-      ).createShader(Offset.zero & size)
-      ..strokeWidth = 5.2
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
-    final nodePaint = Paint()..style = PaintingStyle.fill;
-
-    final points = [
-      Offset(size.width * 0.08, size.height * 0.86),
-      Offset(size.width * 0.18, size.height * 0.12),
-      Offset(size.width * 0.50, size.height * 0.58),
-      Offset(size.width * 0.82, size.height * 0.12),
-      Offset(size.width * 0.92, size.height * 0.86),
-    ];
-    canvas.drawLine(points[0], points[1], left);
-    canvas.drawLine(points[1], points[2], left);
-    canvas.drawLine(points[2], points[3], right);
-    canvas.drawLine(points[3], points[4], right);
-
-    for (var i = 0; i < points.length; i++) {
-      nodePaint.color = i < 3
-          ? const Color(0xFF4DD7FF)
-          : const Color(0xFFB463FF);
-      canvas.drawCircle(points[i], 6.4, nodePaint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _CallCaptions extends StatelessWidget {
@@ -5777,11 +5713,26 @@ class _CallCaptions extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var index = 0; index < lines.length; index++)
-                    _CaptionLyricLine(
-                      line: lines[index],
-                      highlighted: index == lines.length - 1,
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 180),
+                    child: SingleChildScrollView(
+                      key: const ValueKey('call-caption-scroll'),
+                      reverse: true,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (var index = 0; index < lines.length; index++)
+                            _CaptionLyricLine(
+                              key: ValueKey(
+                                '${lines[index].sourceNode}:${lines[index].id}',
+                              ),
+                              line: lines[index],
+                              highlighted: index == lines.length - 1,
+                            ),
+                        ],
+                      ),
                     ),
+                  ),
                   const SizedBox(height: 6),
                   if (controller.canStartCallCaptions ||
                       controller.hasSharedCaptionSession)
@@ -6094,15 +6045,18 @@ class _CaptionStatus extends StatelessWidget {
 }
 
 class _CaptionLyricLine extends StatelessWidget {
-  const _CaptionLyricLine({required this.line, required this.highlighted});
+  const _CaptionLyricLine({
+    super.key,
+    required this.line,
+    required this.highlighted,
+  });
 
   final CallCaptionLine line;
   final bool highlighted;
 
   @override
   Widget build(BuildContext context) {
-    final key =
-        '${line.sourceNode}:${line.id}:${line.text}:${line.translation}';
+    final key = '${line.sourceNode}:${line.id}';
     return TweenAnimationBuilder<double>(
       key: ValueKey(key),
       tween: Tween(begin: 0, end: 1),
@@ -6139,8 +6093,7 @@ class _CaptionLyricLine extends StatelessWidget {
                     TextSpan(text: line.text),
                   ],
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+                softWrap: true,
               ),
             ),
             AnimatedSwitcher(
@@ -6161,8 +6114,7 @@ class _CaptionLyricLine extends StatelessWidget {
                       padding: const EdgeInsets.only(top: 3),
                       child: Text(
                         line.translation,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                        softWrap: true,
                         style: TextStyle(
                           color: highlighted
                               ? Colors.cyanAccent.withValues(alpha: 0.92)
@@ -8071,6 +8023,90 @@ class _ChatGlassSurface extends StatelessWidget {
   }
 }
 
+class _ResizableEditorDialog extends StatefulWidget {
+  const _ResizableEditorDialog({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ResizableEditorDialog> createState() => _ResizableEditorDialogState();
+}
+
+class _ResizableEditorDialogState extends State<_ResizableEditorDialog> {
+  double? width;
+  double? height;
+
+  bool get desktop =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux);
+
+  @override
+  Widget build(BuildContext context) {
+    final screen = MediaQuery.sizeOf(context);
+    final maxWidth = math.max(320.0, screen.width - 24).toDouble();
+    final maxHeight = math.max(420.0, screen.height - 48).toDouble();
+    final dialogWidth = (width ?? math.min(980.0, maxWidth))
+        .clamp(math.min(620.0, maxWidth), maxWidth)
+        .toDouble();
+    final dialogHeight = (height ?? maxHeight * 0.92)
+        .clamp(math.min(520.0, maxHeight), maxHeight)
+        .toDouble();
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            widget.child,
+            if (desktop)
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeDownRight,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: (details) => setState(() {
+                      width = (dialogWidth + details.delta.dx).clamp(
+                        math.min(620.0, maxWidth),
+                        maxWidth,
+                      );
+                      height = (dialogHeight + details.delta.dy).clamp(
+                        math.min(520.0, maxHeight),
+                        maxHeight,
+                      );
+                    }),
+                    child: const SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: Align(
+                        alignment: Alignment.bottomRight,
+                        child: Padding(
+                          padding: EdgeInsets.all(5),
+                          child: Icon(
+                            Icons.drag_handle_rounded,
+                            size: 17,
+                            color: Colors.white38,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _CallPanel extends StatelessWidget {
   const _CallPanel({
     required this.icon,
@@ -8431,6 +8467,96 @@ class _ReplyComposer extends StatelessWidget {
             icon: const Icon(Icons.close_rounded),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TypingBubble extends StatefulWidget {
+  const _TypingBubble({required this.label});
+
+  final String label;
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController animation;
+
+  @override
+  void initState() {
+    super.initState();
+    animation = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1050),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    animation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      label: widget.label,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Padding(
+          padding: const EdgeInsets.only(left: 2, top: 2, bottom: 8),
+          child: _ChatGlassSurface(
+            radius: 18,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(13, 8, 14, 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedBuilder(
+                    animation: animation,
+                    builder: (context, _) => Row(
+                      children: [
+                        for (var index = 0; index < 3; index++)
+                          Container(
+                            width: 6,
+                            height: 6,
+                            margin: const EdgeInsets.symmetric(horizontal: 2),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Color.lerp(
+                                Colors.white30,
+                                Colors.lightBlueAccent,
+                                ((math.sin(
+                                              animation.value * math.pi * 2 -
+                                                  index * 0.9,
+                                            ) +
+                                            1) /
+                                        2)
+                                    .clamp(0.0, 1.0),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    widget.label,
+                    style: const TextStyle(
+                      color: Colors.white60,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -8833,6 +8959,32 @@ class _MessageBubbleState extends State<_MessageBubble> {
         message.messageEffect != 'none' &&
         DateTime.now().difference(message.createdAt).abs() <
             const Duration(seconds: 12);
+    final paintedBody = messageEffectsEnabled
+        ? MessageSendEffect(
+            messageId: message.id,
+            effect: message.messageEffect,
+            enabled: true,
+            child: messageBody,
+          )
+        : messageBody;
+    final sender =
+        widget.controller.profiles[message.senderNode] ?? widget.thread.profile;
+    final groupedSurface = !mine && widget.thread.isGroup
+        ? Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              SizedBox(
+                width: 30,
+                child: widget.joinedNext
+                    ? null
+                    : ProfileAvatar(profile: sender, radius: 13),
+              ),
+              const SizedBox(width: 5),
+              Flexible(child: paintedBody),
+            ],
+          )
+        : paintedBody;
 
     return _MessageAppearanceTransition(
       enabled: !lowEndMode && animateAppearance,
@@ -8891,16 +9043,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
               child: _MessageDragSurface(
                 animate: !lowEndMode,
                 offset: replyDrag,
-                constraints: const BoxConstraints(maxWidth: 340),
-                margin: EdgeInsets.only(bottom: widget.joinedNext ? 2 : 8),
-                child: messageEffectsEnabled
-                    ? MessageSendEffect(
-                        messageId: message.id,
-                        effect: message.messageEffect,
-                        enabled: true,
-                        child: messageBody,
-                      )
-                    : messageBody,
+                constraints: BoxConstraints(
+                  maxWidth: !mine && widget.thread.isGroup ? 375 : 340,
+                ),
+                margin: EdgeInsets.only(bottom: widget.joinedNext ? 1.5 : 8),
+                child: groupedSurface,
               ),
             ),
           ],

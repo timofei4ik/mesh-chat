@@ -11,10 +11,12 @@ class MessageBubblePicker extends StatefulWidget {
     required this.profile,
     required this.onSave,
     this.animatedBackground = true,
+    this.themeId = 'default',
   });
   final Profile profile;
   final Future<String?> Function(String, bool) onSave;
   final bool animatedBackground;
+  final String themeId;
 
   @override
   State<MessageBubblePicker> createState() => _MessageBubblePickerState();
@@ -69,6 +71,13 @@ class _MessageBubblePickerState extends State<MessageBubblePicker> {
                 const Text(
                   'Your messages in all chats',
                   style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 12),
+                _BubbleConversationPreview(
+                  profile: widget.profile,
+                  style: selected,
+                  themeId: widget.themeId,
+                  animated: animatedBackground,
                 ),
                 const SizedBox(height: 12),
                 Expanded(
@@ -185,3 +194,173 @@ class _MessageBubblePickerState extends State<MessageBubblePicker> {
     ),
   );
 }
+
+class _BubbleConversationPreview extends StatelessWidget {
+  const _BubbleConversationPreview({
+    required this.profile,
+    required this.style,
+    required this.themeId,
+    required this.animated,
+  });
+
+  final Profile profile;
+  final String style;
+  final String themeId;
+  final bool animated;
+
+  @override
+  Widget build(BuildContext context) {
+    final previewProfile = profile.copyWith(messageBubbleStyle: style);
+    final skin = collectionBubbleSkin(previewProfile);
+    final accent = _previewAccent(themeId);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 240),
+      height: 176,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      decoration: BoxDecoration(
+        color: _previewBackground(themeId),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        boxShadow: animated
+            ? [
+                BoxShadow(
+                  color: accent.withValues(alpha: 0.16),
+                  blurRadius: 28,
+                  spreadRadius: -6,
+                ),
+              ]
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: _PreviewBubble(
+              text: 'Looks good from here',
+              mine: false,
+              showTail: true,
+            ),
+          ),
+          const Spacer(),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _PreviewBubble(
+              text: 'I will send the details',
+              mine: true,
+              showTail: false,
+              skin: skin,
+              color: accent,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _PreviewBubble(
+              text: 'Voice message  0:18',
+              icon: Icons.graphic_eq_rounded,
+              mine: true,
+              joinedPrevious: true,
+              showTail: false,
+              skin: skin,
+              color: accent,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _PreviewBubble(
+              text: 'Done  12:42',
+              mine: true,
+              joinedPrevious: true,
+              showTail: true,
+              skin: skin,
+              color: accent,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PreviewBubble extends StatelessWidget {
+  const _PreviewBubble({
+    required this.text,
+    required this.mine,
+    required this.showTail,
+    this.joinedPrevious = false,
+    this.skin,
+    this.color,
+    this.icon,
+  });
+
+  final String text;
+  final bool mine;
+  final bool showTail;
+  final bool joinedPrevious;
+  final CollectionBubbleSkin? skin;
+  final Color? color;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: 15, color: Colors.white70),
+          const SizedBox(width: 6),
+        ],
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+          ),
+        ),
+      ],
+    );
+    final decoration = BoxDecoration(color: color ?? const Color(0xFF263441));
+    if (skin != null) {
+      return CollectionMessageSurface(
+        skin: skin!,
+        mine: mine,
+        showTail: showTail,
+        joinedPrevious: joinedPrevious,
+        decoration: decoration,
+        constraints: const BoxConstraints(maxWidth: 245),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        child: content,
+      );
+    }
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 245),
+      padding: EdgeInsets.fromLTRB(mine ? 10 : 16, 7, mine ? 16 : 10, 7),
+      decoration: ShapeDecoration(
+        color: decoration.color,
+        shape: CollectionBubbleBorder(
+          mine: mine,
+          showTail: showTail,
+          joinedPrevious: joinedPrevious,
+        ),
+      ),
+      child: content,
+    );
+  }
+}
+
+Color _previewAccent(String themeId) => switch (themeId) {
+  'cyan' => const Color(0xFF087F9E),
+  'violet' => const Color(0xFF7453C8),
+  'emerald' => const Color(0xFF27815B),
+  _ => const Color(0xFF2587E8),
+};
+
+Color _previewBackground(String themeId) => switch (themeId) {
+  'cyan' => const Color(0xFF0C1820),
+  'violet' => const Color(0xFF151321),
+  'emerald' => const Color(0xFF101B19),
+  _ => const Color(0xFF111820),
+};

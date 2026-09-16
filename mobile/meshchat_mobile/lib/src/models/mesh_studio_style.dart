@@ -514,15 +514,15 @@ String? meshStudioBundledDecorationAsset(
 }
 
 double meshStudioDecorationAvatarScale(String decoration) {
-  final remote = _remoteDecorationScales[decoration];
-  if (remote != null) return remote;
+  // The original catalog ships stale geometry for these known frames.
+  // Keep their calibrated aperture even after the catalog has loaded.
   return switch (decoration) {
-    'camp_clouds' ||
-    'camp_moon' ||
-    'camp_ember' ||
-    'camp_stories' ||
-    'camp_rainlight' => 0.70,
-    _ => 0.79,
+    'camp_clouds' || 'remote_ember_vale' => 0.84,
+    'camp_moon' || 'remote_moonlit_path' => 0.81,
+    'camp_ember' || 'remote_skybound_camp' => 0.82,
+    'camp_stories' || 'remote_lantern_stories' => 0.80,
+    'camp_rainlight' => 0.81,
+    _ => _remoteDecorationScales[decoration] ?? 0.79,
   };
 }
 
@@ -532,7 +532,7 @@ double meshStudioDecorationFrameScale(String decoration) {
     'camp_moon' ||
     'camp_ember' ||
     'camp_stories' ||
-    'camp_rainlight' => 0.72,
+    'camp_rainlight' => 1,
     _ => 1,
   };
 }

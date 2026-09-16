@@ -52,11 +52,17 @@ void main() {
     await tester.runAsync(() async {
       final context = tester.element(find.byType(MessageBubblePicker));
       for (final name in ['sakura', 'nebula', 'ocean']) {
-        await precacheImage(AssetImage('assets/message_bubbles/$name.png', package: null), context);
-        await precacheImage(ExactAssetImage('assets/message_bubbles/$name.png', scale: 4), context);
+        await precacheImage(
+          AssetImage('assets/message_bubbles/$name.png', package: null),
+          context,
+        );
+        await precacheImage(
+          ExactAssetImage('assets/message_bubbles/$name.png', scale: 4),
+          context,
+        );
       }
     });
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 16));
     expect(tester.takeException(), isNull);
     final render = tester.renderObject<RenderRepaintBoundary>(find.byKey(key));
     await tester.runAsync(() async {
@@ -85,6 +91,7 @@ void main() {
               meshProBadge: true,
               profileBackground: 'sakura',
             ),
+            animatedBackground: false,
             onSave: (value, animated) async {
               saved = value;
               return 'Server unavailable';
@@ -93,6 +100,12 @@ void main() {
         ),
       ),
     );
+    await tester.scrollUntilVisible(find.text('Ocean'), 180);
+    await Scrollable.ensureVisible(
+      tester.element(find.text('Ocean')),
+      alignment: 0.5,
+    );
+    await tester.pump(const Duration(milliseconds: 16));
     await tester.tap(find.text('Ocean'));
     await tester.pump();
     await tester.tap(find.text('Apply'));
@@ -101,6 +114,11 @@ void main() {
     expect(find.text('Server unavailable'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.scrollUntilVisible(find.text('Lantern Stories'), 240);
+    await Scrollable.ensureVisible(
+      tester.element(find.text('Lantern Stories')),
+      alignment: 0.5,
+    );
+    await tester.pump(const Duration(milliseconds: 16));
     await tester.tap(find.text('Lantern Stories'));
     await tester.tap(find.text('Apply'));
     await tester.pumpAndSettle();

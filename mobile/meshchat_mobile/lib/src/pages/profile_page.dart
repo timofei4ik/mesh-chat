@@ -325,7 +325,7 @@ class _ProfileHeroState extends State<_ProfileHero>
                         ),
                       ),
                       Align(
-                        alignment: Alignment(0, lerpDouble(-0.42, 0, value)!),
+                        alignment: Alignment(0, lerpDouble(-0.70, 0, value)!),
                         child: Container(
                           padding: EdgeInsets.all(
                             hasAvatarDecoration ? 0 : lerpDouble(6, 0, value)!,
