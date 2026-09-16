@@ -1,9 +1,8 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'file_transfer_payload_store.dart';
+import '../utils/background_json.dart';
 
 // Keep only a small reference in browser localStorage; media lives in IndexedDB.
 class LargePreferenceValue {
@@ -19,7 +18,8 @@ class LargePreferenceValue {
     final reference = prefs.getString('$key:blob');
     if (reference == null) return prefs.getString(key);
     final bytes = await _payloads.readChunk(reference, 0, 0x7fffffff);
-    return bytes.isEmpty ? null : utf8.decode(bytes);
+    if (bytes.isEmpty) return prefs.getString(key);
+    return decodeBackgroundUtf8(bytes);
   }
 
   Future<void> write(SharedPreferences prefs, String key, String value) async {
@@ -30,9 +30,11 @@ class LargePreferenceValue {
     final reference = await _payloads.write(
       'large_preferences',
       key,
-      utf8.encode(value),
+      await encodeBackgroundUtf8(value),
     );
-    await prefs.setString('$key:blob', reference);
+    if (!await prefs.setString('$key:blob', reference)) {
+      throw StateError('Unable to save preference payload reference');
+    }
     await prefs.remove(key);
   }
 

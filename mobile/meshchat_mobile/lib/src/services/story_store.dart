@@ -1,19 +1,35 @@
-import 'dart:convert';
-
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/session.dart';
 import '../models/story_item.dart';
 import 'large_preference_value.dart';
+import '../utils/background_json.dart';
 
 class StoryStore {
-  final _values = LargePreferenceValue();
+  StoryStore({LargePreferenceValue? values})
+    : _values = values ?? LargePreferenceValue(usePayloads: true);
+
+  final LargePreferenceValue _values;
+  Future<void> _pendingWrite = Future.value();
+
+  Future<void> _write(String key, List<Map<String, dynamic>> stories) {
+    final result = _pendingWrite.then((_) async {
+      final encoded = await encodeBackgroundJson(stories);
+      final prefs = await SharedPreferences.getInstance();
+      await _values.write(prefs, key, encoded);
+    });
+    _pendingWrite = result.catchError((Object _) {});
+    return result;
+  }
+
   Future<Map<String, StoryItem>> load(Session session) async {
+    await _pendingWrite;
     final prefs = await SharedPreferences.getInstance();
     final raw = await _values.read(prefs, _key(session));
     if (raw == null || raw.isEmpty) return {};
     try {
-      final decoded = jsonDecode(raw);
+      final decoded = await decodeBackgroundJson(raw);
       if (decoded is! List) return {};
       final stories = <String, StoryItem>{};
       for (final item in decoded) {
@@ -22,9 +38,9 @@ class StoryStore {
         if (story.id.isEmpty || story.expired) continue;
         stories[story.id] = story;
       }
+      await _migrateLegacy(prefs, _key(session), stories.values);
       return stories;
     } catch (_) {
-      await _values.remove(prefs, _key(session));
       return {};
     }
   }
@@ -33,20 +49,16 @@ class StoryStore {
     if (session == null) return;
     final active = stories.where((story) => !story.expired).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final prefs = await SharedPreferences.getInstance();
-    await _values.write(
-      prefs,
-      _key(session),
-      jsonEncode(active.map((story) => story.toJson()).toList()),
-    );
+    await _write(_key(session), active.map((story) => story.toJson()).toList());
   }
 
   Future<List<StoryItem>> loadArchive(Session session) async {
+    await _pendingWrite;
     final prefs = await SharedPreferences.getInstance();
     final raw = await _values.read(prefs, _archiveKey(session));
     if (raw == null || raw.isEmpty) return const [];
     try {
-      final decoded = jsonDecode(raw);
+      final decoded = await decodeBackgroundJson(raw);
       if (decoded is! List) return const [];
       final stories = <StoryItem>[];
       for (final item in decoded) {
@@ -56,10 +68,23 @@ class StoryStore {
         stories.add(story);
       }
       stories.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _migrateLegacy(prefs, _archiveKey(session), stories);
       return stories;
     } catch (_) {
-      await _values.remove(prefs, _archiveKey(session));
       return const [];
+    }
+  }
+
+  Future<void> _migrateLegacy(
+    SharedPreferences prefs,
+    String key,
+    Iterable<StoryItem> stories,
+  ) async {
+    if (!prefs.containsKey(key)) return;
+    try {
+      await _write(key, stories.map((story) => story.toJson()).toList());
+    } catch (error) {
+      debugPrint('Story cache migration deferred: ${error.runtimeType}');
     }
   }
 
@@ -70,11 +95,9 @@ class StoryStore {
     if (session == null) return;
     final archived = stories.toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final prefs = await SharedPreferences.getInstance();
-    await _values.write(
-      prefs,
+    await _write(
       _archiveKey(session),
-      jsonEncode(archived.map((story) => story.toJson()).toList()),
+      archived.map((story) => story.toJson()).toList(),
     );
   }
 

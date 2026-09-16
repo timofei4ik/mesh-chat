@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -34,7 +35,10 @@ void main() {
           await root.delete(recursive: true);
         });
         final bytes = Uint8List.fromList([1, 2, 3, 4]);
-        final source = await StoryVideoSource.prepare(bytes, entry.key);
+        final source = await StoryVideoSource.prepareEncoded(
+          'data:${entry.key};base64,${base64Encode(bytes)}',
+          entry.key,
+        );
         final file = File.fromUri(Uri.parse(source.controller.dataSource));
         expect(file.path, endsWith('video.${entry.value}'));
         expect(await file.readAsBytes(), bytes);

@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../models/chat_message.dart';
 import '../models/rich_message_document.dart';
 import '../utils/media_request_encoder.dart';
+import '../utils/sync_delta_digest.dart';
 import '../models/ai_context.dart';
 import '../models/chat_thread.dart';
 import '../services/direct_thread_identity.dart';
@@ -3629,7 +3630,7 @@ class AppController extends ChangeNotifier {
     _deferNotifications = true;
     try {
       final batch = _syncDeltaBuffer.complete(packet);
-      final actualDigest = await _syncDeltaDigest(batch.eventEnvelopes);
+      final actualDigest = await syncDeltaDigest(batch.eventEnvelopes);
       if (actualDigest != batch.expectedDigest) {
         throw const FormatException('delta checksum mismatch');
       }
@@ -3681,14 +3682,6 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<String> _syncDeltaDigest(List<Map<String, dynamic>> envelopes) async {
-    final canonical = jsonEncode(_canonicalSyncJson(envelopes));
-    final digest = await Sha256().hash(utf8.encode(canonical));
-    return digest.bytes
-        .map((value) => value.toRadixString(16).padLeft(2, '0'))
-        .join();
-  }
-
   void _recordSyncLatency(String mode) {
     final startedAt = _syncStartedAt;
     _syncStartedAt = null;
@@ -3700,19 +3693,6 @@ class AppController extends ChangeNotifier {
         attributes: {'mode': mode, 'platform': defaultTargetPlatform.name},
       ),
     );
-  }
-
-  Object? _canonicalSyncJson(Object? value) {
-    if (value is Map) {
-      final keys = value.keys.map((key) => key.toString()).toList()..sort();
-      return <String, Object?>{
-        for (final key in keys) key: _canonicalSyncJson(value[key]),
-      };
-    }
-    if (value is List) {
-      return value.map(_canonicalSyncJson).toList(growable: false);
-    }
-    return value;
   }
 
   void _requestAuthoritativeSnapshot(String reason) {

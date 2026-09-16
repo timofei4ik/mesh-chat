@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/profile.dart';
 import '../models/session.dart';
 import '../utils/media_request_encoder.dart';
+import '../utils/background_json.dart';
 import 'file_transfer_outbox_store.dart';
 import 'mutation_outbox_store.dart';
 import 'call_signal_buffer.dart';
@@ -1335,7 +1336,11 @@ class MeshSocket {
         (entry.packet['rich_content']?.toString() ?? '').isNotEmpty) {
       return;
     }
-    if (!_sendRaw(entry.packet)) {
+    final sent = entry.packet['type'] == 'story_update'
+        ? await _sendStoryRaw(entry.packet, generation)
+        : _sendRaw(entry.packet);
+    if (!_isCurrentGeneration(generation)) return;
+    if (!sent) {
       await _outboxStore.markQueued(
         current,
         entry.outboxId,
@@ -1494,6 +1499,26 @@ class MeshSocket {
     if (_closed || !_connected || channel == null) return false;
     try {
       channel.sink.add(jsonEncode(packet));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _sendStoryRaw(
+    Map<String, dynamic> packet,
+    int generation,
+  ) async {
+    final channel = _channel;
+    if (channel == null || !_isCurrentConnection(generation, channel)) {
+      return false;
+    }
+    try {
+      final encoded = await encodeBackgroundJson(packet);
+      if (!_connected || !_isCurrentConnection(generation, channel)) {
+        return false;
+      }
+      channel.sink.add(encoded);
       return true;
     } catch (_) {
       return false;

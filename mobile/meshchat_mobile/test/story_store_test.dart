@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meshchat_mobile/src/models/session.dart';
 import 'package:meshchat_mobile/src/models/story_item.dart';
@@ -5,6 +8,9 @@ import 'package:meshchat_mobile/src/services/story_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory temporary;
+  const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
   const session = Session(
     serverUrl: 'wss://meshchat-losa.ru/ws',
     serverToken: 'invite',
@@ -14,8 +20,19 @@ void main() {
     nodeId: 'node-a',
   );
 
-  setUp(() {
+  setUp(() async {
+    temporary = await Directory.systemTemp.createTemp(
+      'meshchat_story_store_test_',
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProvider, (_) async => temporary.path);
     SharedPreferences.setMockInitialValues({});
+  });
+
+  tearDown(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProvider, null);
+    await temporary.delete(recursive: true);
   });
 
   test('reload keeps active story views and likes', () async {

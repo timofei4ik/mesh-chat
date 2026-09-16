@@ -1908,10 +1908,9 @@ packages:
   video_player_win:
     dependency: "direct main"
     description:
-      name: video_player_win
-      sha256: df03760c1498ee0c0efe2688b302c331acf46489e9821761d1adb137148502f1
-      url: "https://pub.dev"
-    source: hosted
+      path: "vendor/video_player_win"
+      relative: true
+    source: path
     version: "3.3.0"
   vm_service:
     dependency: transitive

@@ -1,7 +1,7 @@
 name: meshchat_mobile
 description: "MeshChat mobile client."
 publish_to: "none"
-version: 1.1.8+228
+version: 1.1.8+230
 
 environment:
   sdk: ^3.12.2
@@ -52,6 +52,8 @@ dependencies:
   flutter_quill: ^11.5.1
   flutter_math_fork: ^0.7.4
 dependency_overrides:
+  video_player_win:
+    path: vendor/video_player_win
   flutter_webrtc:
     path: vendor/flutter_webrtc
 

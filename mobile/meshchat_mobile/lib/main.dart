@@ -11,9 +11,11 @@ import 'src/services/android_call_ui.dart';
 import 'src/services/firebase_telemetry_service.dart';
 import 'src/services/mesh_studio_catalog_service.dart';
 import 'src/services/platform_capabilities.dart';
+import 'src/services/story_preferences_migration.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await migrateStoryPreferences();
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks([
       'RNNoise',

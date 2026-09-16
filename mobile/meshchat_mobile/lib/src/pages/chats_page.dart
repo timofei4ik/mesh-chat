@@ -31,6 +31,7 @@ import '../widgets/meshpro_badge.dart';
 import '../widgets/meshpro_gate.dart';
 import '../widgets/profile_avatar.dart';
 import '../widgets/report_content_dialog.dart';
+import '../widgets/story_video_view.dart';
 import 'bluetooth_nearby_page.dart';
 import 'chat_page.dart';
 import 'diagnostics_page.dart';
@@ -2681,38 +2682,32 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
   Future<void> _loadVideo(StoryItem story) async {
     StoryVideoSource? source;
     try {
-      final raw = story.videoData.split(',').last;
-      source = await StoryVideoSource.prepare(
-        base64Decode(raw),
+      source = await StoryVideoSource.prepareEncoded(
+        story.videoData,
         story.videoMime,
       );
-      await source.controller.initialize().timeout(const Duration(seconds: 20));
-      await source.controller.setLooping(true);
       if (!mounted) {
         await source.dispose();
         return;
       }
       _videoSource = source;
+      await source.initializeForPlayback();
+      if (!mounted) return;
       videoController = source.controller;
-      videoController!.addListener(_onVideoChanged);
       setState(() {});
+      // Mount the video texture before advancing the first frame or audio.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
       await source.controller.play();
     } catch (_) {
-      if (source != _videoSource) await source?.dispose();
       if (mounted) setState(() => _videoFailed = true);
-    }
-  }
-
-  void _onVideoChanged() {
-    if (mounted && videoController!.value.hasError && !_videoFailed) {
-      setState(() => _videoFailed = true);
+      await source?.dispose();
     }
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onControllerChanged);
-    videoController?.removeListener(_onVideoChanged);
     unawaited(_videoSource?.dispose());
     replyController.dispose();
     super.dispose();
@@ -2964,7 +2959,11 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
     return Scaffold(
       body: Stack(
         children: [
-          const Positioned.fill(child: MeshHomeBackground(enabled: true)),
+          Positioned.fill(
+            child: MeshHomeBackground(
+              enabled: story.mediaType != StoryMediaType.video,
+            ),
+          ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(14),
@@ -3104,26 +3103,20 @@ class _StoryViewerPageState extends State<_StoryViewerPage> {
                           children: [
                             if (story.mediaType == StoryMediaType.video)
                               Expanded(
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(24),
-                                  child: _videoFailed
-                                      ? const Center(
-                                          child: Text(
-                                            'Unable to play this video',
-                                          ),
-                                        )
-                                      : videoController?.value.isInitialized ==
-                                            true
-                                      ? AspectRatio(
-                                          aspectRatio: videoController!
-                                              .value
-                                              .aspectRatio,
-                                          child: VideoPlayer(videoController!),
-                                        )
-                                      : const Center(
-                                          child: CircularProgressIndicator(),
+                                child: _videoFailed
+                                    ? const Center(
+                                        child: Text(
+                                          'Unable to play this video',
                                         ),
-                                ),
+                                      )
+                                    : videoController?.value.isInitialized ==
+                                          true
+                                    ? StoryVideoView(
+                                        controller: videoController!,
+                                      )
+                                    : const Center(
+                                        child: CircularProgressIndicator(),
+                                      ),
                               )
                             else if (image != null)
                               Expanded(

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../models/session.dart';
+import '../utils/background_json.dart';
 import 'app_database_path.dart';
 import 'large_preference_value.dart';
 import 'file_transfer_payload_store.dart';
@@ -178,11 +179,13 @@ class MutationOutboxStore {
       return;
     }
     final db = await _db();
-    var packetJson = jsonEncode(entry.packet);
+    var packetJson = entry.packet['type'] == 'story_update'
+        ? await encodeBackgroundJson(entry.packet)
+        : jsonEncode(entry.packet);
     // Android SQLite cursors cannot load a multi-megabyte story in one row.
     if (entry.packet['type'] == 'story_update' &&
         packetJson.length > 512 * 1024) {
-      final bytes = utf8.encode(packetJson);
+      final bytes = await encodeBackgroundUtf8(packetJson);
       final reference = await _payloadStore.write(
         'story_outbox:${_sessionKey(session)}',
         entry.outboxId,
@@ -353,7 +356,7 @@ class MutationOutboxStore {
     if (bytes.length != length) {
       throw StateError('Story outbox payload is missing');
     }
-    return _decodePacket(utf8.decode(bytes));
+    return decodeBackgroundPacket(bytes);
   }
 
   Future<Database> _db() async {
