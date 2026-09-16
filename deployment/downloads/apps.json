@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 56,
-  "updatedAt": "2026-09-16T19:16:04Z",
+  "catalogVersion": 57,
+  "updatedAt": "2026-09-16T19:46:58Z",
   "featuredAppId": "meshchat",
   "news": [
     {
@@ -262,5 +262,19 @@
         ]
       }
     }
-  ]
+  ],
+  "hubUpdate": {
+    "version": "1.2.0",
+    "build": 7,
+    "windows": {
+      "url": "https://meshchat-losa.ru/downloads/MeshHub-Setup-1.2.0.exe",
+      "bytes": 12460272,
+      "sha256": "52a0e2ada297cd824e6d73fc7bed04ac16981b4313e222ba9770a06ccec35156"
+    },
+    "android": {
+      "url": "https://meshchat-losa.ru/downloads/MeshHub-Android-1.2.0.apk",
+      "bytes": 50763470,
+      "sha256": "e45e297dd9b4ce2352e98223a9cfd8910deb6e1e9c8f9d1562607a89eca1a10e"
+    }
+  }
 }
