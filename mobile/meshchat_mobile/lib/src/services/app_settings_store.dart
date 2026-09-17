@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
@@ -53,72 +54,72 @@ class AppSettingsStore {
     );
   }
 
-  Future<void> save(AppSettings settings) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('app_theme_mode', settings.themeMode.name);
-    await prefs.setInt('app_accent_color', settings.accentColor.toARGB32());
-    await prefs.setBool('notifications_enabled', settings.notificationsEnabled);
-    await prefs.setBool('notification_sound', settings.notificationSound);
-    await prefs.setBool(
-      'notification_vibration',
-      settings.notificationVibration,
+  Future<void> _pendingWrite = Future<void>.value();
+
+  Future<void> _enqueue(Map<String, Object> values) {
+    final result = _pendingWrite.then((_) => _writeChanged(values));
+    // A failed write must not prevent later settings from being saved.
+    _pendingWrite = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
     );
-    await prefs.setBool('notification_preview', settings.notificationPreview);
-    await prefs.setBool('windows_close_to_tray', settings.windowsCloseToTray);
-    await prefs.setBool(
-      'windows_launch_at_startup',
-      settings.windowsLaunchAtStartup,
-    );
-    await prefs.setBool('compress_photos', settings.compressPhotos);
-    await prefs.setBool('send_files_original', settings.sendFilesOriginal);
-    await prefs.setBool('data_saver', settings.dataSaver);
-    await prefs.setBool('low_end_device_mode', settings.lowEndDeviceMode);
-    await prefs.setBool('reduced_animations', settings.reducedAnimations);
-    await prefs.setBool(
-      'message_effects_enabled',
-      settings.messageEffectsEnabled,
-    );
-    await prefs.setBool('privacy_show_online', settings.showOnline);
-    await prefs.setBool('privacy_show_avatar', settings.showAvatar);
-    await prefs.setBool('privacy_show_about', settings.showAbout);
-    await prefs.setBool('privacy_allow_calls', settings.allowCalls);
-    await prefs.setBool(
-      'privacy_allow_group_invites',
-      settings.allowGroupInvites,
-    );
-    await prefs.setString(
-      'privacy_direct_messages',
-      settings.directMessagePrivacy.name,
-    );
-    await prefs.setStringList(
-      'meshpro_quick_reactions',
-      settings.quickReactions,
-    );
-    await prefs.setBool('meshpro_hd_audio', settings.meshProHdAudio);
-    await prefs.setBool(
-      'call_noise_suppression',
-      settings.callNoiseSuppression,
-    );
-    await prefs.setBool(
-      'meshpro_enhanced_noise_suppression',
-      settings.meshProEnhancedNoiseSuppression,
-    );
-    await prefs.setString(
-      'meshpro_business_settings',
-      jsonEncode(settings.businessSettings.toJson()),
-    );
-    await prefs.setStringList('blocked_node_ids', settings.blockedNodeIds);
-    await prefs.setStringList('deleted_group_ids', settings.deletedGroupIds);
-    await prefs.setStringList(
-      'deleted_message_ids',
-      settings.deletedMessageIds,
-    );
+    return result;
   }
 
-  Future<void> saveDeletedMessageIds(List<String> messageIds) async {
+  Future<void> _writeChanged(Map<String, Object> values) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('deleted_message_ids', messageIds);
+    for (final entry in values.entries) {
+      final value = entry.value;
+      if (value is List<String>
+          ? listEquals(prefs.getStringList(entry.key), value)
+          : prefs.get(entry.key) == value) {
+        continue;
+      }
+      final saved = switch (value) {
+        bool v => await prefs.setBool(entry.key, v),
+        int v => await prefs.setInt(entry.key, v),
+        String v => await prefs.setString(entry.key, v),
+        List<String> v => await prefs.setStringList(entry.key, v),
+        _ => throw StateError('Unsupported setting: ${entry.key}'),
+      };
+      if (!saved) throw StateError('Could not save setting: ${entry.key}');
+    }
   }
+
+  Future<void> save(AppSettings settings) => _enqueue({
+    'app_theme_mode': settings.themeMode.name,
+    'app_accent_color': settings.accentColor.toARGB32(),
+    'notifications_enabled': settings.notificationsEnabled,
+    'notification_sound': settings.notificationSound,
+    'notification_vibration': settings.notificationVibration,
+    'notification_preview': settings.notificationPreview,
+    'windows_close_to_tray': settings.windowsCloseToTray,
+    'windows_launch_at_startup': settings.windowsLaunchAtStartup,
+    'compress_photos': settings.compressPhotos,
+    'send_files_original': settings.sendFilesOriginal,
+    'data_saver': settings.dataSaver,
+    'low_end_device_mode': settings.lowEndDeviceMode,
+    'reduced_animations': settings.reducedAnimations,
+    'message_effects_enabled': settings.messageEffectsEnabled,
+    'privacy_show_online': settings.showOnline,
+    'privacy_show_avatar': settings.showAvatar,
+    'privacy_show_about': settings.showAbout,
+    'privacy_allow_calls': settings.allowCalls,
+    'privacy_allow_group_invites': settings.allowGroupInvites,
+    'privacy_direct_messages': settings.directMessagePrivacy.name,
+    'meshpro_quick_reactions': List<String>.of(settings.quickReactions),
+    'meshpro_hd_audio': settings.meshProHdAudio,
+    'call_noise_suppression': settings.callNoiseSuppression,
+    'meshpro_enhanced_noise_suppression':
+        settings.meshProEnhancedNoiseSuppression,
+    'meshpro_business_settings': jsonEncode(settings.businessSettings.toJson()),
+    'blocked_node_ids': List<String>.of(settings.blockedNodeIds),
+    'deleted_group_ids': List<String>.of(settings.deletedGroupIds),
+    'deleted_message_ids': List<String>.of(settings.deletedMessageIds),
+  });
+
+  Future<void> saveDeletedMessageIds(List<String> messageIds) =>
+      _enqueue({'deleted_message_ids': List<String>.of(messageIds)});
 
   ThemeMode _themeModeFromName(String? value) {
     return ThemeMode.values.firstWhere(

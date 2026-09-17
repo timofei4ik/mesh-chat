@@ -47,6 +47,8 @@ async def handle_sync_v2_snapshot_request(server, packet, context):
             capabilities.get("sync_v2") is True,
             False,
             0,
+            capabilities.get("media_delivery_v2") is True,
+            capabilities.get("sync_v2_delta_batch") is True,
         )
     )
 

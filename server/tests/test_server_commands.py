@@ -709,6 +709,10 @@ class PacketCommandRegistryTests(unittest.IsolatedAsyncioTestCase):
         websocket = FakeWebSocket()
         server = FakeCommandServer()
         started = []
+        server.client_capabilities["client-node"].update({
+            "media_delivery_v2": True,
+            "sync_v2_delta_batch": True,
+        })
 
         async def start_account_sync(operation):
             started.append(True)
@@ -751,6 +755,10 @@ class PacketCommandRegistryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(sync_call[1][3])
         self.assertTrue(sync_call[1][4])
+        self.assertFalse(sync_call[1][5])
+        self.assertEqual(0, sync_call[1][6])
+        self.assertTrue(sync_call[1][7])
+        self.assertTrue(sync_call[1][8])
 
     async def test_mutation_status_is_account_scoped_and_deduplicated(self):
         registry = build_control_command_registry()

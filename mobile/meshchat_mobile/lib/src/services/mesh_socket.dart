@@ -232,6 +232,7 @@ class MeshSocket {
       rethrow;
     }
     _channel = channel;
+    var syncFailed = false;
     _subscription = channel.stream.listen(
       (raw) async {
         if (!_isCurrentConnection(generation, channel)) return;
@@ -243,6 +244,7 @@ class MeshSocket {
           if (!currentPacket.isCompleted) currentPacket.complete();
           return;
         }
+        String? handlingType;
         try {
           final rawPacket = raw.toString();
           final decoded = !kIsWeb && rawPacket.length >= 256 * 1024
@@ -250,6 +252,13 @@ class MeshSocket {
               : _decodeSocketPacket(rawPacket);
           if (decoded != null) {
             final packetType = decoded['type']?.toString() ?? '';
+            handlingType = packetType;
+            if (packetType == 'server_welcome' ||
+                packetType == 'server_sync' ||
+                packetType == 'server_sync_delta_begin') {
+              syncFailed = false;
+            }
+            if (packetType == 'server_sync_done' && syncFailed) return;
             if (packetType == 'reliable_sync_hint') {
               final target = decoded['cursor'];
               if (target is! int || target <= 0) return;
@@ -399,6 +408,15 @@ class MeshSocket {
         } catch (error, stackTrace) {
           debugPrint('MeshSocket packet handling failed: $error');
           debugPrintStack(stackTrace: stackTrace);
+          if (_isCurrentConnection(generation, channel) &&
+              (handlingType == 'server_welcome' ||
+                  handlingType?.startsWith('server_sync') == true ||
+                  handlingType == 'server_file_sync_chunk' ||
+                  handlingType == 'server_sticker_library_sync_chunk')) {
+            // A failed checkpoint must neither look busy forever nor be ACKed.
+            syncFailed = true;
+            onStatus('Sync failed (${error.runtimeType}). Reconnect to retry.');
+          }
         } finally {
           if (!currentPacket.isCompleted) currentPacket.complete();
         }

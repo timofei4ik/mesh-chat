@@ -3701,12 +3701,21 @@ class _ConnectionStatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final normalized = status.toLowerCase();
+    final failed =
+        normalized.contains('failed') ||
+        normalized.contains('error') ||
+        normalized.contains('timeout') ||
+        normalized.contains('ошиб');
     final online =
-        normalized.contains('online') || normalized.contains('в сети');
+        !failed &&
+        (normalized.contains('online') || normalized.contains('в сети'));
     final connecting =
-        normalized.contains('connect') || normalized.contains('подключ');
+        !failed &&
+        (normalized.contains('connect') || normalized.contains('подключ'));
     final syncing =
-        normalized.contains('sync') || normalized.contains('синхрон');
+        !failed &&
+        !online &&
+        (normalized.contains('sync') || normalized.contains('синхрон'));
     final accent = online
         ? Colors.greenAccent
         : syncing
@@ -3714,7 +3723,9 @@ class _ConnectionStatusPill extends StatelessWidget {
         : connecting
         ? Colors.lightBlueAccent
         : Colors.orangeAccent;
-    final label = online
+    final label = failed
+        ? (normalized.contains('sync') ? 'Sync failed' : 'Connection error')
+        : online
         ? 'Online'
         : syncing
         ? 'Syncing'
@@ -4625,7 +4636,7 @@ class _GlassAvatar extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          ProfileAvatar(profile: profile, radius: 26),
+          ProfileAvatar(profile: profile, radius: 26, fillPortrait: true),
           if (isGroup)
             Positioned(
               right: -2,

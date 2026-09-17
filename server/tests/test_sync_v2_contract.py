@@ -645,6 +645,55 @@ class SyncV2ContractTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual([("alice", "login:alice", "heart")], rows)
 
+    def test_reaction_removal_is_account_scoped_and_idempotent(self):
+        self.register_device("alice", "alice-phone")
+        self.register_device("alice", "alice-desktop")
+        self.register_device("bob", "bob-phone")
+        for packet_type in ("message_reaction", "group_reaction"):
+            with self.subTest(packet_type=packet_type):
+                base = {
+                    "type": packet_type,
+                    "message_id": packet_type,
+                    "group_message_id": packet_type,
+                    "group_id": "group-a",
+                    "reaction": "heart",
+                }
+                for node in ("alice-phone", "bob-phone"):
+                    self.relay.save_history_packet({**base, "source_node": node})
+                removal = {
+                    **base, "source_node": "alice-desktop",
+                    "reactor_identity": "login:bob", "remove": True,
+                }
+                self.assertIs(True, self.relay.save_history_packet(removal))
+                self.assertEqual("duplicate", self.relay.save_history_packet(removal))
+                rows = self.relay.db.execute(
+                    "SELECT reactor_identity FROM server_reactions WHERE message_id=?",
+                    (packet_type,),
+                ).fetchall()
+                self.assertEqual([("login:bob",)], rows)
+                self.assertIs(True, self.relay.save_history_packet({
+                    **base, "source_node": "alice-desktop",
+                }))
+
+    def test_reaction_snapshot_preserves_arrival_order_not_account_name(self):
+        self.register_device("alice", "alice-phone")
+        self.register_device("bob", "bob-phone")
+        self.persist_packet({
+            "type": "chat_message", "packet_id": "reaction-order-message",
+            "source_node": "alice-phone", "destination_node": "bob-phone",
+            "sender": "Alice", "message": "ciphertext",
+        })
+        for node in ("bob-phone", "alice-phone"):
+            self.relay.save_history_packet({
+                "type": "message_reaction", "message_id": "reaction-order-message",
+                "source_node": node, "reaction": "heart",
+            })
+        snapshot = self.relay.build_sync_packet("alice", "alice-phone")
+        self.assertEqual(
+            ["login:bob", "login:alice"],
+            [item["reactor_identity"] for item in snapshot["reactions"]],
+        )
+
     def test_atomic_mutation_rolls_back_when_event_journal_fails(self):
         self.register_device("alice", "alice-phone")
         self.register_device("bob", "bob-phone")
@@ -978,11 +1027,25 @@ class SyncV2ContractTests(unittest.TestCase):
             }
         )
 
+        self.register_device("bob", "bob-desktop")
+        self.persist_packet({
+            "type": "group_reaction",
+            "packet_id": "shadow-group-reaction-remove",
+            "group_message_id": "shadow-group-message",
+            "group_id": "shadow-group",
+            "source_node": "bob-desktop",
+            "destination_node": "alice-phone",
+            "reaction": "heart",
+            "remove": True,
+        })
         plan = self.relay.plan_sync_v2_delivery(
             "alice",
             source_cursor,
             supports_delta=True,
         )
+        self.assertTrue(any(
+            event["payload"].get("remove") is True for event in plan["events"]
+        ))
         target_snapshot = self.relay.build_sync_packet(
             "alice",
             "alice-phone",

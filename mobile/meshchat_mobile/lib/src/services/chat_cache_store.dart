@@ -20,7 +20,8 @@ class ChatCacheStore {
   static const _maxCachedWebFileHex = 220 * 1024;
   static const _maxCachedWebAvatar = 260 * 1024;
   static const _dbName = 'meshchat_cache.db';
-  static const _cacheDigestVersion = 1;
+  // Older clients cannot decode fragmented rows and must request a snapshot.
+  static const _cacheDigestVersion = 2;
   static Database? _database;
 
   Future<void> load(
@@ -48,12 +49,8 @@ class ChatCacheStore {
       whereArgs: [sessionKey],
     );
     final restored = <String, ChatThread>{};
-    for (final row in rows) {
-      final payload = row['payload']?.toString() ?? '';
-      if (payload.isEmpty) continue;
+    for (final decoded in await compute(_decodeCacheRows, rows)) {
       try {
-        final decoded = jsonDecode(payload);
-        if (decoded is! Map) continue;
         final thread = ChatThread.fromJson(Map<String, dynamic>.from(decoded));
         final previous = restored[thread.storageKey];
         if (previous == null) {
@@ -152,8 +149,41 @@ class ChatCacheStore {
       // thread would otherwise commit a valid sync cursor with missing history.
       final metadata = trimmed.toJson()..['messages'] = <Object>[];
       final baseBytes = utf8.encode(jsonEncode(metadata)).length;
-      if (baseBytes >= _maxSqlitePayloadChars) {
-        throw StateError('Chat metadata exceeds cache row limit');
+      final encodedMessages = trimmed.messages.map((m) => m.toJson()).toList();
+      final sizes = encodedMessages
+          .map((m) => utf8.encode(jsonEncode(m)).length + 1)
+          .toList();
+      if (baseBytes >= _maxSqlitePayloadChars ||
+          sizes.any((size) => baseBytes + size > _maxSqlitePayloadChars)) {
+        // Avatars, drafts and individual rich messages can exceed a SQLite
+        // cursor window. Fragment the complete record, never discard its data.
+        final data = base64Encode(
+          utf8.encode(jsonEncode({...metadata, 'messages': encodedMessages})),
+        );
+        const partSize = 800 * 1024;
+        final count = (data.length / partSize).ceil();
+        for (var part = 0; part < count; part++) {
+          final key = part == 0
+              ? threadKey
+              : jsonEncode(['chunk-v1', threadKey, part]);
+          prepared[key] = {
+            'session_key': sessionKey,
+            'thread_key': key,
+            'is_group': trimmed.isGroup ? 1 : 0,
+            'updated_at': (trimmed.lastMessage?.createdAt ?? DateTime.now())
+                .millisecondsSinceEpoch,
+            'payload': jsonEncode({
+              'cache_fragment_v1': threadKey,
+              'part': part,
+              'parts': count,
+              'data': data.substring(
+                part * partSize,
+                ((part + 1) * partSize).clamp(0, data.length),
+              ),
+            }),
+          };
+        }
+        continue;
       }
       var messages = <Map<String, dynamic>>[];
       var bytes = baseBytes;
@@ -175,12 +205,9 @@ class ChatCacheStore {
         bytes = baseBytes;
       }
 
-      for (final message in trimmed.messages) {
-        final encoded = message.toJson();
-        final size = utf8.encode(jsonEncode(encoded)).length + 1;
-        if (baseBytes + size > _maxSqlitePayloadChars) {
-          throw StateError('Message exceeds cache row limit');
-        }
+      for (var i = 0; i < encodedMessages.length; i++) {
+        final encoded = encodedMessages[i];
+        final size = sizes[i];
         if (messages.isNotEmpty && bytes + size > _maxSqlitePayloadChars) {
           appendChunk();
         }
@@ -482,13 +509,10 @@ class ChatCacheStore {
     for (final row in rows) {
       final payload = row['payload']?.toString() ?? '';
       bytes += utf8.encode(payload).length;
-      try {
-        final decoded = jsonDecode(payload);
-        final rawMessages = decoded is Map ? decoded['messages'] : null;
-        if (rawMessages is List) messages += rawMessages.length;
-      } catch (_) {
-        // Ignore broken rows in stats; clear() can remove them if needed.
-      }
+    }
+    for (final decoded in await compute(_decodeCacheRows, rows)) {
+      final rawMessages = decoded['messages'];
+      if (rawMessages is List) messages += rawMessages.length;
     }
 
     return CacheStats(
@@ -861,6 +885,51 @@ class ChatCacheStore {
   String _syncKey(Session session) => '${_key(session)}_sync_cursor_v3';
 
   String _digestKey(Session session) => '${_key(session)}_cache_digest_v1';
+}
+
+List<Map<String, dynamic>> _decodeCacheRows(List<Map<String, Object?>> rows) {
+  final result = <Map<String, dynamic>>[];
+  final fragments = <String, List<Map<String, dynamic>>>{};
+  for (final row in rows) {
+    try {
+      final decoded = jsonDecode(row['payload'] as String);
+      if (decoded is! Map) continue;
+      final value = Map<String, dynamic>.from(decoded);
+      final group = value['cache_fragment_v1'];
+      if (group is String) {
+        fragments.putIfAbsent(group, () => []).add(value);
+      } else {
+        result.add(value);
+      }
+    } catch (_) {
+      // A damaged row must not prevent other conversations from loading.
+    }
+  }
+  for (final parts in fragments.values) {
+    try {
+      final count = parts.first['parts'];
+      if (count is! int || count != parts.length) continue;
+      parts.sort((a, b) => (a['part'] as int).compareTo(b['part'] as int));
+      final data = StringBuffer();
+      var complete = true;
+      for (var i = 0; i < count; i++) {
+        if (parts[i]['part'] != i || parts[i]['parts'] != count) {
+          complete = false;
+          break;
+        }
+        data.write(parts[i]['data'] as String);
+      }
+      if (!complete) continue;
+      result.add(
+        Map<String, dynamic>.from(
+          jsonDecode(utf8.decode(base64Decode(data.toString()))) as Map,
+        ),
+      );
+    } catch (_) {
+      // Integrity verification rejects the checkpoint of damaged fragments.
+    }
+  }
+  return result;
 }
 
 class CacheIntegrityReport {

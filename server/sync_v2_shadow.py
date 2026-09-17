@@ -194,7 +194,7 @@ def canonical_sync_v2_state(snapshot):
         key = (
             _text(item.get("scope")),
             _text(item.get("message_id")),
-            _text(item.get("reactor_node")),
+            _text(item.get("reactor_identity")) or _text(item.get("reactor_node")),
             _text(item.get("reaction")),
         )
         if all(key):
@@ -403,12 +403,15 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
                 (
                     scope,
                     message_id,
-                    _text(payload.get("source_node")),
+                    _text(payload.get("reactor_identity")) or _text(payload.get("source_node")),
                     _text(payload.get("reaction")),
                 )
             )
             if all(key.split("\u001f")):
-                state["reactions"][key] = True
+                if payload.get("remove") is True:
+                    state["reactions"].pop(key, None)
+                else:
+                    state["reactions"][key] = True
         elif packet_type in {"message_pin", "group_pin"}:
             message_id = _text(payload.get("message_id"))
             scope = (

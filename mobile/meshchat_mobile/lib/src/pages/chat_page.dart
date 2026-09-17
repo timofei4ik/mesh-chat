@@ -55,6 +55,7 @@ import '../widgets/meshpro_gate.dart';
 import '../widgets/mesh_painting.dart';
 import '../widgets/message_send_effect.dart';
 import '../widgets/profile_avatar.dart';
+import '../widgets/message_reaction_button.dart';
 import 'chat_media_page.dart';
 import 'ai_editor_sheet.dart';
 import 'document_scanner_page.dart';
@@ -9594,6 +9595,61 @@ class _MessageBubbleBody extends StatelessWidget {
   final bool joinedPrevious;
   final bool showTail;
 
+  Widget _reactions({Widget? metadata}) {
+    final ownActor =
+        'login:${controller.session?.login.trim().toLowerCase() ?? ''}';
+    final knownProfiles = <String, Profile>{};
+    for (final profile in [
+      thread.profile,
+      ...controller.profiles.values,
+      controller.ownProfile,
+    ]) {
+      knownProfiles['node:${profile.nodeId}'] = profile;
+      for (final alias in profile.nodeAliases) {
+        knownProfiles['node:$alias'] = profile;
+      }
+      if (profile.accountLogin.isNotEmpty) {
+        knownProfiles['login:${profile.accountLogin.trim().toLowerCase()}'] =
+            profile;
+      }
+    }
+    return Wrap(
+      spacing: 5,
+      runSpacing: 5,
+      crossAxisAlignment: WrapCrossAlignment.end,
+      children: [
+        for (final entry in message.reactions.entries)
+          if (entry.value > 0)
+            MessageReactionButton(
+              key: ValueKey('reaction-${message.id}-${entry.key}'),
+              icon: _ReactionIcon(reaction: entry.key, size: 16),
+              reaction: entry.key,
+              count: entry.value,
+              selected: (message.reactionActors[entry.key] ?? const [])
+                  .contains(ownActor),
+              profiles: [
+                for (final actor
+                    in message.reactionActors[entry.key] ?? <String>[])
+                  if (knownProfiles[actor] != null) knownProfiles[actor]!,
+              ],
+              onPressed: message.deleted || message.pending
+                  ? null
+                  : () => controller.sendReaction(
+                      thread,
+                      message,
+                      entry.key,
+                      toggle: true,
+                    ),
+            ),
+        if (metadata != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 3, bottom: 3),
+            child: metadata,
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final lowEndMode = MeshPerformanceScope.lowEndDeviceModeOf(context);
@@ -9719,28 +9775,8 @@ class _MessageBubbleBody extends StatelessWidget {
             ],
           ),
           if (message.reactions.isNotEmpty) ...[
-            const SizedBox(height: 3),
-            Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: [
-                for (final entry in message.reactions.entries)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF465163),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: _ReactionBadge(
-                      reaction: entry.key,
-                      count: entry.value,
-                    ),
-                  ),
-              ],
-            ),
+            const SizedBox(height: 4),
+            _reactions(),
           ],
           if (onOpenComments != null) ...[
             const SizedBox(height: 4),
@@ -9832,12 +9868,14 @@ class _MessageBubbleBody extends StatelessWidget {
                       ),
                       createdAt: message.createdAt,
                     ),
-                    const SizedBox(height: 2),
-                    Align(
-                      alignment: Alignment.bottomRight,
-                      widthFactor: 1,
-                      child: metadata,
-                    ),
+                    if (message.reactions.isEmpty) ...[
+                      const SizedBox(height: 2),
+                      Align(
+                        alignment: Alignment.bottomRight,
+                        widthFactor: 1,
+                        child: metadata,
+                      ),
+                    ],
                   ],
                 )
               else
@@ -9875,7 +9913,7 @@ class _MessageBubbleBody extends StatelessWidget {
                   ),
                 ),
               ],
-              if (!inlineMetadata) ...[
+              if (!inlineMetadata && message.reactions.isEmpty) ...[
                 const SizedBox(height: 3),
                 Align(
                   alignment: Alignment.centerRight,
@@ -9883,33 +9921,13 @@ class _MessageBubbleBody extends StatelessWidget {
                   child: metadata,
                 ),
               ],
+              if (message.reactions.isNotEmpty) ...[
+                const SizedBox(height: 5),
+                _reactions(metadata: metadata),
+              ],
             ],
           ),
         ),
-        if (message.reactions.isNotEmpty) ...[
-          const SizedBox(height: 3),
-          Wrap(
-            spacing: 4,
-            runSpacing: 4,
-            children: [
-              for (final entry in message.reactions.entries)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF465163),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: _ReactionBadge(
-                    reaction: entry.key,
-                    count: entry.value,
-                  ),
-                ),
-            ],
-          ),
-        ],
         if (onOpenComments != null) ...[
           const SizedBox(height: 4),
           _ChannelCommentsButton(
@@ -12806,40 +12824,6 @@ class _ReactionIcon extends StatelessWidget {
       );
     }
     return Text(reaction, style: TextStyle(fontSize: size));
-  }
-}
-
-class _ReactionBadge extends StatelessWidget {
-  const _ReactionBadge({required this.reaction, required this.count});
-
-  final String reaction;
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      key: ValueKey('$reaction-$count'),
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutBack,
-      builder: (context, value, child) => Transform.scale(
-        scale: 0.78 + value * 0.22,
-        child: Opacity(opacity: value.clamp(0.0, 1.0), child: child),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _ReactionIcon(reaction: reaction, size: 14),
-          if (count > 1) ...[
-            const SizedBox(width: 3),
-            Text(
-              count.toString(),
-              style: const TextStyle(fontSize: 12, color: Colors.white),
-            ),
-          ],
-        ],
-      ),
-    );
   }
 }
 

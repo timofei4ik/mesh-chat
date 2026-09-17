@@ -6098,6 +6098,18 @@ class ServerStorageMixin:
             packet["reactor_login"] = reactor_login
             packet["reactor_identity"] = reactor_identity
 
+            if packet.get("remove") is True:
+                cursor = self.db.execute(
+                    """
+                    DELETE FROM server_reactions
+                    WHERE scope=? AND message_id=?
+                      AND reactor_identity=? AND reaction=?
+                    """,
+                    (scope, message_id, reactor_identity, reaction),
+                )
+                self._commit_storage()
+                return True if cursor.rowcount > 0 else "duplicate"
+
             cursor = self.db.execute(
                 """
                 INSERT OR IGNORE INTO server_reactions(
@@ -6106,9 +6118,10 @@ class ServerStorageMixin:
                     reactor_node,
                     reactor_login,
                     reactor_identity,
-                    reaction
+                    reaction,
+                    created_at
                 )
-                VALUES(?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?)
                 """,
                 (
                     scope,
@@ -6116,7 +6129,8 @@ class ServerStorageMixin:
                     reactor_node,
                     reactor_login,
                     reactor_identity,
-                    reaction
+                    reaction,
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f"),
                 )
             )
 

@@ -134,7 +134,12 @@ class SettingsPage extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (context, _) => _buildSettings(context),
+  );
+
+  Widget _buildSettings(BuildContext context) {
     final session = controller.session;
     final theme = Theme.of(context);
     return Theme(
@@ -1596,22 +1601,29 @@ class _NotificationSettings extends StatelessWidget {
               if (value) {
                 controller.requestNotificationPermissions();
               }
-              save(settings.copyWith(notificationsEnabled: value));
+              save(
+                controller.appSettings.copyWith(notificationsEnabled: value),
+              );
             },
           ),
           SwitchListTile(
             title: const Text('Sound'),
             value: settings.notificationSound,
             onChanged: settings.notificationsEnabled
-                ? (value) => save(settings.copyWith(notificationSound: value))
+                ? (value) => save(
+                    controller.appSettings.copyWith(notificationSound: value),
+                  )
                 : null,
           ),
           SwitchListTile(
             title: const Text('Vibration'),
             value: settings.notificationVibration,
             onChanged: settings.notificationsEnabled
-                ? (value) =>
-                      save(settings.copyWith(notificationVibration: value))
+                ? (value) => save(
+                    controller.appSettings.copyWith(
+                      notificationVibration: value,
+                    ),
+                  )
                 : null,
           ),
           SwitchListTile(
@@ -1619,7 +1631,9 @@ class _NotificationSettings extends StatelessWidget {
             subtitle: const Text('Show message text in notifications'),
             value: settings.notificationPreview,
             onChanged: settings.notificationsEnabled
-                ? (value) => save(settings.copyWith(notificationPreview: value))
+                ? (value) => save(
+                    controller.appSettings.copyWith(notificationPreview: value),
+                  )
                 : null,
           ),
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) ...[
@@ -1634,15 +1648,17 @@ class _NotificationSettings extends StatelessWidget {
                 'Closing the window keeps notifications available',
               ),
               value: settings.windowsCloseToTray,
-              onChanged: (value) =>
-                  save(settings.copyWith(windowsCloseToTray: value)),
+              onChanged: (value) => save(
+                controller.appSettings.copyWith(windowsCloseToTray: value),
+              ),
             ),
             SwitchListTile(
               title: const Text('Launch with Windows'),
               subtitle: const Text('Start MeshChat after signing in'),
               value: settings.windowsLaunchAtStartup,
-              onChanged: (value) =>
-                  save(settings.copyWith(windowsLaunchAtStartup: value)),
+              onChanged: (value) => save(
+                controller.appSettings.copyWith(windowsLaunchAtStartup: value),
+              ),
             ),
           ],
         ],
@@ -1673,7 +1689,7 @@ class _MediaSettings extends StatelessWidget {
             ),
             value: settings.dataSaver,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(dataSaver: value),
+              controller.appSettings.copyWith(dataSaver: value),
             ),
           ),
           SwitchListTile(
@@ -1683,7 +1699,7 @@ class _MediaSettings extends StatelessWidget {
             ),
             value: settings.lowEndDeviceMode,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(lowEndDeviceMode: value),
+              controller.appSettings.copyWith(lowEndDeviceMode: value),
             ),
           ),
           SwitchListTile(
@@ -1691,7 +1707,7 @@ class _MediaSettings extends StatelessWidget {
             subtitle: const Text('Keep the glass UI, but pause glow effects'),
             value: settings.reducedAnimations,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(reducedAnimations: value),
+              controller.appSettings.copyWith(reducedAnimations: value),
             ),
           ),
           SwitchListTile(
@@ -1701,7 +1717,7 @@ class _MediaSettings extends StatelessWidget {
             ),
             value: settings.messageEffectsEnabled,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(messageEffectsEnabled: value),
+              controller.appSettings.copyWith(messageEffectsEnabled: value),
             ),
           ),
           SwitchListTile(
@@ -1709,7 +1725,7 @@ class _MediaSettings extends StatelessWidget {
             subtitle: const Text('Keeps original files when disabled'),
             value: settings.compressPhotos,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(compressPhotos: value),
+              controller.appSettings.copyWith(compressPhotos: value),
             ),
           ),
           SwitchListTile(
@@ -1717,7 +1733,7 @@ class _MediaSettings extends StatelessWidget {
             subtitle: const Text('Do not alter non-photo files'),
             value: settings.sendFilesOriginal,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(sendFilesOriginal: value),
+              controller.appSettings.copyWith(sendFilesOriginal: value),
             ),
           ),
         ],
@@ -1763,7 +1779,7 @@ class _PrivacySettings extends StatelessWidget {
             subtitle: const Text('Hide your active status where possible'),
             value: settings.showOnline,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(showOnline: value),
+              controller.appSettings.copyWith(showOnline: value),
             ),
           ),
           SwitchListTile(
@@ -1771,7 +1787,7 @@ class _PrivacySettings extends StatelessWidget {
             subtitle: const Text('Keep profile photo private when disabled'),
             value: settings.showAvatar,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(showAvatar: value),
+              controller.appSettings.copyWith(showAvatar: value),
             ),
           ),
           SwitchListTile(
@@ -1779,7 +1795,7 @@ class _PrivacySettings extends StatelessWidget {
             subtitle: const Text('Hide profile description when disabled'),
             value: settings.showAbout,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(showAbout: value),
+              controller.appSettings.copyWith(showAbout: value),
             ),
           ),
           ListTile(
@@ -1801,7 +1817,9 @@ class _PrivacySettings extends StatelessWidget {
                     if (selected == null) return;
                     Navigator.pop(sheetContext);
                     controller.updateAppSettings(
-                      settings.copyWith(directMessagePrivacy: selected),
+                      controller.appSettings.copyWith(
+                        directMessagePrivacy: selected,
+                      ),
                     );
                   },
                   child: Column(
@@ -1825,7 +1843,7 @@ class _PrivacySettings extends StatelessWidget {
             title: const Text('Noise suppression'),
             value: settings.callNoiseSuppression,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(callNoiseSuppression: value),
+              controller.appSettings.copyWith(callNoiseSuppression: value),
             ),
           ),
           SwitchListTile(
@@ -1833,7 +1851,7 @@ class _PrivacySettings extends StatelessWidget {
             subtitle: const Text('Decline incoming calls automatically'),
             value: settings.allowCalls,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(allowCalls: value),
+              controller.appSettings.copyWith(allowCalls: value),
             ),
           ),
           SwitchListTile(
@@ -1841,7 +1859,7 @@ class _PrivacySettings extends StatelessWidget {
             subtitle: const Text('Ignore new group/channel invites'),
             value: settings.allowGroupInvites,
             onChanged: (value) => controller.updateAppSettings(
-              settings.copyWith(allowGroupInvites: value),
+              controller.appSettings.copyWith(allowGroupInvites: value),
             ),
           ),
         ],

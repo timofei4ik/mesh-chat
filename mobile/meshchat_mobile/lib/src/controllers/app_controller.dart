@@ -3234,6 +3234,11 @@ class AppController extends ChangeNotifier {
         onDeliveryTrace: _recordDeliveryTrace,
         onStatus: (value) {
           if (!current.isSameAccountAs(session)) return;
+          if (value.startsWith('Sync failed')) {
+            _accountSyncInProgress = false;
+            _snapshotRepairRequested = false;
+            _syncDeltaBuffer.abort();
+          }
           status = value;
           addDiagnostic('server', value);
           notifyListeners();
@@ -5298,19 +5303,30 @@ class AppController extends ChangeNotifier {
       final byReaction = _reactionActors.putIfAbsent(messageId, () => {});
       final actors = byReaction.putIfAbsent(reaction, () => <String>{})
         ..addAll(message.reactionActors[reaction] ?? const <String>[]);
-      if (actor.isNotEmpty && !actors.add(actor)) return;
+      final removing = packet['remove'] == true;
+      if (removing) {
+        if (actor.isEmpty || !actors.remove(actor)) return;
+      } else if (actor.isNotEmpty && !actors.add(actor)) {
+        return;
+      }
 
       final nextActors = <String, List<String>>{
         for (final entry in message.reactionActors.entries)
           entry.key: [...entry.value],
       };
       if (actors.isNotEmpty) {
-        nextActors[reaction] = actors.toList(growable: false)..sort();
+        nextActors[reaction] = actors.toList(growable: false);
+      } else {
+        nextActors.remove(reaction);
       }
       final current = Map<String, int>.from(message.reactions);
-      current[reaction] = actors.isNotEmpty
-          ? actors.length
-          : (current[reaction] ?? 0) + 1;
+      if (removing && actors.isEmpty) {
+        current.remove(reaction);
+      } else {
+        current[reaction] = actors.isNotEmpty
+            ? actors.length
+            : (current[reaction] ?? 0) + 1;
+      }
       thread.messages[index] = message.copyWith(
         reactions: current,
         reactionActors: nextActors,
@@ -5348,26 +5364,33 @@ class AppController extends ChangeNotifier {
   Future<void> sendReaction(
     ChatThread thread,
     ChatMessage message,
-    String reaction,
-  ) async {
+    String reaction, {
+    bool toggle = false,
+  }) async {
     if (session == null || reaction.trim().isEmpty) return;
     final ownActor = 'login:${session!.login.trim().toLowerCase()}';
-    if ((message.reactionActors[reaction] ?? const <String>[]).contains(
-      ownActor,
-    )) {
-      return;
-    }
+    // Read the current message, not a possibly stale bubble captured by a tap.
+    final current =
+        thread.messages.where((item) => item.id == message.id).firstOrNull ??
+        message;
+    final hasOwn = (current.reactionActors[reaction] ?? const <String>[])
+        .contains(ownActor);
+    if (hasOwn && !toggle) return;
+    final removing = hasOwn && toggle;
     _applyReactionPacket({
       'message_id': message.id,
       'reaction': reaction,
       'source_node': myNodeId,
       'reactor_login': session!.login,
+      'remove': removing,
     });
     if (thread.isBluetooth) {
       await _sendBluetoothThreadPacket(thread, {
         'type': 'message_reaction',
         'message_id': message.id,
         'reaction': reaction,
+        'reactor_login': session!.login,
+        'remove': removing,
       });
       return;
     }
@@ -5384,6 +5407,7 @@ class AppController extends ChangeNotifier {
       'group_id': thread.groupId,
       'reaction': reaction,
       'reactor_login': session!.login,
+      'remove': removing,
     };
     if (thread.isGroup) {
       final recipients = thread.members
@@ -12914,6 +12938,10 @@ class AppController extends ChangeNotifier {
   bool get websocketLive => _socket.isConnected;
 
   Future<void> updateAppSettings(AppSettings settings) async {
+    final callNotificationsChanged =
+        appSettings.notificationsEnabled != settings.notificationsEnabled ||
+        appSettings.notificationSound != settings.notificationSound ||
+        appSettings.notificationVibration != settings.notificationVibration;
     if (!appSettings.notificationsEnabled && settings.notificationsEnabled) {
       unawaited(requestNotificationPermissions());
     } else if (appSettings.notificationsEnabled &&
@@ -12932,8 +12960,7 @@ class AppController extends ChangeNotifier {
         appSettings.showAbout != settings.showAbout ||
         appSettings.directMessagePrivacy != settings.directMessagePrivacy;
     appSettings = settings;
-    await _configureSystemCallNotifications();
-    await _settingsStore.save(settings);
+    notifyListeners();
     if (privacyChanged && session != null && _socket.isConnected) {
       _socket.send({
         'type': 'profile_update',
@@ -12957,7 +12984,10 @@ class AppController extends ChangeNotifier {
         _windowsBackground.setLaunchAtStartup(settings.windowsLaunchAtStartup),
       );
     }
-    notifyListeners();
+    await _settingsStore.save(settings);
+    if (callNotificationsChanged) {
+      await _configureSystemCallNotifications();
+    }
   }
 
   Future<String?> updateMeshProPreferences({

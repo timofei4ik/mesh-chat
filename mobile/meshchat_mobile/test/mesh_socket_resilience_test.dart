@@ -420,8 +420,53 @@ void main() {
     },
   );
 
+  test(
+    'failed snapshot cannot commit its completion; next snapshot recovers',
+    () async {
+      final client = MeshSocket();
+      final recovered = Completer<void>();
+      final statuses = <String>[];
+      var completions = 0;
+      final server = await _LocalWebSocketServer.start((socket, packet) {
+        if (packet['type'] == 'server_hello') {
+          socket.add(jsonEncode(_welcomePacket()));
+          socket.add(jsonEncode({'type': 'server_sync', 'broken': true}));
+          socket.add(
+            jsonEncode({'type': 'server_sync_done', 'sync_cursor': 10}),
+          );
+          socket.add(jsonEncode({'type': 'server_sync', 'broken': false}));
+          socket.add(
+            jsonEncode({'type': 'server_sync_done', 'sync_cursor': 11}),
+          );
+        }
+      });
+      addTearDown(server.close);
+      addTearDown(client.close);
+      await client.connect(
+        session: _session(server.url, 'snapshot-failure'),
+        publicKey: 'public-key',
+        profile: _profile('snapshot-failure'),
+        onStatus: statuses.add,
+        onPacket: (packet) {
+          if (packet['type'] == 'server_sync' && packet['broken'] == true) {
+            throw StateError('snapshot failed');
+          }
+          if (packet['type'] == 'server_sync_done') {
+            completions++;
+            expect(packet['sync_cursor'], 11);
+            recovered.complete();
+          }
+        },
+      );
+      await recovered.future.timeout(const Duration(seconds: 2));
+      expect(completions, 1);
+      expect(statuses.any((s) => s.startsWith('Sync failed')), isTrue);
+    },
+  );
+
   test('failed checkpoint never acknowledges the hinted cursor', () async {
     var acknowledgements = 0;
+    final statuses = <String>[];
     final handled = Completer<void>();
     final client = MeshSocket();
     final server = await _LocalWebSocketServer.start((socket, packet) {
@@ -441,7 +486,7 @@ void main() {
       session: _session(server.url, 'recovery-failure'),
       publicKey: 'public-key',
       profile: _profile('recovery-failure'),
-      onStatus: (_) {},
+      onStatus: statuses.add,
       onPacket: (packet) {
         if (packet['type'] == 'server_sync_done') {
           handled.complete();
@@ -452,6 +497,7 @@ void main() {
     await handled.future.timeout(const Duration(seconds: 2));
     await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(acknowledgements, 0);
+    expect(statuses.last, startsWith('Sync failed'));
   });
 
   test(

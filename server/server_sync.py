@@ -1446,6 +1446,7 @@ class ServerSyncMixin:
                        reaction
                 FROM server_reactions
                 WHERE message_id IN ({placeholders})
+                ORDER BY created_at, reactor_identity
                 """,
                 message_ids
             )

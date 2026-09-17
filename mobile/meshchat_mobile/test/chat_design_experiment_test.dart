@@ -21,6 +21,7 @@ import 'package:meshchat_mobile/src/widgets/mesh_performance_scope.dart';
 import 'package:meshchat_mobile/src/widgets/mesh_workspace.dart';
 import 'package:meshchat_mobile/src/widgets/mesh_home_background.dart';
 import 'package:meshchat_mobile/src/widgets/profile_avatar.dart';
+import 'package:meshchat_mobile/src/widgets/message_reaction_button.dart';
 
 import 'package:meshchat_mobile/src/widgets/mesh_liquid_glass.dart';
 import 'package:meshchat_mobile/src/services/platform_capabilities.dart';
@@ -218,6 +219,156 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  for (final width in [320.0, 1100.0]) {
+    testWidgets('reactions stay inside bubble and toggle at $width', (
+      tester,
+    ) async {
+      tester.view.physicalSize = Size(width, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = _PreviewController()
+        ..session = const Session(
+          serverUrl: 'wss://example.test/ws',
+          serverToken: '',
+          login: 'alice',
+          password: '',
+          publicUsername: 'alice',
+          nodeId: 'alice-phone',
+        );
+      const peer = Profile(
+        nodeId: 'bob-phone',
+        accountLogin: 'bob',
+        displayName: 'Bob',
+      );
+      final original = ChatMessage(
+        id: 'reaction-preview',
+        senderNode: peer.nodeId,
+        receiverNode: controller.myNodeId,
+        text: 'Hi',
+        createdAt: DateTime(2026, 9, 17),
+        reactions: const {'heart': 2, 'fire': 1, 'ok': 1, 'wow': 1},
+        reactionActors: const {
+          'heart': ['login:alice', 'login:bob'],
+          'fire': ['login:bob'],
+          'ok': ['login:bob'],
+          'wow': ['login:bob'],
+        },
+      );
+      final thread = ChatThread(profile: peer, messages: [original]);
+      controller.threads[thread.storageKey] = thread;
+      final boundary = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(
+            brightness: Brightness.dark,
+            fontFamily: 'PreviewSans',
+          ),
+          home: RepaintBoundary(
+            key: boundary,
+            child: ChatPage(controller: controller, thread: thread),
+          ),
+        ),
+      );
+      await waitForChatViewport(tester);
+      final chip = find.byKey(
+        const ValueKey('reaction-reaction-preview-heart'),
+      );
+      expect(tester.widget<MessageReactionButton>(chip).selected, isTrue);
+      expect(tester.widget<MessageReactionButton>(chip).profiles.length, 2);
+      final surface = find.ancestor(
+        of: chip,
+        matching: find.byWidgetPredicate(
+          (widget) => widget.runtimeType.toString() == '_MessageBodySurface',
+        ),
+      );
+      expect(surface, findsOneWidget);
+      final bubbleRect = tester.getRect(surface);
+      final chipRect = tester.getRect(chip);
+      expect(bubbleRect.contains(chipRect.topLeft), isTrue);
+      expect(bubbleRect.contains(chipRect.bottomRight), isTrue);
+      await captureRevision(tester, boundary, 'reactions-$width');
+      await tester.tap(chip);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(thread.messages.single.reactions['heart'], 1);
+      expect(thread.messages.single.reactionActors['heart'], ['login:bob']);
+      expect(tester.widget<MessageReactionButton>(chip).selected, isFalse);
+      await tester.tap(chip);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(thread.messages.single.reactions['heart'], 2);
+      // A stale message captured before the first tap must not block removal.
+      await controller.sendReaction(thread, original, 'heart', toggle: true);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(thread.messages.single.reactions['heart'], 1);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 3));
+    });
+  }
+
+  testWidgets('framed portraits keep the same visible diameter', (
+    tester,
+  ) async {
+    final boundary = GlobalKey();
+    final styles = ['none', 'camp_moon', 'remote_moonlit_path', 'camp_stories'];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          fontFamily: 'PreviewSans',
+        ),
+        home: RepaintBoundary(
+          key: boundary,
+          child: Scaffold(
+            body: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final style in styles)
+                    Padding(
+                      padding: const EdgeInsets.all(15),
+                      child: ProfileAvatar(
+                        key: ValueKey(style),
+                        profile: Profile(
+                          nodeId: style,
+                          displayName: 'A',
+                          meshProBadge: true,
+                          avatarDecoration: style,
+                        ),
+                        radius: 26,
+                        fillPortrait: true,
+                        animateDecoration: false,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.runAsync(() async {
+      for (final image in tester.widgetList<Image>(find.byType(Image))) {
+        await precacheImage(image.image, tester.element(find.byType(Scaffold)));
+      }
+    });
+    await tester.pump();
+    for (final style in styles) {
+      final portrait = find
+          .descendant(
+            of: find.byKey(ValueKey(style)),
+            matching: find.byType(ClipRRect),
+          )
+          .first;
+      expect(tester.getRect(portrait).width, closeTo(52, 0.01));
+      expect(tester.getRect(portrait).height, closeTo(52, 0.01));
+    }
+    await captureRevision(tester, boundary, 'reaction-avatar-sizes');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   for (final count in [0, 3, 250]) {
     testWidgets('chat first visible frame starts at the bottom ($count)', (

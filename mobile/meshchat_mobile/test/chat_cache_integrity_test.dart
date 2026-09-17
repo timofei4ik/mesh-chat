@@ -221,6 +221,91 @@ void main() {
     },
   );
 
+  test(
+    'oversized metadata and single messages round-trip in bounded rows',
+    () async {
+      final store = ChatCacheStore();
+      final avatar = base64Encode(List<int>.generate(1100000, (i) => i % 251));
+      final text = List.filled(360000, '\u0416').join();
+      final chat = ChatThread(
+        profile: Profile(
+          nodeId: 'large-peer',
+          displayName: 'Peer',
+          avatarData: avatar,
+        ),
+        draft: 'Keep this draft',
+        messages: [
+          ChatMessage(
+            id: 'large-message',
+            senderNode: 'large-peer',
+            receiverNode: session.nodeId,
+            text: text,
+            createdAt: DateTime(2026),
+            pending: true,
+          ),
+        ],
+      );
+      await store.saveCheckpoint(session, [chat], 40);
+      final db = await openDatabase(await appDatabasePath('meshchat_cache.db'));
+      final rows = await db.query('chat_threads', columns: ['payload']);
+      expect(rows.length, greaterThan(1));
+      for (final row in rows) {
+        expect(
+          utf8.encode(row['payload'] as String).length,
+          lessThan(900 * 1024),
+        );
+      }
+      final restored = <String, ChatThread>{};
+      await store.load(session, {}, restored, {});
+      expect(restored['large-peer']!.profile.avatarData, avatar);
+      expect(restored['large-peer']!.messages.single.text, text);
+      expect(restored['large-peer']!.messages.single.pending, isTrue);
+      expect(restored['large-peer']!.draft, chat.draft);
+      expect(await store.loadSyncCursor(session), 40);
+      expect((await store.inspectIntegrity(session)).verified, isTrue);
+      expect((await store.stats(session)).messages, 1);
+      await store.deleteThread(session, chat);
+      expect((await db.query('chat_threads')).isEmpty, isTrue);
+      expect(await store.loadSyncCursor(session), isNull);
+    },
+  );
+
+  test(
+    'oversized single message survives; missing fragment rejects checkpoint',
+    () async {
+      final store = ChatCacheStore();
+      final chat = thread('large-text');
+      chat.messages.add(
+        ChatMessage(
+          id: 'text',
+          senderNode: 'large-text',
+          receiverNode: session.nodeId,
+          text: List.filled(600000, '\u0416').join(),
+          createdAt: DateTime(2026),
+        ),
+      );
+      await store.saveCheckpoint(session, [chat], 41);
+      final restored = <String, ChatThread>{};
+      await store.load(session, {}, restored, {});
+      expect(
+        restored['large-text']!.messages.single.text,
+        chat.messages.single.text,
+      );
+      final db = await openDatabase(await appDatabasePath('meshchat_cache.db'));
+      final rows = await db.query('chat_threads', columns: ['thread_key']);
+      await db.delete(
+        'chat_threads',
+        where: 'thread_key=?',
+        whereArgs: [rows.last['thread_key']],
+      );
+      expect((await store.inspectIntegrity(session)).verified, isFalse);
+      expect(await store.loadSyncCursor(session), isNull);
+      restored.clear();
+      await store.load(session, {}, restored, {});
+      expect(restored, isEmpty);
+    },
+  );
+
   test('failed checkpoint rolls back both cache and cursor', () async {
     final store = ChatCacheStore();
     await store.saveCheckpoint(session, [thread('peer-a')], 7);

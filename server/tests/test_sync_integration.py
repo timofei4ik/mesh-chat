@@ -1020,6 +1020,19 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(received_path)
         self.assertEqual(payload, received_path.read_bytes())
 
+        # Repair sync must retain on-demand media delivery, including for a
+        # large attachment already present in the account's history.
+        await receiver.send({"type": "sync_v2_snapshot_request"})
+        snapshot = await receiver.receive_type("server_sync", timeout=5.0)
+        done = await receiver.receive_type("server_sync_done", timeout=5.0)
+        self.assertEqual(0, done["total_files"])
+        self.assertTrue(snapshot["files"][0]["media_delivery_v2"])
+        self.assertNotIn("data", snapshot["files"][0])
+        self.assertFalse(any(
+            packet.get("type") == "server_file_sync_chunk"
+            for packet in receiver.pending
+        ))
+
     async def test_mutation_ack_is_durable_and_duplicate_is_not_rerouted(self):
         sender = await self.connect(
             "outbox_sender",
