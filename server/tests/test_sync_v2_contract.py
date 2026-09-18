@@ -326,6 +326,7 @@ class SyncV2ContractTests(unittest.TestCase):
                 "destination_node": "SERVER",
                 "chat_key": "direct:bob",
                 "draft": "answer from the phone",
+                "rich_draft": "encrypted-rich-document",
             },
             ["alice"],
         )
@@ -361,6 +362,7 @@ class SyncV2ContractTests(unittest.TestCase):
                 {
                     "chat_key": "direct:bob",
                     "draft": "answer from the desktop",
+                    "rich_draft": "encrypted-rich-document",
                     "archived": False,
                     "version": 2,
                     "updated_at": target_snapshot["chat_states"][0][

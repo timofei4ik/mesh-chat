@@ -271,7 +271,7 @@ class ServerPushMixin:
                             notification.get("body") or "New message"
                         ),
                     },
-                    "sound": "default",
+                    **({} if notification.get("silent") is True else {"sound": "default"}),
                     "thread-id": str(notification.get("tag") or "meshchat"),
                 },
                 **custom,
@@ -358,7 +358,7 @@ class ServerPushMixin:
         for token in self.android_push_tokens_for_node(destination_node):
             android_notification = None
             firebase_notification = None
-            if not is_cancel:
+            if not is_cancel and data["silent"] != "true":
                 # Keep the notification payload until all installed Android
                 # clients have the native data-message renderer. New clients
                 # still receive the complete data payload, while old clients
@@ -411,6 +411,7 @@ class ServerPushMixin:
             "source_node": str(notification.get("source_node") or ""),
             "group_id": str(notification.get("group_id") or ""),
             "cancel": "true" if notification.get("cancel") else "false",
+            "silent": "true" if notification.get("silent") is True else "false",
         }
 
     def _web_push_payload(
@@ -439,6 +440,7 @@ class ServerPushMixin:
 
         if packet_type == "chat_message":
             return {
+                "silent": packet.get("silent") is True,
                 "title": sender,
                 "body": "Новое сообщение",
                 "url": target_url(packet_type),
@@ -452,6 +454,7 @@ class ServerPushMixin:
         if packet_type == "group_message":
             group_name = packet.get("group_name") or "Группа"
             return {
+                "silent": packet.get("silent") is True,
                 "title": group_name,
                 "body": f"{sender}: новое сообщение",
                 "url": target_url(packet_type),
@@ -464,6 +467,7 @@ class ServerPushMixin:
 
         if packet_type == "file_chunk" and packet.get("chunk_index") == 0:
             return {
+                "silent": packet.get("silent") is True,
                 "title": sender,
                 "body": "Новый файл",
                 "url": target_url(packet_type),

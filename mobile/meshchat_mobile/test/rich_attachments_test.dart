@@ -42,6 +42,7 @@ class AttachmentController extends AppController {
     ChatMessage? retryingMessage,
     String? messageId,
     bool businessAutoReply = false,
+    bool silent = false,
     String? richContent,
   }) async {
     forwardedRich = richContent;

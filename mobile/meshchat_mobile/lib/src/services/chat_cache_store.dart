@@ -821,6 +821,8 @@ class ChatCacheStore {
       groupKeyData: thread.groupKeyData,
       pinnedMessageIds: List.of(thread.pinnedMessageIds),
       draft: thread.draft,
+      richDraft: thread.richDraft,
+      draftOperation: thread.draftOperation,
       archived: thread.archived,
       pinned: thread.pinned,
       muted: thread.muted,

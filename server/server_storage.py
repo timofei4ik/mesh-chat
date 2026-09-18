@@ -368,6 +368,8 @@ class ServerStorageMixin:
                 "ALTER TABLE account_chat_state "
                 "ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
             )
+        if "rich_draft" not in account_chat_columns:
+            conn.execute("ALTER TABLE account_chat_state ADD COLUMN rich_draft TEXT NOT NULL DEFAULT ''")
 
         conn.execute(
             """
@@ -4917,12 +4919,15 @@ class ServerStorageMixin:
             ).strip().lower()
             chat_key = str(packet.get("chat_key") or "").strip()
             draft_text = str(packet.get("draft") or "")
+            rich_draft = packet.get("rich_draft")
+            if rich_draft is not None and (not isinstance(rich_draft, str) or len(rich_draft.encode()) > 768 * 1024):
+                return False
             if (
                 not source_node
                 or not source_login
                 or not chat_key
                 or len(chat_key) > 512
-                or len(draft_text) > 4096
+                or len(draft_text) > 60000
             ):
                 return False
 
@@ -4943,6 +4948,9 @@ class ServerStorageMixin:
                 """,
                 (source_login, chat_key, draft_text),
             )
+            if rich_draft is not None:
+                self.db.execute("UPDATE account_chat_state SET rich_draft=? WHERE login=? AND chat_key=?",
+                                (rich_draft, source_login, chat_key))
             version_row = self.db.execute(
                 """
                 SELECT version

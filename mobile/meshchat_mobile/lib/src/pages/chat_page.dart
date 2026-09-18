@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:scroll_to_index/scroll_to_index.dart';
+import '../services/audio_progress_store.dart';
 import '../models/rich_message_document.dart';
 import '../services/rich_draft_store.dart';
 import '../widgets/rich_message_view.dart';
@@ -79,11 +81,13 @@ class _ScheduleDraft {
     required this.text,
     required this.sendAt,
     required this.repeatInterval,
+    this.silent = false,
   });
 
   final String text;
   final DateTime sendAt;
   final String repeatInterval;
+  final bool silent;
 }
 
 class ChatPage extends StatefulWidget {
@@ -113,6 +117,7 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final input = TextEditingController();
+  bool applyingRemoteDraft = false;
   WidgetBuilder? detailBuilder;
   Completer<Object?>? detailResult;
   int detailRevision = 0;
@@ -146,7 +151,7 @@ class _ChatPageState extends State<ChatPage>
   }
 
   final inputFocus = FocusNode();
-  final scroll = ScrollController();
+  final scroll = AutoScrollController(suggestedRowHeight: 92);
   final composerInputKey = GlobalKey();
   final recorder = AudioRecorder();
   final imagePicker = image_picker.ImagePicker();
@@ -328,6 +333,7 @@ class _ChatPageState extends State<ChatPage>
           if (clearReplies) smartReplies = const [];
         });
       }
+      if (applyingRemoteDraft) return;
       widget.controller.updateDraft(widget.thread, input.text);
       final now = DateTime.now();
       if (input.text.trim().isNotEmpty &&
@@ -442,6 +448,15 @@ class _ChatPageState extends State<ChatPage>
 
   void syncChatChrome() {
     if (!mounted) return;
+    if (widget.thread.draftOperation.isEmpty &&
+        input.text != widget.thread.draft) {
+      applyingRemoteDraft = true;
+      input.value = TextEditingValue(
+        text: widget.thread.draft,
+        selection: TextSelection.collapsed(offset: widget.thread.draft.length),
+      );
+      applyingRemoteDraft = false;
+    }
     final nextCallAlertFingerprint = _computeCallAlertFingerprint();
     if (callAlertFingerprint != nextCallAlertFingerprint) {
       callAlertFingerprint = nextCallAlertFingerprint;
@@ -588,7 +603,7 @@ class _ChatPageState extends State<ChatPage>
     return bytes;
   }
 
-  Future<void> send() async {
+  Future<void> send({bool silent = false}) async {
     final text = input.text;
     if (text.trim().isEmpty) return;
     if (!canPostToThread) {
@@ -619,6 +634,7 @@ class _ChatPageState extends State<ChatPage>
         widget.thread,
         text,
         replyTo: quote,
+        silent: silent,
       );
     } else {
       await widget.controller.sendMessage(
@@ -626,6 +642,7 @@ class _ChatPageState extends State<ChatPage>
         text,
         replyTo: quote,
         threadOverride: widget.thread,
+        silent: silent,
       );
     }
     if (error != null && mounted) showSnack(error);
@@ -636,14 +653,16 @@ class _ChatPageState extends State<ChatPage>
     if (!canPostToThread || widget.thread.isBluetooth) return;
     final session = widget.controller.session;
     if (session == null) return;
-    final drafts = RichDraftStore(
-      jsonEncode([
-        session.serverUrl,
-        session.login,
-        widget.thread.storageKey,
-        editing?.id ?? '',
-      ]),
-    );
+    final drafts = editing == null
+        ? widget.controller.richDraftStore(widget.thread)
+        : RichDraftStore(
+            jsonEncode([
+              session.serverUrl,
+              session.login,
+              widget.thread.storageKey,
+              editing.id,
+            ]),
+          );
     try {
       final initial =
           await drafts.load() ??
@@ -711,7 +730,11 @@ class _ChatPageState extends State<ChatPage>
                   replyTo: quote,
                   richContent: document.encode(),
                 );
-                if (failure != null) throw StateError(failure);
+                if (failure != null &&
+                    widget.controller.messageInThread(widget.thread, failure) ==
+                        null) {
+                  throw StateError(failure);
+                }
               } else {
                 await widget.controller.sendMessage(
                   widget.thread.profile,
@@ -2651,6 +2674,34 @@ class _ChatPageState extends State<ChatPage>
     );
   }
 
+  Future<void> showSendOptions() async {
+    if (widget.thread.isBluetooth) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.notifications_off_outlined),
+              title: const Text('Send silently'),
+              onTap: () => Navigator.pop(context, 'silent'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.schedule),
+              title: const Text('Schedule message'),
+              onTap: () => Navigator.pop(context, 'schedule'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'silent') await send(silent: true);
+    if (choice == 'schedule') await showScheduleComposer();
+  }
+
   Future<void> showScheduleComposer() async {
     if (isChannelCommentThread || widget.thread.isBluetooth) {
       showSnack('Scheduling is unavailable in this chat');
@@ -2675,6 +2726,7 @@ class _ChatPageState extends State<ChatPage>
       sendAt.minute,
     );
     var repeat = 'none';
+    var silent = false;
     final draft = await showModalBottomSheet<_ScheduleDraft>(
       context: context,
       isScrollControlled: true,
@@ -2770,6 +2822,12 @@ class _ChatPageState extends State<ChatPage>
                       onChanged: (value) =>
                           setSheetState(() => repeat = value ?? 'none'),
                     ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Send silently'),
+                      value: silent,
+                      onChanged: (value) => setSheetState(() => silent = value),
+                    ),
                     const SizedBox(height: 14),
                     SizedBox(
                       width: double.infinity,
@@ -2793,6 +2851,7 @@ class _ChatPageState extends State<ChatPage>
                               text: text,
                               sendAt: sendAt,
                               repeatInterval: repeat,
+                              silent: silent,
                             ),
                           );
                         },
@@ -2815,6 +2874,7 @@ class _ChatPageState extends State<ChatPage>
       draft.text,
       sendAt: draft.sendAt,
       repeatInterval: draft.repeatInterval,
+      silent: draft.silent,
     );
     if (!mounted) return;
     if (error == null) {
@@ -3994,90 +4054,36 @@ class _ChatPageState extends State<ChatPage>
   }
 
   Future<void> showSearchDialog() async {
-    if (MeshDesktop.isDesktop && MediaQuery.sizeOf(context).width >= 1240) {
-      await openDetail<void>(
-        (_) => MeshMessageSearch(
-          search: (query) =>
-              widget.controller.searchMessages(widget.thread, query),
-          onSelect: jumpToMessage,
-        ),
-      );
-      return;
-    }
-    final searchInput = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          final results = widget.controller.searchMessages(
-            widget.thread,
-            searchInput.text,
-          );
-          return AlertDialog(
-            title: const Text('Search'),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: searchInput,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                    ),
-                    onChanged: (_) => setDialogState(() {}),
-                  ),
-                  const SizedBox(height: 12),
-                  Flexible(
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: results.length,
-                      itemBuilder: (context, index) {
-                        final message = results[index];
-                        return ListTile(
-                          dense: true,
-                          title: Text(
-                            replyPreview(message),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(messageTime(message.createdAt)),
-                          onTap: () {
-                            Navigator.pop(context);
-                            WidgetsBinding.instance.addPostFrameCallback(
-                              (_) => jumpToMessageById(message.id),
-                            );
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton.icon(
-                onPressed: () {
-                  final question = searchInput.text;
-                  Navigator.pop(context);
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) showContextAi('search', question: question);
-                  });
-                },
-                icon: const Icon(Icons.manage_search_rounded),
-                label: const Text('By meaning'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
-              ),
-            ],
-          );
+    final wide =
+        MeshDesktop.isDesktop && MediaQuery.sizeOf(context).width >= 1240;
+    await openDetail<void>(
+      (_) => MeshMessageSearch(
+        messages: visibleMessages(),
+        senderLabels: {
+          widget.controller.myNodeId: 'You',
+          widget.thread.profile.nodeId: widget.thread.profile.displayName,
+          for (final profile in widget.controller.profiles.values)
+            profile.nodeId: profile.displayName,
+        },
+        onClose: wide ? closeDetail : null,
+        search: (query) =>
+            widget.controller.searchMessages(widget.thread, query),
+        onMeaning: (query) {
+          if (wide) {
+            closeDetail();
+          } else {
+            Navigator.pop(context);
+          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) showContextAi('search', question: query);
+          });
+        },
+        onSelect: (message) {
+          if (!wide) Navigator.pop(context);
+          jumpToMessage(message);
         },
       ),
     );
-    searchInput.dispose();
   }
 
   Future<void> openPinnedMessages() async {
@@ -4116,17 +4122,33 @@ class _ChatPageState extends State<ChatPage>
 
   void jumpToMessage(ChatMessage message) => jumpToMessageById(message.id);
 
-  void jumpToMessageById(String messageId) {
-    final index = widget.thread.messages.indexWhere(
-      (candidate) => candidate.id == messageId,
-    );
-    if (index < 0 || !scroll.hasClients) return;
-    final offset = (index * 92.0).clamp(0.0, scroll.position.maxScrollExtent);
-    scroll.animateTo(
-      offset,
+  Future<void> jumpToMessageById(String messageId) async {
+    final messages = visibleMessages();
+    var index = messages.indexWhere((candidate) => candidate.id == messageId);
+    if (index < 0) {
+      showSnack('This message is not available in this conversation');
+      return;
+    }
+    while (index > 0 && isCoveredByAlbum(messages, index)) {
+      index--;
+    }
+    followLatestMessages = false;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || !scroll.hasClients) return;
+    if (!scroll.isIndexStateInLayoutRange(index) && messages.length > 1) {
+      // Land near a distant row first, then let measured tags locate it exactly.
+      scroll.jumpTo(
+        scroll.position.maxScrollExtent * index / (messages.length - 1),
+      );
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !scroll.hasClients) return;
+    }
+    await scroll.scrollToIndex(
+      index,
+      preferPosition: AutoScrollPosition.middle,
       duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
     );
+    if (!mounted) return;
     setState(() => highlightedMessageId = messageId);
     Future<void>.delayed(const Duration(milliseconds: 1100), () {
       if (mounted && highlightedMessageId == messageId) {
@@ -4136,8 +4158,27 @@ class _ChatPageState extends State<ChatPage>
   }
 
   Future<void> openMediaList() async {
+    final wide =
+        MeshDesktop.isDesktop && MediaQuery.sizeOf(context).width >= 1240;
     final messageId = await openDetail<String>(
-      (_) => ChatMediaPage(thread: widget.thread),
+      (_) => ChatMediaPage(
+        thread: widget.thread,
+        accountKey:
+            '${widget.controller.session?.serverUrl}|${widget.controller.session?.login}',
+        prepareMedia: (message) async {
+          final ready = await widget.controller.ensureMediaAvailable(
+            widget.thread,
+            message,
+          );
+          if (!ready) {
+            if (mounted) showSnack('Could not download media');
+            return null;
+          }
+          return widget.controller.messageInThread(widget.thread, message.id);
+        },
+        onClose: wide ? closeDetail : null,
+        onOpenMessage: wide ? (id) => closeDetail(id) : null,
+      ),
     );
     if (!mounted || messageId == null || messageId.isEmpty) return;
     jumpToMessageById(messageId);
@@ -4174,7 +4215,11 @@ class _ChatPageState extends State<ChatPage>
   }
 
   bool isCoveredByAlbum(List<ChatMessage> messages, int index) {
-    return index > 0 && sameAlbumPhoto(messages[index - 1], messages[index]);
+    var start = index;
+    while (start > 0 && sameAlbumPhoto(messages[start - 1], messages[start])) {
+      start--;
+    }
+    return (index - start) % 10 != 0;
   }
 
   List<ChatMessage> albumFrom(List<ChatMessage> messages, int index) {
@@ -4689,17 +4734,18 @@ class _ChatPageState extends State<ChatPage>
                                       ? const SizedBox(width: double.infinity)
                                       : messageRow,
                                 );
-                                if (!messageScrollSpringEnabled) {
-                                  return ChatDateAnchor(
+                                return AutoScrollTag(
+                                  key: ValueKey('timeline-${message.id}'),
+                                  controller: scroll,
+                                  index: index,
+                                  child: ChatDateAnchor(
                                     date: message.createdAt,
-                                    child: animatedRow,
-                                  );
-                                }
-                                return ChatDateAnchor(
-                                  date: message.createdAt,
-                                  child: _ChatScrollSpringLayer(
-                                    motion: messageScrollMotion,
-                                    child: animatedRow,
+                                    child: messageScrollSpringEnabled
+                                        ? _ChatScrollSpringLayer(
+                                            motion: messageScrollMotion,
+                                            child: animatedRow,
+                                          )
+                                        : animatedRow,
                                   ),
                                 );
                               },
@@ -5039,11 +5085,9 @@ class _ChatPageState extends State<ChatPage>
                                         child: hasInputText && !recording
                                             ? _ComposerIconButton(
                                                 key: const ValueKey('send'),
-                                                tooltip:
-                                                    'Send · hold to schedule',
+                                                tooltip: 'Send options',
                                                 onPressed: send,
-                                                onLongPress:
-                                                    showScheduleComposer,
+                                                onLongPress: showSendOptions,
                                                 icon: Icons.send_rounded,
                                                 accent: _chatThemeAccent(
                                                   widget.thread.themeId,
@@ -7454,6 +7498,7 @@ class _ComposerIconButton extends StatelessWidget {
             customBorder: const CircleBorder(),
             onTap: onPressed,
             onLongPress: onLongPress,
+            onSecondaryTap: onLongPress,
             child: SizedBox(
               width: 44,
               height: 44,
@@ -11930,6 +11975,10 @@ class _AudioPreview extends StatefulWidget {
 }
 
 class _AudioPreviewState extends State<_AudioPreview> {
+  StreamSubscription<bool>? playingSubscription;
+  late AudioProgressStore progressStore;
+  int lastSavedSecond = -1;
+  double playbackRate = 1;
   late final MessageAudioPlayer player;
   StreamSubscription<Duration>? durationSubscription;
   StreamSubscription<Duration>? positionSubscription;
@@ -11953,11 +12002,20 @@ class _AudioPreviewState extends State<_AudioPreview> {
     super.initState();
     localTranscription = widget.message.transcription;
     player = MessageAudioPlayer();
+    progressStore = createProgressStore();
+    playingSubscription = player.onPlayingChanged.listen((value) {
+      if (mounted) setState(() => playing = value);
+      if (!value && sourceReady) unawaited(progressStore.save(position));
+    });
     durationSubscription = player.onDurationChanged.listen((value) {
       if (mounted) setState(() => duration = value);
     });
     positionSubscription = player.onPositionChanged.listen((value) {
       if (mounted) setState(() => position = value);
+      if (sourceReady && value.inSeconds ~/ 3 != lastSavedSecond) {
+        lastSavedSecond = value.inSeconds ~/ 3;
+        unawaited(progressStore.save(value));
+      }
     });
     completeSubscription = player.onPlayerComplete.listen((_) {
       if (!mounted) return;
@@ -11965,6 +12023,7 @@ class _AudioPreviewState extends State<_AudioPreview> {
         playing = false;
         position = Duration.zero;
       });
+      unawaited(progressStore.save(Duration.zero));
     });
   }
 
@@ -11977,13 +12036,17 @@ class _AudioPreviewState extends State<_AudioPreview> {
     if (oldWidget.message.id != widget.message.id ||
         oldWidget.message.fileName != widget.message.fileName ||
         oldWidget.message.fileData != widget.message.fileData) {
+      if (sourceReady) unawaited(progressStore.save(position));
+      progressStore = createProgressStore();
       unawaited(resetSource());
     }
   }
 
   @override
   void dispose() {
+    if (sourceReady) unawaited(progressStore.save(position));
     playerDisposed = true;
+    playingSubscription?.cancel();
     sourceGeneration++;
     durationSubscription?.cancel();
     positionSubscription?.cancel();
@@ -11995,6 +12058,11 @@ class _AudioPreviewState extends State<_AudioPreview> {
   Future<void> disposePlayer() async {
     await player.dispose();
   }
+
+  AudioProgressStore createProgressStore() => AudioProgressStore(
+    '${widget.controller.session?.serverUrl}|${widget.controller.session?.login}',
+    widget.message.id,
+  );
 
   Future<void> resetSource() async {
     sourceGeneration++;
@@ -12034,6 +12102,17 @@ class _AudioPreviewState extends State<_AudioPreview> {
       await player.release().catchError((_) {});
       return;
     }
+    var saved = await progressStore.load();
+    final length = await player.getDuration();
+    if (length != null &&
+        length > Duration.zero &&
+        saved >= length - const Duration(milliseconds: 500)) {
+      saved = Duration.zero;
+      await progressStore.save(saved);
+    }
+    if (!mounted || playerDisposed || generation != sourceGeneration) return;
+    await player.setRate(playbackRate);
+    if (saved > Duration.zero) await player.seek(saved);
     sourceReady = true;
   }
 
@@ -12050,12 +12129,14 @@ class _AudioPreviewState extends State<_AudioPreview> {
   Future<void> togglePlayback() async {
     if (playing) {
       await player.pause();
+      await progressStore.save(position);
       if (mounted) setState(() => playing = false);
       return;
     }
     try {
       await ensureSource();
       if (!mounted || !sourceReady) return;
+      progressStore.activate();
       await player.resume();
       if (mounted) setState(() => playing = true);
     } catch (_) {
@@ -12076,6 +12157,7 @@ class _AudioPreviewState extends State<_AudioPreview> {
       );
       await player.seek(target);
       if (mounted) setState(() => position = target);
+      await progressStore.save(target);
     } catch (_) {
       // Some platform audio backends can reject seeking before metadata loads.
     }
@@ -12202,6 +12284,32 @@ class _AudioPreviewState extends State<_AudioPreview> {
                       ),
                     ),
                   ],
+                ),
+              ),
+              PopupMenuButton<double>(
+                tooltip: 'Playback speed',
+                initialValue: playbackRate,
+                onSelected: (value) async {
+                  try {
+                    if (sourceReady) await player.setRate(value);
+                    if (mounted) setState(() => playbackRate = value);
+                  } catch (_) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(this.context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Could not change playback speed'),
+                        ),
+                      );
+                    }
+                  }
+                },
+                itemBuilder: (_) => [
+                  for (final rate in [0.75, 1.0, 1.25, 1.5, 2.0])
+                    PopupMenuItem(value: rate, child: Text('${rate}x')),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Text('${playbackRate}x'),
                 ),
               ),
             ],

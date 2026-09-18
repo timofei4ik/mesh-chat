@@ -1519,7 +1519,8 @@ class ServerSyncMixin:
                    draft_text,
                    archived,
                    version,
-                   updated_at
+                   updated_at,
+                   rich_draft
             FROM account_chat_state
             WHERE login=?
             ORDER BY chat_key
@@ -1530,6 +1531,7 @@ class ServerSyncMixin:
             {
                 "chat_key": row[0],
                 "draft": row[1] or "",
+                "rich_draft": row[5] or "",
                 "archived": bool(row[2]),
                 "version": int(row[3] or 0),
                 "updated_at": row[4],

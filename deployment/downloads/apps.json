@@ -1,9 +1,17 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": 59,
-  "updatedAt": "2026-09-17T14:45:04Z",
+  "catalogVersion": 60,
+  "updatedAt": "2026-09-18T08:52:59Z",
   "featuredAppId": "meshchat",
   "news": [
+    {
+      "id": "meshchat-messaging-234",
+      "appId": "meshchat",
+      "badge": "Release",
+      "title": "Message navigation, drafts and playback",
+      "summary": "Jump reliably to messages from search and shared media, including long histories and albums. Filter message search by sender, date and media type. Scheduled messages retry failed delivery; silent messages suppress notification sound and vibration. Plain and rich drafts retain pending edits offline; encrypted rich drafts and attachments synchronize across account devices. Voice playback supports pause, speed selection and saved per-account playback position. iOS source is available in Git for Codemagic; no new iOS binary is included.",
+      "publishedAt": "2026-09-18"
+    },
     {
       "id": "meshchat-reactions-sync-233",
       "appId": "meshchat",
@@ -212,7 +220,7 @@
       "tagline": "Messenger",
       "category": "Communication",
       "status": "available",
-      "version": "1.1.8",
+      "version": "1.1.9",
       "description": "Chats, groups, channels, files, calls and Bluetooth mode.",
       "logoAsset": "assets/meshchat_logo_card.png",
       "logoUrl": "https://meshchat-losa.ru/downloads/logos/meshchat.png",
@@ -228,22 +236,21 @@
       "playStoreUrl": "",
       "webUrl": "https://meshchat-losa.ru/",
       "deepLink": "meshchat://",
-      "build": 233,
+      "build": 234,
       "android_url": "/downloads/MeshChat-Android.apk",
       "windows_url": "/downloads/MeshChat-Windows.zip",
       "web_url": "/downloads/MeshChat-Web.zip",
-      "updated_at": "2026-09-17T14:45:04Z",
+      "updated_at": "2026-09-18T08:52:59Z",
       "release": {
-        "title": "Compact reactions and reliable sync",
-        "publishedAt": "2026-09-17",
+        "title": "Message navigation, drafts and playback",
+        "publishedAt": "2026-09-18",
         "notes": [
-          "Android, Windows and web builds are updated to 1.1.8+233.",
-          "Reactions are compact buttons inside message bubbles; tap your reaction to remove it.",
-          "One or two reactions show overlapping participant avatars; larger counts use a number.",
-          "Reaction chips keep the same height for both emoji and image reactions.",
-          "Large chat metadata and messages are saved in bounded cache rows without breaking synchronization.",
-          "Settings update immediately and save only changed values in order.",
-          "Decorated portraits in the chat list keep the same size as undecorated portraits.",
+          "Android, Windows and web builds are updated to 1.1.9+234.",
+          "Jump reliably to messages from search and shared media, including long histories and albums.",
+          "Filter message search by sender, date and media type.",
+          "Scheduled messages retry failed delivery; silent messages suppress notification sound and vibration.",
+          "Plain and rich drafts retain pending edits offline; encrypted rich drafts and attachments synchronize across account devices.",
+          "Voice playback supports pause, speed selection and saved per-account playback position.",
           "iOS source is available in Git for Codemagic; no new iOS binary is included."
         ]
       }

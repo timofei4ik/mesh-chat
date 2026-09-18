@@ -506,8 +506,7 @@ class SubscriptionTests(unittest.TestCase):
         self.relay.db.commit()
         route = self.relay.route_packet
         self.relay.route_packet = AsyncMock(side_effect=ConnectionResetError())
-        with self.assertRaises(ConnectionResetError):
-            asyncio.run(self.relay.dispatch_due_scheduled_messages())
+        self.assertEqual(0, asyncio.run(self.relay.dispatch_due_scheduled_messages()))
         first_packet = self.relay.route_packet.call_args.args[0]
         self.relay.route_packet = route
         self.assertEqual(1, asyncio.run(self.relay.dispatch_due_scheduled_messages()))

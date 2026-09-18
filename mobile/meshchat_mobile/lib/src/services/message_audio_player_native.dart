@@ -6,9 +6,11 @@ import 'package:media_kit/media_kit.dart';
 import 'audio_playback_source.dart';
 
 class MessageAudioPlayer {
+  static MessageAudioPlayer? _active;
   final _durationController = StreamController<Duration>.broadcast();
   final _positionController = StreamController<Duration>.broadcast();
   final _completeController = StreamController<void>.broadcast();
+  final _playingController = StreamController<bool>.broadcast();
   final _subscriptions = <StreamSubscription<dynamic>>[];
 
   Player? _player;
@@ -18,6 +20,8 @@ class MessageAudioPlayer {
   Stream<Duration> get onDurationChanged => _durationController.stream;
   Stream<Duration> get onPositionChanged => _positionController.stream;
   Stream<void> get onPlayerComplete => _completeController.stream;
+  Stream<bool> get onPlayingChanged => _playingController.stream;
+  Future<Duration?> getDuration() async => _player?.state.duration;
 
   Player _ensurePlayer() {
     if (_disposed) throw StateError('Audio player has been disposed');
@@ -29,6 +33,7 @@ class MessageAudioPlayer {
     _subscriptions.addAll([
       player.stream.duration.listen(_durationController.add),
       player.stream.position.listen(_positionController.add),
+      player.stream.playing.listen(_playingController.add),
       player.stream.completed.where((completed) => completed).listen((_) {
         _completeController.add(null);
       }),
@@ -64,7 +69,13 @@ class MessageAudioPlayer {
     }
   }
 
-  Future<void> resume() => _ensurePlayer().play();
+  Future<void> resume() async {
+    if (_active != this) await _active?.pause();
+    _active = this;
+    await _ensurePlayer().play();
+  }
+
+  Future<void> setRate(double rate) => _ensurePlayer().setRate(rate);
 
   Future<void> pause() async {
     final player = _player;
@@ -94,6 +105,7 @@ class MessageAudioPlayer {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    if (_active == this) _active = null;
     final player = _player;
     final source = _source;
     _player = null;
@@ -108,6 +120,7 @@ class MessageAudioPlayer {
       await _durationController.close();
       await _positionController.close();
       await _completeController.close();
+      await _playingController.close();
     }
   }
 }

@@ -17,6 +17,38 @@ void main() {
     fileSize: 1024,
   );
 
+  testWidgets(
+    'shared media search and source callback keep the desktop panel route',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      String? selected;
+      final thread = ChatThread(
+        profile: const Profile(nodeId: 'a', displayName: 'Alice'),
+        messages: [file('one', 'notes.pdf'), file('two', 'other.pdf')],
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ChatMediaPage(
+            thread: thread,
+            onOpenMessage: (id) => selected = id,
+          ),
+        ),
+      );
+      await tester.tap(find.text('Files 2'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'notes');
+      await tester.pumpAndSettle();
+      expect(find.text('notes.pdf'), findsOneWidget);
+      expect(find.text('other.pdf'), findsNothing);
+      await tester.tap(find.byTooltip('Go to message'));
+      await tester.pumpAndSettle();
+      expect(selected, 'one');
+      expect(find.byType(ChatMediaPage), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('shared content separates photos videos voice and music', (
     tester,
   ) async {

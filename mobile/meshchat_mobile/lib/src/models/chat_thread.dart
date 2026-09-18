@@ -20,6 +20,8 @@ class ChatThread {
     this.groupKeyData = '',
     List<String>? pinnedMessageIds,
     this.draft = '',
+    this.richDraft = '',
+    this.draftOperation = '',
     this.archived = false,
     this.pinned = false,
     this.muted = false,
@@ -48,6 +50,8 @@ class ChatThread {
   String groupKeyData;
   final List<String> pinnedMessageIds;
   String draft;
+  String richDraft;
+  String draftOperation;
   bool archived;
   bool pinned;
   bool muted;
@@ -131,6 +135,8 @@ class ChatThread {
           ? pinsRaw.map((value) => value.toString()).toList()
           : const [],
       draft: json['draft']?.toString() ?? '',
+      richDraft: json['rich_draft']?.toString() ?? '',
+      draftOperation: json['draft_operation']?.toString() ?? '',
       archived: json['archived'] == true,
       pinned: json['pinned'] == true,
       muted: json['muted'] == true,
@@ -162,6 +168,8 @@ class ChatThread {
       'group_key_data': groupKeyData,
       'pinned_message_ids': pinnedMessageIds,
       'draft': draft,
+      'rich_draft': richDraft,
+      'draft_operation': draftOperation,
       'archived': archived,
       'pinned': pinned,
       'muted': muted,

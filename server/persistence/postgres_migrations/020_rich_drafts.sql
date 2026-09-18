@@ -1,0 +1,1 @@
+ALTER TABLE account_chat_state ADD COLUMN IF NOT EXISTS rich_draft TEXT NOT NULL DEFAULT '';

@@ -147,6 +147,16 @@ class MeshCrypto {
     return encryptedPrefix + _encode(utf8.encode(jsonEncode(payload)));
   }
 
+  Future<String> encryptPrivateText(String text) async {
+    if (_keyPair == null || !_isValidPublicKey(publicKey)) {
+      throw const EncryptionUnavailableException(
+        'Encryption identity is not initialized',
+      );
+    }
+    final payload = {'v': 1, 'to': await _seal(publicKey, utf8.encode(text))};
+    return encryptedPrefix + _encode(utf8.encode(jsonEncode(payload)));
+  }
+
   Future<String> decryptText(String value) async {
     if (!value.startsWith(encryptedPrefix) || _keyPair == null) return value;
     try {

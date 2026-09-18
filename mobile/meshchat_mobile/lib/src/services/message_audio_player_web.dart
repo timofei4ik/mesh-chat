@@ -5,12 +5,16 @@ import 'package:audioplayers/audioplayers.dart';
 import 'audio_playback_source.dart';
 
 class MessageAudioPlayer {
+  static MessageAudioPlayer? _active;
   final AudioPlayer _player = AudioPlayer();
   PreparedAudioSource? _source;
 
   Stream<Duration> get onDurationChanged => _player.onDurationChanged;
   Stream<Duration> get onPositionChanged => _player.onPositionChanged;
   Stream<void> get onPlayerComplete => _player.onPlayerComplete;
+  Stream<bool> get onPlayingChanged =>
+      _player.onPlayerStateChanged.map((value) => value == PlayerState.playing);
+  Future<Duration?> getDuration() => _player.getDuration();
 
   Future<void> setSource({
     required Uint8List bytes,
@@ -31,7 +35,13 @@ class MessageAudioPlayer {
     }
   }
 
-  Future<void> resume() => _player.resume();
+  Future<void> resume() async {
+    if (_active != this) await _active?.pause();
+    _active = this;
+    await _player.resume();
+  }
+
+  Future<void> setRate(double rate) => _player.setPlaybackRate(rate);
   Future<void> pause() => _player.pause();
   Future<void> stop() => _player.stop();
   Future<void> seek(Duration position) => _player.seek(position);
@@ -47,6 +57,7 @@ class MessageAudioPlayer {
   }
 
   Future<void> dispose() async {
+    if (_active == this) _active = null;
     final source = _source;
     _source = null;
     try {

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from uuid import uuid4
 import time
+import json
 
 from websockets.exceptions import ConnectionClosed
 
@@ -169,6 +170,11 @@ async def execute_history_mutation(
             # delivery; the sender can reconcile its durable outbox later.
             pass
 
+    if packet.get("type") == "draft_update":
+        try:
+            await websocket.send(json.dumps(packet, ensure_ascii=False))
+        except (OSError, ConnectionClosed):
+            pass
     await server.mirror_packet_to_source_account_devices(packet)
 
     if packet.get("type") == "group_delete":

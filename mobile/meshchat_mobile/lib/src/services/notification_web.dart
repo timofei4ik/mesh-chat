@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:html';
 import 'dart:typed_data';
+import 'package:web/web.dart' as web;
 
 Future<bool> requestNotificationPermission() async {
   if (!Notification.supported) return false;
@@ -17,12 +18,14 @@ Future<void> showNotification({
   required String title,
   required String body,
   String? icon,
+  bool silent = false,
   Map<String, String>? target,
 }) async {
   if (!Notification.supported) return;
   if (Notification.permission != 'granted') return;
-  final notification = Notification(title, body: body, icon: icon);
-  Timer(const Duration(seconds: 8), notification.close);
+  final notification = web.Notification(title,
+    web.NotificationOptions(body: body, icon: icon ?? '', silent: silent));
+  Timer(const Duration(seconds: 8), () => notification.close());
 }
 
 Map<String, String>? consumeInitialNotificationTarget() {

@@ -4,6 +4,7 @@ Future<void> showNotification({
   required String title,
   required String body,
   String? icon,
+  bool silent = false,
   Map<String, String>? target,
 }) async {}
 

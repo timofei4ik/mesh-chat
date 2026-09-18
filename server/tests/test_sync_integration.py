@@ -504,6 +504,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         server_module.SYNC_V2_DELTA_ENABLED = True
         server_module.SYNC_V2_DELTA_TEST_ACCOUNTS = frozenset()
         self.relay = server_module.MeshRelayServer()
+        self.relay.draft_blob_root = Path(self.temp_dir.name) / 'draft-attachments'
         self.relay.wireguard_config_for = lambda login, device_id: (
             "[Interface]\n"
             "PrivateKey = integration-test\n"
@@ -2147,6 +2148,7 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "destination_node": "SERVER",
                 "chat_key": "direct:live_alice",
                 "draft": "typing on the phone",
+                "rich_draft": "encrypted-document-with-table",
                 "ttl": 1,
             }
         )
@@ -2154,6 +2156,20 @@ class ServerSyncIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(True, bob_mirror_draft["account_mirror"])
         self.assertEqual("typing on the phone", bob_mirror_draft["draft"])
         self.assertEqual(1, bob_mirror_draft["version"])
+        self.assertEqual("encrypted-document-with-table", bob_mirror_draft["rich_draft"])
+        own_draft_ack = await bob_phone.receive_type("draft_update")
+        self.assertEqual("draft_update:live-draft-1", own_draft_ack["operation_id"])
+        blob_id = str(uuid.uuid4())
+        await bob_phone.send({"type": "draft_blob_put", "request_id": "put", "source_node": bob_phone.node_id,
+                              "destination_node": "SERVER", "blob_id": blob_id, "index": 0, "data": "encrypted-chunk"})
+        self.assertTrue((await bob_phone.receive_type("draft_blob_result"))["ok"])
+        for client, allowed in ((bob_desktop, True), (alice_phone, False)):
+            await client.send({"type": "draft_blob_get", "request_id": "get", "source_node": client.node_id,
+                               "destination_node": "SERVER", "blob_id": blob_id, "index": 0})
+            response = await client.receive_type("draft_blob_result")
+            self.assertEqual(allowed, response["ok"])
+            if allowed:
+                self.assertEqual("encrypted-chunk", response["data"])
 
         await bob_phone.send(
             {

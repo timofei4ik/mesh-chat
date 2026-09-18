@@ -77,6 +77,7 @@ class _PreviewController extends AppController {
     ChatMessage? replyTo,
     ChatMessage? retryingMessage,
     String? richContent,
+    bool silent = false,
   }) async {
     sentGroupMessages.add(text);
     return 'preview-${sentGroupMessages.length}';
@@ -91,6 +92,7 @@ class _RichPreviewController extends _PreviewController {
     ChatMessage? replyTo,
     ChatMessage? retryingMessage,
     String? richContent,
+    bool silent = false,
   }) async {
     sentGroupMessages.add(text);
     return null;
@@ -368,6 +370,53 @@ void main() {
     await captureRevision(tester, boundary, 'reaction-avatar-sizes');
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('jump finds the actual variable-height row in a long chat', (
+    tester,
+  ) async {
+    final controller = _PreviewController();
+    final thread = ChatThread(
+      profile: const Profile(nodeId: 'friend', displayName: 'Alex'),
+      messages: List.generate(
+        250,
+        (i) => ChatMessage(
+          id: 'jump-$i',
+          senderNode: 'friend',
+          receiverNode: '',
+          text:
+              'Target $i\n${List.filled(i % 9 + 1, "a line of variable height").join("\n")}',
+          createdAt: DateTime(2026, 9, 18, 10, i),
+        ),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MeshPerformanceScope(
+          lowEndDeviceMode: true,
+          child: ChatPage(controller: controller, thread: thread),
+        ),
+      ),
+    );
+    await waitForChatViewport(tester);
+    final dynamic state = tester.state(find.byType(ChatPage));
+    var finished = false;
+    final Future<void> navigation = state.jumpToMessageById('jump-7');
+    navigation.then((_) => finished = true);
+    for (var frame = 0; frame < 100 && !finished; frame++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(finished, isTrue);
+    final target = find.byKey(const ValueKey('timeline-jump-7'));
+    expect(target, findsOneWidget);
+    final rect = tester.getRect(target);
+    final viewport = tester.getRect(
+      find.byKey(const ValueKey('chat-initial-viewport')),
+    );
+    expect(rect.overlaps(viewport), isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
   });
 
   for (final count in [0, 3, 250]) {

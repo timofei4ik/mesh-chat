@@ -1,4 +1,6 @@
 import 'dart:async';
+import '../services/rich_draft_store.dart';
+import '../services/rich_draft_sync.dart';
 import 'dart:convert';
 import 'dart:math';
 
@@ -692,6 +694,8 @@ class AppController extends ChangeNotifier {
   bool _cacheSavePending = false;
   Future<void> _deletedMessageSave = Future<void>.value();
   final Map<String, int> _draftVersions = {};
+  final Map<String, Completer<Map<String, dynamic>>> _draftRequests = {};
+  bool _flushingDrafts = false;
   final Map<String, int> _archiveVersions = {};
   final Map<String, bool> _archiveStates = {};
   final Map<String, DateTime> _businessAutoReplyAt = {};
@@ -3408,7 +3412,11 @@ class AppController extends ChangeNotifier {
         lastSyncAt = DateTime.now();
         _recordSyncLatency('snapshot');
         addDiagnostic('sync', 'Sync received');
+        unawaited(flushPendingDrafts());
         notifyListeners();
+      case 'draft_blob_result':
+        final pending = _draftRequests.remove(packet['request_id']);
+        if (pending != null && !pending.isCompleted) pending.complete(packet);
       case 'mutation_ack':
         _applyMutationAck(packet);
       case 'file_transfer_progress':
@@ -3676,6 +3684,7 @@ class AppController extends ChangeNotifier {
       _snapshotRepairRequested = false;
       lastSyncAt = DateTime.now();
       _recordSyncLatency('delta');
+      unawaited(flushPendingDrafts());
       addDiagnostic('sync', 'Delta sync applied through ${batch.targetCursor}');
     } catch (syncError) {
       _applyingSyncDelta = false;
@@ -4744,6 +4753,7 @@ class AppController extends ChangeNotifier {
     ChatMessage? replyTo,
     ChatMessage? retryingMessage,
     String? richContent,
+    bool silent = false,
   }) async {
     final rich = _outgoingRich(
       text,
@@ -4782,6 +4792,7 @@ class AppController extends ChangeNotifier {
           text: trimmed,
           richContent: rich,
           senderName: ownProfile.displayName,
+          silent: silent,
           createdAt: DateTime.now(),
           replyToMessageId: replyToMessageId,
           replyToText: replyToText,
@@ -4807,6 +4818,7 @@ class AppController extends ChangeNotifier {
     final basePacket = {
       'type': 'group_message',
       'packet_id': id,
+      'silent': outgoing.silent,
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
       'ttl': 5,
@@ -4999,6 +5011,7 @@ class AppController extends ChangeNotifier {
           _showNotification(
             title: group.profile.displayName,
             body: '$senderName: $text',
+            silent: packet['silent'] == true,
             notificationKey: 'message:$id',
             sourceNode: sender,
             groupId: group.groupId,
@@ -5763,9 +5776,107 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  void updateDraft(ChatThread thread, String value) {
-    if (thread.draft == value) return;
+  Future<Map<String, dynamic>> _draftRequest(
+    Map<String, dynamic> payload,
+  ) async {
+    final account = session;
+    if (account == null || !_socket.supportsRichDrafts) {
+      throw StateError('Draft sync is unavailable');
+    }
+    final id = const Uuid().v4();
+    final pending = Completer<Map<String, dynamic>>();
+    _draftRequests[id] = pending;
+    try {
+      _socket.send({
+        ...payload,
+        'request_id': id,
+        'source_node': myNodeId,
+        'destination_node': 'SERVER',
+      });
+      final result = await pending.future.timeout(const Duration(seconds: 30));
+      if (!account.isSameAccountAs(session)) {
+        throw StateError('Account changed');
+      }
+      if (result['ok'] != true) {
+        throw StateError(result['error']?.toString() ?? 'Draft sync failed');
+      }
+      return result;
+    } finally {
+      _draftRequests.remove(id);
+    }
+  }
+
+  RichDraftStore richDraftStore(ChatThread thread) {
+    final account = session;
+    if (account == null) throw StateError('No active session');
+    final sync = RichDraftSync(
+      request: (packet) {
+        if (!account.isSameAccountAs(session)) {
+          throw StateError('Account changed');
+        }
+        return _draftRequest(packet);
+      },
+      encrypt: _crypto.encryptPrivateText,
+      decrypt: _crypto.decryptText,
+    );
+    return RichDraftStore(
+      jsonEncode([account.serverUrl, account.login, thread.storageKey, '']),
+      loadRemote: () async {
+        if (!account.isSameAccountAs(session) ||
+            thread.draftOperation.isNotEmpty ||
+            (!_draftVersions.containsKey(chatPreferenceKey(thread)) &&
+                thread.richDraft.isEmpty)) {
+          throw StateError('Use local draft');
+        }
+        final payload = await sync.decode(thread.richDraft);
+        final document = RichMessageDocument.decode(
+          payload['document']?.toString() ?? '',
+        );
+        if (payload.isNotEmpty && document == null) {
+          throw const FormatException('Invalid synced draft');
+        }
+        return document;
+      },
+      readRemoteAttachment: (id) => sync.download(thread.richDraft, id),
+      onSaved: (document, read) async {
+        if (!account.isSameAccountAs(session) || !_socket.supportsRichDrafts) {
+          return false;
+        }
+        final wire = await sync.upload(document, read, thread.richDraft);
+        if (!account.isSameAccountAs(session)) return false;
+        thread.richDraft = wire;
+        updateDraft(thread, thread.draft, force: true);
+        await _saveCache();
+        return true;
+      },
+    );
+  }
+
+  Future<void> flushPendingDrafts() async {
+    if (_flushingDrafts || session == null) return;
+    _flushingDrafts = true;
+    final account = session!;
+    try {
+      for (final thread in [...threads.values, ...groups.values]) {
+        if (!account.isSameAccountAs(session) || !_socket.isConnected) break;
+        if (thread.isBluetooth) continue;
+        if (thread.draftOperation.isNotEmpty) {
+          updateDraft(thread, thread.draft, force: true);
+        }
+        if (_socket.supportsRichDrafts) {
+          final store = richDraftStore(thread);
+          if (await store.hasPendingSync) await store.save(await store.load());
+        }
+      }
+    } finally {
+      _flushingDrafts = false;
+    }
+  }
+
+  void updateDraft(ChatThread thread, String value, {bool force = false}) {
+    if (!force && thread.draft == value) return;
     thread.draft = value;
+    thread.draftOperation = 'draft_update:${const Uuid().v4()}';
     _draftCacheSaveTimer?.cancel();
     // Persist only after typing settles. Serializing every cached thread while
     // the user is actively typing causes visible frame drops on older phones.
@@ -5787,12 +5898,13 @@ class AppController extends ChangeNotifier {
         _socket.send({
           'type': 'draft_update',
           'packet_id': const Uuid().v4(),
-          'operation_id': 'draft_update:${const Uuid().v4()}',
+          'operation_id': thread.draftOperation,
           'protocol_version': MeshSocket.protocolVersion,
           'source_node': myNodeId,
           'destination_node': 'SERVER',
           'chat_key': chatKey,
           'draft': thread.draft,
+          if (_socket.supportsRichDrafts) 'rich_draft': thread.richDraft,
           'ttl': 1,
         });
       });
@@ -6013,6 +6125,7 @@ class AppController extends ChangeNotifier {
     String text, {
     required DateTime sendAt,
     String repeatInterval = 'none',
+    bool silent = false,
   }) async {
     final current = session;
     final trimmed = text.trim();
@@ -6121,7 +6234,9 @@ class AppController extends ChangeNotifier {
       'send_at': sendAt.toUtc().toIso8601String(),
       'repeat_interval': repeatInterval,
       'preview': trimmed,
-      'payloads': payloads,
+      'payloads': [
+        for (final payload in payloads) {...payload, 'silent': silent},
+      ],
     });
     final result = await completer.future.timeout(
       const Duration(seconds: 10),
@@ -9894,6 +10009,7 @@ class AppController extends ChangeNotifier {
     String? messageId,
     bool businessAutoReply = false,
     String? richContent,
+    bool silent = false,
   }) async {
     final rich = _outgoingRich(
       text,
@@ -9956,6 +10072,7 @@ class AppController extends ChangeNotifier {
           receiverNode: recipient.nodeId,
           text: trimmed,
           richContent: rich,
+          silent: silent,
           createdAt: DateTime.now(),
           replyToMessageId: replyToMessageId,
           replyToText: replyToText,
@@ -9985,6 +10102,7 @@ class AppController extends ChangeNotifier {
     _socket.send({
       'type': 'chat_message',
       'packet_id': id,
+      'silent': outgoing.silent,
       'protocol_version': MeshSocket.protocolVersion,
       'source_node': myNodeId,
       'destination_node': recipient.nodeId,
@@ -11457,6 +11575,7 @@ class AppController extends ChangeNotifier {
               title: profile.displayName,
               body: text,
               notificationKey: 'message:$id',
+              silent: packet['silent'] == true,
               sourceNode: sender,
             ),
           );
@@ -12332,14 +12451,15 @@ class AppController extends ChangeNotifier {
     required String notificationKey,
     required String sourceNode,
     String groupId = '',
+    bool silent = false,
   }) async {
     if (!appSettings.notificationsEnabled) return;
     try {
       await _notifications.showMessage(
         title: title,
         body: appSettings.notificationPreview ? body : 'New message',
-        sound: appSettings.notificationSound,
-        vibration: appSettings.notificationVibration,
+        sound: appSettings.notificationSound && !silent,
+        vibration: appSettings.notificationVibration && !silent,
         notificationKey: notificationKey,
         target: NotificationTarget(
           packetType: groupId.isEmpty ? 'chat_message' : 'group_message',
@@ -12773,10 +12893,20 @@ class AppController extends ChangeNotifier {
     ];
     if (matches.isEmpty) return;
     _draftVersions[chatKey] = version;
-    _draftSyncTimers.remove(chatKey)?.cancel();
     final draft = packet['draft']?.toString() ?? '';
     var changed = false;
     for (final thread in matches) {
+      if (thread.draftOperation.isNotEmpty) {
+        if (packet['operation_id'] != thread.draftOperation) continue;
+        thread.draftOperation = '';
+        changed = true;
+      }
+      _draftSyncTimers.remove(chatKey)?.cancel();
+      if (packet['rich_draft'] is String &&
+          thread.richDraft != packet['rich_draft']) {
+        thread.richDraft = packet['rich_draft'] as String;
+        changed = true;
+      }
       if (thread.draft == draft) continue;
       thread.draft = draft;
       changed = true;

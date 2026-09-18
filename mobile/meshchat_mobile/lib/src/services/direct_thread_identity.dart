@@ -98,6 +98,12 @@ void mergeDirectHistory(
   target.pinned = target.pinned || other.pinned;
   target.muted = target.muted || other.muted;
   if (target.draft.isEmpty) target.draft = other.draft;
+  if (target.richDraft.isEmpty) target.richDraft = other.richDraft;
+  if (target.draftOperation.isEmpty && other.draftOperation.isNotEmpty) {
+    target.draftOperation = other.draftOperation;
+    target.draft = other.draft;
+    target.richDraft = other.richDraft;
+  }
   target.unread = target.unread > other.unread ? target.unread : other.unread;
   target.pinnedMessageIds.addAll(
     other.pinnedMessageIds.where((id) => !target.pinnedMessageIds.contains(id)),

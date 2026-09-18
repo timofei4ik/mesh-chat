@@ -11,6 +11,7 @@ try:
         StopConnectionHandler,
     )
     from server.server_commands_ai import register_ai_commands
+    from server.server_commands_drafts import register_draft_commands
     from server.server_commands_automation import (
         register_automation_commands,
     )
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
         StopConnectionHandler,
     )
     from server_commands_ai import register_ai_commands
+    from server_commands_drafts import register_draft_commands
     from server_commands_automation import register_automation_commands
     from server_commands_identity import (
         register_identity_commands,
@@ -58,6 +60,7 @@ def build_command_registry():
     register_identity_commands(registry)
     register_automation_commands(registry)
     register_ai_commands(registry)
+    register_draft_commands(registry)
     register_moderation_commands(registry)
     register_poll_commands(registry)
     register_call_commands(registry)

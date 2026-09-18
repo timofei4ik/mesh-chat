@@ -247,6 +247,9 @@ class ServerSchedulerMixin:
         record_sync_event = getattr(self, "record_sync_v2_event", None)
         for row in self._due_scheduled_rows():
             schedule_id, login, source_node, payloads_json, repeat_interval, due_at, chat_key = row
+            due = self._parse_schedule_time(due_at)
+            if due is not None and due > datetime.now(timezone.utc):
+                continue
             try:
                 payloads = json.loads(payloads_json or "[]")
             except json.JSONDecodeError:
@@ -266,8 +269,10 @@ class ServerSchedulerMixin:
             ))
             created_at = (self._parse_schedule_time(due_at) or datetime.now(timezone.utc)).isoformat()
             sent_payload = None
+            failed = False
             for raw_payload in payloads:
                 if not isinstance(raw_payload, dict):
+                    failed = True
                     continue
                 payload = dict(raw_payload)
                 payload["packet_id"] = message_id
@@ -280,20 +285,27 @@ class ServerSchedulerMixin:
                     if callable(sync_accounts_for_packet)
                     else ()
                 )
-                if callable(persist_history_mutation):
-                    mutation_result = persist_history_mutation(
-                        payload,
-                        sync_event_accounts,
-                    )
-                    saved = mutation_result["saved"]
-                else:
-                    saved = self.save_history_packet(payload)
-                    if saved is not False and callable(record_sync_event):
-                        record_sync_event(payload, sync_event_accounts)
-                if saved is False:
+                try:
+                    if callable(persist_history_mutation):
+                        mutation_result = persist_history_mutation(payload, sync_event_accounts)
+                        saved = mutation_result["saved"]
+                    else:
+                        saved = self.save_history_packet(payload)
+                        if saved is not False and callable(record_sync_event):
+                            record_sync_event(payload, sync_event_accounts)
+                    if saved is False:
+                        failed = True
+                        continue
+                    await self.route_packet(payload)
+                except Exception as error:
+                    # Keep this run pending; deterministic IDs make retry idempotent.
+                    print("Scheduled delivery failed:", schedule_id, type(error).__name__)
+                    failed = True
                     continue
-                await self.route_packet(payload)
                 sent_payload = sent_payload or payload
+
+            if failed or sent_payload is None:
+                continue
 
             repeat_delta = _SCHEDULE_REPEATS.get(repeat_interval)
             if repeat_delta is None:

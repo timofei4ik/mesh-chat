@@ -69,6 +69,7 @@ class ChatMessage {
     required this.text,
     required this.createdAt,
     this.richContent = '',
+    this.silent = false,
     this.senderName = '',
     this.kind = ChatMessageKind.text,
     this.fileName = '',
@@ -104,6 +105,7 @@ class ChatMessage {
   final String receiverNode;
   final String text;
   final String richContent;
+  final bool silent;
   final DateTime createdAt;
   final String senderName;
   final ChatMessageKind kind;
@@ -172,6 +174,7 @@ class ChatMessage {
       richContent:
           richContent ??
           (text != null && text != this.text ? '' : this.richContent),
+      silent: silent,
       senderName: senderName ?? this.senderName,
       createdAt: createdAt,
       kind: kind ?? this.kind,
@@ -219,6 +222,7 @@ class ChatMessage {
       senderNode: json['sender_node']?.toString() ?? '',
       receiverNode: json['receiver_node']?.toString() ?? '',
       text: json['text']?.toString() ?? '',
+      silent: json['silent'] == true,
       richContent: json['rich_content'] is String
           ? json['rich_content'] as String
           : '',
@@ -269,6 +273,7 @@ class ChatMessage {
       'receiver_node': receiverNode,
       'text': text,
       'rich_content': richContent,
+      'silent': silent,
       'sender_name': senderName,
       'created_at': createdAt.toUtc().toIso8601String(),
       'kind': kind.name,

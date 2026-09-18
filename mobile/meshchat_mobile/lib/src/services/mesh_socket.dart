@@ -90,6 +90,7 @@ class MeshSocket {
   bool _supportsSyncV2DeltaBatch = false;
   bool _supportsMultiDeviceState = false;
   bool _supportsRichMessages = false;
+  bool _supportsRichDrafts = false;
   bool _supportsAiCompose = false;
   String _lastIdentityRecovery = '';
   bool _flushingOutbox = false;
@@ -123,6 +124,8 @@ class MeshSocket {
   bool get supportsSyncV2Delta => _supportsSyncV2Delta;
   bool get supportsSyncV2DeltaBatch => _supportsSyncV2DeltaBatch;
   bool get supportsMultiDeviceState => _supportsMultiDeviceState;
+  bool get supportsRichDrafts =>
+      _connected && _serverCapabilitiesKnown && _supportsRichDrafts;
   bool get supportsRichMessages =>
       _connected && _serverCapabilitiesKnown && _supportsRichMessages;
   bool get supportsAiCompose =>
@@ -337,6 +340,7 @@ class MeshSocket {
               _supportsMultiDeviceState =
                   capabilities['multi_device_state'] == true;
               _supportsRichMessages = capabilities['rich_messages_v1'] == true;
+              _supportsRichDrafts = capabilities['rich_drafts_v1'] == true;
               _supportsAiCompose = capabilities['ai_compose_v1'] == true;
             }
             if (packetType == 'file_chunk_ack') {

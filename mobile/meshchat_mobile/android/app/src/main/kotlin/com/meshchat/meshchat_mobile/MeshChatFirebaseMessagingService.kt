@@ -55,9 +55,10 @@ class MeshChatFirebaseMessagingService : FirebaseMessagingService() {
         val data = message.data
         val type = data["type"].orEmpty()
         val isCall = type == "call_offer"
+        val silent = !isCall && data["silent"] == "true"
         val callId = data["call_id"].orEmpty()
         val packetId = data["packet_id"].orEmpty()
-        val channelId = if (isCall) CALL_CHANNEL_ID else MESSAGE_CHANNEL_ID
+        val channelId = if (isCall) CALL_CHANNEL_ID else if (silent) SILENT_CHANNEL_ID else MESSAGE_CHANNEL_ID
         val title = data["title"] ?: message.notification?.title ?: "MeshChat"
         val body = data["body"] ?: message.notification?.body ?: "New message"
         val contentIntent = notificationIntent(data, packetId.ifEmpty { callId })
@@ -90,7 +91,7 @@ class MeshChatFirebaseMessagingService : FirebaseMessagingService() {
             @Suppress("DEPRECATION")
             builder.setPriority(Notification.PRIORITY_HIGH)
             @Suppress("DEPRECATION")
-            builder.setDefaults(Notification.DEFAULT_SOUND or Notification.DEFAULT_VIBRATE)
+            builder.setDefaults(if (silent) 0 else Notification.DEFAULT_SOUND or Notification.DEFAULT_VIBRATE)
         }
 
         val tag = if (isCall) {
@@ -149,7 +150,13 @@ class MeshChatFirebaseMessagingService : FirebaseMessagingService() {
             enableVibration(true)
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
-        manager.createNotificationChannels(listOf(messages, calls))
+        val silentMessages = NotificationChannel(
+            SILENT_CHANNEL_ID, "Silent messages", NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            setSound(null, null)
+            enableVibration(false)
+        }
+        manager.createNotificationChannels(listOf(messages, calls, silentMessages))
     }
 
     override fun onNewToken(token: String) {
@@ -164,6 +171,7 @@ class MeshChatFirebaseMessagingService : FirebaseMessagingService() {
         const val PREFERENCES = "meshchat_fcm"
         const val TOKEN_KEY = "registration_token"
         private const val MESSAGE_CHANNEL_ID = "meshchat_messages"
+        private const val SILENT_CHANNEL_ID = "meshchat_messages_silent"
         private const val CALL_CHANNEL_ID = "meshchat_calls"
         private const val CALL_TIMEOUT_MILLIS = 60_000L
 

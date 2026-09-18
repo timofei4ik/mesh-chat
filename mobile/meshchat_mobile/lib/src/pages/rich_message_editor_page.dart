@@ -176,7 +176,7 @@ class _RichMessageEditorPageState extends State<RichMessageEditorPage>
       await widget.drafts.save(value);
       savedRevision = currentRevision;
       if (mounted && savedRevision == revision) {
-        draftStatus.value = 'Saved locally';
+        draftStatus.value = widget.drafts.cloudSynced ? 'Saved to account' : 'Saved locally';
       }
       return true;
     } catch (_) {

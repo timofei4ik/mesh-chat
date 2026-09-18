@@ -206,14 +206,15 @@ class NotificationService {
         title: title.trim().isEmpty ? 'MeshChat' : title.trim(),
         body: body.trim().isEmpty ? 'New message' : body.trim(),
         icon: 'icons/Icon-192.png',
+        silent: !sound && !vibration,
         target: target.toMap(),
       );
       return;
     }
 
     final android = AndroidNotificationDetails(
-      'meshchat_messages',
-      'Messages',
+      sound || vibration ? 'meshchat_messages' : 'meshchat_messages_silent',
+      sound || vibration ? 'Messages' : 'Silent messages',
       channelDescription: 'New MeshChat messages',
       importance: Importance.high,
       priority: Priority.high,
@@ -226,7 +227,9 @@ class NotificationService {
       presentBadge: true,
       presentSound: sound,
     );
-    const windows = WindowsNotificationDetails();
+    final windows = WindowsNotificationDetails(
+      audio: sound ? null : WindowsNotificationAudio.silent(),
+    );
     const linux = LinuxNotificationDetails(defaultActionName: 'Open');
     final details = NotificationDetails(
       android: android,

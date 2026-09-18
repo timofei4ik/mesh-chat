@@ -33,6 +33,7 @@ self.addEventListener('push', function(event) {
     badge: '/icons/Icon-192.png',
     tag: payload.tag || payload.packet_id || undefined,
     renotify: payload.packet_type === 'call_offer',
+    silent: payload.silent === true,
     data: {
       url: payload.url || '/',
       packetType: payload.packet_type || '',

@@ -226,6 +226,7 @@ def canonical_sync_v2_state(snapshot):
         if chat_key:
             state["chat_states"][chat_key] = {
                 "draft": _text(item.get("draft")),
+                "rich_draft": _text(item.get("rich_draft")),
                 "archived": item.get("archived") is True,
                 "version": int(item.get("version") or 0),
             }
@@ -448,6 +449,7 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
                 previous = state["chat_states"].get(chat_key, {})
                 state["chat_states"][chat_key] = {
                     "draft": _text(payload.get("draft")),
+                    "rich_draft": _text(payload.get("rich_draft", previous.get("rich_draft"))),
                     "archived": previous.get("archived") is True,
                     "version": int(payload.get("version") or 0),
                 }
@@ -457,6 +459,7 @@ def apply_sync_v2_delta_shadow(snapshot, events, node_id=""):
                 previous = state["chat_states"].get(chat_key, {})
                 state["chat_states"][chat_key] = {
                     "draft": _text(previous.get("draft")),
+                    "rich_draft": _text(previous.get("rich_draft")),
                     "archived": payload.get("archived") is True,
                     "version": int(payload.get("version") or 0),
                 }

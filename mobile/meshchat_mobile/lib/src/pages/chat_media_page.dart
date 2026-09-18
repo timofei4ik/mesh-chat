@@ -13,14 +13,26 @@ import 'package:path_provider/path_provider.dart';
 import '../models/chat_message.dart';
 import '../models/chat_thread.dart';
 import '../services/message_audio_player.dart';
+import '../services/audio_progress_store.dart';
 import '../utils/media_request_encoder.dart';
 
 enum MediaSection { media, videos, files, voice, music, links }
 
 class ChatMediaPage extends StatefulWidget {
-  const ChatMediaPage({super.key, required this.thread});
+  const ChatMediaPage({
+    super.key,
+    required this.thread,
+    this.onOpenMessage,
+    this.onClose,
+    this.prepareMedia,
+    this.accountKey = '',
+  });
 
   final ChatThread thread;
+  final ValueChanged<String>? onOpenMessage;
+  final VoidCallback? onClose;
+  final Future<ChatMessage?> Function(ChatMessage)? prepareMedia;
+  final String accountKey;
 
   @override
   State<ChatMediaPage> createState() => _ChatMediaPageState();
@@ -28,15 +40,27 @@ class ChatMediaPage extends StatefulWidget {
 
 class _ChatMediaPageState extends State<ChatMediaPage> {
   MediaSection selected = MediaSection.media;
+  String query = '';
 
   void openSourceMessage(String messageId) {
+    if (widget.onOpenMessage != null) {
+      widget.onOpenMessage!(messageId);
+      return;
+    }
     Navigator.pop(context, messageId);
   }
 
   @override
   Widget build(BuildContext context) {
     final buckets = _MediaBuckets.fromThread(widget.thread);
-    final items = buckets.itemsFor(selected);
+    final items = buckets
+        .itemsFor(selected)
+        .where(
+          (item) => '${item.title} ${item.subtitle} ${item.message.text}'
+              .toLowerCase()
+              .contains(query.trim().toLowerCase()),
+        )
+        .toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFF07111E),
@@ -49,7 +73,7 @@ class _ChatMediaPageState extends State<ChatMediaPage> {
                 children: [
                   _RoundGlassButton(
                     icon: Icons.arrow_back_ios_new_rounded,
-                    onTap: () => Navigator.maybePop(context),
+                    onTap: widget.onClose ?? () => Navigator.maybePop(context),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -140,6 +164,16 @@ class _ChatMediaPageState extends State<ChatMediaPage> {
                 ),
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              child: TextField(
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search shared content',
+                ),
+                onChanged: (value) => setState(() => query = value),
+              ),
+            ),
             const SizedBox(height: 10),
             Expanded(
               child: AnimatedSwitcher(
@@ -158,6 +192,8 @@ class _ChatMediaPageState extends State<ChatMediaPage> {
                         items: items,
                         mediaItems: buckets.media,
                         onOpenMessage: openSourceMessage,
+                        prepareMedia: widget.prepareMedia,
+                        accountKey: widget.accountKey,
                       ),
               ),
             ),
@@ -175,12 +211,16 @@ class _MediaContent extends StatelessWidget {
     required this.items,
     required this.mediaItems,
     required this.onOpenMessage,
+    this.prepareMedia,
+    this.accountKey = '',
   });
 
   final MediaSection section;
   final List<_MediaItem> items;
   final List<_MediaItem> mediaItems;
   final ValueChanged<String> onOpenMessage;
+  final Future<ChatMessage?> Function(ChatMessage)? prepareMedia;
+  final String accountKey;
 
   @override
   Widget build(BuildContext context) {
@@ -195,8 +235,18 @@ class _MediaContent extends StatelessWidget {
         itemBuilder: (context, index) =>
             items[index].kind == _MediaKind.voice ||
                 items[index].kind == _MediaKind.audio
-            ? _VoiceListTile(item: items[index], onOpenMessage: onOpenMessage)
-            : _ListMediaTile(item: items[index], onOpenMessage: onOpenMessage),
+            ? _VoiceListTile(
+                key: ValueKey(items[index].message.id),
+                item: items[index],
+                onOpenMessage: onOpenMessage,
+                prepareMedia: prepareMedia,
+                accountKey: accountKey,
+              )
+            : _ListMediaTile(
+                item: items[index],
+                onOpenMessage: onOpenMessage,
+                prepareMedia: prepareMedia,
+              ),
       );
     }
     return GridView.builder(
@@ -210,8 +260,21 @@ class _MediaContent extends StatelessWidget {
       ),
       itemBuilder: (context, index) => _GridMediaTile(
         item: items[index],
-        onTap: () {
+        onTap: () async {
+          var item = items[index];
+          if (item.message.fileData.isEmpty && prepareMedia != null) {
+            final message = await prepareMedia!(item.message);
+            if (!context.mounted || message == null) return;
+            item = item.withMessage(message);
+          }
+          if (item.kind == _MediaKind.video) {
+            await _openSharedFile(context, item.message);
+            return;
+          }
           final photos = mediaItems
+              .map(
+                (photo) => photo.message.id == item.message.id ? item : photo,
+              )
               .where(
                 (item) => item.kind == _MediaKind.image && item.bytes != null,
               )
@@ -293,10 +356,15 @@ class _GridMediaTile extends StatelessWidget {
 }
 
 class _ListMediaTile extends StatelessWidget {
-  const _ListMediaTile({required this.item, required this.onOpenMessage});
+  const _ListMediaTile({
+    required this.item,
+    required this.onOpenMessage,
+    this.prepareMedia,
+  });
 
   final _MediaItem item;
   final ValueChanged<String> onOpenMessage;
+  final Future<ChatMessage?> Function(ChatMessage)? prepareMedia;
 
   @override
   Widget build(BuildContext context) {
@@ -325,7 +393,17 @@ class _ListMediaTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(color: Colors.white54),
         ),
-        onTap: () => _handleItemTap(context, item),
+        onTap: () async {
+          var resolved = item;
+          if (item.kind != _MediaKind.link &&
+              item.message.fileData.isEmpty &&
+              prepareMedia != null) {
+            final message = await prepareMedia!(item.message);
+            if (!context.mounted || message == null) return;
+            resolved = item.withMessage(message);
+          }
+          if (context.mounted) await _handleItemTap(context, resolved);
+        },
         trailing: IconButton(
           tooltip: 'Go to message',
           icon: const Icon(
@@ -343,26 +421,30 @@ class _ListMediaTile extends StatelessWidget {
       await Clipboard.setData(ClipboardData(text: item.subtitle));
       return;
     }
-    if (item.message.kind != ChatMessageKind.file ||
-        item.message.fileData.isEmpty ||
-        kIsWeb) {
+    await _openSharedFile(context, item.message);
+  }
+}
+
+Future<void> _openSharedFile(BuildContext context, ChatMessage message) async {
+  if (message.kind != ChatMessageKind.file || message.fileData.isEmpty) {
+    return;
+  }
+  try {
+    final bytes = await compute(decodeMediaHex, message.fileData);
+    final filename = _safeFilename(message.fileName);
+    if (kIsWeb) {
+      await XFile.fromData(bytes, name: filename).saveTo(filename);
       return;
     }
-    try {
-      final dir = await getTemporaryDirectory();
-      final filename = _safeFilename(item.message.fileName);
-      final path = p.join(dir.path, filename);
-      await XFile.fromData(
-        _hexDecode(item.message.fileData),
-        name: filename,
-      ).saveTo(path);
-      await OpenFilex.open(path);
-    } catch (_) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Could not open file')));
-    }
+    final dir = await getTemporaryDirectory();
+    final path = p.join(dir.path, filename);
+    await XFile.fromData(bytes, name: filename).saveTo(path);
+    await OpenFilex.open(path);
+  } catch (_) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Could not open file')));
   }
 }
 
@@ -568,16 +650,28 @@ class _PhotoViewerPageState extends State<_PhotoViewerPage> {
 }
 
 class _VoiceListTile extends StatefulWidget {
-  const _VoiceListTile({required this.item, required this.onOpenMessage});
+  const _VoiceListTile({
+    super.key,
+    required this.item,
+    required this.onOpenMessage,
+    this.prepareMedia,
+    this.accountKey = '',
+  });
 
   final _MediaItem item;
   final ValueChanged<String> onOpenMessage;
+  final Future<ChatMessage?> Function(ChatMessage)? prepareMedia;
+  final String accountKey;
 
   @override
   State<_VoiceListTile> createState() => _VoiceListTileState();
 }
 
 class _VoiceListTileState extends State<_VoiceListTile> {
+  AudioProgressStore? progressStore;
+  StreamSubscription<bool>? playingSubscription;
+  int lastSavedSecond = -1;
+  double rate = 1;
   late final MessageAudioPlayer player;
   StreamSubscription<Duration>? durationSubscription;
   StreamSubscription<Duration>? positionSubscription;
@@ -595,11 +689,25 @@ class _VoiceListTileState extends State<_VoiceListTile> {
   void initState() {
     super.initState();
     player = MessageAudioPlayer();
+    if (widget.accountKey.isNotEmpty) {
+      progressStore = AudioProgressStore(
+        widget.accountKey,
+        widget.item.message.id,
+      );
+    }
+    playingSubscription = player.onPlayingChanged.listen((value) {
+      if (mounted) setState(() => playing = value);
+      if (!value && sourceReady) unawaited(progressStore?.save(position));
+    });
     durationSubscription = player.onDurationChanged.listen((value) {
       if (mounted) setState(() => duration = value);
     });
     positionSubscription = player.onPositionChanged.listen((value) {
       if (mounted) setState(() => position = value);
+      if (sourceReady && value.inSeconds ~/ 3 != lastSavedSecond) {
+        lastSavedSecond = value.inSeconds ~/ 3;
+        unawaited(progressStore?.save(value));
+      }
     });
     completeSubscription = player.onPlayerComplete.listen((_) {
       if (!mounted) return;
@@ -607,6 +715,7 @@ class _VoiceListTileState extends State<_VoiceListTile> {
         playing = false;
         position = Duration.zero;
       });
+      unawaited(progressStore?.save(Duration.zero));
     });
   }
 
@@ -624,6 +733,8 @@ class _VoiceListTileState extends State<_VoiceListTile> {
 
   @override
   void dispose() {
+    if (sourceReady) unawaited(progressStore?.save(position));
+    playingSubscription?.cancel();
     playerDisposed = true;
     sourceGeneration++;
     durationSubscription?.cancel();
@@ -664,7 +775,12 @@ class _VoiceListTileState extends State<_VoiceListTile> {
 
   Future<void> prepareSource() async {
     final generation = sourceGeneration;
-    final message = widget.item.message;
+    var message = widget.item.message;
+    if (message.fileData.isEmpty && widget.prepareMedia != null) {
+      final downloaded = await widget.prepareMedia!(message);
+      if (downloaded == null) throw StateError('Could not download audio');
+      message = downloaded;
+    }
     final bytes = await compute(decodeMediaHex, message.fileData);
     if (!mounted || playerDisposed || generation != sourceGeneration) return;
     await player.setSource(bytes: bytes, filename: message.fileName);
@@ -675,6 +791,16 @@ class _VoiceListTileState extends State<_VoiceListTile> {
       await player.release().catchError((_) {});
       return;
     }
+    var saved = await progressStore?.load() ?? Duration.zero;
+    final length = await player.getDuration();
+    if (length != null &&
+        length > Duration.zero &&
+        saved >= length - const Duration(milliseconds: 500)) {
+      saved = Duration.zero;
+    }
+    if (!mounted || playerDisposed || generation != sourceGeneration) return;
+    await player.setRate(rate);
+    if (saved > Duration.zero) await player.seek(saved);
     sourceReady = true;
   }
 
@@ -697,6 +823,7 @@ class _VoiceListTileState extends State<_VoiceListTile> {
     try {
       await ensureSource();
       if (!mounted || !sourceReady) return;
+      progressStore?.activate();
       await player.resume();
       if (mounted) setState(() => playing = true);
     } catch (_) {
@@ -713,8 +840,17 @@ class _VoiceListTileState extends State<_VoiceListTile> {
       milliseconds: (duration.inMilliseconds * fraction.clamp(0.0, 1.0))
           .round(),
     );
-    await player.seek(target);
-    if (mounted) setState(() => position = target);
+    try {
+      await player.seek(target);
+      if (mounted) setState(() => position = target);
+      await progressStore?.save(target);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Could not seek audio')));
+      }
+    }
   }
 
   @override
@@ -763,6 +899,31 @@ class _VoiceListTileState extends State<_VoiceListTile> {
               ),
             ),
             const SizedBox(width: 4),
+            PopupMenuButton<double>(
+              tooltip: 'Playback speed',
+              onSelected: (value) async {
+                try {
+                  if (sourceReady) await player.setRate(value);
+                  if (mounted) setState(() => rate = value);
+                } catch (_) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Could not change playback speed'),
+                      ),
+                    );
+                  }
+                }
+              },
+              itemBuilder: (_) => [
+                for (final value in [0.75, 1.0, 1.25, 1.5, 2.0])
+                  PopupMenuItem(value: value, child: Text('${value}x')),
+              ],
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text('${rate}x'),
+              ),
+            ),
             IconButton(
               tooltip: 'Go to message',
               onPressed: () => widget.onOpenMessage(widget.item.message.id),
@@ -968,7 +1129,7 @@ class _GlassSurface extends StatelessWidget {
             borderRadius: BorderRadius.circular(radius),
             border: Border.all(color: Colors.white.withValues(alpha: 0.11)),
           ),
-          child: child,
+          child: Material(type: MaterialType.transparency, child: child),
         ),
       ),
     );
@@ -1082,6 +1243,13 @@ class _MediaItem {
   final String title;
   final String subtitle;
   final Uint8List? bytes;
+  _MediaItem withMessage(ChatMessage value) => _MediaItem(
+    message: value,
+    kind: kind,
+    title: title,
+    subtitle: subtitle,
+    bytes: kind == _MediaKind.image ? _tryHexDecode(value.fileData) : null,
+  );
 }
 
 enum _MediaKind { image, video, file, voice, audio, link }
