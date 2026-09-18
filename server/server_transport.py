@@ -1,6 +1,7 @@
 import json
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 try:
     from server.server_calls import is_call_signal_packet, route_call_signal
@@ -142,37 +143,45 @@ class ServerTransportMixin:
         destination_node = str(metadata.get("destination_node") or "").strip()
         if not destination_node or destination_node.upper() == "SERVER":
             return
-        try:
-            manifest_delivered = await self._send_live_packet(
-                destination_node,
-                {
-                    **metadata,
-                    "type": "file_manifest",
-                    "file_id": transfer_result.get("file_id") or "",
-                    "media_id": metadata.get("media_id") or "",
-                    "file_sha256": transfer_result.get("sha256") or "",
-                    "file_size": transfer_result.get("size_bytes") or 0,
-                    "media_delivery_v2": True,
-                },
-                required_capability="media_delivery_v2",
-            )
-            if manifest_delivered:
-                return
-            for delivery_packet in self.iter_file_transfer_delivery_packets(
-                transfer_result
-            ):
-                if not await self._send_live_packet(
-                    destination_node,
-                    delivery_packet,
+        source_node = str(metadata.get("source_node") or "").strip()
+        sender_login = str(self.get_login_by_node(source_node) or "").strip().lower()
+        receiver_login = str(self.get_login_by_node(destination_node) or "").strip().lower()
+        targets = {destination_node: receiver_login}
+        for login in dict.fromkeys((receiver_login, sender_login)):
+            if login:
+                for node in await self._live_account_nodes(login):
+                    if node and node != source_node:
+                        targets[node] = login
+        targets.pop(source_node, None)
+        manifest = {
+            **metadata,
+            "sender_login": sender_login,
+            "receiver_login": receiver_login,
+            "type": "file_manifest",
+            "file_id": transfer_result.get("file_id") or "",
+            "media_id": metadata.get("media_id") or "",
+            "file_sha256": transfer_result.get("sha256") or "",
+            "file_size": transfer_result.get("size_bytes") or 0,
+            "media_delivery_v2": True,
+        }
+        for target_node, login in targets.items():
+            try:
+                routed = self.normalize_group_packet_for_recipient(
+                    manifest, login, target_node,
+                )
+                if await self._send_live_packet(
+                    target_node, routed, required_capability="media_delivery_v2",
                 ):
-                    break
-        except (OSError, websockets.exceptions.ConnectionClosed) as error:
-            print(
-                "Deferred durable file delivery:",
-                transfer_result.get("file_id"),
-                destination_node,
-                error,
-            )
+                    continue
+                for packet in self.iter_file_transfer_delivery_packets(transfer_result):
+                    routed = self.normalize_group_packet_for_recipient(
+                        {**packet, "sender_login": sender_login, "receiver_login": receiver_login},
+                        login, target_node,
+                    )
+                    if not await self._send_live_packet(target_node, routed):
+                        break
+            except (OSError, ConnectionClosed) as error:
+                print("Deferred durable file delivery:", transfer_result.get("file_id"), target_node, error)
 
     async def route_packet(self, packet):
         destination_node = packet.get("destination_node")

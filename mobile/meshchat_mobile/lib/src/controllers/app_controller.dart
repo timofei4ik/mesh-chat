@@ -692,6 +692,10 @@ class AppController extends ChangeNotifier {
   Timer? _draftCacheSaveTimer;
   Future<void>? _cacheSaveFuture;
   bool _cacheSavePending = false;
+  Session? _cacheSaveAccount;
+  int _cacheSaveEpoch = 0;
+  int _accountStateEpoch = 0;
+  bool _loadingAccountState = false;
   Future<void> _deletedMessageSave = Future<void>.value();
   final Map<String, int> _draftVersions = {};
   final Map<String, Completer<Map<String, dynamic>>> _draftRequests = {};
@@ -1498,25 +1502,31 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> restoreSession() async {
-    unawaited(_refreshNotifications());
-    appSettings = await _settingsStore.load();
-    await _configureSystemCallNotifications();
-    unawaited(
-      _windowsBackground.setCloseToTray(appSettings.windowsCloseToTray),
-    );
-    recentSessions = await _store.loadRecent();
-    final pending = await _store.loadPendingAuthentication();
-    _applyPendingAuthentication(pending);
-    session = await _store.load();
-    if (session != null) {
-      await _loadVerifiedCache(session!);
-      await _loadOwnProfile(session!);
-      stickerLibrary = await _stickerStore.load(session);
-      await _loadStories();
-      await _repairCachedGroups();
-      await _repairCachedMessages();
-      _restoreGroupKeysFromThreads();
-      await _repairCachedGroupMessages();
+    _loadingAccountState = true;
+    _accountStateEpoch++;
+    try {
+      unawaited(_refreshNotifications());
+      appSettings = await _settingsStore.load();
+      await _configureSystemCallNotifications();
+      unawaited(
+        _windowsBackground.setCloseToTray(appSettings.windowsCloseToTray),
+      );
+      recentSessions = await _store.loadRecent();
+      final pending = await _store.loadPendingAuthentication();
+      _applyPendingAuthentication(pending);
+      session = await _store.load();
+      if (session != null) {
+        await _loadVerifiedCache(session!);
+        await _loadOwnProfile(session!);
+        stickerLibrary = await _stickerStore.load(session);
+        await _loadStories();
+        await _repairCachedGroups();
+        await _repairCachedMessages();
+        _restoreGroupKeysFromThreads();
+        await _repairCachedGroupMessages();
+      }
+    } finally {
+      _loadingAccountState = false;
     }
     initialized = true;
     notifyListeners();
@@ -1526,7 +1536,7 @@ class AppController extends ChangeNotifier {
   Future<void> handleAppResumed() async {
     setAppForeground(true);
     unawaited(_refreshNotifications());
-    if (session == null) return;
+    if (session == null || _loadingAccountState) return;
     if (!_socket.isConnected && !_socket.isConnecting) {
       await _connect();
     } else if (_socket.isReady) {
@@ -2650,12 +2660,15 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> forceResync() async {
+  Future<void> forceResync({bool fullSnapshot = true}) async {
     if (session == null) return;
     status = 'Resyncing...';
     addDiagnostic('sync', 'Manual resync requested');
     notifyListeners();
     await _socket.close();
+    if (fullSnapshot && session != null) {
+      await _syncCursorStore.clear(session!);
+    }
     await _connect();
   }
 
@@ -2668,7 +2681,7 @@ class AppController extends ChangeNotifier {
         return;
       }
       addDiagnostic('sync', reason);
-      unawaited(forceResync());
+      unawaited(forceResync(fullSnapshot: false));
     });
   }
 
@@ -3077,20 +3090,25 @@ class AppController extends ChangeNotifier {
     candidate = await _adoptCanonicalLogin(candidate, diagnostics.data);
     emailBindingRequired = diagnostics.data['email_binding_required'] == true;
     candidate = await _adoptServerIdentityRecovery(candidate);
-    await _socket.close();
-    _clearLocalState();
-    await _store.saveCurrent(candidate);
-    await _store.saveRecent(candidate);
-    session = candidate;
-    recentSessions = await _store.loadRecent();
-    await _loadVerifiedCache(candidate);
-    await _loadOwnProfile(candidate);
-    stickerLibrary = await _stickerStore.load(candidate);
-    await _loadStories();
-    await _repairCachedGroups();
-    await _repairCachedMessages();
-    _restoreGroupKeysFromThreads();
-    await _repairCachedGroupMessages();
+    _loadingAccountState = true;
+    try {
+      await _socket.close();
+      _clearLocalState();
+      await _store.saveCurrent(candidate);
+      await _store.saveRecent(candidate);
+      session = candidate;
+      recentSessions = await _store.loadRecent();
+      await _loadVerifiedCache(candidate);
+      await _loadOwnProfile(candidate);
+      stickerLibrary = await _stickerStore.load(candidate);
+      await _loadStories();
+      await _repairCachedGroups();
+      await _repairCachedMessages();
+      _restoreGroupKeysFromThreads();
+      await _repairCachedGroupMessages();
+    } finally {
+      _loadingAccountState = false;
+    }
     await _connect(reactivateDevice: reactivateDevice);
     return true;
   }
@@ -3174,6 +3192,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _connect({bool reactivateDevice = false}) async {
+    if (_loadingAccountState) return;
     final current = session;
     if (current == null) return;
     final pending = _connectionTask;
@@ -13588,6 +13607,8 @@ class AppController extends ChangeNotifier {
   }
 
   void _clearLocalState() {
+    _accountStateEpoch++;
+    _cacheSavePending = false;
     if (session == null) unawaited(_notifications.systemCalls.clear());
     _webPushVapidPublicKey = '';
     _androidPushSubscribedToken = '';
@@ -13731,6 +13752,9 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _saveCache() {
+    if (_loadingAccountState || session == null) return Future<void>.value();
+    _cacheSaveAccount = session;
+    _cacheSaveEpoch = _accountStateEpoch;
     _cacheSavePending = true;
     if (_applyingSyncDelta) return Future<void>.value();
     final existing = _cacheSaveFuture;
@@ -13745,6 +13769,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _drainCacheSaves() async {
+    final epoch = _accountStateEpoch;
+    final account = session;
     while (_cacheSavePending) {
       while (_applyingSyncDelta && _cacheSavePending) {
         await Future<void>.delayed(const Duration(milliseconds: 40));
@@ -13753,10 +13779,22 @@ class AppController extends ChangeNotifier {
       // Message acknowledgements and sync deltas commonly arrive in short
       // bursts. Let the burst settle so it becomes one SQLite transaction.
       await Future<void>.delayed(const Duration(milliseconds: 80));
+      if (_loadingAccountState ||
+          epoch != _accountStateEpoch ||
+          account == null ||
+          !account.isSameAccountAs(session) ||
+          account.nodeId != session?.nodeId) {
+        if (_cacheSaveEpoch == epoch &&
+            account?.isSameAccountAs(_cacheSaveAccount) == true &&
+            account?.nodeId == _cacheSaveAccount?.nodeId) {
+          _cacheSavePending = false;
+        }
+        return;
+      }
       if (_applyingSyncDelta) continue;
       _cacheSavePending = false;
       try {
-        await _cache.save(session, [...threads.values, ...groups.values]);
+        await _cache.save(account, [...threads.values, ...groups.values]);
       } catch (_) {
         // Web storage can reject writes when Safari quota is exhausted.
         // The app should keep working; sync can restore data later.

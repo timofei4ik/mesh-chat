@@ -20,8 +20,8 @@ class ChatCacheStore {
   static const _maxCachedWebFileHex = 220 * 1024;
   static const _maxCachedWebAvatar = 260 * 1024;
   static const _dbName = 'meshchat_cache.db';
-  // Older clients cannot decode fragmented rows and must request a snapshot.
-  static const _cacheDigestVersion = 2;
+  // Refresh pre-guard checkpoints that may describe partially hydrated state.
+  static const _cacheDigestVersion = 3;
   static Database? _database;
 
   Future<void> load(

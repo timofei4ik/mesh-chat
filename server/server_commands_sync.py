@@ -172,6 +172,16 @@ async def handle_file_chunk_v2(server, packet, context):
         metrics = getattr(server, "runtime_metrics", None)
         if metrics is not None:
             metrics.increment("file_errors_total")
+    if transfer_result.get("complete") is True or transfer_result.get("newly_completed") is True:
+        accounts_for = getattr(server, "sync_v2_accounts_for_packet", None)
+        invalidate = getattr(server, "invalidate_sync_v2_snapshot", None)
+        if callable(accounts_for) and callable(invalidate):
+            completed = {**packet, **(transfer_result.get("metadata") or {}), "source_node": context.node_id}
+            file_id = transfer_result.get("file_id") or packet.get("file_id")
+            for affected_login in accounts_for(completed, []):
+                # Also runs on a retried completed upload. The stable operation
+                # ID deduplicates it, closing the commit-to-ACK crash window.
+                invalidate(affected_login, "file_transfer_completed", f"file-complete:{file_id}", {"file_id": file_id})
     await server.send_file_transfer_ack(
         context.websocket,
         packet,
